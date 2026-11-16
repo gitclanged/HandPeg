@@ -11,31 +11,31 @@ using static HandPegApp.Native.User32;
 
 namespace HandPegApp;
 
-// ----- The screen eyedropper's loupe (Pass 5.6A): the patch magnified beside the pointer, never in a screen capture -----
+// ----- Screen eyedropper loupe: magnified patch beside the pointer, excluded from screen capture -----
 public sealed partial class ScreenEyedropper
 {
     /// <summary>
-    /// The loupe: a small top-most window that takes neither the pointer nor the focus, shown beside the pointer and never over the patch
-    /// it reads (20 of the monitor's pixels away at 100 %, on the side with room), placed and sized in physical pixels for the monitor
-    /// under the pointer (its effective DPI), and left out of screen captures (SetWindowDisplayAffinity WDA_EXCLUDEFROMCAPTURE), so the
-    /// reads never see it. Its patch picture and swatch are written in place on every read (one bitmap, one brush).
+    /// Small topmost, click-through, non-activating window shown beside the pointer, never over the sampled patch (20 px at 100 % on the
+    /// side with room). Positioned and sized in physical pixels for the monitor under the pointer (its effective DPI) and excluded from
+    /// capture (SetWindowDisplayAffinity WDA_EXCLUDEFROMCAPTURE) so samples never include it. Patch image and swatch update in place
+    /// per sample (one bitmap, one brush).
     /// </summary>
     private sealed partial class Loupe : Window
     {
-        // The loupe's picture and its swatch strip, in DIPs at 100 % (the monitor's scale applied in Place).
+        // Picture size, swatch strip height and pointer gap in 100 % units (monitor scale applied in Place).
         private const double PictureSide = 120, SwatchHeight = 16, Gap = 20;
 
         private static readonly Brush Frame = FrozenBrush(0x2A, 0x2A, 0x30), Ground = FrozenBrush(0x1E, 0x1E, 0x22), CentreMark = FrozenBrush(0xFF, 0xFF, 0xFF);
 
         private readonly WriteableBitmap _picture = new(PatchSide, PatchSide, 96, 96, PixelFormats.Bgr32, null);
 
-        // The swatch's brush: its colour follows the reads (mutable by design, the one brush of the loupe not frozen).
+        // Swatch brush, intentionally unfrozen (the only one here): its colour is updated per sample.
         private readonly SolidColorBrush _swatch = new(Colors.Black);
         private nint _window;
 
         public Loupe()
         {
-            // 5.6A review: sized by Place alone (UiScale scales its content, never its size: Place squares the picture row).
+            // Size is set only by Place (UiScale scales content, not window size; Place keeps the picture row square).
             UiScale.SetKeepsItsSize(this, true);
             (WindowStyle, ResizeMode, ShowInTaskbar, ShowActivated, Topmost, Focusable, IsHitTestVisible) = (WindowStyle.None, ResizeMode.NoResize, false, false, true, false, false);
             (Left, Top, Width, Height) = (-32000, -32000, PictureSide, PictureSide + SwatchHeight);
@@ -44,7 +44,7 @@ public sealed partial class ScreenEyedropper
             var image = new Image { Source = _picture, Stretch = Stretch.Fill };
             RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
 
-            // The centre pixel outlined: the middle of a 7 : 1 : 7 grid over the picture.
+            // Outline the centre pixel: middle cell of a 7 : 1 : 7 grid over the picture.
             var marks = new Grid();
             foreach (var share in new[] { 7.0, 1, 7 })
             {
@@ -68,14 +68,14 @@ public sealed partial class ScreenEyedropper
             Content = root;
         }
 
-        /// <summary>The patch and its colour drawn, the loupe shown beside the pointer's physical place (<paramref name="x"/>, <paramref name="y"/>).</summary>
+        /// <summary>Updates the patch and colour, then shows the loupe beside the physical pointer position (<paramref name="x"/>, <paramref name="y"/>).</summary>
         public void Present(byte[] patch, (double R, double G, double B) colour, int x, int y)
         {
             _picture.WritePixels(new Int32Rect(0, 0, PatchSide, PatchSide), patch, PatchSide * 4, 0);
             _swatch.Color = Color.FromRgb(ToByte(colour.R), ToByte(colour.G), ToByte(colour.B));
             if (_window == 0)
             {
-                // Its window made first, so it is left out of captures and takes no pointer or focus before it is ever shown.
+                // Create the HWND first so capture exclusion and click-through/no-activate styles apply before it is ever shown.
                 _window = new WindowInteropHelper(this).EnsureHandle();
                 _ = SetWindowDisplayAffinity(_window, WdaExcludeFromCapture);
                 _ = SetWindowLongPtr(_window, GwlExStyle, GetWindowLongPtr(_window, GwlExStyle) | WsExTransparent | WsExNoActivate | WsExToolWindow);
@@ -85,9 +85,9 @@ public sealed partial class ScreenEyedropper
             Place(x, y);
         }
 
-        // Beside the pointer on the side with room, in the pixels of the monitor under it, at its scale. 5.6A review: the window is as much
-        // taller than wide as its swatch row is in real pixels (its content's pixels per DIP, UiScale's: VisualTreeHelper.GetDpi), so the
-        // picture row stays square whatever the UI Scale (the 1-DIP frame takes the same pixels on every side).
+        // Positions beside the pointer on the side with room, in the monitor's physical pixels at its scale. Height exceeds width by the
+        // swatch row's physical height (content pixels per DIP from VisualTreeHelper.GetDpi), keeping the picture row square at any UI
+        // scale (the 1-DIP frame is equal on all sides).
         private void Place(int x, int y)
         {
             var monitor = MonitorFromPoint(new NativePoint { X = x, Y = y }, MonitorDefaultToNearest);

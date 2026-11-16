@@ -3,16 +3,14 @@ using System.Runtime.InteropServices;
 namespace HandPegApp.Services.Gpu;
 
 /// <summary>
-/// A 64-bit FNV-1a hash built up value by value (each <c>Add</c> gives the hash with that value added: chain them):
-/// what the GPU engine's resources are told apart and deduplicated by (a mask's recipe, a still's words and style, a
-/// LUT's file). Values are hashed by their bits, never by their text, so no culture or formatting can make two equal
-/// recipes differ.
+/// Immutable, chainable 64-bit FNV-1a hash that identifies and deduplicates GPU resources (mask recipes, still text and style,
+/// LUT files). Values hash by their bits, never their text, so culture or formatting cannot split equal recipes.
 /// </summary>
 public readonly struct GpuHash
 {
     private const ulong Basis = 0xcbf29ce484222325UL, Prime = 0x100000001b3UL;
 
-    // Kept as the value minus the basis, so that default(GpuHash) is the empty hash too.
+    // Stored as value minus basis so default(GpuHash) is the empty hash.
     private readonly ulong _state;
 
     private GpuHash(ulong value) => _state = value - Basis;
@@ -37,7 +35,7 @@ public readonly struct GpuHash
 
     public GpuHash Add(bool value) => Add(value ? 1L : 0L);
 
-    // (0 and -0 are one value.)
+    // 0 and -0 hash identically.
     public GpuHash Add(double value) => Add(BitConverter.DoubleToInt64Bits(value == 0 ? 0 : value));
 
     public GpuHash Add(string? text)
@@ -49,11 +47,11 @@ public readonly struct GpuHash
             hash *= Prime;
         }
 
-        // The length too, so that "ab" + "c" is not "a" + "bc".
+        // Mix in the length so "ab" + "c" differs from "a" + "bc".
         return new GpuHash(hash).Add((text ?? "").Length);
     }
 
-    /// <summary>Bytes as they are (a scene's layer descriptors: <see cref="GpuProgramStrip"/>), and their count.</summary>
+    /// <summary>Raw bytes (e.g. layer descriptors for <see cref="GpuProgramStrip"/>) followed by their count.</summary>
     public GpuHash Add(ReadOnlySpan<byte> bytes)
     {
         var hash = Current;
@@ -66,7 +64,7 @@ public readonly struct GpuHash
         return new GpuHash(hash).Add(bytes.Length);
     }
 
-    /// <summary>A clip's id as a layer's key (<see cref="GpuLayerDescriptor.ClipKey"/>): the same id always gives the same key, across plans and sessions.</summary>
+    /// <summary>Stable layer key for a clip id (<see cref="GpuLayerDescriptor.ClipKey"/>), identical across plans and sessions.</summary>
     public static long Of(Guid id)
     {
         Span<byte> bytes = stackalloc byte[16];

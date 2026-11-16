@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace HandPegApp.Models;
 
-/// <summary>The export's channel choices for encoded audio, saved by these names (4.1.1).</summary>
+/// <summary>Encoded audio channel choices (serialized by name).</summary>
 public static class AudioChannelChoice
 {
     /// <summary>Two channels: anything wider is folded down; a stereo or mono track is left as it is.</summary>
@@ -18,39 +18,36 @@ public static class AudioChannelChoice
     public static IReadOnlyList<LabeledChoice<string>> Choices { get; } =
         [new(Stereo, "Stereo (2.0)"), new(Mono, "Mono (1.0)"), new(Source, "Match Source")];
 
-    /// <summary>The sample rates offered, in Hz; 0 is Match Project Settings (5.4A: every render is mixed at the project's rate, 48 kHz unless it says otherwise).</summary>
+    /// <summary>Offered sample rates (Hz); 0 = Match Project Settings (project rate, default 48 kHz).</summary>
     public static IReadOnlyList<LabeledChoice<int>> SampleRates { get; } =
         [new(0, "Match Project Settings (48 kHz)"), new(48000, "48000 Hz"), new(44100, "44100 Hz")];
 
     public static int NormalizeRate(int value) => value is 48000 or 44100 ? value : 0;
 }
 
-/// <summary>A choice for a box: the value saved (<see cref="Key"/>) and the words shown (<see cref="Value"/>), which are
-/// also what it reads as wherever a box falls back to the item itself (screen readers, a template without a path).</summary>
+/// <summary>Combo box item: stored <see cref="Key"/> and display <see cref="Value"/> (also returned by ToString for screen readers and
+/// path-less templates).</summary>
 public sealed record LabeledChoice<T>(T Key, string Value)
 {
     public override string ToString() => Value;
 }
 
 /// <summary>
-/// A named snapshot of the export settings (the Export tab), and the layout, filters and captions of a preset saved with them.
-/// Nothing about the source or its cut points is stored.
-/// Since 5.4.0 it is also the one model of an Export Preset: the built-in ones (ExportPresetCatalog) carry a <see cref="Category"/>,
-/// the user's own (presets.json, .hppreset files) none.
+/// Named snapshot of Export tab settings plus saved layout, filters and captions (no source or cut data). Single model for Export
+/// Presets: built-ins (ExportPresetCatalog) have a <see cref="Category"/>; custom ones (presets.json, .hppreset) do not.
 /// </summary>
 public sealed class EncodingPreset : IJsonOnDeserialized
 {
-    /// <summary>The Export Presets selector's groups (5.4B): the built-ins of each, then the user's own ("My Presets").</summary>
+    /// <summary>Export Preset selector groups: built-in categories, then "My Presets".</summary>
     public const string PlatformCategory = "Platform & Social", StudioCategory = "Studio & Archive", UserCategory = "My Presets";
 
     /// <summary>
-    /// Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them. Keys an older version wrote
-    /// and this one retired (<see cref="RetiredKeys"/>) are dropped as the preset is read instead.
+    /// Unknown JSON fields preserved on save; retired keys (<see cref="RetiredKeys"/>) are dropped on read.
     /// </summary>
     [JsonExtensionData]
     public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 
-    /// <summary>Keys of retired settings: "VerticalFramer" is the Frame &amp; Layer Engine switch removed in 5.2.</summary>
+    /// <summary>Retired setting keys (e.g. "VerticalFramer", the removed Frame &amp; Layer Engine switch).</summary>
     private static readonly string[] RetiredKeys = ["VerticalFramer"];
 
     void IJsonOnDeserialized.OnDeserialized()
@@ -65,7 +62,7 @@ public sealed class EncodingPreset : IJsonOnDeserialized
 
     public string Name { get; set; } = "";
 
-    /// <summary>The selector group of a built-in Export Preset; null (not written) for one the user saved, which is "My Presets".</summary>
+    /// <summary>Selector group of a built-in preset; null (omitted) for custom presets ("My Presets").</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Category { get; set; }
 
@@ -73,7 +70,7 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Detail { get; set; }
 
-    /// <summary>A built-in Export Preset (it has a <see cref="Category"/>): never written to presets.json, never overwritten by a save.</summary>
+    /// <summary>True for built-ins (has a <see cref="Category"/>): never written to presets.json or overwritten.</summary>
     [JsonIgnore]
     public bool IsBuiltIn => Category is not null;
 
@@ -85,7 +82,7 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     public string OutputWidth { get; set; } = "";
     public string OutputHeight { get; set; } = "";
     public bool KeepAspectRatio { get; set; } = true;
-    /// <summary>The crop as percentages of the source: left, top, right, bottom. Null in presets saved before the crop became relative.</summary>
+    /// <summary>Crop percentages (left, top, right, bottom); null in legacy presets with absolute crops.</summary>
     public double[]? CropPercent { get; set; }
 
     // The crop in pixels, from those earlier presets. Read for conversion; a zero is not written.
@@ -100,14 +97,12 @@ public sealed class EncodingPreset : IJsonOnDeserialized
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int CropRight { get; set; }
-    /// <summary>"Match Project Settings" (5.4A) for the project's own; a preset saved with "Same as source" reads as it.</summary>
+    /// <summary>"Match Project Settings" for the project resolution; legacy "Same as source" maps to it.</summary>
     public string PixelAspectRatio { get; set; } = "Match Project Settings";
     public string CustomPixelAspectRatio { get; set; } = "";
 
     /// <summary>
-    /// Whether the size is the source's shape turned on its side (16:9 becomes 9:16). Null in presets saved before the option
-    /// existed, which reads as off (5.2-Arm64AndNpu: the old Frame &amp; Layer Engine switch, "VerticalFramer" in such a file, is
-    /// no longer read in its place; a member of a file this version does not know is skipped).
+    /// Rotate the output aspect to vertical (16:9 becomes 9:16). Null in legacy presets reads as off; legacy "VerticalFramer" is ignored.
     /// </summary>
     public bool? UseVerticalResolution { get; set; }
 
@@ -122,9 +117,7 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     [JsonPropertyName("VerticalOffset")]
     public double CenterOffsetY { get; set; }
 
-    // The blurred background (5.0-Release: the main video's video-only child): its blur in pixels of the frame (0 sharp to
-    // 64, continuous), its passes (1 to 4), its darkening, its zoom about the middle (1 covers the frame), and its own
-    // effect stack (Look cards; null for none).
+    // Blur-fill background: radius (0-64 frame px, continuous), passes (1-4), darkening, centre zoom (1 = cover), Look cards (null for none).
     public double BlurRadius { get; set; } = 20;
     public int BlurPasses { get; set; } = 2;
     public double BackgroundDim { get; set; } = -0.15;
@@ -136,7 +129,7 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool BackgroundEffectsBypassed { get; set; }
 
-    /// <summary>Pieces of the source and images placed on the frame, each with where it comes from and where it goes. In stacking order, bottom first.</summary>
+    /// <summary>Preset layers (Cutouts and images) with source and placement, bottom-first.</summary>
     public List<LayerState> Layers { get; set; } = [];
 
     /// <summary>The look of the main video as a layer: its style, mask, filters and how it is turned.</summary>
@@ -150,12 +143,11 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     /// <summary>Whether the blurred background is switched off, leaving the black canvas.</summary>
     public bool BackgroundHidden { get; set; }
 
-    /// <summary>How many of those layers lie under the main video: 0 puts it beneath all of them, as it always was before layers could be reordered.</summary>
+    /// <summary>Number of preset layers below the host video (0 = video at the bottom, legacy default).</summary>
     public int MainVideoIndex { get; set; }
 
     /// <summary>
-    /// Width divided by height of the video the layers were marked on; 0 when not recorded. Their source
-    /// rectangles are fractions of the frame, so they fit any size of video, but only one shape.
+    /// Aspect ratio of the video the layers were authored on (0 if unknown); fractional rects fit any size but only this aspect.
     /// </summary>
     public double LayoutSourceAspectRatio { get; set; }
 
@@ -171,7 +163,7 @@ public sealed class EncodingPreset : IJsonOnDeserialized
 
     public bool WhisperTranslate { get; set; }
 
-    /// <summary>Where the caption box sits on the frame, its size and opacity. Null in presets saved before it could be moved.</summary>
+    /// <summary>Caption box placement, size and opacity; null in legacy presets.</summary>
     public LayerState? CaptionLayer { get; set; }
 
     // Filters
@@ -179,8 +171,7 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     public bool Denoise { get; set; }
     public string LutPath { get; set; } = "";
 
-    // (The watermark of versions before images were clips, WatermarkPath and its opacity and position, is not read any more,
-    // 5.2-Arm64AndNpu: a preset that has one opens without it; an image clip does the same.)
+    // (Legacy watermark fields are ignored; image clips replace them.)
 
     // Advanced: colour correction (eq) and sharpening (cas). The defaults leave the picture as it is.
     public double ColorContrast { get; set; } = 1;
@@ -200,19 +191,18 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     public string VideoEncoder { get; set; } = "libx264";
 
     /// <summary>
-    /// The codec a built-in Export Preset wants ("h264", "hevc", "av1", "vp9"): the best encoder of it this PC has, a hardware one
-    /// first (MainViewModel.ResolveEncoder); <see cref="VideoEncoder"/> when none. Null (not written): <see cref="VideoEncoder"/> as it is.
+    /// Target codec of a built-in preset ("h264", "hevc", "av1", "vp9"), resolved to the best local encoder, hardware first
+    /// (MainViewModel.ResolveEncoder), falling back to <see cref="VideoEncoder"/>. Null (omitted): use <see cref="VideoEncoder"/> as-is.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? PreferredCodec { get; set; }
 
-    /// <summary>The encoder's speed step; empty for its own default (its best: <c>MainViewModel.BestStepOf</c>, veryslow for x264 and x265 since 5.4B).</summary>
+    /// <summary>Encoder speed preset; empty for the highest-quality default (<c>MainViewModel.BestStepOf</c>, e.g. veryslow for x264/x265).</summary>
     public string EncoderPreset { get; set; } = "";
 
     /// <summary>
-    /// The encoder's fastest step, whichever it resolves to (5.4D, Q2 b: Fast Proxy, the one exception to the slowest step everywhere):
-    /// NVENC p1, QuickSync veryfast, AMF speed, x264 and x265 ultrafast, Media Foundation -compression_level 0 (MainViewModel.FastestStepOf).
-    /// A flag, not a step: <see cref="EncoderPreset"/> is one name across every family. False (not written) for every other preset.
+    /// Use the encoder's fastest step (Fast Proxy, the only speed-first preset): NVENC p1, QSV veryfast, AMF speed, x264/x265 ultrafast, MF
+    /// -compression_level 0 (MainViewModel.FastestStepOf). A flag because <see cref="EncoderPreset"/> is family-specific. False (omitted) otherwise.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool SpeedFirst { get; set; }
@@ -221,25 +211,25 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     public string Profile { get; set; } = "Auto";
     public string Level { get; set; } = "Auto";
 
-    /// <summary>The rate control as stored (5.4B: VBR, stored "Average Bitrate (ABR)", is the default).</summary>
+    /// <summary>Stored rate control (default VBR, stored as "Average Bitrate (ABR)").</summary>
     public string RateControl { get; set; } = "Average Bitrate (ABR)";
     public int Quality { get; set; } = 22;
 
-    /// <summary>The video bitrate in kbps; empty (5.4B) for the automatic one worked out from the output's size and rate (MainViewModel.EffectiveBitrateKbps).</summary>
+    /// <summary>Video bitrate (kbps); empty for automatic (MainViewModel.EffectiveBitrateKbps from output size and rate).</summary>
     public string TargetBitrate { get; set; } = "";
     public string Framerate { get; set; } = "Match Project Settings";
     public string CustomFramerate { get; set; } = "";
 
-    /// <summary>The most frames a second a Match Project Settings rate is given (a platform's cap: 60); 0 (not written) for no cap.</summary>
+    /// <summary>Frame-rate cap applied to Match Project Settings (platform limit, e.g. 60); 0 (omitted) for none.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int FramerateCap { get; set; }
 
-    /// <summary>The short side of the picture capped at this many pixels, never above the Sequence's own (a chat's size); 0 (not written) for none.</summary>
+    /// <summary>Short-side pixel cap (never upscales the Sequence); 0 (omitted) for none.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int ShortSideCap { get; set; }
     public string Colorspace { get; set; } = "Match Project Settings";
 
-    // (Its "HardwareDecoding", the dead -hwaccel switch, is not read any more, 5.4B: a file that has it reads without it.)
+    // (Legacy "HardwareDecoding" is ignored.)
 
     /// <summary>Encoder options with no control of their own, for example "-g 1 -keyint_min 1".</summary>
     public string ExtraVideoArguments { get; set; } = "";
@@ -273,18 +263,17 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     public bool MergeAudioTracks { get; set; }
     public bool NormalizeAudio { get; set; }
 
-    /// <summary>The loudness Normalize aims at, in LUFS: -14 or -16; 0 (not written) is the default, -16 (5.4B).</summary>
+    /// <summary>Normalize target LUFS (-14 or -16); 0 (omitted) means the default -16.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int LoudnessTarget { get; set; }
 
-    // (A preset's old "DuckAudio", one switch for the first two streams from before ducking was set lane by lane, is not read
-    // any more, 5.2-Arm64AndNpu: each Sub-Lane ducks of its own. A file that has it reads without it.)
+    // (Legacy "DuckAudio" is ignored; ducking is per Sub-Lane.)
 
-    /// <summary>The sample rate every encoded track is written at, in Hz; 0 (Auto, not written) keeps each track's own.</summary>
+    /// <summary>Encoded sample rate (Hz); 0 (Auto, omitted) keeps each track's rate.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int AudioSampleRate { get; set; }
 
-    /// <summary>The channels of every encoded track (<see cref="AudioChannelChoice"/>); null (not written) is Stereo.</summary>
+    /// <summary>Encoded channel layout (<see cref="AudioChannelChoice"/>); null (omitted) = Stereo.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? AudioChannels { get; set; }
 
@@ -292,8 +281,7 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     public double DuckAmountDb { get; set; } = -15;
 
     /// <summary>
-    /// What was set track by track (action, codec, bitrate, title), by track number. Applied on top of the
-    /// codec and bitrate above to the tracks a source actually has.
+    /// Per-track overrides (action, codec, bitrate, title) by track number, applied over the defaults to tracks that exist.
     /// </summary>
     public List<AudioTrackState> AudioTracks { get; set; } = [];
 
@@ -301,11 +289,11 @@ public sealed class EncodingPreset : IJsonOnDeserialized
     public string TargetFileSize { get; set; } = "";
 
     /// <summary>
-    /// The container (mp4, mkv, mov...): set by built-in presets, and by every preset saved since 5.4B; null leaves it as it is.
+    /// Container (mp4, mkv, mov, ...); null leaves the current container unchanged (legacy presets).
     /// </summary>
     public string? Container { get; set; }
 
-    /// <summary>Web Optimized (-movflags +faststart) as the preset has it; null (not written, presets from before 5.4B) leaves it as it is.</summary>
+    /// <summary>Web Optimized (-movflags +faststart); null (legacy) leaves it unchanged.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? WebOptimized { get; set; }
 

@@ -21,12 +21,12 @@
             <Setter Property="TextWrapping" Value="Wrap" />
             <Setter Property="Margin" Value="0,0,0,8" />
         </Style>
-        <!-- A labelled row: a label, then what it sets, side by side -->
+        <!-- Horizontal label + control row -->
         <Style x:Key="Row" TargetType="StackPanel">
             <Setter Property="Orientation" Value="Horizontal" />
             <Setter Property="Margin" Value="0,2,0,4" />
         </Style>
-        <!-- A row whose box takes the width that is left: a path, an address -->
+        <!-- Row whose input fills the remaining width (paths, URLs) -->
         <Style x:Key="WideRow" TargetType="DockPanel">
             <Setter Property="Margin" Value="0,2,0,2" />
         </Style>
@@ -35,8 +35,8 @@
         </Style>
 
         <!--
-            The pages of the full-window screen (4.3-0B): the category rail on the left picks them, so no strip of tabs is
-            shown. The tabs stay in the tree, unseen and taking no room, so that the selection works as a TabControl's does.
+            Page host driven by the category rail: the tab strip is hidden, but tabs stay in the tree (zero size) so
+            selection keeps TabControl semantics.
         -->
         <ControlTemplate x:Key="RailPages" TargetType="TabControl">
             <Grid>
@@ -49,7 +49,7 @@
             <Setter Property="Margin" Value="0,1" />
         </Style>
 
-        <!-- A section that starts folded: a chevron and a title, the options under it once opened -->
+        <!-- Collapsible section (initially folded): chevron + title, options revealed on expand -->
         <Style x:Key="FoldedSection" TargetType="Expander">
             <Setter Property="Margin" Value="0,16,0,2" />
             <Setter Property="Template">
@@ -97,9 +97,9 @@
     </Window.Resources>
 
     <!--
-        The screen draws its own title bar (4.4), as the main window does (the same WindowChrome): placed over the editor
-        (CoverWindow), its bar (CaptionBarHeight, 26 px since 5.3-Stage2, as the editor's) lies exactly on the editor's, carrying
-        the same progress fill and status.
+        Custom title bar using the main window's WindowChrome settings.
+        Positioned over the editor (CoverWindow) so its 26 px bar (CaptionBarHeight, same as the editor's) overlays the
+        editor's exactly, mirroring its progress fill and status.
     -->
     <WindowChrome.WindowChrome>
         <WindowChrome CaptionHeight="{StaticResource CaptionBarHeight}" GlassFrameThickness="0,0,0,1" CornerRadius="0" UseAeroCaptionButtons="False"
@@ -107,13 +107,13 @@
     </WindowChrome.WindowChrome>
 
     <!--
-        The full-window settings screen (4.3-0B), over the editor: a title bar with Back to Editor (which saves) and Cancel; the
-        category rail with the search box; the options of the chosen category; and the live preview stage, which shows
-        what the option under the pointer or with the focus does.
-
-        Every tab is one flat StackPanel: a section title, then the options under it, one element each. That is
-        the shape the search box walks (an option is a child of the tab's panel, or of a folded section's; see
-        SearchBox_TextChanged), and the stage names its options by it. A tab is put in a scroller by the code-behind.
+        Full-window settings over the editor:
+        - title bar (Back to Editor saves; Cancel) and category rail with search;
+        - the selected category's options;
+        - a live preview stage describing the hovered or focused option.
+        Each tab is a flat StackPanel (section title, then one element per option). SearchBox_TextChanged walks this shape
+        (options are children of the tab panel or of a folded section), and the stage resolves option names from it. The
+        code-behind wraps each tab in a ScrollViewer.
     -->
     <Grid x:Name="ScreenRoot">
         <Grid.RowDefinitions>
@@ -121,17 +121,17 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
-            <!-- The rail is wide enough for its longest category name ("Automation & Drop Targets") beside its icon. -->
+            <!-- Rail width fits the longest category ("Automation & Drop Targets") plus icon. -->
             <ColumnDefinition Width="228" />
             <ColumnDefinition x:Name="ListColumn" Width="55*" MinWidth="380" />
             <ColumnDefinition x:Name="StageColumn" Width="45*" />
         </Grid.ColumnDefinitions>
 
         <!--
-            The title bar (WindowChrome, 4.4; CaptionBarHeight): Back to the editor (saving) and the screen's name at the left, what went
-            wrong beside them, Cancel and the caption buttons at the right (Close is Cancel too: only Back and Escape save).
-            The editor's status and the progress of the work under way are mirrored across it as on the editor's own bar
-            (UpdateTitleStatus); the status gives way to an error. Dragging anywhere else moves the window.
+            Title bar (WindowChrome, CaptionBarHeight).
+            Left: Back to Editor (saves), title and error text. Right: Cancel and caption buttons (Close = Cancel; only Back
+            and Escape save). Mirrors the editor's status and work progress (UpdateTitleStatus); errors replace the status.
+            Dragging elsewhere moves the window.
         -->
         <Grid x:Name="TitleBar" Grid.ColumnSpan="3" Height="{StaticResource CaptionBarHeight}" Background="{DynamicResource TitleBarBrush}">
             <Grid.ColumnDefinitions>
@@ -139,7 +139,7 @@
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <!-- 5.4D: as the editor's own bar draws it, over everything on the bar: a 16 % wash and a 2 DIP accent rail along the bottom (UpdateTitleProgress). -->
+            <!-- Progress overlay matching the editor's bar: 16 % wash plus a 2 DIP bottom accent rail (UpdateTitleProgress). -->
             <Canvas x:Name="TitleProgress" Grid.ColumnSpan="3" Panel.ZIndex="10" IsHitTestVisible="False" ClipToBounds="True" Visibility="Collapsed">
                 <Rectangle x:Name="TitleProgressFill" Height="{StaticResource CaptionBarHeight}" Width="0" Fill="{DynamicResource AccentBrush}" Opacity="0.16" />
                 <Rectangle x:Name="TitleProgressRail" Canvas.Left="0" Canvas.Bottom="0" Height="2" Width="0" Fill="{DynamicResource AccentBrush}" />
@@ -158,7 +158,7 @@
             <TextBlock x:Name="ErrorText" Grid.Column="1" Foreground="{DynamicResource WarningTextBrush}" FontSize="12" VerticalAlignment="Center" Margin="0,0,12,0"
                        TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" WindowChrome.IsHitTestVisibleInChrome="True"
                        ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
-            <!-- The editor's status, shown only while there is no error to show (ErrorText) -->
+            <!-- Editor status, hidden while ErrorText is shown -->
             <Border x:Name="TitleStatus" Grid.ColumnSpan="3" HorizontalAlignment="Center" Background="Transparent" Padding="12,0"
                     WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Status" AutomationProperties.AutomationId="TitleStatus">
                 <Border.Style>
@@ -183,12 +183,12 @@
             </StackPanel>
         </Grid>
 
-        <!-- The category rail: the search box, then a category for each tab (made by the code-behind, from the tabs) -->
+        <!-- Category rail: search box, then one category per tab (generated in code-behind) -->
         <Border Grid.Row="1" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="0,0,1,0">
             <DockPanel Margin="10,12">
-                <!-- Type here to find an option: what does not match is hidden, on every tab -->
+                <!-- Option search: hides non-matching options across all tabs -->
                 <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
-                    <!-- The text starts 29 DIP in, where the hint does (26 + the edge and the text view's caret room). -->
+                    <!-- Text inset 29 DIP to align with the hint (26 + border and caret padding). -->
                     <TextBox x:Name="SearchBox" Padding="26,7,8,7" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged"
                              AutomationProperties.Name="Search Settings" ToolTip="Type part of an option's name or description. Categories with nothing that matches are hidden; clear the box (or press Escape in it) to see everything again." />
                     <TextBlock Text="&#xE721;" FontFamily="Segoe MDL2 Assets" FontSize="13" Margin="9,0,0,0" VerticalAlignment="Center" HorizontalAlignment="Left"
@@ -201,14 +201,14 @@
             </DockPanel>
         </Border>
 
-        <!-- The live preview stage: the option looked at, its default, what it does, and a picture of it -->
+        <!-- Live preview stage: focused option, its default, description and visual preview -->
         <Border x:Name="StagePanel" Grid.Row="1" Grid.Column="2" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1,0,0,0">
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
                 <StackPanel Margin="22,18">
                     <!--
-                        The header is always 112 px tall (4.4), so the card under it never moves from one option to the next: the
-                        title keeps to one line (the default beside it), the description to three, and a longer one is given in
-                        full under the card (StageDescriptionMore, FitStageDescription).
+                        Fixed 112 px header so the card below never shifts between options: title on one line (default beside
+                        it), description clamped to three lines, overflow shown in full under the card (StageDescriptionMore,
+                        FitStageDescription).
                     -->
                     <Grid x:Name="StageHeader" Height="112" ClipToBounds="True">
                         <Grid.RowDefinitions>
@@ -241,9 +241,9 @@
                                 <local:CaptionPreview x:Name="StageCaptions" />
                             </Border>
                             <!--
-                                5.6A, Export & Hardware only: the GPU and NPU role cards as the first run has them (RoleCardsPanel: a click on a card
-                                picks its role, into this window's copy, the role lists following), the System tier, and the Playback & A/V Sync
-                                Test's last result, read-only (its test is the GPU & NPU Roles section's own card). SettingsWindow.Hardware.cs fills it.
+                                Export & Hardware only: GPU/NPU role cards as in first run (RoleCardsPanel; card clicks set roles in this
+                                window's copy and sync the role lists), System tier, and the last A/V Sync Test result (read-only; the test
+                                lives in GPU & NPU Roles). Populated by SettingsWindow.Hardware.cs.
                             -->
                             <StackPanel x:Name="StageHardwarePanel" Visibility="Collapsed" Margin="0,0,0,14">
                                 <DockPanel Margin="0,0,0,8">
@@ -260,11 +260,11 @@
                                 </DockPanel>
                             </StackPanel>
                             <local:SettingsStagePreview x:Name="StagePreview" />
-                            <!-- The keys of the main window, drawn for the Keybinds & Lightning Dial page (filled by InitializeKeybindsPage) -->
+                            <!-- Main window keyboard map for Keybinds & Lightning Dial (InitializeKeybindsPage) -->
                             <ContentControl x:Name="StageKeybindsHost" Visibility="Collapsed" Focusable="False" />
                         </StackPanel>
                     </Border>
-                    <!-- What the option looked at does, in full, when it says more than the header has room for -->
+                    <!-- Full description when it overflows the header -->
                     <TextBlock x:Name="StageDescriptionMore" Visibility="Collapsed" TextWrapping="Wrap" LineHeight="19" Margin="0,14,0,0"
                                Foreground="{DynamicResource MutedTextBrush}" />
                 </StackPanel>
@@ -274,7 +274,7 @@
         <TabControl x:Name="SettingsTabs" Grid.Row="1" Grid.Column="1" Template="{StaticResource RailPages}" Padding="24,10,12,10"
                     SelectionChanged="SettingsTabs_SelectionChanged">
 
-            <!-- ===== General: how HandPeg looks, starts and looks after a project ===== -->
+            <!-- ===== General: appearance, startup and project handling ===== -->
             <TabItem Header="General">
                 <StackPanel>
                     <TextBlock Text="About HandPeg" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
@@ -380,7 +380,7 @@
                               ToolTip="Off at first. Ticked, closing HandPeg keeps every open project tab, saved or not, exactly as it was (with its undo steps) and asks nothing: the tabs come back the next time HandPeg starts, the one in front last time in front again. Off: closing asks when a tab holds work not saved (when Prompt to save before closing is ticked), and keeping them all for the next start is one of its answers." />
                     <CheckBox Content="Show video &amp; hover previews in Project Manager" IsChecked="{Binding ShowProjectPreviews}" AutomationProperties.Name="Show Video and Hover Previews in Project Manager"
                               ToolTip="The Project Manager shows a 16:9 picture of the video each project was opened with; with the pointer across it, the frames along the video. They are the media browser's pictures, kept in its cache (Caches, below), and made in the background when not kept. Also a box in the Project Manager itself." />
-                    <!-- Explorer's previews of projects (ExplorerThumbnails, Pass 5.2D); the hint is shown by the code in a self-contained copy -->
+                    <!-- Explorer project thumbnails (ExplorerThumbnails); code-behind shows the hint in self-contained builds -->
                     <StackPanel>
                         <CheckBox x:Name="ExplorerThumbnailsCheck" Content="Show project preview thumbnails in Windows Explorer" IsChecked="{Binding ShowExplorerThumbnails}"
                                   AutomationProperties.Name="Show Project Preview Thumbnails in Windows Explorer"
@@ -402,7 +402,7 @@
                               AutomationProperties.Name="Trim Long Recordings in Project Bundles"
                               ToolTip="On at first. Save Project Bundle (.hpb) puts a video longer than 2 minutes, of which the clips use less than 60 %, into the bundle as the stretches they use, each with 5 seconds to spare at either end: lossless stream copies (every audio track kept, nothing encoded again), each starting on a key frame, and the bundle's project pointed at them so every frame lands where it was. A two-hour stream recording cut down to a few minutes goes in as those minutes. Off: every file goes in whole. The project you are working on and its files are never changed." />
 
-                    <!-- Diagnostics: crash reports (CrashReporter), written here and sent once each (CrashReports.UploadPendingAsync) -->
+                    <!-- Diagnostics: crash reports (CrashReporter), each uploaded once (CrashReports.UploadPendingAsync) -->
                     <TextBlock Text="Diagnostics" Style="{StaticResource SectionTitle}" />
                     <CheckBox x:Name="CrashReportsCheck" Content="Save anonymous crash reports" IsChecked="{Binding SendCrashReports}" Margin="0,2" AutomationProperties.Name="Send Crash Reports"
                               ToolTip="When HandPeg falls over, a crash report (.hpcrash) is written to the crash reports folder: the error, the parts of HandPeg that were running, its last few steps, the kind of media open (container, codecs, resolution, frame rate, length) and the computer (processor, memory, graphics cards, display, engine versions), with no file names, paths, names, serial numbers or words from your media. Reports stay on this PC; HandPeg never sends them (attach one to a GitHub issue to share it). On, a small watcher process (a second HandPeg.exe, using no processor time) runs beside HandPeg to catch crashes in a graphics driver or another native library. Off: nothing is written and the watcher does not run. Applied when you press Save." />
@@ -417,14 +417,14 @@
                                 ToolTip="Deletes every crash report in the folder, at once (not when you press Save)." />
                         <TextBlock x:Name="CrashReportsUsage" VerticalAlignment="Center" Margin="14,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
                     </StackPanel>
-                    <!-- The developer flight recorder (DevFlightRecorder; 5.2.0's re-cut, the user's answer: a checkbox again, no flag file needed) -->
+                    <!-- Developer flight recorder (DevFlightRecorder): checkbox toggle, no flag file required -->
                     <CheckBox Content="Verbose flight recorder" IsChecked="{Binding DevVerboseLogging}" Margin="0,6,0,2" AutomationProperties.Name="Verbose Flight Recorder"
                               ToolTip="Off by default. On: HandPeg keeps its last 500 steps (every key and click, action, timeline edit, undo step, log line, and the project and media paths, each with the playhead and the selection) in the logs folder, written about once a second, with a snapshot of the open project, and a crash report carries all of it unredacted, so a bug can be replayed exactly. Meant for chasing a bug with the developer: the reports then hold your file names and paths. Off: none of it runs and crash reports stay as anonymous as ever. Switched on or off when you press Save. (A dev-verbose.flag file in the settings folder turns it on as well.)" />
 
                 </StackPanel>
             </TabItem>
 
-            <!-- ===== Timeline & Player: what is drawn along the time bars, and how the player plays ===== -->
+            <!-- ===== Timeline & Player: timeline display and playback behaviour ===== -->
             <TabItem Header="Timeline &amp; Player">
                 <StackPanel>
                     <TextBlock Text="Timeline" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
@@ -472,7 +472,7 @@
                               ToolTip="Clips whose sound is drawn on their blocks show a line at their gain (drag it up or down), sloping down over the clip's fades. The fades themselves are the handles at every clip's top corners, whether this is on or not." />
                     <CheckBox Content="Show the Quick FX button on the Timeline" IsChecked="{Binding ShowCreatorHotbar}" AutomationProperties.Name="Show Quick FX Button"
                               ToolTip="The Quick FX button on the Timeline's row of tools (on by default): rest the pointer on it, or click it, for five slots, each putting its Effect, Transition, Game Preset or one-click tool on the selected clips (else the video clip at the playhead) in one step of Undo. Right-click a slot to choose what it holds; they start with Motion Blur, 3D Fly-In, Neon Rim, Whip Pan and Studio Voice." />
-                    <!-- The Timeline's own switches (5.3): the same values as its Timeline Settings menu (its tab's right-click, the gear on its row of tools). -->
+                    <!-- Timeline switches, shared with the Timeline Settings menu (tab right-click or toolbar gear). -->
                     <CheckBox Content="Show effect sub-lanes on expanded tracks" IsChecked="{Binding ShowTimelineEffectLanes}" AutomationProperties.Name="Show Effect Sub-Lanes"
                               ToolTip="On by default. Each track's effects get lanes of their own in its stack, one block per effect over the stretch it works in, shown only while that track's stack is open (its chevron); closed, they take no room. Off: no effect lanes at all, and a clip's effects show only as the fx badge on its block." />
                     <CheckBox Content="Show built-in Mask &amp; Edge lanes on Cutouts" IsChecked="{Binding ShowBuiltInMaskEffectLanes}" AutomationProperties.Name="Show Built-In Mask and Edge Lanes"
@@ -549,7 +549,7 @@
                     <CheckBox Content="Show advanced playback controls" IsChecked="{Binding ShowAdvancedPlayback}"
                               ToolTip="A transport row centred under the player: reload player, previous I-frame, back one frame, play/pause, forward one frame, next I-frame, with a playback speed selector (0.25x to 2x) beside it." />
 
-                    <!-- The v5.0 sound engine (5.0C, SettingsWindow.AudioEngine.cs): the device list is filled when the section is shown. -->
+                    <!-- Audio engine (SettingsWindow.AudioEngine.cs): device list populated on first show. -->
                     <TextBlock Text="Audio playback" Style="{StaticResource SectionTitle}" />
                     <StackPanel x:Name="AudioEngineSection" Loaded="AudioEngineSection_Loaded">
                         <TextBlock Style="{StaticResource Hint}"
@@ -583,7 +583,7 @@
                 </StackPanel>
             </TabItem>
 
-            <!-- ===== Preview & Cache: what is kept on disk ===== -->
+            <!-- ===== Preview & Cache: on-disk caches ===== -->
             <TabItem Header="Preview &amp; Cache">
                 <StackPanel>
                     <TextBlock Text="Caches" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
@@ -739,7 +739,7 @@
                 </StackPanel>
             </TabItem>
 
-            <!-- ===== Export & Hardware: what an encode starts with, and which hardware does the work ===== -->
+            <!-- ===== Export & Hardware: encode defaults and hardware role assignment ===== -->
             <TabItem Header="Export &amp; Hardware">
                 <StackPanel>
                     <TextBlock Text="Default encoding settings" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
@@ -832,11 +832,11 @@
                     <CheckBox Content="Save the Target File Size with each preset" IsChecked="{Binding SaveTargetSizeInPresets}"
                               ToolTip="When on, Save Preset also stores the Target File Size set at the time, and applying that preset brings it back." />
 
-                    <!-- The four GPU roles (5.0-0): each card's job, set by hand or by Test & Auto-Tune Hardware (HardwareBenchmarkService);
-                         the NPUs and what Auto-Captions run on (5.2-Arm64AndNpu, SettingsWindow.Hardware.cs) -->
+                    <!-- Four GPU roles, set manually or by Test & Auto-Tune Hardware (HardwareBenchmarkService); NPUs and the
+                         Auto-Captions accelerator (SettingsWindow.Hardware.cs) -->
                     <TextBlock Text="GPU &amp; NPU Roles" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}" Text="Which graphics card does what. Auto suits most computers." />
-                    <!-- One option: the button, its status, and (after a test) why each role went where it did -->
+                    <!-- Test button, status, and per-role rationale after a run -->
                     <StackPanel>
                         <StackPanel Style="{StaticResource Row}">
                             <Button x:Name="BenchmarkButton" Padding="12,4" Margin="0" Click="Benchmark_Click" AutomationProperties.Name="Test &amp; Auto-Tune Hardware"
@@ -846,7 +846,7 @@
                                     <TextBlock x:Name="BenchmarkButtonText" Text="Test &amp; Auto-Tune Hardware" Margin="7,0,0,0" VerticalAlignment="Center" />
                                 </StackPanel>
                             </Button>
-                            <!-- 5.5.0 (the user's Q10 b): the roles the last test (or the first start's quick check) recommends, set again with one click -->
+                            <!-- Apply Recommended Roles: re-applies the last test's (or first-start quick check's) roles in one click -->
                             <Button x:Name="ApplyRolesButton" Content="Apply Recommended Roles" Padding="12,4" Margin="8,0,0,0" Click="ApplyRoles_Click" IsEnabled="False"
                                     AutomationProperties.Name="Apply Recommended Roles"
                                     ToolTip="Sets the four GPU roles below to what the last hardware test recommends (or, before any test, what the first start's quick check found), as the test itself does when it ends. Each stays yours to change afterwards. Off until a result for these cards is kept." />
@@ -856,7 +856,7 @@
                         <TextBlock x:Name="BenchmarkReasonsText" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap"
                                    Margin="0,0,0,6" AutomationProperties.AutomationId="BenchmarkReasons" />
                     </StackPanel>
-                    <!-- 5.5.2 (the user's Q2): the Playback & A/V Sync Test, its result kept at once (SettingsWindow.Hardware.cs) -->
+                    <!-- Playback & A/V Sync Test; result persisted immediately (SettingsWindow.Hardware.cs) -->
                     <local:PlaybackSyncCard x:Name="SyncTestCard" Margin="0,2,0,10" />
                     <StackPanel Style="{StaticResource Row}">
                         <TextBlock Text="Compositor GPU:" Style="{StaticResource FieldLabel}" />
@@ -897,8 +897,8 @@
                     <TextBlock x:Name="CaptionAcceleratorText" Foreground="{DynamicResource MutedTextBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,6"
                                AutomationProperties.AutomationId="CaptionAcceleratorPlan" />
 
-                    <!-- The GPU preview engine (5.0D, SettingsWindow.GpuEngine.cs): Instant Seek's frame cache (its readout refreshed while
-                         this page is shown) and the compositor's decode threads -->
+                    <!-- GPU preview engine (SettingsWindow.GpuEngine.cs): Instant Seek frame cache (readout refreshed while visible)
+                         and compositor decode threads -->
                     <TextBlock Text="GPU Preview Engine" Style="{StaticResource SectionTitle}" />
                     <TextBlock Style="{StaticResource Hint}"
                                Text="The player: the GPU compositor draws every layer, effect and transition on the graphics card, plays the sound through its own mixer, and seeks with Instant Seek: every frame it decodes is kept in video memory, so steps back, scrubs and seeks over anything decoded once cost nothing. Should the card fail, the player says so and starts again by itself, on the processor (WARP) if the card fails twice; Reload Player tries the card again." />
@@ -987,7 +987,7 @@
                 </StackPanel>
             </TabItem>
 
-            <!-- ===== Auto-Captions: how whisper.cpp listens, what counts as silence, and the style captions start with ===== -->
+            <!-- ===== Auto-Captions: whisper.cpp settings, silence detection and default caption style ===== -->
             <TabItem Header="Auto-Captions">
                 <StackPanel>
                     <TextBlock Text="Speech model" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
@@ -1106,9 +1106,9 @@
             </TabItem>
 
             <!--
-                ===== Automation & Drop Targets: what happens to a video by itself, when it is loaded or dropped =====
-                The rules are the main window's view model's, not the copy of the settings the other tabs edit:
-                they are saved as they are edited, without the Save button.
+                ===== Automation & Drop Targets: automatic actions on video load or drop =====
+                Rules belong to the main window's view model, not the edited settings copy, and are saved on edit
+                (independent of Save).
             -->
             <TabItem Header="Automation &amp; Drop Targets">
                 <StackPanel>
@@ -1276,10 +1276,10 @@
             </TabItem>
 
             <!--
-                ===== Keybinds & Lightning Dial (4.4): the dial's slices, and every key of the main window =====
-                The dial, the list and the keyboard on the stage are made by SettingsWindow.Keybinds.cs (InitializeKeybindsPage)
-                in the hosts named here, and kept by Save (SaveKeybinds); the dial's hint names its key as bound (DialHint). The
-                stage is widened for the keyboard. 4.4-BugHunt: the Lightning Dial comes first (the user's order).
+                ===== Keybinds & Lightning Dial: dial slices and every main window key =====
+                Dial, key list and stage keyboard are built by SettingsWindow.Keybinds.cs (InitializeKeybindsPage) into the
+                named hosts and committed on Save (SaveKeybinds); DialHint shows the dial's bound key. The stage widens for the
+                keyboard. The Lightning Dial section is listed first.
             -->
             <TabItem Header="Keybinds &amp; Lightning Dial" Tag="WideStage">
                 <StackPanel>
@@ -1312,7 +1312,7 @@
                 </StackPanel>
             </TabItem>
 
-            <!-- ===== Tools & Backup: the programs HandPeg downloads, where they come from, and getting settings in and out ===== -->
+            <!-- ===== Tools & Backup: managed tool downloads, sources, and settings import/export ===== -->
             <TabItem Header="Tools &amp; Backup">
                 <StackPanel>
                     <TextBlock Text="Dependencies" Style="{StaticResource SectionTitle}" Margin="0,0,0,2" />
@@ -1320,7 +1320,7 @@
                                Text="Everything HandPeg downloads, and what is installed. Nothing ships with HandPeg itself. FFmpeg and whisper.cpp come from the builds this version of HandPeg was tested with (pinned, each checked against its SHA-256), unless untested updates are allowed; yt-dlp from its newest release. One button installs what is missing and replaces what is not the build to have; a tool with a path of your own (Advanced, below) is left alone." />
                     <local:DependencyPanel x:Name="Dependencies" />
 
-                    <!-- Folded until opened (4.3-0B); the search box opens it when something inside matches -->
+                    <!-- Folded by default; search expands it when a contained option matches -->
                     <Expander x:Name="AdvancedToolsExpander" Header="Advanced: Custom Tool Paths &amp; Update URLs" IsExpanded="False" Style="{StaticResource FoldedSection}"
                               ToolTip="Your own copies of yt-dlp, FFmpeg, ffprobe and whisper.cpp, and the addresses HandPeg downloads them from. Most people never need these.">
                         <StackPanel x:Name="AdvancedToolsPanel">

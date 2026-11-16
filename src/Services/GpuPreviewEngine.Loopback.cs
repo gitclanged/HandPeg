@@ -1,37 +1,35 @@
 namespace HandPegApp.Services;
 
 /// <summary>
-/// What the compositor's encode loopback is doing (ControlBlock's Loopback* fields, read as they are). 5.4.4-Final: whether the encoder is on
-/// the card the export's family names (false: a stand-in on another card) and whether it encodes paused frames only (a software encoder).
+/// Compositor encode-loopback status (raw ControlBlock Loopback* fields), including whether the encoder runs on the export family's
+/// adapter (false: a substitute adapter) and whether it encodes paused frames only (software encoders).
 /// </summary>
 public readonly record struct ExportLoopbackStatus(ExportLoopbackState State, string EncoderName, float RoundTripMs, int FramesEncoded, int LateFrames, int HResult,
     bool OnAskedCard = true, bool PausedOnly = false);
 
-// ----- The Export Quality Preview (Pass 5.4B): the player's frame through the export's encoder and back -----
-// Off (null settings), nothing of it is written into a scene and the worker holds nothing for it (FrameSceneHeader.FlagLoopback is
-// never set): the player's path is as it was. On, every scene the pump publishes asks the worker for it (ExportLoopbackPreview), with
-// the export's codec and rate control, what is shown (the encoded picture, a split wipe, the difference x10), and a content stamp
-// raised whenever the picture may have changed: a paused frame is encoded again only then, never for a wipe or mode moved.
+// ----- Live Encoded Preview: the player frame round-tripped through the export encoder -----
+// Off (null settings): no scene data and no worker resources (FrameSceneHeader.FlagLoopback never set). On: every published scene
+// requests it (ExportLoopbackPreview) with codec, rate control, view mode (encoded, split wipe, difference x10) and a content stamp
+// raised when the picture may change; paused frames re-encode only on a stamp change, never for wipe or mode moves.
 public sealed partial class GpuPreviewEngine
 {
     private ExportLoopbackSettings? _loopback;
     private int _loopbackMode = 1;
     private float _loopbackWipe = 0.5f;
 
-    // The content stamp, and whether something that may change the picture happened since it was last written (Invalidate sets it).
+    // Content stamp and a dirty flag (set by Invalidate) for picture-affecting changes since the last write.
     private long _loopbackStamp;
     private int _loopbackStale = 1;
 
     /// <summary>The difference's magnification (the roadmap's "x10").</summary>
     public const float LoopbackHeatGain = 10;
 
-    // Raised by every change of the settings while the preview is on (5.4.4-Final, FrameSceneHeader.LoopbackSettingsStamp).
+    // Incremented on every settings change while on (FrameSceneHeader.LoopbackSettingsStamp).
     private long _loopbackSettingsStamp;
 
     /// <summary>
-    /// The Export Quality Preview on with these settings, or off (null). Any thread. 5.4.4-Final: turned on, the picture is drawn anew (the
-    /// content stamp raised); new settings while it is on keep the content stamp (the worker encodes the scene it has already drawn again,
-    /// no layer drawn for it: a paused frame updates as fast as the encoder answers) and raise the settings' own stamp.
+    /// Enables the preview with settings, or disables it (null). Any thread. Enabling raises the content stamp (fresh render); changing
+    /// settings while on raises only the settings stamp, so the worker re-encodes its existing scene without re-rendering layers.
     /// </summary>
     public void SetLoopback(ExportLoopbackSettings? settings)
     {
@@ -53,9 +51,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// A software encoder's arguments into the control block (UTF-8, at most 255 bytes, cut at the last whole argument that fits), between an
-    /// odd and an even <see cref="ControlBlock.LoopbackArgumentsVersion"/>: the worker never takes a half-written string. Pure in its packing
-    /// (<see cref="PackArguments"/>, for the golden test).
+    /// Writes software encoder arguments to the control block (UTF-8, max 255 bytes, truncated at a whole argument) bracketed by odd/even
+    /// <see cref="ControlBlock.LoopbackArgumentsVersion"/> so the worker never reads a torn string. Packing is pure (<see cref="PackArguments"/>).
     /// </summary>
     private void WriteSoftwareArguments(string arguments)
     {
@@ -73,7 +70,7 @@ public sealed partial class GpuPreviewEngine
 
     private readonly object _loopbackArgumentsLock = new();
 
-    /// <summary>The arguments as the control block holds them: UTF-8, at most 255 bytes, cut at a space so no argument is half there.</summary>
+    /// <summary>Encodes arguments as UTF-8 (max 255 bytes), truncated at a space so no argument is split.</summary>
     internal static byte[] PackArguments(string arguments)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes((arguments ?? "").Trim());
@@ -83,12 +80,12 @@ public sealed partial class GpuPreviewEngine
         return bytes[..Math.Max(cut, 0)];
     }
 
-    /// <summary>Whether the preview is on (settings given).</summary>
+    /// <summary>True when the preview is enabled.</summary>
     public bool LoopbackOn => Volatile.Read(ref _loopback) is not null;
 
     /// <summary>
-    /// What the preview shows: <paramref name="mode"/> 0 the encoded picture, 1 a split wipe at <paramref name="wipe"/> (0..1 of the
-    /// picture's width, source on the left), 2 the difference x10. Drawn again from what the worker has, not encoded again.
+    /// View mode: 0 encoded, 1 split wipe at <paramref name="wipe"/> (0..1 of picture width, source left), 2 difference x10. Redrawn from
+    /// worker state without re-encoding.
     /// </summary>
     public void SetLoopbackView(int mode, double wipe)
     {
@@ -110,7 +107,7 @@ public sealed partial class GpuPreviewEngine
         {
             ref var control = ref _client.Memory.Control;
 
-            // A clip's source shown alone carries no loopback (the worker lets it go and says Off): it is not in this view, not waiting.
+            // Source view carries no loopback (the worker releases it and reports Off), so it is absent, not pending.
             var state = (ExportLoopbackState)Volatile.Read(ref control.LoopbackState);
             if (_sourceView && Volatile.Read(ref _loopback) is not null && state == ExportLoopbackState.Off)
                 state = ExportLoopbackState.Unavailable;
@@ -121,8 +118,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// Where the picture lies across the player, in the units of <paramref name="viewportWidth"/> (DIPs or pixels: the letterbox scales
-    /// alike): its left edge and its width, as the worker places it (SceneRenderer.Letterbox: fitted, zoomed, panned). For the wipe's handle.
+    /// Horizontal picture extent (left, width) in <paramref name="viewportWidth"/> units (DIPs or pixels), matching SceneRenderer.Letterbox
+    /// (fit, zoom, pan). Used for the wipe handle.
     /// </summary>
     public (double Left, double Width) PictureSpan(double viewportWidth, double viewportHeight)
     {
@@ -131,24 +128,22 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// The split wipe under a pointer at <paramref name="pointerX"/> (5.4.1A): its fraction of the picture's width (<paramref name="span"/>,
-    /// <see cref="PictureSpan"/> in the same units), 0..1; 0.5 for a picture of no width. The handle's drag and the worker's line use the
-    /// same span, so the line is where the handle is. Pure, for the golden tests.
+    /// Wipe fraction (0..1) under <paramref name="pointerX"/> within <paramref name="span"/> (<see cref="PictureSpan"/>, same units); 0.5
+    /// for zero width. Handle and worker share the span so they align. Pure (golden-tested).
     /// </summary>
     internal static double WipeAt(double pointerX, (double Left, double Width) span) =>
         span.Width > 1 && double.IsFinite(pointerX) && double.IsFinite(span.Left) ? Math.Max(0, Math.Min((pointerX - span.Left) / span.Width, 1)) : 0.5;
 
     /// <summary>
-    /// Where the split wipe's line lies across the player (5.4.1A): <paramref name="wipe"/> (0..1) of the picture's width from its left edge,
-    /// in the units of <paramref name="span"/>, as the worker draws it (Loopback.hlsl: the picture's left plus the wipe times its width).
-    /// The inverse of <see cref="WipeAt"/>. Pure, for the golden tests.
+    /// Wipe line position: span left + <paramref name="wipe"/> x width, in <paramref name="span"/> units, matching Loopback.hlsl. Inverse
+    /// of <see cref="WipeAt"/>. Pure (golden-tested).
     /// </summary>
     internal static double WipeLineX(double wipe, (double Left, double Width) span) =>
         span.Left + Math.Max(0, Math.Min(double.IsFinite(wipe) ? wipe : 0.5, 1)) * span.Width;
 
     /// <summary>
-    /// Where the picture lies on the player, in the units of <paramref name="viewportWidth"/> (5.4D: <see cref="PictureSpan"/> with its
-    /// top and height, for the Magnifier): fitted, zoomed and panned as the worker places it.
+    /// Full picture rectangle in <paramref name="viewportWidth"/> units (<see cref="PictureSpan"/> plus top and height, for the
+    /// Magnifier), fitted, zoomed and panned like the worker.
     /// </summary>
     public (double Left, double Top, double Width, double Height) PictureRect(double viewportWidth, double viewportHeight)
     {
@@ -158,8 +153,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// SceneRenderer.Letterbox in the client's units: a canvas fitted into the viewport and centred, zoomed by <paramref name="viewScale"/>
-    /// about the middle and moved by the pan (fractions of the zoomed picture). Pure, for the golden tests.
+    /// Client-side SceneRenderer.Letterbox: fit and centre, zoom by <paramref name="viewScale"/> about the centre, then pan (fractions of
+    /// the zoomed picture). Pure (golden-tested).
     /// </summary>
     internal static (double Left, double Top, double Width, double Height) PictureRectOf(int canvasWidth, int canvasHeight, double viewScale, double panX, double panY,
         double viewportWidth, double viewportHeight)
@@ -173,10 +168,9 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// The Magnifier's point (5.4D): a pointer at <paramref name="pointerX"/>, <paramref name="pointerY"/> on a player of
-    /// <paramref name="viewportWidth"/> x <paramref name="viewportHeight"/> (the units of <paramref name="picture"/>) as fractions of the
-    /// player's output, which the worker multiplies by its own output's size; null off the picture (the bars, or the player's zoom
-    /// leaving the pointer over nothing) or on a player with no size.
+    /// Magnifier point: pointer (<paramref name="pointerX"/>, <paramref name="pointerY"/>) in a <paramref name="viewportWidth"/> x
+    /// <paramref name="viewportHeight"/> player (units of <paramref name="picture"/>) as output fractions (scaled by the worker); null
+    /// outside the picture or for a zero-size player.
     /// </summary>
     internal static (double X, double Y)? LoupePointOf(double pointerX, double pointerY, double viewportWidth, double viewportHeight,
         (double Left, double Top, double Width, double Height) picture)
@@ -196,8 +190,8 @@ public sealed partial class GpuPreviewEngine
     private float _loopbackLoupeX = float.NaN, _loopbackLoupeY = float.NaN;
 
     /// <summary>
-    /// The Export Quality Preview's Magnifier (5.4D) at a point of the output (fractions of its width and height: <see cref="LoupePointOf"/>),
-    /// or put away (null). Drawn again from what the worker has, never encoded again, as <see cref="SetLoopbackView"/>. Any thread.
+    /// Shows the preview Magnifier at an output point (fractions, <see cref="LoupePointOf"/>) or hides it (null). Redrawn from worker
+    /// state without re-encoding, like <see cref="SetLoopbackView"/>. Any thread.
     /// </summary>
     public void SetLoopbackLoupe(double? outputFractionX, double? outputFractionY)
     {
@@ -234,14 +228,14 @@ public sealed partial class GpuPreviewEngine
         header.LoopbackHeatGain = LoopbackHeatGain;
         header.LoopbackContentStamp = _loopbackStamp;
 
-        // 5.4.4-Final: the exact encoder the Export tab chose and every setting it has.
+        // The exact Export tab encoder and all of its settings.
         header.LoopbackFamily = settings.Family;
         (header.LoopbackEncodedWidth, header.LoopbackEncodedHeight) = (Math.Max(settings.EncodedWidth, 0), Math.Max(settings.EncodedHeight, 0));
         header.LoopbackTenBit = settings.TenBit ? 1 : 0;
         header.LoopbackCrf = settings.Crf;
         header.LoopbackSettingsStamp = Interlocked.Read(ref _loopbackSettingsStamp);
 
-        // The Magnifier (5.4D): only in the flat view this is written for (never in source view, which writes no loopback).
+        // Magnifier: flat view only (source view writes no loopback).
         var (loupeX, loupeY) = (Volatile.Read(ref _loopbackLoupeX), Volatile.Read(ref _loopbackLoupeY));
         if (float.IsFinite(loupeX) && float.IsFinite(loupeY))
         {

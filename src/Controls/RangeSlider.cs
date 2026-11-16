@@ -9,8 +9,8 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// A slider with two handles, for choosing a stretch between a minimum and a maximum: here, which part of
-/// a recording to keep. The handles cannot pass each other.
+/// Two-handle range slider selecting a span between Minimum and Maximum (e.g. the kept part of a recording). Handles cannot
+/// cross.
 /// </summary>
 public sealed class RangeSlider : Grid
 {
@@ -29,7 +29,7 @@ public sealed class RangeSlider : Grid
 
     public RangeSlider()
     {
-        // What lies outside the handles is dimmed, so the part that is kept stands out over whatever is behind.
+        // Shade regions outside the handles so the selected span stands out over the underlying content.
         _canvas.Children.Add(_excludedLeft);
         _canvas.Children.Add(_excludedRight);
         _canvas.Children.Add(_lower);
@@ -101,8 +101,8 @@ public sealed class RangeSlider : Grid
 }
 
 /// <summary>
-/// A gain in decibels as the factor a waveform picture is stretched by vertically: +6 dB draws it about
-/// twice as tall. A picture of the change, shown at once, while the real gain is applied by FFmpeg.
+/// Converts a gain in dB to a vertical waveform scale factor (+6 dB is about 2x, clamped 0.05..4): an immediate visual of the
+/// change, while the actual gain is applied by the audio engine.
 /// </summary>
 public sealed class DecibelToScaleConverter : IValueConverter
 {

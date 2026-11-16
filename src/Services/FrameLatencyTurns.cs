@@ -1,32 +1,28 @@
 namespace HandPegApp;
 
 /// <summary>
-/// The turns of a swap chain's frame-latency waitable object (Pass 5.4.4): what keeps the player's pump at most one frame ahead of the
-/// display. DXGI releases the object once for every frame it retires, so every frame queued must take one turn of it; a present that takes
-/// none leaves it a count it never loses, and from then on the pump runs that many frames ahead of the display for as long as the swap
-/// chain lives.
-/// <para>That was the 5.4.4 playback slowdown on the XPS 13 (Adreno X1-85, 60 Hz): the paused pump presents each new frame of a seek or a
-/// redraw without a turn (GpuPreviewEngine.Pump, at once, no vsync), so every pause added counts (12 before a session's first play, 40
-/// before its sixth), the playing pump then queued as many vsync'd copies on the card, the worker's next frames waited behind them for its
-/// output textures' keyed mutexes, its decode lanes' copies behind those, and Media Foundation for the decoder surfaces those copies held:
-/// GPU work done 0.2 s (first play) to 0.6 s (sixth) after it was sent, ReadSample 7 ms a frame growing to 30, on-time frames 80 % falling to
-/// 30 %. Measured with the play bench: the editor's GPU latency in frames followed the turnless presents made before each play.</para>
-/// <para>So each present that finds no turn waited for takes one free at once, and else owes it: the next waits take owed turns back first,
-/// as they come free, before they wait for their own. A present the desktop did not queue (DXGI_STATUS_OCCLUDED, a failure) uses no turn.
-/// One thread (the pump's). The wait is given (milliseconds to wait, true when a turn was taken): a semaphore in the golden test
-/// frame-latency-turns, the swap chain's object in <see cref="GpuViewport"/>.</para>
+/// Accounting for the swap chain's frame-latency waitable, which keeps the pump at most one frame ahead of display. DXGI signals once
+/// per retired frame, so every queued present must consume one signal; an unmatched present leaves a permanent surplus and the pump runs
+/// that many frames ahead for the swap chain's lifetime.
+/// <para>Paused seeks/redraws present without waiting, accumulating surplus with each pause; playback then queued that many vsync'd
+/// frames, backing up keyed mutexes, decode copies and MF decoder surfaces, so GPU latency grew to 0.2-0.6 s and on-time frames fell
+/// from 80 % to 30 %.</para>
+/// <para>Fix: a present without a prior wait takes a free signal immediately or records a debt; subsequent waits repay debts first as
+/// signals arrive. Presents that queue nothing (DXGI_STATUS_OCCLUDED, failures) consume none. Single-threaded (pump). The wait function
+/// is injected (ms timeout, true if acquired): a semaphore in golden frame-latency-turns, the swap chain object in
+/// <see cref="GpuViewport"/>.</para>
 /// </summary>
 internal struct FrameLatencyTurns
 {
     /// <summary>A turn waited for and not yet used by a present.</summary>
     public bool Taken;
 
-    /// <summary>Frames queued with no turn free: taken back by the next waits, as turns come free, before they wait for their own.</summary>
+    /// <summary>Outstanding debt: presents queued without a signal, repaid by later waits before their own.</summary>
     public int Owed;
 
     /// <summary>
-    /// Waits for a turn (the playing pump, before each frame), at most <paramref name="milliseconds"/>: turns owed are taken back first, as
-    /// many as are free now, and a turn already held is kept (never a second one for the same frame). True when the next present has its turn.
+    /// Waits up to <paramref name="milliseconds"/> before a playing frame: first repays available debt, keeps an already-held signal (never
+    /// two per frame). True when the next present holds a signal.
     /// </summary>
     public bool Wait(Func<int, bool> wait, int milliseconds)
     {
@@ -38,8 +34,8 @@ internal struct FrameLatencyTurns
     }
 
     /// <summary>
-    /// A frame was queued (IDXGISwapChain::Present returned S_OK): it uses the turn waited for, else one free now, else it owes one. Not called
-    /// for a present that queued nothing, which keeps the turn for the next.
+    /// Records a queued present (S_OK): consumes the held signal, else a free one, else adds debt. Not called for presents that queued
+    /// nothing (the signal is kept).
     /// </summary>
     public void Queued(Func<int, bool> wait)
     {

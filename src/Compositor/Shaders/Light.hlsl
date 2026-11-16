@@ -1,7 +1,7 @@
-// HandPeg compositor: light and lenses (Pass 5.1-GpuFx): slot 23 Film Halation & Glow, slot 24 the Neon Rim Light, slot 25 the Impact Shockwave and the
-// Anamorphic Lens, and the dual-Kawase pyramid they share. Mirrored on the processor by tools/GoldenTests/CompositorReference.Fx.cs: change both together.
-// (Frosted Glass, the other half of slot 24, reads the canvas where the layer lands: PSFrostedGlass in Core.hlsl.)
-// Conventions: Common.hlsli. Light is added in linear light (FilmGamma), as a lens and a film stock add it: the picture's values are gamma-encoded.
+// Light and lens effects: slot 23 Film Halation & Glow, slot 24 Neon Rim Light, slot 25 Impact Shockwave and Anamorphic Lens, plus their
+// shared dual-Kawase pyramid. CPU mirror: tools/GoldenTests/CompositorReference.Fx.cs (change both together). Frosted Glass (slot 24's
+// other variant) samples the canvas: PSFrostedGlass in Core.hlsl.
+// Conventions: Common.hlsli. Light is added in linear space (FilmGamma) because picture values are gamma-encoded.
 
 #include "Common.hlsli"
 
@@ -10,10 +10,10 @@ static const float FilmGamma = 2.2;
 float3 ToLinear(float3 c) { return pow(abs(c), FilmGamma); }
 float3 ToFilm(float3 c) { return pow(abs(c), 1 / FilmGamma); }
 
-// ----- The dual-Kawase pyramid -----
+// ----- Dual-Kawase pyramid -----
 //
-// A wide, smooth blur for the price of a few small passes: each pass halves the picture (PSKawaseDown), then doubles it back (PSKawaseUp), Params.z the
-// taps' offset in texels of the pass's input. Bilinear taps on premultiplied (or linear) values.
+// Wide, smooth blur from a few small passes: halve (PSKawaseDown), then double back (PSKawaseUp); Params.z = tap offset in input texels.
+// Bilinear taps on premultiplied (or linear) values.
 
 float4 PSKawaseDown(VsOut i) : SV_Target
 {
@@ -33,8 +33,8 @@ float4 PSKawaseUp(VsOut i) : SV_Target
     return sum / 12;
 }
 
-// What is bright enough to bloom, in linear light, its threshold (Params2.x, gamma-encoded) with a soft knee: drawn at half the picture's size, it
-// starts the pyramid of the glow and of the lens's streaks.
+// Bloom source at half resolution: linear-light pixels above the threshold (Params2.x, gamma-encoded) with a soft knee. Feeds the glow
+// and anamorphic streak pyramids.
 float4 PSGlowBright(VsOut i) : SV_Target
 {
     float4 c = Unpremul(Sample(i.Uv));
@@ -48,7 +48,7 @@ float4 PSGlowBright(VsOut i) : SV_Target
     return float4(lin * kept * c.a, c.a);
 }
 
-// Light added to a picture at a pixel: its colour, in linear light, on a premultiplied picture; what it brightens beyond the picture's shape shows too.
+// Adds linear light to a premultiplied pixel; alpha grows by the light's luma so light beyond the shape shows too.
 float4 AddLight(float4 picture, float3 light)
 {
     float4 c = Unpremul(picture);
@@ -57,9 +57,9 @@ float4 AddLight(float4 picture, float3 light)
     return Premul(ToFilm(saturate(total / max(a, 1e-4))), a);
 }
 
-// Film Halation & Glow (slot 23): P0 amount, P1 threshold, P2 spread (the host's), P3 halation, P4..P6 its colour, P7 mix (%). Aux the blurred highlights.
-// Halation is light that went through the film and back off its backing: only the red-sensitive layer sees it again, so the halo keeps the highlight's
-// brightness and takes the film's colour instead of its own.
+// Film Halation & Glow (slot 23): P0 amount, P1 threshold, P2 spread (host), P3 halation, P4..P6 halation colour, P7 mix (%); Aux = blurred
+// highlights. Halation is light reflected off the film base that re-exposes only the red-sensitive layer: the halo keeps the highlight's
+// brightness but takes the film's tint.
 float4 PSGlowMix(VsOut i) : SV_Target
 {
     float4 c = SampleAt(i.Uv, float2(0, 0));
@@ -68,11 +68,11 @@ float4 PSGlowMix(VsOut i) : SV_Target
     return lerp(c, AddLight(c, glow), saturate(P7 / 100));
 }
 
-// ----- The Neon Rim Light (slot 24, variant 0) -----
+// ----- Neon Rim Light (slot 24, variant 0) -----
 //
-// A distance field of the layer's shape, by jump flooding: whatever its shape (a mask, a key, a rounded box), in about log2(reach) passes. Each texel keeps
-// the way to the nearest texel inside the shape (.xy) and outside it (.zw) as offsets in texels: relative, so RGBA16F keeps them exact to a fraction
-// of a texel at the reach used. The input is mapped by UvRect, which leaves room round the shape (beyond it: nothing, the border sampler).
+// Jump-flood distance field of the layer's shape (any mask, key or rounded box) in ~log2(reach) passes. Each texel stores the texel offset
+// to the nearest inside texel (.xy) and outside texel (.zw); relative offsets keep RGBA16F exact to a fraction of a texel at this reach.
+// Input is mapped by UvRect with padding around the shape (border sampler beyond).
 static const float FarAway = 20000;
 
 float4 PSJfaSeed(VsOut i) : SV_Target
@@ -81,9 +81,8 @@ float4 PSJfaSeed(VsOut i) : SV_Target
     return a >= 0.5 ? float4(0, 0, FarAway, FarAway) : float4(FarAway, FarAway, 0, 0);
 }
 
-// One pass: Params.z the step, in texels: a neighbour's nearest, seen from here, may be nearer than this texel's. A neighbour beyond the edge is passed
-// over by a choice, not a branch: on a tiled mobile GPU (an Adreno) a divergent branch round each of the eight taps cost more than the taps themselves
-// (5.2-Arm64AndNpu).
+// One JFA pass with step Params.z texels. Out-of-bounds neighbours are rejected by select, not branch: on tiled mobile GPUs (Adreno)
+// a divergent branch per tap cost more than the taps themselves.
 float4 PSJfaStep(VsOut i) : SV_Target
 {
     float4 best = SampleAt(i.Uv, float2(0, 0));
@@ -115,9 +114,9 @@ float4 PSJfaStep(VsOut i) : SV_Target
     return best;
 }
 
-// The rim on the grown picture: Input the layer's picture (mapped by UvRect), Aux the field, Params2.x its texels to this picture's texels, Params2.y what
-// share of the picture itself stays (Frosted Glass's), P0..P2 the colour, P3 the line's width and P4 the glow's reach in output pixels (Params.w),
-// P5 the strength, P6 how far the light falls inward. The light is added: its colour counts on any picture under it, and only the line itself is solid.
+// Rim on the grown picture: Input = layer (via UvRect), Aux = field, Params2.x = field-to-output texel scale, Params2.y = retained picture
+// share (Frosted Glass), P0..P2 colour, P3 line width and P4 glow reach in output px (Params.w), P5 strength, P6 inward falloff.
+// Light is additive; only the line itself is opaque.
 float4 PSRimLight(VsOut i) : SV_Target
 {
     float4 c = Input.SampleLevel(LinearBorder, lerp(UvRect.xy, UvRect.zw, i.Uv), 0) * Params2.y;
@@ -133,11 +132,11 @@ float4 PSRimLight(VsOut i) : SV_Target
     return float4(c.rgb + float3(P0, P1, P2) * light, saturate(c.a + saturate(line_ * P5)));
 }
 
-// ----- The Impact Shockwave (slot 25, variant 0) -----
+// ----- Impact Shockwave (slot 25, variant 0) -----
 //
-// A ring of refraction going out from a point: P0 how far through it is (0..1), P1 and P2 the point (% of the picture), P3 the ripple in px of a 1080-wide
-// frame, P4 how far it gets (% of the picture's height, from the middle), P5 how wide the ring is (% of how far it has got), P6 the camera shake (px, as P3).
-// Channels bend a little differently (a real lens's fringe). Nothing depends on the clock but where it is through its run and the shake's own noise.
+// Expanding refraction ring: P0 progress 0..1, P1/P2 centre (% of picture), P3 ripple in px of a 1080-wide frame, P4 max radius (% of
+// height), P5 ring width (% of current radius), P6 camera shake (px, as P3). Per-channel bend adds lens fringing. Deterministic in
+// progress and the shake noise.
 
 float ShakeNoise(float n)
 {
@@ -147,7 +146,7 @@ float ShakeNoise(float n)
     return frac(n) * 2 - 1;
 }
 
-// How far the ring is out, a share of the whole way: fast, then slowing, as a pressure front does.
+// Ring radius as a fraction of max: cubic ease-out, like a decelerating pressure front.
 float RingOut(float through) { float left = 1 - through; return 1 - left * left * left; }
 
 float4 PSShockwave(VsOut i) : SV_Target
@@ -166,12 +165,12 @@ float4 PSShockwave(VsOut i) : SV_Target
     float away = (d - radius) / width;
     float ring = exp(-away * away);
 
-    // Pushed outward ahead of the ring, drawn in behind it.
+    // Push outward ahead of the ring, pull inward behind it.
     float2 toward = d > 1e-5 ? p / d : float2(0, 0);
     float pixels = P3 * Params.x / max(DstSize.y, 1);
     float2 bend = toward * sin(clamp(away, -1.5, 1.5) * 2.0944) * ring * pixels * fading / scale;
 
-    // The whole frame shaken, and held in a little so no edge shows.
+    // Camera shake, with the frame zoomed in slightly so no edge shows.
     float2 uv = i.Uv;
     if (P6 > 0)
     {
@@ -186,15 +185,15 @@ float4 PSShockwave(VsOut i) : SV_Target
     c.ga = Sample(uv - bend).ga;
     c.b = Sample(uv - bend * 0.94).b;
 
-    // The compressed air catches the light.
+    // Brighten the ring, as compressed air catches the light.
     c.rgb += ring * fading * 0.18 * c.a * saturate(P3 / 60);
     return c;
 }
 
-// ----- The Anamorphic Lens (slot 25, variant 1) -----
+// ----- Anamorphic Lens (slot 25, variant 1) -----
 
-// One pass of the streaks (a quarter of the picture's height, half its width): seven taps along the row, Params.z texels apart; the host goes wider each pass.
-// The row turned Params.y radians (5.2: the lens's Rotation), as long on the screen whichever way it runs (Params.w the picture's width over its height).
+// One streak pass (quarter height, half width): seven taps along the row Params.z texels apart; the host widens it each pass.
+// The row is rotated by Params.y radians (Rotation) with constant on-screen length (Params.w = width / height).
 float4 PSStreak(VsOut i) : SV_Target
 {
     float s, c;
@@ -207,7 +206,7 @@ float4 PSStreak(VsOut i) : SV_Target
     return sum / 16;
 }
 
-// Anamorphic Lens: P0 the streaks' strength, P1 threshold, P2 length (the host's), P3..P5 their colour, P6 the barrel and colour fringe. Aux the streaks.
+// Anamorphic Lens: P0 streak strength, P1 threshold, P2 length (host), P3..P5 streak colour, P6 barrel and colour fringe; Aux = streaks.
 float4 PSAnamorphic(VsOut i) : SV_Target
 {
     float2 d = i.Uv - 0.5;

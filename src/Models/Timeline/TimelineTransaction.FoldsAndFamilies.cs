@@ -5,16 +5,14 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Models.Timeline;
 
-// ----- The timeline transaction: folds and children (split from TimelineTransaction.cs, 5.4.1-M5) -----
+// ----- Timeline transaction: folds and parent/child families -----
 internal sealed partial class TimelineTransaction
 {
-    // ----- Folds (4.3D; both ways and at their edges, 4.4-BugHunt) -----
+    // ----- Folds: fold, unfold, resize -----
 
     /// <summary>
-    /// Folds the stretch from <paramref name="from"/> to <paramref name="to"/> out of the timeline at <paramref name="seamTrack"/>
-    /// (<see cref="ITimelineTransaction.FoldStretch"/>): as the fold <paramref name="id"/> when one is given (a stretch put back,
-    /// folded again), and out of <paramref name="onTracks"/> when they are given (the tracks a fold was just put back on, so
-    /// that it closes up on the very tracks it opened on).
+    /// Folds [<paramref name="from"/>, <paramref name="to"/>] at <paramref name="seamTrack"/> (<see cref="ITimelineTransaction.FoldStretch"/>),
+    /// reusing <paramref name="id"/> when re-folding and restricting to <paramref name="onTracks"/> when given (the tracks it was unfolded on).
     /// </summary>
     private FoldedSegment? Fold(TimelineTrackModel seamTrack, double from, double to, bool rippleAll, Guid? id = null, List<TimelineTrackModel>? onTracks = null)
     {
@@ -26,15 +24,12 @@ internal sealed partial class TimelineTransaction
         if (id is { } given && _doc.Folds?.Exists(f => f.Id == given) == true)
             throw new TimelineEditException("That stretch is folded out already.");
 
-        // What lies in the stretch on each track, cut out at its ends (a clip whose edge is too near an end to be split
-        // there, or whose sound is, goes whole), kept with its times counted from the stretch's start, and taken off. The
-        // tracks (4.4): the ripple's, those under them (the captions' lane among them), and the tracks of what goes with the
-        // clips in the stretch. Every track is cut before anything is taken off, so that a child's piece in the stretch is
-        // its parent's piece there (Split) whichever of their tracks comes first.
+        // Split each affected track at both ends (clips too close to an end to split go whole), store pieces relative to the range
+        // start, then remove them. Tracks: ripple tracks, their child tracks (caption lane included) and tracks of family members.
+        // All tracks are split before removal so child pieces re-parent to the parent's piece regardless of track order.
         var tracks = onTracks ?? FoldTracks(RippleTracks(seamTrack, rippleAll), start, end);
 
-        // The stretches put back that this one covers (4.4-BugHunt), found while their clips are where they were: folded
-        // again, or in part by Remove Dead Air, they are no longer marked (and the one with this fold's id in any case).
+        // Find covered RestoredFolds before clips move; they (and any with this fold's id) are unmarked.
         var covered = Covered(tracks, start, end);
         foreach (var track in tracks)
         {
@@ -93,8 +88,7 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// The stretches put back (<see cref="TimelineDocument.RestoredFolds"/>) that lie on one of <paramref name="tracks"/>
-    /// across the stretch from <paramref name="start"/> to <paramref name="end"/>; null when none does.
+    /// <see cref="TimelineDocument.RestoredFolds"/> on <paramref name="tracks"/> overlapping [<paramref name="start"/>, <paramref name="end"/>]; null when none.
     /// </summary>
     private HashSet<RestoredFold>? Covered(List<TimelineTrackModel> tracks, double start, double end)
     {
@@ -112,13 +106,12 @@ internal sealed partial class TimelineTransaction
 
     private bool Unfold(FoldedSegment given)
     {
-        // Found by its id (4.4-BugHunt): one taken from an older copy of the document (an undo step's, a view's) is this one.
+        // Resolve by id so folds from older document copies (undo, views) still match.
         var fold = _doc.Folds?.Find(f => f.Id == given.Id) ?? throw new TimelineEditException("That fold is not on this timeline.");
         if (fold.SeamIn(_doc) is not { } at || _doc.FindClip(fold.SeamClipId) is not { } seam)
             throw new TimelineEditException("The cut the stretch was folded at is gone.");
 
-        // Room at the seam on the tracks it was folded out of (as they are now), those under them among them, and on the
-        // tracks its clips go back to (4.4: its children's): what lies across it is split there.
+        // Make room at the seam on its fold tracks (current state, children included) and destination tracks, splitting crossing clips.
         var seamTrack = Editable(TrackOf(seam));
         var tracks = UnfoldTracks(fold, seamTrack);
         foreach (var track in tracks)
@@ -139,8 +132,8 @@ internal sealed partial class TimelineTransaction
 
         Ripple(tracks, at, fold.Length, null);
 
-        // Its clips where they were, on their own tracks (a track gone since: the first unlocked one of its kind). A copy
-        // whose id has been taken since gets a new one, and the copies that named it as their parent name that (4.4).
+        // Reinsert clips on their tracks (deleted track: first unlocked of that kind). Re-id copies whose id is now taken and remap
+        // their children's parent links.
         Dictionary<Guid, Guid>? renamed = null;
         var copies = new List<(TimelineTrackModel Track, TimelineClip Copy)>(fold.Clips.Count);
         foreach (var kept in fold.Clips)
@@ -168,9 +161,8 @@ internal sealed partial class TimelineTransaction
             Place(track, copy, allowCrossfadeOverlap: true, free: true);
         }
 
-        // The stretch stays marked, to be folded again as this very fold (4.4-BugHunt): from the start of what came back on
-        // the seam's track (or the end of the clip before it there) to the seam clip's start, or for a seam that was a clip's
-        // end, to the end of what came back.
+        // Record a RestoredFold with this id: from the restored content's start on the seam track (or the preceding clip's end) to the
+        // seam clip's start, or for an end seam, to the restored content's end.
         var from = EdgeAt(seamTrack, at, start: true) ?? EdgeAt(seamTrack, at, start: false);
         var to = fold.AtEnd ? EdgeAt(seamTrack, at + fold.Length, start: false) : new FoldEdge(seam.Id, false);
         RememberFolds();
@@ -182,9 +174,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// The tracks a fold is put back on (and, opened at an edge, folded out of again): its ripple's at the seam's track as
-    /// they are now, but the subtitles that lie under none (as a fold leaves them), and the unlocked tracks its clips go back
-    /// to (4.4: its children's).
+    /// Tracks a fold restores onto (and re-folds from when resized): current ripple set at the seam track excluding top-level subtitle
+    /// tracks, plus unlocked destination tracks of its clips and children.
     /// </summary>
     private List<TimelineTrackModel> UnfoldTracks(FoldedSegment fold, TimelineTrackModel seamTrack)
     {
@@ -197,7 +188,7 @@ internal sealed partial class TimelineTransaction
         return tracks;
     }
 
-    /// <summary>The clip of a track whose start (or, not <paramref name="start"/>, whose end) is at <paramref name="seconds"/>; null when none is.</summary>
+    /// <summary>Clip whose start (or end when !<paramref name="start"/>) is at <paramref name="seconds"/>; null when none.</summary>
     private static TimelineClip? ClipWithEdgeAt(TimelineTrackModel track, double seconds, bool start)
     {
         foreach (var clip in track.ClipsIntersecting(seconds - Slack, seconds + Slack))
@@ -220,16 +211,15 @@ internal sealed partial class TimelineTransaction
             throw new TimelineEditException("The stretch that was put back is not there any more.");
         var track = TrackById(restored.TrackId) ?? throw new TimelineEditException("The track the stretch was put back on is gone.");
 
-        // Folded as it was the first time, as the same fold (whose record Fold lets go of).
+        // Re-fold with the original id (Fold removes the RestoredFold record).
         return Fold(track, span.From, span.To, restored.AllTracks, restored.Id)
                ?? throw new TimelineEditException("Nothing lies there to fold.");
     }
 
     /// <summary>
-    /// <see cref="ITimelineTransaction.ResizeFold"/>: the whole stretch put back first (on the tracks UnfoldSegment puts it
-    /// back on), then the new stretch folded out of the same tracks as the same fold: from the seam to short of the tail
-    /// shown, from past the head shown to the end, or with as much more of the clip at the edge. What is shown then joins
-    /// the clip it continues (<see cref="JoinShown"/>). One step: a refusal anywhere puts everything back.
+    /// <see cref="ITimelineTransaction.ResizeFold"/>: unfold fully (UnfoldSegment tracks), then re-fold the adjusted range on the same tracks
+    /// with the same id (tail reveal, head reveal, or extended into the edge clip), then rejoin revealed pieces (<see cref="JoinShown"/>).
+    /// Atomic: any refusal rolls back.
     /// </summary>
     private FoldedSegment? Resize(FoldedSegment given, FoldSide side, double seconds)
     {
@@ -244,8 +234,7 @@ internal sealed partial class TimelineTransaction
         if (Math.Abs(seconds) < (Quantizing(false) ? Rate.FrameDuration / 2 : Slack))
             return fold;
 
-        // Every track it was folded out of is there and open: a part of a fold goes back to its own track or nowhere (only a
-        // whole fold put back finds another track of its kind).
+        // All fold tracks must exist and be unlocked: partial reveals return to their own track only (only full unfolds may substitute).
         foreach (var kept in fold.Clips)
         {
             if (TrackById(kept.TrackId) is not { IsLocked: false })
@@ -256,8 +245,7 @@ internal sealed partial class TimelineTransaction
         double amount;
         if (reveal)
         {
-            // At least the shortest clip, so that what is shown and what stays folded can both be clips; all but less than
-            // that is all of it.
+            // Enforce the minimum clip length on both sides; leaving less than that folded reveals everything.
             amount = Math.Max(Near(Math.Min(seconds, length), false), minimum);
             if (length - amount < minimum - Slack)
             {
@@ -281,9 +269,8 @@ internal sealed partial class TimelineTransaction
         var cut = Near(tail ? (reveal ? end - amount : end + amount) : (reveal ? at + amount : at - amount), false);
         var (from, to) = tail ? (at, cut) : (cut, end);
 
-        // Cut at the new edge first, where FoldStretch would leave a clip whole: on the seam's track the clip there must be
-        // cut, or the fold would take all of it. Folding more at the tail leaves the clip at the edge the part after the cut,
-        // which keeps its id (and its children theirs).
+        // Split at the new edge first (FoldStretch would otherwise take the whole seam clip). When folding more at the tail, the part
+        // after the cut keeps the clip's id and children.
         _splits = tail && !reveal ? new List<(TimelineClip First, TimelineClip Second)>() : null;
         try
         {
@@ -317,14 +304,13 @@ internal sealed partial class TimelineTransaction
             _splits = null;
         }
 
-        // Nothing left in the stretch to fold: it stays put back whole, as UnfoldSegment leaves it.
+        // Empty range: remain fully unfolded.
         if (Fold(seamTrack, from, to, fold.AllTracks, fold.Id, tracks) is not { } refolded)
             return null;
         if (!reveal)
             return refolded;
 
-        // What is shown joins the clip it continues: the tail's the clip after the seam, the head's the clip before it. A seam
-        // that was a piece joined into a clip is that clip's edge now.
+        // Rejoin revealed pieces (tail into the clip after the seam, head into the clip before); a joined seam piece becomes that clip's edge.
         var shown = Near(at + amount, false);
         var joined = JoinShown(tracks, tail ? shown : at, tail, at, shown, fold.Id);
         if (!joined.TryGetValue(refolded.SeamClipId, out var keeper))
@@ -337,8 +323,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// Gives each split's second half the id its clip had, and the first half the new one (a fold grown at its tail takes a
-    /// clip's head and leaves the rest, which is still that clip, its children still its): the links to either half follow.
+    /// Swaps split ids so the second half keeps the original id (tail growth folds the head away; the remainder is still that clip with its
+    /// children); parent links follow.
     /// </summary>
     private void KeepIdsAfter(List<(TimelineClip First, TimelineClip Second)> halves)
     {
@@ -367,14 +353,10 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// After a fold was opened by part of its length (<see cref="Resize"/>): on each of its tracks, the piece shown (lying
-    /// within <paramref name="shownFrom"/> to <paramref name="shownTo"/>) that meets a clip at <paramref name="junction"/>
-    /// joins that clip when the two are one clip cut in two (<see cref="Joinable"/>), the clip keeping its id: the clip
-    /// after the seam takes in the piece before it (<paramref name="tail"/>), or the clip before the seam the piece after it.
-    /// The joined piece's children name the clip it joined, so that theirs join in turn (passes until none does; the
-    /// seam's track, a parent, comes first). A piece that is the seam of another fold (than <paramref name="foldId"/>), or
-    /// an edge of a stretch put back, stays a clip of its own, so that neither loses its place. Returns each joined piece's
-    /// id with the id of the clip that took it in.
+    /// After a partial reveal (<see cref="Resize"/>), merges each revealed piece in [<paramref name="shownFrom"/>, <paramref name="shownTo"/>]
+    /// abutting a clip at <paramref name="junction"/> into it when <see cref="Joinable"/> (clip keeps its id; <paramref name="tail"/> selects the
+    /// clip after vs before the seam). Children are re-parented so they can join in later passes (seam track first). Pieces anchoring another
+    /// fold's seam or a RestoredFold edge stay separate. Returns (joined piece id, absorbing clip id) pairs.
     /// </summary>
     private Dictionary<Guid, Guid> JoinShown(List<TimelineTrackModel> tracks, double junction, bool tail, double shownFrom, double shownTo, Guid foldId)
     {
@@ -428,7 +410,7 @@ internal sealed partial class TimelineTransaction
         return joined;
     }
 
-    /// <summary>The clips that named <paramref name="from"/> as their parent name <paramref name="to"/> (a piece joined into a clip).</summary>
+    /// <summary>Re-parents children of <paramref name="from"/> to <paramref name="to"/> (piece merged into a clip).</summary>
     private void Relink(Guid from, Guid to)
     {
         foreach (var track in _doc.Tracks)
@@ -445,9 +427,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// Whether two clips that meet are one clip cut in two, as a split's halves are: the same thing from the same file and
-    /// streams at the same speed, its file running on from one into the other, the same switches, sound and parent (its tether mark too, 5.5A), and
-    /// nothing at the cut (a fade, a crossfade, a J or L cut). Their looks are <see cref="JoinLook"/>'s to compare.
+    /// True when two abutting clips are halves of one split: same kind, file, streams and speed with contiguous source, same switches,
+    /// audio, parent and tether flag, and nothing at the cut (fade, crossfade, J/L). Looks are compared by <see cref="JoinLook"/>.
     /// </summary>
     private static bool Joinable(TimelineClip a, TimelineClip b) =>
         Meet(a, b) && a.ContentKind == b.ContentKind && string.Equals(a.SourcePath, b.SourcePath, StringComparison.OrdinalIgnoreCase)
@@ -458,7 +439,7 @@ internal sealed partial class TimelineTransaction
         && a.AudioTailOutSeconds == 0 && b.AudioLeadInSeconds == 0
         && (!a.PlaysFile || Math.Abs(b.MediaOffset - a.MediaEnd) <= TimelineDocument.FileSlack(a));
 
-    // ----- Children (4.4): what goes with a clip, found where it lies -----
+    // ----- Families: locating children that travel with a clip -----
 
     private static bool Holds(List<(TimelineTrackModel Track, TimelineClip Clip)>? clips, TimelineClip clip)
     {
@@ -483,7 +464,7 @@ internal sealed partial class TimelineTransaction
         return null;
     }
 
-    /// <summary>Whether <paramref name="track"/> lies under <paramref name="ancestor"/>, through the tracks it lies under (a chain that loops is followed once round).</summary>
+    /// <summary>True when <paramref name="track"/> descends from <paramref name="ancestor"/> (cycles traversed once).</summary>
     private bool Under(TimelineTrackModel track, TimelineTrackModel ancestor)
     {
         var (up, steps) = (track, 0);
@@ -499,9 +480,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// The clips on any track that name <paramref name="parent"/> as theirs and lie in the stretch from <paramref name="from"/>
-    /// to <paramref name="to"/> (by more than the slack: one that only touches it does not), with their tracks; null when
-    /// there are none. Two binary searches on each track, and nothing made unless one is found.
+    /// Children of <paramref name="parent"/> overlapping (by more than the slack) [<paramref name="from"/>, <paramref name="to"/>] on any track,
+    /// with tracks; null when none. Two binary searches per track; allocates only on a hit.
     /// </summary>
     private List<(TimelineTrackModel Track, TimelineClip Clip)>? ChildrenWith(TimelineClip parent, double from, double to)
     {
@@ -518,8 +498,7 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// What goes with a clip when it moves or goes: its children that lie with it in time, theirs that lie with them, and so
-    /// on, on unlocked tracks (a locked track's clips stay as they are, as a ripple passes it by), each once; null when none.
+    /// Transitive overlapping descendants on unlocked tracks (locked tracks are skipped like ripples), each once; null when none.
     /// </summary>
     private List<(TimelineTrackModel Track, TimelineClip Clip)>? Family(TimelineClip clip)
     {
@@ -545,11 +524,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// What rides a ripple trim of a clip (whose end the ripple moves): of what goes with it (its children that lie with it,
-    /// theirs, on unlocked tracks), those whose end is on its end or in the stretch it may give up (from
-    /// <paramref name="lostFrom"/> to its end), and with <paramref name="head"/> (a trim of its start, which it keeps) those
-    /// whose start is on its start. Their ends move with its end, or they go (<see cref="Ride"/>), so none holds the ripple
-    /// back. Null when none.
+    /// Ripple-trim riders: family members ending at the clip end or within [<paramref name="lostFrom"/>, end], plus with <paramref name="head"/>
+    /// those starting at the clip start. They move with the end or are removed (<see cref="Ride"/>), so none blocks the ripple. Null when none.
     /// </summary>
     private List<(TimelineTrackModel Track, TimelineClip Clip)>? Riders(TimelineClip clip, bool head, double lostFrom)
     {
@@ -578,14 +554,11 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// Moves what rides a ripple trim (<see cref="Riders"/>) once the clip's end has moved from <paramref name="oldEnd"/> by
-    /// <paramref name="by"/> to <paramref name="newEnd"/> (by whole frames, or not: <paramref name="whole"/>). One on the clip's
-    /// start (<paramref name="head"/>) has its head trimmed as the clip's was, its end moving with the clip's; one on the clip's
-    /// end has its end moved with it (when it grows, as far as its file and the clip after it let it); one ending in the stretch
-    /// the clip gave up is cut back to its new end. One that would be shorter than the shortest clip goes when its track is
-    /// one the ripple closes up (<paramref name="rippled"/>: what follows comes back into its place), and is otherwise left
-    /// where it is, unlinked (Q3, 4.4-BugHunt); one whose head cannot grow (its file, a clip in its way) stays as it is.
-    /// Shrinking, this comes before the ripple; growing, after it.
+    /// Applies a ripple trim to <see cref="Riders"/> after the end moved from <paramref name="oldEnd"/> by <paramref name="by"/> to
+    /// <paramref name="newEnd"/> (<paramref name="whole"/> = frame-aligned). Head riders (<paramref name="head"/>) are head-trimmed likewise;
+    /// end riders extend (bounded by file and neighbour) or contract; riders inside the released range are cut. Riders below minimum length
+    /// are removed on <paramref name="rippled"/> tracks, else unlinked in place; riders whose head cannot grow stay. Runs before a shrinking
+    /// ripple and after a growing one.
     /// </summary>
     private void Ride(List<(TimelineTrackModel Track, TimelineClip Clip)> riders, double oldStart, double oldEnd, double newEnd,
                       double by, bool whole, bool head, bool free, List<TimelineTrackModel> rippled)
@@ -635,8 +608,7 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// A rider a ripple trim leaves shorter than the shortest clip: on a track the ripple closes up it goes (what follows
-    /// comes back into its place); on any other it stays where it is, unlinked (Q3, 4.4-BugHunt).
+    /// Handles a rider shortened below minimum: removed on rippled tracks (the gap closes), otherwise unlinked in place.
     /// </summary>
     private void LeaveOrLift(TimelineTrackModel track, TimelineClip rider, List<TimelineTrackModel> rippled)
     {
@@ -647,8 +619,7 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// A child a trim leaves wholly outside its parent (Q3, 4.4-BugHunt): it stays where it is, a clip of its own, and its own
-    /// children stay with it.
+    /// Unlinks a child left wholly outside its trimmed parent; it stays in place with its own children.
     /// </summary>
     private void Unlink(TimelineClip child)
     {
@@ -659,9 +630,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// After a trim of a clip's start without a ripple (or a roll of the cut before it): its children (on unlocked tracks)
-    /// whose start was on its old start follow it there, as far as each can go, and those it left wholly before its new start
-    /// stay where they are, unlinked (Q3, 4.4-BugHunt: they went, with what went with them, before).
+    /// After a non-ripple head trim (or roll): children starting at the old start follow as far as possible; children wholly before the
+    /// new start are unlinked in place.
     /// </summary>
     private void FollowStart(TimelineClip clip, double oldStart, double oldEnd)
     {
@@ -680,9 +650,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// After a trim of a clip's end without a ripple (or a roll of the cut after it): its children (on unlocked tracks) whose
-    /// end was on its old end follow it there, as far as each can go, and those it left wholly after its new end stay where
-    /// they are, unlinked (Q3, 4.4-BugHunt).
+    /// After a non-ripple tail trim (or roll): children ending at the old end follow as far as possible; children wholly after the new
+    /// end are unlinked in place.
     /// </summary>
     private void FollowEnd(TimelineClip clip, double oldEnd)
     {
@@ -700,7 +669,7 @@ internal sealed partial class TimelineTransaction
         }
     }
 
-    /// <summary>Takes what goes with a moving clip off its tracks, each with the clip it met (and its crossfade from it), to land again.</summary>
+    /// <summary>Lifts a moving clip's family off their tracks, remembering each one's abutting neighbour and crossfade for landing.</summary>
     private List<(TimelineTrackModel Track, TimelineClip Clip, TimelineClip? Met, double Crossfade)> TakeOff(List<(TimelineTrackModel Track, TimelineClip Clip)> family)
     {
         // Who meets whom first, before any of them is taken off: two that meet may both go with it.
@@ -722,8 +691,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// Lands what went with a moved clip, each by <paramref name="delta"/> on its own track, where nothing may be in its way
-    /// (a clip of another's is refused, and so the move). A crossfade stays with one that lands against the same clip again.
+    /// Lands the family shifted by <paramref name="delta"/> on their own tracks; any collision refuses the whole move. Crossfades survive
+    /// when landing against the same neighbour.
     /// </summary>
     private void LandFamily(List<(TimelineTrackModel Track, TimelineClip Clip, TimelineClip? Met, double Crossfade)> riding, double delta)
     {
@@ -744,8 +713,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// After a clip moved to another track: a track that lay under its old track, and whose clips' parents (each one on
-    /// either track) now all lie on the new one, lies under the new one (a mini-stack follows its clips).
+    /// After a cross-track move: re-parents a child track of the old track to the new one when all its clips' parents now live there
+    /// (mini-stacks follow their clips).
     /// </summary>
     private void FollowTrack(TimelineTrackModel source, TimelineTrackModel target)
     {
@@ -775,9 +744,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// The tracks a fold takes a stretch out of: the ripple's (<paramref name="rippled"/>) but the subtitles that lie under
-    /// none (4.4: the captions' lane of a mini-stack folds with it), then the unlocked tracks of the children of what lies in
-    /// the stretch on any of them, and of theirs, in that order.
+    /// Fold tracks: <paramref name="rippled"/> minus top-level subtitle tracks (a mini-stack's caption lane folds with it), then unlocked
+    /// tracks of descendants of clips in the range, in that order.
     /// </summary>
     private List<TimelineTrackModel> FoldTracks(List<TimelineTrackModel> rippled, double start, double end)
     {
@@ -798,7 +766,7 @@ internal sealed partial class TimelineTransaction
         return tracks;
     }
 
-    /// <summary>A ripple's tracks for a move: the clip's track, the unlocked tracks under it, and the tracks of what goes with the clip.</summary>
+    /// <summary>Ripple tracks for a move: the clip's track, its unlocked child tracks, and its family's tracks.</summary>
     private List<TimelineTrackModel> WithFamilyTracks(TimelineTrackModel track, List<(TimelineTrackModel Track, TimelineClip Clip)>? family)
     {
         var tracks = WithChildTracks([track]);
@@ -813,7 +781,7 @@ internal sealed partial class TimelineTransaction
         return tracks;
     }
 
-    /// <summary>Adds to <paramref name="tracks"/> the unlocked tracks that lie under any of them (4.4), and theirs: a mini-stack ripples with its track.</summary>
+    /// <summary>Adds unlocked descendant tracks of <paramref name="tracks"/> (mini-stacks ripple with their parent).</summary>
     private List<TimelineTrackModel> WithChildTracks(List<TimelineTrackModel> tracks)
     {
         for (var i = 0; i < tracks.Count; i++)

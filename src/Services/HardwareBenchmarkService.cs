@@ -5,17 +5,14 @@ using CliWrap;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Test &amp; Auto-Tune Hardware (Pass 5.0-Core, micro-step 5.0-0): runs the hardware benchmark (HandPeg.exe --hw-benchmark,
-/// a worker of its own, so that a driver that falls over takes only it down) on a short test clip, passes on its progress
-/// as it measures, keeps the result in hardware-benchmark.json beside the settings, and puts the four GPU roles it
-/// recommends into the settings. Only ever started by the user's press of the button (Settings): nothing here runs before
-/// the main window's first frame. The first-run window's two-phase profile (5.5A: <see cref="EstimateAsync"/>, then
-/// <see cref="RunQuickAsync"/>) runs only from that window, shown before the main window exists (or opened again from Settings,
-/// where only the estimate runs): never on the normal start-up path.
+/// Test &amp; Auto-Tune Hardware: runs the benchmark in a separate worker (HandPeg.exe --hw-benchmark, isolating driver crashes) on a short
+/// test clip, reports progress, saves hardware-benchmark.json beside the settings and applies the four recommended GPU roles. Started
+/// only from the Settings button, never before Frame 1. The first-run two-phase profile (<see cref="EstimateAsync"/>, then
+/// <see cref="RunQuickAsync"/>) runs only from the first-run window (estimate only when reopened from Settings), never on normal startup.
 /// </summary>
 public static class HardwareBenchmarkService
 {
-    /// <summary>The test clip: 1.5 s of FFmpeg's moving test pattern, 1080p60 H.264 (an I-frame each half second), made once.</summary>
+    /// <summary>Test clip: 1.5 s FFmpeg moving test pattern, 1080p60 H.264, GOP 0.5 s; generated once.</summary>
     public static string ClipPath => Path.Combine(AppPaths.Cache, "benchmark", "bench-1080p60-h264.mp4");
 
     /// <summary>Where the last result is kept.</summary>
@@ -27,23 +24,20 @@ public static class HardwareBenchmarkService
     private static HardwareBenchmarkResult? _saved;
     private static bool _savedRead;
 
-    /// <summary>Why the last run gave no result, in a few words for the status line ("Cancelled.", "FFmpeg is not installed yet."); empty after one that did.</summary>
+    /// <summary>Short status-line reason the last run produced no result ("Cancelled.", ...); empty after success.</summary>
     public static string LastFailure { get; private set; } = "";
 
-    /// <summary>What <see cref="LastFailure"/> says when another window's test holds the one benchmark gate (5.6.0: the first-run window shows it as a warning).</summary>
+    /// <summary><see cref="LastFailure"/> text when another window holds the benchmark gate (shown as a warning in the first-run window).</summary>
     public const string BusyFailure = "The test is already running (in the other window).";
 
     /// <summary>
-    /// Makes the test clip if it is not there yet, runs the benchmark on it and returns its result (also saved, and then
-    /// what <see cref="LoadSaved"/> returns, unless it ran without the clip over a kept result that decoded: <see cref="ClipLessMayReplace"/>);
-    /// null when it could not be run, failed or was cancelled (<see cref="LastFailure"/>
-    /// says which). Progress is reported from a pool thread: give a <see cref="Progress{T}"/> made on the UI thread.
-    /// The roles are not applied here: <see cref="ApplyRoles"/> does that.
+    /// Ensures the test clip, runs the benchmark and returns the result (saved unless a clip-less run would replace a kept decode result,
+    /// <see cref="ClipLessMayReplace"/>); null on failure or cancel (<see cref="LastFailure"/>). Progress arrives on a pool thread (pass a
+    /// UI-created <see cref="Progress{T}"/>). Roles are applied separately (<see cref="ApplyRoles"/>).
     /// </summary>
     public static async Task<HardwareBenchmarkResult?> RunAsync(IProgress<HardwareBenchmarkProgress>? progress, CancellationToken token)
     {
-        // One run at a time, refused visibly: a second caller (the first-run window over Settings) would otherwise join the
-        // first through the work key, with no progress of its own and a Stop that stops nothing.
+        // Single run at a time, visibly refused: joining via the work key would leave the second caller without progress or a working Stop.
         if (Interlocked.Exchange(ref _running, 1) == 1)
         {
             LastFailure = BusyFailure;
@@ -97,8 +91,7 @@ public static class HardwareBenchmarkService
         if (result.Error.Length > 0)
             AppLog.Write($"The hardware benchmark stopped short: {result.Error}");
 
-        // 5.6.0: a run without its test clip (no FFmpeg) never replaces a kept result that measured decoding on these same cards; it
-        // is still shown (returned).
+        // A clip-less run (no FFmpeg) never replaces a kept same-hardware result with decode measurements; it is still returned.
         if (clip.Length > 0 || ClipLessMayReplace(LoadSaved(), result))
             Save(result);
         else
@@ -107,18 +100,16 @@ public static class HardwareBenchmarkService
     }
 
     /// <summary>
-    /// Whether a full test run without its test clip (no decoding measured) may take the place of the result kept (5.6.0; pure:
-    /// the goldens check it): never of a full result measured on these same cards and drivers (its fingerprint the run's own, both
-    /// measured in a worker: nothing is asked of DXGI here) that measured decoding; of anything else, yes.
+    /// True when a clip-less full run may replace the kept result (pure, golden-tested): never over a same-fingerprint full result with
+    /// decode measurements (fingerprints come from the worker; no DXGI here); otherwise yes.
     /// </summary>
     internal static bool ClipLessMayReplace(HardwareBenchmarkResult? saved, HardwareBenchmarkResult result) =>
         saved is null || saved.Kind.Length > 0 || saved.Fingerprint != result.Fingerprint
         || !saved.Adapters.Any(a => a.HardwareDecodeFps > 0 || a.SoftwareDecodeFps > 0);
 
     /// <summary>
-    /// Runs the benchmark's worker with these arguments and reads its lines: each progress line passed on (to the work's progress
-    /// too, when there is a work), the result line kept. Returns the exit code, the result (null when none came) and the last line
-    /// that was not one of its JSON lines (its standard error comes down the same pipe), for the log.
+    /// Runs the benchmark worker and parses its output: forwards progress lines (also to the work item), keeps the result line. Returns exit
+    /// code, result (or null) and the last non-JSON line (stderr shares the pipe) for logging.
     /// </summary>
     private static async Task<(int ExitCode, HardwareBenchmarkResult? Result, string? Other)> RunWorkerAsync(string arguments,
         IProgress<HardwareBenchmarkProgress>? progress, WorkContext? work, ProcessClass jobClass, CancellationToken token)
@@ -160,14 +151,12 @@ public static class HardwareBenchmarkService
         return (exitCode, result, lastOther);
     }
 
-    // ----- The first-run window's two-phase profile (5.5A) -----
+    // ----- First-run two-phase hardware profile -----
 
     /// <summary>
-    /// Phase 1: HandPeg.exe --hw-benchmark --estimate (HardwareBenchmark.Profile.cs), the cards, their hardware encoders, the NPUs and
-    /// the roles that follow, nothing measured; the cards reach <paramref name="progress"/> on the first line. Not gated (it loads no
-    /// card's video driver and takes a few tens of milliseconds), in the foreground job (the window waits for it), never saved. Null when
-    /// it could not be run or was cancelled (cancelling kills the worker). Its own time and the time with the process start are logged.
-    /// Call it from a pool thread (Task.Run): starting the process waits for CreateProcess.
+    /// Phase 1 (--hw-benchmark --estimate, HardwareBenchmark.Profile.cs): enumerates adapters, hardware encoders and NPUs and derives roles
+    /// without measuring; adapters reach <paramref name="progress"/> on the first line. Ungated (no video driver load, tens of ms), foreground
+    /// job, never saved. Null on failure or cancel (kills the worker). Logs timings. Call from the pool (CreateProcess blocks).
     /// </summary>
     public static async Task<HardwareBenchmarkResult?> EstimateAsync(IProgress<HardwareBenchmarkProgress>? progress, CancellationToken token)
     {
@@ -199,11 +188,9 @@ public static class HardwareBenchmarkService
     }
 
     /// <summary>
-    /// Phase 2: HandPeg.exe --hw-benchmark [clip] --quick --adapters ..., hardware decoding (when there is a test clip: made now when
-    /// FFmpeg is here and the clip is not; with no FFmpeg, the bus only) and the bus of <paramref name="cards"/> only (see
-    /// <see cref="QuickTargets"/>), in the background job and the Background lane, about a second and a half. One benchmark at a time:
-    /// it shares Test &amp; Auto-Tune Hardware's gate. Saved unless a current full result is kept (<see cref="QuickMayReplace"/>). Null
-    /// when it could not be run, was refused by the gate or was cancelled (cancelling kills the worker at once).
+    /// Phase 2 (--hw-benchmark [clip] --quick --adapters ...): measures hardware decode (when a test clip exists or can be made) and bus
+    /// bandwidth for <paramref name="cards"/> only (<see cref="QuickTargets"/>), background job and lane, ~1.5 s. Shares the benchmark gate.
+    /// Saved unless a current full result exists (<see cref="QuickMayReplace"/>). Null on failure, gate refusal or cancel (kills the worker).
     /// </summary>
     public static async Task<HardwareBenchmarkResult?> RunQuickAsync(IReadOnlyList<int> cards, IProgress<HardwareBenchmarkProgress>? progress, CancellationToken token)
     {
@@ -239,13 +226,13 @@ public static class HardwareBenchmarkService
         }
     }
 
-    // All of it on a pool thread (the window's thread only starts it): the worker's CreateProcess, the clip, the result read and saved.
+    // Runs entirely on the pool (CreateProcess, clip generation, result read/save); the UI thread only starts it.
     private static Task<HardwareBenchmarkResult?> MeasureQuickAsync(WorkContext work, IReadOnlyList<int> cards, IProgress<HardwareBenchmarkProgress>? progress) =>
         Task.Run(() => MeasureQuickOffThreadAsync(work, cards, progress), CancellationToken.None);
 
     private static async Task<HardwareBenchmarkResult?> MeasureQuickOffThreadAsync(WorkContext work, IReadOnlyList<int> cards, IProgress<HardwareBenchmarkProgress>? progress)
     {
-        // The test clip when it is here or FFmpeg can make it; else the bus only (the window runs it again once FFmpeg is installed).
+        // Use the test clip when available or creatable; otherwise bus-only (rerun after FFmpeg is installed).
         var clip = File.Exists(ClipPath) ? ClipPath
             : File.Exists(DependencyUpdater.FfmpegPath) ? await EnsureClipAsync(work.Token).ConfigureAwait(false) ?? ""
             : "";
@@ -265,9 +252,9 @@ public static class HardwareBenchmarkService
     }
 
     /// <summary>
-    /// The cards the quick check measures: the compositor's (the role's card, or the first-listed card with the most video memory
-    /// when the roles name none), and the Export card when it is another. Never any other card: a second card is never measured, nor
-    /// given work, unless a role holds it (CLAUDE.md 8: decoding on the Desktop's Arc A310 beside its RX 7900 XTX ended in 0x116).
+    /// Adapters measured by the quick check: the compositor adapter (role, else first adapter with most VRAM) and a distinct Export adapter.
+    /// No other adapter is ever measured or given work unless a role names it (decoding on a secondary Intel Arc beside an AMD primary
+    /// caused VIDEO_TDR_FAILURE 0x116).
     /// </summary>
     internal static IReadOnlyList<int> QuickTargets(HardwareBenchmarkResult estimate)
     {
@@ -282,9 +269,8 @@ public static class HardwareBenchmarkService
     }
 
     /// <summary>
-    /// The full test's command line (5.6.0): the clip when there is one; the FFmpeg the app uses (the codecs its fallback decodes where Media
-    /// Foundation cannot are listed, 5.2.0); --adapters with the roles chosen in Settings (the compositor stage times them too,
-    /// beside the cards the measurements point to), when any is a card.
+    /// Full test command line: optional clip; the app's FFmpeg (to list fallback-decodable codecs Media Foundation lacks); --adapters with
+    /// the Settings roles when any names an adapter (also timed by the compositor stage).
     /// </summary>
     internal static string FullArguments(string clip, string ffmpeg, IReadOnlyList<int> chosen)
     {
@@ -299,7 +285,7 @@ public static class HardwareBenchmarkService
         return text.ToString();
     }
 
-    /// <summary>The quick check's command line: the clip when there is one, then --quick --adapters with the cards ("0,2").</summary>
+    /// <summary>Quick check command line: optional clip, then --quick --adapters "0,2".</summary>
     internal static string QuickArguments(string clip, IReadOnlyList<int> cards)
     {
         var adapters = string.Join(",", cards.Select(c => c.ToString(System.Globalization.CultureInfo.InvariantCulture)));
@@ -310,15 +296,14 @@ public static class HardwareBenchmarkService
     }
 
     /// <summary>
-    /// Whether a quick check may take the place of the result kept: never of a full result measured on these same cards and drivers
-    /// (its fingerprint the quick check's own, both measured in a worker: nothing is asked of DXGI here); of anything else, yes.
+    /// True when a quick check may replace the kept result: never over a same-fingerprint full result (fingerprints from the worker).
     /// </summary>
     internal static bool QuickMayReplace(HardwareBenchmarkResult? saved, HardwareBenchmarkResult quick) =>
         saved is null || saved.Kind.Length > 0 || saved.Fingerprint.Length > 0 && saved.Fingerprint != quick.Fingerprint;
 
     /// <summary>
-    /// What a quick check measured, from its numbers (5.5A review): "decoding and the bus", "decoding", "the bus" (no test clip yet, or the
-    /// clip did not decode in hardware), or "" (no card gave a number). Never from the clip's name: a clip tried and failed is not decoding.
+    /// Description of what the quick check measured, derived from its numbers: "decoding and the bus", "decoding", "the bus", or "" (never
+    /// inferred from the clip name; a failed decode does not count).
     /// </summary>
     internal static string QuickMeasured(HardwareBenchmarkResult result)
     {
@@ -326,12 +311,12 @@ public static class HardwareBenchmarkService
         return decoded && bus ? "decoding and the bus" : decoded ? "decoding" : bus ? "the bus" : "";
     }
 
-    /// <summary>Whether a quick check decoded the test clip on some card (5.5A review: the first-run window's re-run gate; a failed decode is not one).</summary>
+    /// <summary>True when the quick check successfully decoded the clip on any adapter (first-run re-run gate).</summary>
     internal static bool QuickDecoded(HardwareBenchmarkResult result) => result.Adapters.Any(a => a.HardwareDecodeFps > 0);
 
     /// <summary>
-    /// The roles the first-run window writes (5.5A review): the profile's Compositor and Export, Decode and Background Auto whatever the
-    /// profile holds (CLAUDE.md 8: the compositor's card; a result saved by a version before 5.4.4 may still name a second card for them).
+    /// Roles written by the first-run window: profile Compositor and Export; Decode and Background always Auto (the compositor adapter),
+    /// ignoring older results that named a secondary adapter.
     /// </summary>
     internal static HardwareBenchmarkRoles DecodeAndBackgroundAuto(HardwareBenchmarkRoles roles) =>
         new() { Compositor = roles.Compositor, Decode = -1, Background = -1, Export = roles.Export, Reasons = [.. roles.Reasons] };
@@ -343,7 +328,7 @@ public static class HardwareBenchmarkService
         Save(quick);
     }
 
-    /// <summary>The test clip, made now when it is not there yet (into a file beside it, then moved into place); null when FFmpeg is missing or failed.</summary>
+    /// <summary>Ensures the test clip exists (written to a temp file then moved); null when FFmpeg is missing or fails.</summary>
     private static async Task<string?> EnsureClipAsync(CancellationToken token)
     {
         var clip = ClipPath;
@@ -399,8 +384,7 @@ public static class HardwareBenchmarkService
     }
 
     /// <summary>
-    /// The last result kept (read from disk once, then remembered); null when the benchmark has never run here or its file
-    /// cannot be read. A small file: cheap, but never asked for before the first frame.
+    /// Last saved result (read once, then cached); null when absent or unreadable. Small file, but never read before Frame 1.
     /// </summary>
     public static HardwareBenchmarkResult? LoadSaved()
     {
@@ -424,15 +408,15 @@ public static class HardwareBenchmarkService
         return _saved;
     }
 
-    /// <summary>Whether a result was measured on the cards and drivers there are now (not, after a card or driver changed).</summary>
+    /// <summary>True when the result's hardware/driver fingerprint matches the current system.</summary>
     public static bool IsCurrent(HardwareBenchmarkResult result) => result.Fingerprint.Length == 0 || result.Fingerprint == GpuAdapters.Fingerprint;
 
-    /// <summary>Puts the four roles into the settings in effect and saves them (the way the dialogs that save at once do).</summary>
+    /// <summary>Applies the four roles to the active settings and saves immediately.</summary>
     public static void ApplyRoles(HardwareBenchmarkRoles roles)
     {
         try
         {
-            // Saved before returning: GPU work restarts on the new roles right after, and a driver fault then must not lose them.
+            // Save before returning: GPU work restarts on the new roles and a driver fault must not lose them.
             AppSettings.Update(settings => WriteRoles(roles, settings), saveNow: true);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -443,14 +427,14 @@ public static class HardwareBenchmarkService
     }
 
     /// <summary>
-    /// Writes the four roles into a copy of the settings (the one the Settings window edits, say) without saving it. A card
-    /// that is not there now is Auto; Background may also be -2, the processor.
+    /// Writes the four roles into a settings copy (e.g. the Settings window's) without saving; missing adapters become Auto; Background
+    /// may be -2 (CPU).
     /// </summary>
     public static void WriteRoles(HardwareBenchmarkRoles roles, AppSettings settings) => WriteRoles(roles, settings, [.. GpuAdapters.All.Select(a => a.Index)]);
 
     /// <summary>
-    /// <see cref="WriteRoles(HardwareBenchmarkRoles, AppSettings)"/> against the cards a profile found itself (their DXGI numbers), so
-    /// that nothing lists the cards in this process (5.5A: the first-run window's Start, on the UI thread).
+    /// <see cref="WriteRoles(HardwareBenchmarkRoles, AppSettings)"/> using the profile's adapter indices, so this process never enumerates
+    /// DXGI (first-run Start on the UI thread).
     /// </summary>
     public static void WriteRoles(HardwareBenchmarkRoles roles, AppSettings settings, IReadOnlyCollection<int> cardsHere)
     {

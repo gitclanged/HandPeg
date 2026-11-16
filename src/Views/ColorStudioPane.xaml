@@ -3,9 +3,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              AutomationProperties.Name="Color Studio">
     <!--
-        The Color tab (Pass 5.6A): the Color Grade of the Effects pane's target (a clip, the blur fill or the Sequence Output). Light
-        to make (it is realized at idle with the other tabs): the header, the wheels, the curves and the rest are built in code
-        (ColorStudioPane.xaml.cs) the first time the tab is shown, and nothing is captured until then.
+        Color tab: Color Grade of the Effects pane's target (clip, blur fill or Sequence Output). Cheap to realize (done at idle
+        with the other tabs): header, wheels, curves and the rest are built in code (ColorStudioPane.xaml.cs) on first show, and
+        no frame is captured before then.
     -->
     <DockPanel x:Name="Root" />
 </UserControl>

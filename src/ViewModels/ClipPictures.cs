@@ -5,14 +5,13 @@ using HandPegApp.Services;
 namespace HandPegApp.ViewModels;
 
 /// <summary>
-/// The Timeline blocks' pictures by key: a video file's strip of frames (keyed by the file) and the waveform of one audio stream of a
-/// file (<see cref="SoundKey"/>). One picture serves every clip of that file in every open tab; a block reads its picture here when it
-/// is drawn and <see cref="Changed"/> tells the Timeline to draw again, so no clip carries a picture and nothing polls for one.
+/// Shared Timeline block images by key: per-file filmstrips and per-stream waveforms (<see cref="SoundKey"/>). One image serves every
+/// clip of that file across tabs; blocks read here at draw time and <see cref="Changed"/> triggers redraw, so clips hold no images
+/// and nothing polls.
 /// </summary>
 /// <remarks>
-/// The window's thread only (<see cref="ThreadOwner"/>). Pictures of files an open Sequence uses are always kept; of the rest, the
-/// <c>kept</c> most recently stored stay, so an undo that brings a clip back finds its pictures. <see cref="Release"/> drops all
-/// pictures of unused files at once.
+/// UI thread only (<see cref="ThreadOwner"/>). Images for files used by an open Sequence are always kept; of the rest, the
+/// <c>kept</c> most recent stay so undo-restored clips find theirs. <see cref="Release"/> drops all unused-file images at once.
 /// </remarks>
 public sealed class ClipPictures(int kept, Func<IEnumerable<string>> filesInUse)
 {
@@ -23,36 +22,36 @@ public sealed class ClipPictures(int kept, Func<IEnumerable<string>> filesInUse)
     private readonly ThreadOwner _owner = new();
     private long _stamp;
 
-    /// <summary>The files background tabs use; the window sets it (a view model alone has only its own Sequence).</summary>
+    /// <summary>Files used by background tabs; window-injected (a VM only knows its own Sequence).</summary>
     public Func<IEnumerable<string>> OtherFilesInUse { get; set; } = static () => [];
 
-    /// <summary>A picture was stored or released: the Timeline draws its blocks again.</summary>
+    /// <summary>Raised on store/release so the Timeline redraws blocks.</summary>
     public event Action? Changed;
 
-    /// <summary>The key of the waveform of audio stream <paramref name="stream"/> of <paramref name="file"/> (the file itself for stream 0).</summary>
+    /// <summary>Waveform key for <paramref name="file"/> stream <paramref name="stream"/> (the file path itself for stream 0).</summary>
     public static string SoundKey(string file, int stream) =>
         stream <= 0 ? file : string.Create(CultureInfo.InvariantCulture, $"{file}|a{stream}");
 
-    /// <summary>The strip of frames of a video file; null while none is made.</summary>
+    /// <summary>Filmstrip of a video file; null until generated.</summary>
     public ImageSource? Film(string file) => _film.TryGetValue(file, out var entry) ? entry.Picture : null;
 
-    /// <summary>The waveform of a sound key (<see cref="SoundKey"/>); null while none is made.</summary>
+    /// <summary>Waveform for a <see cref="SoundKey"/>; null until generated.</summary>
     public ImageSource? Sound(string key) => _sound.TryGetValue(key, out var entry) ? entry.Picture : null;
 
-    /// <summary>Every picture made of <paramref name="file"/>: its strip and its streams' waveforms (a tab's memory estimate).</summary>
+    /// <summary>All images for <paramref name="file"/> (filmstrip and stream waveforms), for tab memory estimates.</summary>
     public IEnumerable<ImageSource> OfFile(string file) =>
         _film.Values.Concat(_sound.Values).Where(e => string.Equals(e.File, file, StringComparison.OrdinalIgnoreCase)).Select(e => e.Picture);
 
-    /// <summary>How many pictures are held.</summary>
+    /// <summary>Number of cached images.</summary>
     public int Count => _film.Count + _sound.Count;
 
-    /// <summary>Stores the strip of frames of <paramref name="file"/>.</summary>
+    /// <summary>Stores the filmstrip for <paramref name="file"/>.</summary>
     public void PutFilm(string file, ImageSource picture) => Put(_film, file, file, picture);
 
-    /// <summary>Stores the waveform of audio stream <paramref name="stream"/> of <paramref name="file"/>.</summary>
+    /// <summary>Stores the waveform for <paramref name="file"/> stream <paramref name="stream"/>.</summary>
     public void PutSound(string file, int stream, ImageSource picture) => Put(_sound, SoundKey(file, stream), file, picture);
 
-    /// <summary>Drops every picture of a file no open Sequence uses; returns how many files that was.</summary>
+    /// <summary>Drops images of files no open Sequence uses; returns the file count.</summary>
     public int Release()
     {
         _owner.Check();
@@ -80,7 +79,7 @@ public sealed class ClipPictures(int kept, Func<IEnumerable<string>> filesInUse)
         Changed?.Invoke();
     }
 
-    // Over the bound: the least recently stored pictures of unused files go until `kept` of them are left.
+    // Over budget: evict least-recently-stored unused-file images until `kept` remain.
     private void Trim()
     {
         var used = Used();

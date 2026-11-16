@@ -8,50 +8,46 @@ using HandPegApp.Views;
 
 namespace HandPegApp;
 
-// ----- The panes: arranged freely, in this window and the side windows -----
-// Every pane (the player, the playback controls, the timeline, the Sequence Overview Scrubber, the layout, the header, the side panes,
-// the preset bar and each settings tab) is made in PaneLibrary and put where the arrangement says by the dock
-// manager (Docking/DockManager.cs). The arrangement is kept in AppSettings.DockLayout, the side windows (5.4C: any number, each a
-// Live Video Preview or a Pane Docker) in AppSettings.SideWindows.
+// ----- Docked panes (main window and side windows) -----
+// Every pane (player, playback controls, timeline, Scrubber, Canvas, header, side panes, Preset Bar, settings tabs) is created in
+// PaneLibrary and placed by DockManager (Docking/DockManager.cs). The arrangement persists in AppSettings.DockLayout; side windows
+// (any number, each a Live Video Preview or Pane Docker) in AppSettings.SideWindows.
 public partial class MainWindow
 {
     private DockManager _dock = null!;
 
-    // The settings tabs, as panes: their names, by the tab they came from.
+    // Settings tab pane names, keyed by source tab.
     private readonly List<(string Id, TabItem Tab)> _tabPanes = [];
 
-    // The Sequence Overview Scrubber made taller by the border beside it: what a drag has moved but not yet made a step.
+    // Scrubber resize via its border: sub-step drag remainder not yet applied.
     private double _timelineResizeRest;
 
     /// <summary>
-    /// The timeline (4.4: one drawn surface for every track, Views/UnifiedTimelinePane.xaml). Its pane's name is not
-    /// "Timeline": that one is the Sequence Overview Scrubber's (the Overview Bar's until 5.2, the master timeline's until
-    /// 4.4), kept so arrangements keep it where it was.
+    /// Pane id of the unified timeline (Views/UnifiedTimelinePane.xaml). Not "Timeline", which is the Scrubber's legacy id, kept so
+    /// saved arrangements still resolve.
     /// </summary>
     private const string TimelinePaneId = "UnifiedTimeline";
 
     /// <summary>
-    /// Panes saved arrangements may name that are another now (DockManager.Replaced, applied to the main window's, every side window's and
-    /// Pane Docker's trees on every load): the Source pane is the Media pane, and every rename the settings' hidden-tab list follows too
-    /// (<see cref="SettingsMigrations.PaneRenames"/>: the Filters tab is the Color tab since 5.6.0). Shared with the goldens.
+    /// Legacy pane id remaps applied to every tree on load (DockManager.Replaced): Source to Media, plus the hidden-tab renames in
+    /// <see cref="SettingsMigrations.PaneRenames"/> (e.g. Filters to Color). Shared with goldens.
     /// </summary>
     internal static readonly IReadOnlyDictionary<string, string> ReplacedPanes = new Dictionary<string, string>(SettingsMigrations.PaneRenames)
     {
         ["Source"] = "Media",
     };
 
-    /// <summary>Takes the panes out of the library, tells the dock manager what each is, and lays the window out as it was left.</summary>
+    /// <summary>Moves panes out of PaneLibrary, registers them with DockManager, and performs the single startup layout.</summary>
     private void InitializeDocking()
     {
-        // The Source pane (gone since Pass 1.5: Add Media in the header took its job) is where saved arrangements may still
-        // have it: the Media pane goes there, and is shown. An arrangement from before 4.4 has the timeline put where its
-        // Layers tab was, and one from before 4.4-BugHunt the timeline first among the settings tabs (UpgradeLayout).
+        // Legacy Source pane slots host the Media pane (shown). Older arrangements are migrated by UpgradeLayout (timeline into the
+        // retired Layers slot, then first among the settings tabs).
         _dock = new DockManager(this, MainDockHost, DefaultDockLayout)
         {
             Replaced = ReplacedPanes,
             Upgrade = UpgradeLayout,
 
-            // A tab's menu's Reset Panes Layout is the Views menu's (5.4D): the user's Default layout, the scrubber's height put back.
+            // Tab-menu Reset Panes Layout = Views menu's: Default layout plus default Scrubber height.
             ResetLayout = () => ResetPanesLayout_Click(this, new RoutedEventArgs()),
         };
         _dock.PaneReplaced += (_, replacement) =>
@@ -60,13 +56,13 @@ public partial class MainWindow
                 _viewModel.ShowMediaBrowser = true;
         };
 
-        // The panes' contents leave the library: from now on they are wherever the arrangement puts them.
+        // Detach contents from PaneLibrary; DockManager owns placement from here.
         var contents = PaneLibrary.Children.OfType<FrameworkElement>().ToList();
         foreach (var content in contents.Where(c => !ReferenceEquals(c, SettingsTabs)))
             PaneLibrary.Children.Remove(content);
 
-        // Each pane's least width (5.4D, the splitter's range): 180 unless said otherwise below (DockPane.MinWidth's own), so a border always has
-        // room to move in a 1280 DIP window; the sums of these are what pin a column (DockManager.MinWidthOf).
+        // Pane minimum widths (splitter range): 180 unless overridden below (DockPane.MinWidth default), so borders can move at 1280 DIPs;
+        // sums pin columns (DockManager.MinWidthOf).
         void Add(string id, string title, FrameworkElement content, PaneHandle handle = PaneHandle.TitleSlot, bool fits = false,
             Func<bool>? shown = null, Action? close = null, Func<double>? minWidth = null, double minHeight = 60, Panel? hoverHost = null, Action<double>? resize = null,
             Action<PaneShape>? reshape = null, bool joinsBelow = false, bool floats = false, Action? resetSize = null, bool headerlessAlone = false) =>
@@ -77,47 +73,40 @@ public partial class MainWindow
                 JoinsPaneBelow = joinsBelow, Floats = floats, HeaderlessAlone = headerlessAlone,
             });
 
-        // The player floats over its place (DockPane.Floats): the panes are laid out again around it, and its video never blinks. Its least width
-        // stays 320 (as PlayerPane's own MinWidth in the XAML): its transport overlay and a 16:9 picture need it.
+        // Player floats over its slot (DockPane.Floats) so relayouts never blink the video; min 320 (matches XAML) for the transport overlay
+        // and a 16:9 picture.
         Add("Player", "Player", PlayerPane, PaneHandle.Hover, minWidth: () => 320, minHeight: 180, hoverHost: PlayerOverlay, floats: true);
-        // The playback controls and the Sequence Overview Scrubber keep 300: rows as tall as their content, they share a column with the player
-        // or the timeline, at least as wide, in every built-in layout.
+        // Playback controls and Scrubber: min 300 (content-height rows sharing a column with the player or timeline in built-in layouts).
         Add("Playback", "Playback Controls", TransportRow, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowAdvancedPlayback, minWidth: () => 300);
-        // The Sequence Overview Scrubber: the whole sequence at a glance, its segments and markers, scrubbed by a click or a
-        // drag (the Overview Bar until 5.2-AuditB, the master timeline until 4.4; its id stays "Timeline" and its setting
-        // ShowMasterTimeline, so saved arrangements, layouts and settings keep it where and as they had it).
-        // A double-click on the border under it puts its height back (5.4D), as one on its own grip does (OverviewGrip_ResetRequested).
+        // Sequence Overview Scrubber: whole-sequence overview with segments and markers, click/drag to scrub. Legacy id "Timeline" and
+        // setting ShowMasterTimeline are kept for compatibility. Double-clicking its lower border (or grip) resets its height.
         Add("Timeline", ScrubberTitle, TimelinePane, PaneHandle.Hover, fits: true, shown: () => AppSettings.Current.ShowMasterTimeline, minWidth: () => 300, resize: ResizeMasterTimeline,
             resetSize: OverviewGrip_ResetRequested);
-        // The timeline: every track on one drawn surface (4.4). Always shown; its tab is in its own title row while it shares its group, and
-        // alone in it (5.4.4, Standard Editing's bottom) it has no title row: the tracks start at the part's top edge, and the tab comes up
-        // when the pointer rests on its top-left corner (DockPane.HeaderlessAlone). 300: its track headers and a stretch of the ruler.
+        // Timeline: always shown. Shared group: normal tab row; alone (Standard Editing bottom): headerless, tab revealed by hovering the
+        // top-left corner (DockPane.HeaderlessAlone). Min 300 for track headers plus some ruler.
         Add(TimelinePaneId, "Timeline", UnifiedTimelinePanel, minWidth: () => 300, minHeight: 140, headerlessAlone: true);
-        // The Canvas: the output frame the layers are arranged on. Its id stays "Layout" (its name until 4.2), so saved
-        // arrangements and layouts keep it where they had it. 180 (5.4D; 200 before).
+        // Canvas: output frame for arranging layers; legacy id "Layout" kept for saved arrangements. Min 180.
         Add("Layout", "Canvas", LayoutPane, shown: () => _viewModel.IsArrangeActive, close: () => _viewModel.IsArrangeActive = false);
         Add("Header", "Header", EditorHeader, PaneHandle.Hover, fits: true, minWidth: HeaderWidth, reshape: ApplyHeaderShape, joinsBelow: true);
-        // The Media Browser: 180, or 280 while it shows the Filmstrip view (its list and the preview beside it: MediaMinWidth), raised and
-        // lowered in place as the view changes (DockManager.RefreshMinSizes).
+        // Media Browser: min 180, or 280 in Filmstrip view (list + preview, MediaMinWidth), updated live (DockManager.RefreshMinSizes).
         Add("Media", "Media", MediaBrowserPanel, shown: () => _viewModel.IsMediaBrowserVisible, close: () => _viewModel.ShowMediaBrowser = false, minWidth: MediaMinWidth, minHeight: 140);
         MediaBrowser.ViewModeChanged += _ => _dock.RefreshMinSizes();
-        // The keyframes and the effects: 180 (5.4D; 200 and 240 before), their lists' names trimmed rather than the column pinned.
+        // Keyframes and Effects: min 180; list names trim instead of pinning the column.
         Add("Keyframes", "Keyframes", KeyframesPane, shown: () => _viewModel.ShowKeyframesPane, close: () => _viewModel.ShowKeyframesPane = false, minHeight: 110);
         Add("Effects", "Effects", EffectsPanePanel, shown: () => _viewModel.ShowEffectsPane, close: () => _viewModel.ShowEffectsPane = false, minHeight: 110);
-        // The Master Meter (5.2B): the Sequence's meter and master fader upright. Off to start with, a tab beside the effects and keyframes
-        // (StandardLayout; an arrangement saved without it takes it there), and Tabs and Panes shows it. 104: a meter stands narrow.
+        // Master Meter: vertical Sequence meter and master fader; hidden by default, tabbed beside Effects/Keyframes (StandardLayout, also
+        // the fallback for arrangements without it), shown via Tabs and Panes. Min 104.
         Add("Meter", "Master Meter", MasterMeterPanel, shown: () => _viewModel.ShowMasterMeter, close: () => _viewModel.ShowMasterMeter = false, minWidth: () => 104, minHeight: 180);
-        // The Preset Bar: the panes' 180 (5.4D; 160 before).
+        // Preset Bar: min 180.
         Add("Presets", "Preset Bar", PresetBarPane, PaneHandle.Hover, fits: true, shown: () => _viewModel.ShowPresetBarAtTop);
-        // The studios (5.4C): made by their factories when first shown, never in PaneLibrary (MainWindow.Studios.cs).
+        // Studios: created by factories on first show, never in PaneLibrary (MainWindow.Studios.cs).
         RegisterStudioPanes();
 
-        // The Effects pane's Color Grade card opens the Color tab (Pass 5.6A, MainWindow.ColorStudio.cs).
+        // The Effects pane's Color Grade card opens the Color tab (MainWindow.ColorStudio.cs).
         EffectsView.OpenColorStudioRequested += OpenColorStudio;
 
-        // The settings tabs: each a pane with a tab, made when first shown (RealizeTabContent), shown while its tab would be.
-        // Audio is a box, its content moved between it and the Export tab (MainWindow.Export.cs). (5.4B retired the Video tab: a saved
-        // arrangement naming Tab:Video loads without it, DockManager's validation dropping the unknown pane.)
+        // Settings tabs: one pane each, realized on first show (RealizeTabContent). Audio is a host whose content moves between it and
+        // Export (MainWindow.Export.cs). A saved Tab:Video (retired) is dropped by DockManager validation.
         foreach (var tab in SettingsTabs.Items.OfType<TabItem>())
         {
             var title = tab.Header as string ?? "Tab";
@@ -127,7 +116,7 @@ public partial class MainWindow
             _dock.Register(new DockPane
             {
                 Id = id, Title = title, Handle = PaneHandle.Tab, Content = content,
-                // 300: the Export tab's cards (ExportCardMinWidth) and the other tabs' rows of settings.
+                // Min 300: Export cards (ExportCardMinWidth) and other tabs' setting rows.
                 IsShown = () => tab.Visibility == Visibility.Visible, MinWidth = () => 300, MinHeight = 140,
             });
         }
@@ -149,14 +138,13 @@ public partial class MainWindow
             SyncMirrors();
         };
         _dock.PaneShown += OnPaneShown;
-        // The layout chosen in the first-run window, the first time; then the user's Default layout (5.4D, StartupLayoutJson: the arrangement as
-        // it was left while it still has that layout's shape), always opening on the Timeline (5.4A: never on Export, Audio or Filters because
-        // HandPeg was closed on one of them). The side windows saved open (5.4C) come back after the first frame, each laid out on its own
-        // (DockManager.OpenSidesWhenShown); this is the window's one dock build.
+        // First run uses the first-run layout choice; afterwards the Default layout (StartupLayoutJson keeps the saved arrangement while it
+        // matches), always opening on the Timeline tab. Saved side windows reopen after Frame 1 (DockManager.OpenSidesWhenShown). This is
+        // the window's single pre-Frame 1 dock build (Law 1).
         _dock.Load(sideWindows: AppSettings.Current.SideWindows, saved: TakeFirstRunLayout() ?? StartupLayoutJson(), showFirst: TimelinePaneId);
         UpdateSideWindowCheck();
 
-        // What shows or hides a pane.
+        // Pane visibility bindings.
         _viewModel.PropertyChanged += (_, e) =>
         {
             switch (e.PropertyName)
@@ -170,8 +158,7 @@ public partial class MainWindow
                     _dock.ScheduleRebuild();
                     break;
 
-                // The Canvas turned on comes to the front of its group once the dock has it (since 5.3-Stage2 a tab behind the effects
-                // in Standard Editing; it had a part of its own before, and showed at once): in place, as a click on its tab.
+                // Enabling the Canvas selects its tab once docked (it is a non-selected tab beside Effects in Standard Editing).
                 case nameof(ViewModels.MainViewModel.IsArrangeActive):
                     _dock.ScheduleRebuild();
                     if (_viewModel.IsArrangeActive)
@@ -182,10 +169,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The settings tabs that a setting leaves out (Command Preview the setting's, and the Tabs and Panes choices: HandPeg
-    /// starts with Export instead of Video), then where the sections and the destination bar go (MainWindow.Export.cs). Set
-    /// here, before the panes are first laid out, not bound in the XAML: a binding there is attached only once the window
-    /// is up, so the first frame would have a tab in its bar that the next frame took away.
+    /// Applies setting-hidden tabs (Command Preview, Tabs and Panes choices) and Export section/destination placement
+    /// (MainWindow.Export.cs) before the first layout. Not XAML-bound: bindings attach after load, so Frame 1 would show a tab that
+    /// Frame 2 removes.
     /// </summary>
     private void UpdateTabVisibility()
     {
@@ -196,33 +182,29 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Where the panes start (a pane switched off is hidden, not moved): the Standard Editing layout (see MainWindow.Layouts.cs), what an
-    /// arrangement that cannot be read loads as and where a pane missing from one goes. (5.4D: Reset Layout puts back the user's Default
-    /// layout, DefaultLayoutChoice, which is this one unless a ★ says otherwise.)
+    /// Baseline arrangement (Standard Editing, MainWindow.Layouts.cs): fallback for unreadable arrangements and home for missing panes
+    /// (disabled panes are hidden, not moved). Reset Layout uses DefaultLayoutChoice, which equals this unless another is starred.
     /// </summary>
     private DockLayoutState DefaultDockLayout() => StandardLayout();
 
-    /// <summary>The Media pane's least width (5.4D): 280 while the Media Browser shows its Filmstrip view (the list with the preview and cutter beside it), else 180.</summary>
+    /// <summary>Media pane min width: 280 in Filmstrip view (list + preview/cutter), else 180.</summary>
     private double MediaMinWidth() => MediaBrowser.ViewMode == Views.MediaBrowserView.Filmstrip ? 280 : 180;
 
-    /// <summary>How wide the header's buttons are together: its pane is never narrower, so none of them is cut off.</summary>
+    /// <summary>Combined header button width; the header pane's minimum so no button is clipped.</summary>
     private double HeaderWidth()
     {
         EditorHeader.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         return Math.Max(Math.Ceiling(EditorHeader.DesiredSize.Width), _headerShape == PaneShape.Column ? 0 : 140);
     }
 
-    // The header's shape as the dock manager last laid it out, and its buttons' own padding (for the shapes that keep it).
+    // Last header slot shape from DockManager, and the buttons' original padding (restored for shapes that use it).
     private PaneShape _headerShape;
     private Dictionary<Control, Thickness>? _headerPadding;
 
     /// <summary>
-    /// Lays the header out for where it is (told by the dock manager before each layout, and when its slot changes shape):
-    /// a row of buttons against the right edge, at the top of its slot (Row: its buttons are never stretched taller); the
-    /// same, centred and without the room under it, at the right-hand end of the row of boxed tabs of the pane right under
-    /// it (Joined: the two headers are one bar); or, beside any other part (and in any slot taller than wide, or too narrow
-    /// for a row), an upright 44 px strip of 32 x 32 icon buttons from its top (Column): Add Media, Layout, Project and
-    /// Settings. The flyouts open beside the strip then
+    /// Adapts the header to its slot (called by DockManager before each layout and on slot shape changes): Row (right-aligned buttons
+    /// at the top, never stretched), Joined (centred at the right end of the pane below's tab row, one combined bar), or Column (44 px
+    /// strip of 32x32 icons: Add Media, Layout, Project, Settings) for tall or narrow slots; flyouts then open beside the strip
     /// (PlaceHeaderFlyout).
     /// </summary>
     private void ApplyHeaderShape(PaneShape shape)
@@ -236,7 +218,7 @@ public partial class MainWindow
         EditorHeader.HorizontalAlignment = column ? HorizontalAlignment.Center : HorizontalAlignment.Right;
         EditorHeader.VerticalAlignment = shape == PaneShape.Joined ? VerticalAlignment.Center : VerticalAlignment.Top;
 
-        // A column leaves the hover strip its 7 pixels at the top, and a little room at each side.
+        // Column mode: reserve the 7 px hover strip at the top plus small side margins.
         EditorHeader.Margin = column ? new Thickness(6, 9, 6, 0) : shape == PaneShape.Joined ? new Thickness(0) : new Thickness(0, 0, 0, 2);
         foreach (var part in EditorHeader.Children.OfType<FrameworkElement>())
             part.Margin = column ? new Thickness(0, 0, 0, 6) : new Thickness(6, 0, 0, shape == PaneShape.Joined ? 0 : 6);
@@ -247,27 +229,26 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>What the pane of the overview of the whole sequence is called on screen (its id stays "Timeline").</summary>
+    /// <summary>Display name of the Scrubber pane (id remains "Timeline").</summary>
     internal const string ScrubberTitle = "Sequence Overview Scrubber";
 
-    // How tall the Sequence Overview Scrubber can be dragged (5.2-AuditB, the user's directive: 16 to 120 px). Its height
-    // setting (MainViewModel.MasterTimelineHeight) is in steps of 4 px over 12 (MainViewModel.TimelineAreaHeight), so the
-    // steps a drag keeps to are those whose bar lies within that: 1 (16 px) to 27 (120 px).
+    // Scrubber drag range 16..120 px. MainViewModel.MasterTimelineHeight steps are 12 + 4n px (MainViewModel.TimelineAreaHeight), so
+    // valid steps are 1 (16 px) to 27 (120 px).
     private const double ScrubberLeastPixels = 16, ScrubberMostPixels = 120, ScrubberPixelsPerStep = 4, ScrubberBasePixels = 12;
 
-    /// <summary>A height setting for the Sequence Overview Scrubber, kept to the steps a drag can give it.</summary>
+    /// <summary>Clamps a Scrubber height setting to the draggable step range.</summary>
     private static double ScrubberStep(double step) => Math.Clamp(step,
         Math.Max(1, Math.Ceiling((ScrubberLeastPixels - ScrubberBasePixels) / ScrubberPixelsPerStep)),
         Math.Floor((ScrubberMostPixels - ScrubberBasePixels) / ScrubberPixelsPerStep));
 
-    // The Sequence Overview Scrubber's lower edge (5.1-Polish, the user's directive: OverviewGrip): its height setting when the drag began.
+    // Scrubber height setting at the start of an OverviewGrip drag.
     private double _overviewHeightAtDrag;
 
     private void OverviewGrip_DragStarted() => _overviewHeightAtDrag = _viewModel.MasterTimelineHeight;
 
     /// <summary>
-    /// The Sequence Overview Scrubber's lower edge dragged (by <paramref name="pixels"/> of the window's content, EdgeGrip): its
-    /// height setting, four pixels a step, so the edge stays under the pointer; kept to 16 to 120 px (ScrubberStep).
+    /// OverviewGrip (EdgeGrip) drag by <paramref name="pixels"/>: sets the height in 4 px steps so the edge tracks the pointer, clamped to
+    /// 16..120 px (ScrubberStep).
     /// </summary>
     private void OverviewGrip_Dragged(double pixels) =>
         _viewModel.MasterTimelineHeight = ScrubberStep(_overviewHeightAtDrag + Math.Round(pixels / ScrubberPixelsPerStep));
@@ -275,9 +256,8 @@ public partial class MainWindow
     private void OverviewGrip_ResetRequested() => _viewModel.MasterTimelineHeight = AppSettings.DefaultMasterTimelineHeight;
 
     /// <summary>
-    /// The border under the Sequence Overview Scrubber dragged, or the one above it Ctrl-dragged (plainly dragged, where nothing
-    /// above it shares the room: DockManager.AddBorder), told by how far the pointer moved since the last time: the bar's height
-    /// setting, four pixels a step, kept to 16 to 120 px.
+    /// Dock border drag resizing the Scrubber (border below, or above with Ctrl / when nothing above shares space: DockManager.AddBorder),
+    /// given the incremental pointer delta: 4 px steps, clamped to 16..120 px.
     /// </summary>
     private void ResizeMasterTimeline(double pixels)
     {
@@ -290,7 +270,7 @@ public partial class MainWindow
         _viewModel.MasterTimelineHeight = ScrubberStep(_viewModel.MasterTimelineHeight + steps);
     }
 
-    /// <summary>A pane was put on screen: the Canvas draws its frame once it has a size.</summary>
+    /// <summary>Pane shown: the Canvas draws its frame once it has a size.</summary>
     private void OnPaneShown(string id)
     {
         if (id == "Layout")
@@ -298,10 +278,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Makes what is in a settings tab: from its template (every tab is left as one until wanted; Export too since 5.3-Stage2), or
-    /// the content it was made with. The named parts this window uses are found in it as it is made (the Audio tab's options row,
-    /// which folds into a button when it is narrow; the Export tab's parts). (5.4A retired the Summary tab: its controls live in the
-    /// Export tab, the Timeline's Game Presets box and the Project Manager.)
+    /// Realizes a settings tab from its template (all tabs, Export included, stay templates until needed) or its initial content, and
+    /// resolves the named parts this window uses (Audio options row that collapses into a button when narrow; Export parts).
     /// </summary>
     private FrameworkElement RealizeTabContent(TabItem tab)
     {
@@ -326,15 +304,15 @@ public partial class MainWindow
             AudioPanel = (DockPanel)content.FindName(nameof(AudioPanel));
         }
 
-        // The Audio tab's master meter and fader (5.2B): fed and wired as the pane's is.
+        // Audio tab master meter and fader: wired like the Master Meter pane.
         if (content.FindName("AudioTabMeter") is AudioMeterControl tabMeter)
             WireMeter(tabMeter);
 
-        // The Color tab's Color Studio (Pass 5.6A): wired to the window as it is made (it builds its own parts when first shown).
+        // Color tab's Color Studio: wired on creation (builds its parts on first show).
         if ((content as ColorStudioPane ?? content.FindName("ColorStudio")) is ColorStudioPane studio)
             AttachColorStudio(studio);
 
-        // The Export tab's parts (MainWindow.Export.cs); ExportContent fills it once they are found. ExportPanel is the template's root.
+        // Export parts (MainWindow.Export.cs); ExportContent fills them once resolved. ExportPanel is the template root.
         if ((content.Name == nameof(ExportPanel) ? content : content.FindName(nameof(ExportPanel))) is DockPanel export)
         {
             T Part<T>(string name) where T : class => (T)content.FindName(name);
@@ -349,9 +327,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Makes the panes nobody has seen yet, one at a time and only while nothing else is wanted of this thread, so that
-    /// the first click on any of them finds it ready: the timeline (when an arrangement keeps it behind another tab), then
-    /// the settings tabs.
+    /// Idle pre-realization of unseen panes, one per ApplicationIdle slot, so first clicks are instant: the timeline (if it is a
+    /// non-selected tab), then the settings tabs; when none remain, requests the start-up memory compaction.
     /// </summary>
     private void RealizeTabsWhenIdle()
     {
@@ -366,25 +343,21 @@ public partial class MainWindow
         Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
     }
 
-    // ----- Arrangements from before 4.4 -----
+    // ----- Legacy arrangement migration -----
 
-    // The settings tabs 4.4 retired, in the order their place is taken for the timeline: the Layers tab's track list and
-    // the Subtitles tab's captions are on the timeline now. (The Audio tab stays, holding the sound's settings; its lanes
-    // moved to the timeline.)
+    // Retired settings tabs, in priority order for hosting the timeline (Layers' track list and Subtitles' captions moved onto the
+    // timeline; the Audio tab remains for audio settings).
     private static readonly string[] RetiredPanes = ["Tab:Layers", "Tab:Subtitles"];
 
-    // How much of the room of the group it is put beside the timeline takes: the tabs keep the rest, at its right.
+    // Timeline share when inserted beside a group; the tabs keep the remainder to its right.
     private const double TimelineShare = 0.7;
 
     private static bool IsRetiredPane(string id) => Array.IndexOf(RetiredPanes, id) >= 0;
 
     /// <summary>
-    /// An arrangement saved by an older HandPeg, brought up to this one (DockManager.Upgrade), step by step from the version
-    /// it was made as. Every arrangement taken up passes through here before the one dock build of Load (the saved one, a
-    /// built-in layout, one of the user's own, the first run's choice), so each step is quick, changes nothing that is up to
-    /// date, and may run again at every start until the arrangement is next saved: nothing is saved here (it is saved as
-    /// it is the next time the user changes it), and nothing here builds or lays out a pane. A 4.3 arrangement saved no
-    /// version (it reads as the newest): its retired tabs tell it.
+    /// Migrates an arrangement to the current version step by step (DockManager.Upgrade). Every applied arrangement passes through before
+    /// Load's single dock build, so steps must be cheap, idempotent on current input, and side-effect free (nothing saved, built or laid
+    /// out; re-runs each start until the next save). Unversioned legacy arrangements are detected by their retired tabs.
     /// </summary>
     private DockLayoutState UpgradeLayout(DockLayoutState state)
     {
@@ -392,7 +365,7 @@ public partial class MainWindow
         return state;
     }
 
-    /// <summary>The steps of <see cref="UpgradeLayout(DockLayoutState)"/>, for the settings tabs given (their pane ids, in order): window-free, for the goldens too.</summary>
+    /// <summary>Window-free migration steps of <see cref="UpgradeLayout(DockLayoutState)"/> for the given settings tab ids (also used by goldens).</summary>
     internal static void UpgradeLayout(DockLayoutState state, IReadOnlyList<string> tabIds)
     {
         var from = new[] { state.Main, state.Side, state.SideClosed }.OfType<DockNode>().Any(root => root.AllPanes().Any(IsRetiredPane))
@@ -409,15 +382,14 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// 4 to 5 (5.4.4, the user's): Standard Editing as version 4 had it (the settings tabs in the timeline's group at the bottom) gets those
-    /// tabs beside the Media tab under the header, Media still shown, and the timeline alone at the bottom, shown (its title row then hidden:
-    /// DockPane.HeaderlessAlone). Only that shape (with the Master Meter, or without it: a 4.4 arrangement just brought up, the Meter put in
-    /// afterwards by DockManager.PlaceAsDefault); any arrangement the user made is left as it is. The splits' shares do not move.
+    /// v4 to v5: only the exact v4 Standard Editing shape (with or without the Master Meter, which PlaceAsDefault adds later) moves the
+    /// settings tabs beside Media (Media stays selected) and leaves the timeline alone at the bottom (headerless, DockPane.HeaderlessAlone).
+    /// Custom arrangements and split shares are untouched.
     /// </summary>
     private static void MoveExportBesideMedia(DockLayoutState state, IReadOnlyList<string> tabIds)
     {
-        // Told by its shape with the settings tabs and the Meter left out: a 5.3 arrangement still holds the retired Summary tab (dropped by
-        // DockManager.Validate after this step), another may lack a tab added since; neither is the user's own arrangement.
+        // Match on shape excluding settings tabs and Meter: older arrangements may still hold the retired Summary tab (dropped later by
+        // DockManager.Validate) or lack newer tabs; neither makes them custom.
         if (ShapeWithoutTabs(state.Main) != ShapeWithoutTabs(StandardLayoutV4(tabIds).Main)
             || state.Main.GroupOf(TimelinePaneId) is not { } bottom || state.Main.GroupOf("Media") is not { } media || ReferenceEquals(bottom, media)
             || !bottom.Panes.Any(p => p.StartsWith("Tab:", StringComparison.Ordinal)))
@@ -429,13 +401,13 @@ public partial class MainWindow
         media.Panes.AddRange(tabs.Where(p => !media.Panes.Contains(p)));
         media.Active = "Media";
 
-        // The top row's shares as version 4 started them (never dragged): today's, which give the Media column (now the Export tab's too,
-        // 300 DIPs at least) the room its border needs at 1280 DIPs.
+        // Untouched v4 default top-row shares become today's, giving the Media column (also hosting Export, min 300 DIPs) border room at
+        // 1280 DIPs.
         if (state.Main is { IsGroup: false, Children: [{ IsGroup: false, Vertical: false, Sizes: [56.0, 22.0, 22.0] } top, ..] })
             top.Sizes = [.. StandardTopShares];
     }
 
-    // A tree's shape (DockManager.Shape) with every settings tab and the Master Meter left out.
+    // DockManager.Shape excluding settings tabs and the Master Meter.
     private static string ShapeWithoutTabs(DockNode root)
     {
         var copy = new DockLayoutState { Main = root }.Copy().Main;
@@ -445,18 +417,14 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// 1 to 2 (4.4): the Layers and Subtitles tabs are taken out, and the timeline is put beside the group the Layers tab was
-    /// in (else the Subtitles tab), at its left, with most of its room; a group of nothing but retired tabs becomes the
-    /// timeline's own. So a 4.3 built-in layout becomes the 4.4 one of the same name (the Layout Selector's "In use" mark
-    /// still finds it), and a layout the user made keeps everything else where it was. In the window the Layers tab was in:
-    /// the main window, or the side window while it is open; the side window's closed arrangement (put back when it is
-    /// opened again) gets it only when neither of those has it or gets it, so it is never in two trees. An arrangement that
-    /// already has the timeline only loses the retired tabs.
+    /// v1 to v2: removes the retired Layers/Subtitles tabs and inserts the timeline to the left of their group (most of its space), or as
+    /// that group if it held only retired tabs, so legacy built-ins map to their successors ("In use" still matches). Placed in the
+    /// window that held Layers (main, or an open side window); a closed side arrangement gets it only if no shown window does, so it never
+    /// exists in two trees. Arrangements already containing the timeline only lose the retired tabs.
     /// </summary>
     private static void WithoutRetiredTabs(DockLayoutState state)
     {
-        // The window the timeline goes into: the one the Layers tab (else the Subtitles tab) was in, unless one of the
-        // windows shown already has it.
+        // Target window: the one that held Layers (else Subtitles), unless a shown window already has the timeline.
         var side = state.SideOpen ? state.Side : null;
         DockNode? WindowWith(string id) => state.Main.GroupOf(id) is not null ? state.Main : side?.GroupOf(id) is not null ? side : null;
         var shown = state.Main.GroupOf(TimelinePaneId) is not null || side?.GroupOf(TimelinePaneId) is not null;
@@ -465,16 +433,15 @@ public partial class MainWindow
         state.Main = WithoutRetiredPanes(state.Main, ReferenceEquals(home, state.Main)) ?? DockNode.Group();
         state.Side = WithoutRetiredPanes(state.Side, home is not null && ReferenceEquals(home, state.Side));
 
-        // The closed side window's arrangement gets the timeline only when no window shown has it or gets it: opening the
-        // side window takes its panes out of the main window, so a timeline in both would move away from where Layers was.
+        // Closed side arrangement gets it only if no shown window does: reopening steals its panes from the main window, which would
+        // move the timeline away from the Layers slot.
         state.SideClosed = WithoutRetiredPanes(state.SideClosed, placeTimeline: !shown && home is null);
     }
 
     /// <summary>
-    /// 2 to 3 (4.4-BugHunt, the user's Q8): Standard Editing as 4.4 first made it (the timeline's own group beside the
-    /// settings tabs) becomes Standard Editing as it is now, the timeline the tabs' first and shown, in the place and the
-    /// share of the room the two had; in any other arrangement, a group holding the timeline and settings tabs gets the
-    /// timeline as its first tab (the tab shown stays the one shown). Nothing else moves.
+    /// v2 to v3: the exact v2 Standard Editing shape (timeline group beside the settings group) merges into one group with the timeline
+    /// first and selected, taking the pair's slot and share; elsewhere, a group with timeline and settings tabs just moves the timeline to
+    /// first (selection unchanged). Nothing else moves.
     /// </summary>
     private static void PutTimelineFirst(DockLayoutState state, IReadOnlyList<string> tabIds)
     {
@@ -483,7 +450,7 @@ public partial class MainWindow
             && ReferenceEquals(beside.Children[0], alone) && beside.Children[1] is { IsGroup: true } tabs
             && state.Main.ParentOf(beside) is { } parent)
         {
-            // The pair's place in its split (and so its share of the room, Sizes by index) goes to the tabs' group.
+            // The merged group inherits the pair's split index (and thus its Sizes share).
             parent.Children[parent.Children.IndexOf(beside)] = TimelineFirst(tabs);
             return;
         }
@@ -500,11 +467,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// 3 to 4 (5.3-Stage2, the user's de-clutter): Standard Editing as version 3 had it (the Canvas in a part of its own over the
-    /// effects, keyframes and Master Meter) gets the Canvas as a tab of that group, after the keyframes, the group taking the
-    /// column's place and so its share of the room; the tab shown stays the one shown. Only that shape, with the Meter (5.2B on) or
-    /// without it (a 4.4 arrangement just brought up by PutTimelineFirst: the Meter is put in afterwards, by DockManager.PlaceAsDefault);
-    /// any arrangement the user made is left as it is.
+    /// v3 to v4: only the exact v3 Standard Editing shape (Canvas above Effects/Keyframes/Master Meter, Meter optional since PlaceAsDefault
+    /// adds it later) folds the Canvas into that group after Keyframes; the group takes the column's slot and share, selection unchanged.
+    /// Custom arrangements are untouched.
     /// </summary>
     private static void StackCanvasWithEffects(DockLayoutState state, IReadOnlyList<string> tabIds)
     {
@@ -520,14 +485,13 @@ public partial class MainWindow
         var keys = effects.Panes.IndexOf("Keyframes");
         effects.Panes.Insert(keys < 0 ? effects.Panes.Count : keys + 1, "Layout");
 
-        // The same place in its split, so the column's share of the room (Sizes, by index) is the group's.
+        // Same split index, so the group inherits the column's Sizes share.
         parent.Children[parent.Children.IndexOf(column)] = effects;
     }
 
     /// <summary>
-    /// One window's tree without the retired tabs (a group showing one of them shows its first pane left instead); when it
-    /// is to have the timeline (and has none), the timeline beside the group the first retired tab was in, or in its place
-    /// when that group held nothing else. Returns the tree's top part, null when nothing is left.
+    /// Removes retired tabs from one tree (groups showing one select their first remaining pane). If this tree receives the timeline,
+    /// inserts it beside the first retired tab's group, or replaces that group if it held nothing else. Returns the root, or null if empty.
     /// </summary>
     private static DockNode? WithoutRetiredPanes(DockNode? root, bool placeTimeline)
     {
@@ -557,12 +521,11 @@ public partial class MainWindow
         return DockTree.Tidy(DockTree.InsertBeside(root, anchor, DockZone.Left, DockNode.Group(TimelinePaneId), TimelineShare));
     }
 
-    // ----- The side windows (5.4C: any number, each a Live Video Preview or a Pane Docker) -----
+    // ----- Side windows (any number; Live Video Preview or Pane Docker) -----
 
     /// <summary>
-    /// The Layout Selector's "+ New Side Window" (5.4D: in its footer): a new side window, a Live Video Preview to start with (its title bar
-    /// switches it to a Pane Docker). A layout only previewed is put back first, and then the selector closed, before the window opens
-    /// (5.4D: the popup's Closed comes later, after the new window's Changed has saved the arrangement).
+    /// Layout Selector footer "+ New Side Window": opens a Live Video Preview (switchable to Pane Docker from its title bar). Reverts any
+    /// preview and closes the selector first, since the popup's async Closed would run after the new window's Changed saved the arrangement.
     /// </summary>
     private void SideWindowRow_Click(object sender, RoutedEventArgs e)
     {
@@ -572,7 +535,7 @@ public partial class MainWindow
         _viewModel.StatusText = "A new side window shows the player live: put it on another monitor (F11 or a double-click: full screen). Its title bar makes it a Pane Docker, or drag any pane's tab out of the window.";
     }
 
-    /// <summary>Keeps the arrangement, and (5.4C) the side windows, in the settings: on every dock change and at close.</summary>
+    /// <summary>Persists the arrangement and side windows to settings on every dock change and at close.</summary>
     private void SaveDockInto(AppSettings settings)
     {
         settings.DockLayout = _dock.Save();
@@ -580,8 +543,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The Layout Selector's rows for the side windows open (5.4C; 5.4D: in its footer): each one's name (a click brings it to the front) and a
-    /// close button. Made as the selector opens (OpeningLayoutSelector) and whenever a side window opens, closes or changes its mode.
+    /// Builds the selector footer rows for open side windows (name activates it; close button). Rebuilt on selector open
+    /// (OpeningLayoutSelector) and whenever a side window opens, closes or changes mode.
     /// </summary>
     private void UpdateSideWindowCheck()
     {
@@ -604,8 +567,8 @@ public partial class MainWindow
             };
             System.Windows.Automation.AutomationProperties.SetName(close, $"Close Side Window {number}");
 
-            // A layout only previewed is put back first: closing a Pane Docker puts its panes into the arrangement, which is saved. Its row goes
-            // with the button that had the keyboard, so after a click with the pointer the selector lets the keyboard go (as a card's pill does).
+            // Revert any preview first: closing a Pane Docker merges its panes into the (saved) arrangement. The row, and with it the focused
+            // button, is removed, so after a pointer click focus is released as with a card pill.
             close.Click += (_, _) =>
             {
                 RestoreLayoutBeforePreview();
@@ -614,7 +577,7 @@ public partial class MainWindow
                     LeaveSelectorToPointer();
             };
 
-            // Under the footer's buttons, 8 DIPs down (the card's row spacing), then close together.
+            // Below the footer buttons with 8 DIP spacing (card row spacing), then tightly packed.
             var line = new DockPanel { Margin = new Thickness(0, SideWindowRows.Children.Count == 0 ? 8 : 2, 0, 0) };
             DockPanel.SetDock(close, Dock.Right);
             line.Children.Add(close);
@@ -623,11 +586,11 @@ public partial class MainWindow
         }
     }
 
-    // The side windows answer keys and dropped files as this window does.
+    // Side windows route keys and file drops like the main window.
     private readonly HashSet<Window> _hookedSides = [];
     private bool _mirrorNotesHooked;
 
-    /// <summary>A window over the editor that takes its keys and mouse buttons (the Fullscreen Preview): the editor's and the 3D view's.</summary>
+    /// <summary>Routes an overlay window's (Fullscreen Preview) keys and mouse buttons to the editor and 3D view handlers.</summary>
     private void HookSideKeys(Window side)
     {
         side.PreviewKeyDown += MainWindow_PreviewKeyDown;
@@ -635,7 +598,7 @@ public partial class MainWindow
         _hookedSides.Add(side);
     }
 
-    /// <summary>Takes back what <see cref="HookSideKeys"/> gave (the window is closing).</summary>
+    /// <summary>Removes <see cref="HookSideKeys"/> handlers (window closing).</summary>
     private void UnhookSideKeys(Window side)
     {
         side.PreviewKeyDown -= MainWindow_PreviewKeyDown;
@@ -651,8 +614,7 @@ public partial class MainWindow
         side.PreviewKeyDown += MainWindow_PreviewKeyDown;
         HookTimelineMenuKey(side);
 
-        // The sideways wheel over a Timeline moved here (5.4C review): each window hears its own WM_MOUSEHWHEEL; the hook answers only
-        // while the pointer is over the Timeline.
+        // Horizontal wheel for a Timeline docked here: each window receives its own WM_MOUSEHWHEEL; handled only while over the Timeline.
         void HookSidewaysWheel() =>
             System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(side).Handle)?.AddHook(TimelineSidewaysWheel);
         if (new System.Windows.Interop.WindowInteropHelper(side).Handle != IntPtr.Zero)
@@ -663,7 +625,7 @@ public partial class MainWindow
         side.PreviewDragOver += Window_PreviewDragOver;
         side.PreviewDrop += Window_PreviewDrop;
 
-        // A Live Video Preview's surface made or gone: its mirror attached or let go (MainWindow.GpuPreview.cs).
+        // Live Video Preview surface created/destroyed: attach/detach its mirror (MainWindow.GpuPreview.cs).
         side.PreviewSurfaceChanged += _ => SyncMirrors();
         side.Closed += (_, _) =>
         {
@@ -671,7 +633,7 @@ public partial class MainWindow
             SyncMirrors();
         };
 
-        // The player hidden or shown again: the previews say whether they show its last picture.
+        // Player hidden/shown: previews indicate whether they show its last frame.
         if (!_mirrorNotesHooked)
         {
             _mirrorNotesHooked = true;

@@ -1,24 +1,22 @@
-// HandPeg compositor: the Motion Blur card (slot 22, Pass 5.1-GpuFx): a real shutter, with no plugin's guesswork about what moved.
+// Motion Blur (slot 22): shutter blur from measured motion.
 //
-// Two kinds of motion, each measured where it is known:
-// - What moves inside the picture (a whip-turn, a speed ramp): optical flow between the frame shown and the one before it, both read from
-//   the FrameCache (no demand is made for it, so it can never make a frame late). A pyramid of Lucas-Kanade solves at a quarter of the frame's
-//   size and below (PSFlowSolve, coarsest first, each level warping by the level above), smoothed once (PSFlowSmooth), kept per frame of a source
-//   (SceneRenderer.Fx.cs). An adjustment layer or the Sequence Output has no file: it is measured between the canvas under it and the last one.
-// - What the layer itself does (a move, a zoom, a turn): sub-frames of the laid-on picture, summed along the way from the shutter's opening to its
-//   closing (SceneRenderer.Fx.cs Shutter, the plan's lanes), which is exact: nothing is estimated.
+// - Content motion: optical flow between the shown frame and the previous one, both read from FrameCache (no decode demand, so it
+//   never makes a frame late). Coarse-to-fine Lucas-Kanade pyramid from quarter resolution down (PSFlowSolve, each level warped by
+//   the coarser one), one smoothing pass (PSFlowSmooth), cached per source frame (SceneRenderer.Fx.cs). Adjustment layers and the
+//   Sequence Output measure flow between successive canvases.
+// - Layer motion (move, zoom, rotate): exact shutter sub-frames of the transformed picture (SceneRenderer.Fx.cs Shutter).
 // Conventions: Common.hlsli.
 
 #include "Common.hlsli"
 
-// The flow of the level above (texels of that level): t5.
+// Coarser level's flow, in that level's texels: t5.
 Texture2D<float4> Coarser : register(t5);
 
 float LevelAt(Texture2D<float4> level, float2 uv) { return dot(level.SampleLevel(LinearClamp, uv, 0).rgb, Luma709); }
 
-// One Lucas-Kanade solve. Input this frame at this level, Aux the frame before, Coarser the level above's flow, in texels, times Params2.x (2 from
-// the level above; 1 for a second solve at one level; nothing bound at the top: 0). f is the flow of the picture: this(x) = before(x - f). The frame
-// before is warped by the guess and what is left of the motion solved over a lattice two texels apart, regularised, so a flat wall keeps the guess.
+// One Lucas-Kanade solve. Input = this frame at this level, Aux = previous frame, Coarser = coarser flow in texels scaled by Params2.x
+// (2 from the level above, 1 for a same-level refinement, 0 when unbound). Flow f satisfies this(x) = before(x - f). Warps the previous
+// frame by the guess and solves the residual on a 3x3 lattice two texels apart, regularised so flat areas keep the guess.
 float4 PSFlowSolve(VsOut i) : SV_Target
 {
     float2 texel = SrcTexel;
@@ -48,7 +46,7 @@ float4 PSFlowSolve(VsOut i) : SV_Target
     return float4(clamp(guess + clamp(step, -3, 3), -256, 256), 0, 1);
 }
 
-// The finished flow smoothed once (a 3 x 3 tent): the solve's lattice leaves a little noise on fine detail.
+// 3x3 tent smoothing of the final flow (removes lattice noise on fine detail).
 float4 PSFlowSmooth(VsOut i) : SV_Target
 {
     float2 sum = float2(0, 0);
@@ -61,9 +59,9 @@ float4 PSFlowSmooth(VsOut i) : SV_Target
     return float4(sum / 16, 0, 1);
 }
 
-// The picture smeared along the flow: Params2 the part of the flow's frame this picture is (u0, v0, u1, v1); Params3.xy what a texel of flow comes to
-// in this picture's uv across the shutter, Params3.z the longest streak (uv), Params3.w the samples. Run twice by the host, the second with a sample's
-// length: N x N samples for the price of N + N, so even a long streak has no steps. Premultiplied, so what lies beyond a shape's edge blends right.
+// Smears the picture along the flow. Params2 = this picture's sub-rect of the flow frame (u0, v0, u1, v1); Params3.xy = flow texel to uv
+// over the shutter, z = max streak (uv), w = sample count. The host runs it twice (the second at one sample's length): N x N taps for
+// N + N, so long streaks show no steps. Premultiplied so samples past a shape's edge blend correctly.
 float4 PSMotionBlur(VsOut i) : SV_Target
 {
     float2 at = lerp(Params2.xy, Params2.zw, i.Uv);
@@ -79,11 +77,9 @@ float4 PSMotionBlur(VsOut i) : SV_Target
     return sum / n;
 }
 
-// Smooth Slow-Mo: the picture phi (Params3.z) of the way from a frame (Input) to the next (Aux), along the flow of the next from the first
-// (t5, in flow texels: next(x) = first(x - f)). Params2 the part of the flow's frame this picture is (u0, v0, u1, v1); Params3.xy what a texel of flow
-// comes to in this picture's uv between the two frames. Each frame is read where the motion puts the point at phi, the first at x - phi f and the next at
-// x + (1 - phi) f, and the two blended by phi. Where they disagree (something comes out from behind another, or the flow missed) the nearer frame alone
-// is taken, so nothing is seen twice. Premultiplied in, premultiplied out.
+// Smooth Slow-Mo: picture at phase phi (Params3.z) from Input to the next frame (Aux) along flow t5 (next(x) = first(x - f)).
+// Params2 = sub-rect of the flow frame; Params3.xy = flow texel to uv over the frame gap. Samples first at x - phi f and next at
+// x + (1 - phi) f, blended by phi; where they disagree (disocclusion or flow miss) the nearer frame wins. Premultiplied in and out.
 float4 PSFlowInterpolate(VsOut i) : SV_Target
 {
     float2 at = lerp(Params2.xy, Params2.zw, i.Uv);

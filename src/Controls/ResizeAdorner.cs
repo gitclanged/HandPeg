@@ -7,18 +7,18 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// Puts a resize handle on the bottom-right corner of a layer on the Arrange canvas. Living in the adorner
-/// layer, the handle follows the layer wherever it is moved and always lies above every layer.
+/// Bottom-right resize grip adorner for a layer box (Canvas and player caption box). As an adorner it tracks the box's position
+/// and renders above all boxes.
 /// </summary>
 internal sealed class ResizeAdorner : Adorner
 {
     private readonly VisualCollection _visuals;
     private readonly Thumb _grip;
 
-    /// <summary>Raised while the handle is dragged, with the distance moved in screen units.</summary>
+    /// <summary>Raised during a grip drag with the delta in screen units.</summary>
     public event DragDeltaEventHandler? ResizeDelta;
 
-    /// <summary>Raised when the handle starts to be dragged.</summary>
+    /// <summary>Raised when a grip drag starts.</summary>
     public event DragStartedEventHandler? ResizeStarted;
 
     public ResizeAdorner(UIElement adornedElement, Style gripStyle, string name) : base(adornedElement)
@@ -36,7 +36,7 @@ internal sealed class ResizeAdorner : Adorner
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        // Centred on the corner of the layer.
+        // Centre the grip on the box's bottom-right corner.
         var size = AdornedElement.RenderSize;
         _grip.Arrange(new Rect(size.Width - _grip.Width / 2, size.Height - _grip.Height / 2, _grip.Width, _grip.Height));
         return finalSize;

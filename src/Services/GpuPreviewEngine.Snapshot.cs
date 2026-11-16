@@ -3,10 +3,9 @@ using HandPegApp.Compositor.Native;
 
 namespace HandPegApp.Services;
 
-// ----- The picture on the screen read back at once (Pass 5.4.3) -----
-// A project tab put behind with no still of its playhead (it was playing, or the still had not settled yet) keeps the frame the player
-// shows as it goes: the pump reads it back on its own device (the viewport's reader is the pump's), cropped to the picture when the whole
-// picture is in view, every n-th pixel so its short side is near the size asked. The UI thread waits a few frames at most, never more.
+// ----- Immediate on-screen snapshot -----
+// When a tab is backgrounded without a settled playhead still (playing, or not yet settled), the pump reads back the displayed frame
+// on its device, cropped to the picture when fully visible and decimated to near the requested short side. The UI waits a few frames max.
 public sealed partial class GpuPreviewEngine
 {
     internal sealed class SnapshotRequest(int shortSide)
@@ -15,34 +14,32 @@ public sealed partial class GpuPreviewEngine
         public readonly ManualResetEventSlim Done = new(false);
         public (byte[] Bgra, int Width, int Height)? Frame;
 
-        // The frame drawn smaller on the screen while the whole one is awaited (5.4.4), read once (pump thread): what the UI keeps when the
-        // whole frame is not read in time, never nothing instead. Boxed: the pump writes it while the UI thread may read it.
+        // Soft (scaled) frame read once while awaiting the full one (pump thread), used if the full frame is late. Boxed for cross-thread
+        // publication.
         public StrongBox<(byte[] Bgra, int Width, int Height)>? Soft;
         public bool SoftTried;
     }
 
     private SnapshotRequest? _snapshot;
 
-    // The newest scene published drawn smaller (Dynamic Preview Scaling; pump thread): no still is read while it may be the one on screen.
+    // Newest published scene drawn scaled (Dynamic Preview Scaling; pump thread); full stills wait while it may be on screen.
     private long _scaledSequence;
 
     /// <summary>
-    /// Whether the still asked for is read from the screen now (5.4.4): playing, as it is; paused, only once the frame on the screen is newer
-    /// than the last one drawn smaller (the paused turn draws it whole first: a play stopped for a tab switch, a scrub just over), so a tab
-    /// put behind keeps a soft still only when the whole one is late. Meanwhile the request waits for that turn with the soft frame read once
-    /// (its fallback); the UI thread's own bound still holds (it withdraws the request and keeps the soft frame).
+    /// True when a requested still may be read now: immediately while playing; when paused, only after a full-resolution frame newer than
+    /// the last scaled one is on screen, so soft stills are kept only if the full one is late. Meanwhile the soft frame is read once as a
+    /// fallback; the UI's timeout still applies (it withdraws and keeps the soft frame).
     /// </summary>
     internal static bool StillMayBeRead(bool playing, long presentedSequence, long scaledSequence) => playing || presentedSequence > scaledSequence;
 
     /// <summary>
-    /// The frame on the screen now, its short side near <paramref name="shortSide"/> (never upscaled): the whole frame when it is read within
-    /// <paramref name="timeoutMs"/>, else the one drawn smaller read meanwhile, else null (nothing presented yet, the pump busy). UI thread;
-    /// the pump does the readback.
+    /// Current on-screen frame near <paramref name="shortSide"/> (never upscaled): full frame if read within <paramref name="timeoutMs"/>,
+    /// else the soft frame, else null. UI thread; the pump performs the readback.
     /// </summary>
     public (byte[] Bgra, int Width, int Height)? SnapshotPresented(int shortSide, int timeoutMs) => SnapshotPresented(shortSide, timeoutMs, out _);
 
-    /// <summary>As <see cref="SnapshotPresented(int, int)"/>, saying whether what it returns is the soft frame (drawn smaller: 5.4.4), which the
-    /// caller keeps only until a whole one can be read.</summary>
+    /// <summary><see cref="SnapshotPresented(int, int)"/> that also reports whether the result is the soft frame (keep only until a full
+    /// one is available).</summary>
     public (byte[] Bgra, int Width, int Height)? SnapshotPresented(int shortSide, int timeoutMs, out bool soft)
     {
         soft = false;
@@ -55,14 +52,13 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// What <paramref name="request"/> gets within <paramref name="timeoutMs"/>, never longer (UI thread, 5.4.4): the frame read for it, else
-    /// the soft one read while the whole one was awaited (not read in time, or not read), else null. Not taken in time, it is withdrawn from
-    /// <paramref name="slot"/> if the pump has not taken it yet (the event is left to the collector: the pump may set it still).
+    /// Waits at most <paramref name="timeoutMs"/> (UI thread) for <paramref name="request"/>: its frame, else the soft frame, else null. On
+    /// timeout it is withdrawn from <paramref name="slot"/> if not yet taken (the event is not disposed: the pump may still set it).
     /// </summary>
     internal static (byte[] Bgra, int Width, int Height)? AwaitStill(ref SnapshotRequest? slot, SnapshotRequest request, int timeoutMs) =>
         AwaitStill(ref slot, request, timeoutMs, out _);
 
-    /// <summary>As above, saying whether what it returns is the soft frame (<paramref name="soft"/>: never when nothing is returned).</summary>
+    /// <summary>As above, reporting <paramref name="soft"/> (false when nothing is returned).</summary>
     internal static (byte[] Bgra, int Width, int Height)? AwaitStill(ref SnapshotRequest? slot, SnapshotRequest request, int timeoutMs, out bool soft)
     {
         if (!request.Done.Wait(timeoutMs))
@@ -88,13 +84,13 @@ public sealed partial class GpuPreviewEngine
     /// <summary>A snapshot asked for, taken (pump thread).</summary>
     private void TakeSnapshot()
     {
-        // The request read before the player's state: a Pause made before it was asked is seen (5.4.4).
+        // Read the request before player state so a preceding Pause is observed.
         if (Volatile.Read(ref _snapshot) is not { } asked)
             return;
         if (!StillMayBeRead(_playing, _viewport.PresentedSequence, _scaledSequence))
         {
-            // The frame drawn smaller read once meanwhile (5.4.4), left with the request: a Sequence slow enough to be drawn smaller may
-            // take longer to draw whole than the UI waits, and the tab then keeps this still (as before 5.4.4), never an uncovered player.
+            // Read the soft frame once and attach it: a slow Sequence may not render full-size within the UI wait, and the tab must never
+            // be left without a still.
             if (!asked.SoftTried)
             {
                 asked.SoftTried = true;
@@ -117,12 +113,12 @@ public sealed partial class GpuPreviewEngine
         }
     }
 
-    /// <summary>The frame on the screen now, its short side near <paramref name="shortSide"/>; null when there is none or it is not read (logged). Pump thread.</summary>
+    /// <summary>Reads back the displayed frame near <paramref name="shortSide"/>; null when none or on failure (logged). Pump thread.</summary>
     private (byte[] Bgra, int Width, int Height)? StillOnScreen(int shortSide)
     {
         try
         {
-            // The picture's own rectangle when all of it is in view (unzoomed): the still is then the canvas's, as a captured still is.
+            // Crop to the picture when fully visible (unzoomed) so the still matches a captured canvas still.
             var canvas = _shownCanvas;
             (int, int, int, int) Region(int width, int height)
             {

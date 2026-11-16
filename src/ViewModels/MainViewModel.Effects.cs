@@ -10,13 +10,13 @@ namespace HandPegApp.ViewModels;
 // ----- Effect stacks: the Sequence Output's, adjustment clips, and the Effects pane's target -----
 public partial class MainViewModel
 {
-    /// <summary>The Sequence Output's effects: applied to the finished picture, after the Filters tab's colour. Kept in the project (and in presets).</summary>
+    /// <summary>Sequence Output effects, applied to the final picture after Filters colour. Persisted in projects and presets.</summary>
     public ObservableCollection<EffectInstance> SequenceEffects => _sequenceEffects ??= WatchSequenceEffects();
 
     private ObservableCollection<EffectInstance>? _sequenceEffects;
     private EffectStackWatcher? _sequenceEffectWatcher;
 
-    /// <summary>The Sequence Output's effects set aside at once (Bypass All, with the pane on Sequence Output).</summary>
+    /// <summary>Bypass All for Sequence Output effects (pane on Sequence Output).</summary>
     [ObservableProperty] private bool _sequenceEffectsBypassed;
 
     partial void OnSequenceEffectsBypassedChanged(bool value) => GenerateCommand();
@@ -28,7 +28,7 @@ public partial class MainViewModel
         return stack;
     }
 
-    /// <summary>Replaces the Sequence Output's stack (a project, a preset, Undo).</summary>
+    /// <summary>Replaces the Sequence Output stack (project load, preset, Undo).</summary>
     private void SetSequenceEffects(IEnumerable<EffectState>? states, bool bypassed)
     {
         using var whole = DeferCommand();
@@ -40,12 +40,12 @@ public partial class MainViewModel
 
     private List<EffectState> CaptureSequenceEffects() => [.. SequenceEffects.Select(e => e.ToState())];
 
-    // ----- The blur fill's own stack (5.0-Release) -----
+    // ----- Blur fill effect stack -----
 
-    /// <summary>The blur fill's settings are what the Effects pane works on: its row or block was selected on the timeline.</summary>
+    /// <summary>Effects pane targets the blur fill (its row or block selected on the timeline).</summary>
     [ObservableProperty] private bool _backgroundSelected;
 
-    /// <summary>Replaces the blur fill's effects (a project, a Preset, Undo): Look effects only, one notice.</summary>
+    /// <summary>Replaces blur fill effects (project, Preset, Undo); Look effects only, single change notification.</summary>
     private void SetBackgroundEffects(IEnumerable<EffectState>? states, bool bypassed)
     {
         var cards = (states ?? []).Select(EffectInstance.FromState).Where(c => c.Definition is null or { Zone: EffectZone.Look, Pinned: false }).ToList();
@@ -56,15 +56,14 @@ public partial class MainViewModel
         _backgroundRow.SetEffects(cards, bypassed);
     }
 
-    /// <summary>The blur fill's effects as a project, a Preset and Undo keep them; null for none.</summary>
+    /// <summary>Blur fill effects for persistence (project, Preset, Undo); null when empty.</summary>
     private List<EffectState>? CaptureBackgroundEffects() =>
         _backgroundRow.Effects.Count == 0 ? null : [.. _backgroundRow.Effects.Select(e => e.ToState())];
 
     /// <summary>
-    /// An effect put on a clip or on the blur fill with its visible starting values (EffectDefinition.NewEffect; the
-    /// user's Q1, 5.0-Release): the Effects pane's Add Effect and a track's Add Effect menu both come here. The clip's own
-    /// (Layer.Echo, as the pane's edits are), one step of Undo; an effect a clip has once at most (a key, a shadow, the edges,
-    /// the blend) is switched on as Layer Properties would, its instance the one there. Returns the effect; null where it cannot go.
+    /// Adds an effect with visible defaults (EffectDefinition.NewEffect) to a clip or the blur fill; shared by the Effects pane and the
+    /// track Add Effect menu. Writes via Layer.Echo in one undo step; single-instance effects (key, shadow, edges, blend) are enabled as
+    /// Layer Properties does, reusing the existing instance. Returns the effect, or null when not applicable.
     /// </summary>
     public EffectInstance? AddEffect(Layer layer, EffectDefinition definition)
     {
@@ -79,7 +78,7 @@ public partial class MainViewModel
         return card;
     }
 
-    /// <summary>An effect put on a clip as <see cref="AddEffect"/> puts it, in the step something else took (the Creator Hotbar's, for several clips).</summary>
+    /// <summary>As <see cref="AddEffect"/> but within a caller's undo step (Creator Hotbar, multi-clip).</summary>
     private EffectInstance PutEffectOn(Layer layer, EffectDefinition definition)
     {
         EffectInstance card;
@@ -100,14 +99,14 @@ public partial class MainViewModel
         return card;
     }
 
-    /// <summary>The Effects pane: on to start with, beside the Keyframes pane.</summary>
+    /// <summary>Effects pane visibility (default on, beside Keyframes).</summary>
     [ObservableProperty] private bool _showEffectsPane = AppSettings.Current.ShowEffectsPane;
 
     partial void OnShowEffectsPaneChanged(bool value) => SaveView(s => s.ShowEffectsPane = value);
 
     /// <summary>
-    /// Adds an adjustment clip at the playhead: a clip with no picture whose effects work on everything under it
-    /// while it lasts, over the whole frame (narrow its rectangle in the layout pane to limit it to a part).
+    /// Adds an adjustment clip at the playhead: no picture of its own, its effects apply to everything beneath over the full frame
+    /// (shrink its rectangle in the layout pane to limit the area).
     /// </summary>
     [RelayCommand]
     private void AddAdjustmentLayer()
@@ -126,7 +125,7 @@ public partial class MainViewModel
             LockAspectRatio = false,
         };
 
-        // Something to see at once: a grade, which the Effects pane then shows to be changed.
+        // Start with a visible grade so the result is immediate and editable in the Effects pane.
         element.AddEffect(EffectRegistry.Find(EffectRegistry.Grade)?.NewEffect() ?? new EffectInstance { Type = EffectRegistry.Grade });
         if (!PlaceLayer(element, start, start + length, "add an adjustment clip"))
             return;
@@ -137,16 +136,15 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The copied cards a clip can take (5.6.0), as the pane's own paste keeps them (ReplaceWith, Fits): an unknown effect is kept,
-    /// as AdoptEffect keeps it; one its kind cannot take (a picture's card on a sound clip) is left out, before AdoptEffect switches its
-    /// feature on (a chroma key, a shadow).
+    /// Filters copied cards for a clip like the pane's paste (ReplaceWith, Fits): unknown effects pass (as AdoptEffect keeps them);
+    /// kind-incompatible ones (picture card on an audio clip) are dropped before AdoptEffect enables features (chroma key, shadow).
     /// </summary>
     internal static IEnumerable<EffectState> TakenBy(Layer clip, IReadOnlyList<EffectState> cards) =>
         cards.Where(s => EffectRegistry.Find(s.Type) is not { } definition || clip.CanTake(definition, ignorePresent: true));
 
-    /// <summary>Gives every clip on a clip's track a copy of a stack (Paste Effects with Shift, or Paste Selected Effects...), with the values its effects carry.</summary>
-    /// <param name="append">Added to each clip's stack (Paste Selected Effects..., 4.1.1), an effect a clip has once at most taking the
-    /// place of the one there; otherwise each clip's stack is replaced (Paste Effects).</param>
+    /// <summary>Copies a stack with its values to every clip on a clip's track (Shift+Paste Effects, Paste Selected Effects...).</summary>
+    /// <param name="append">Append to each stack (Paste Selected Effects...; single-instance effects replace the existing one);
+    /// otherwise replace the stack (Paste Effects).</param>
     public void PasteEffectsToTrack(Layer on, IReadOnlyList<EffectState> cards, bool append = false)
     {
         Checkpoint($"paste effects to the track of {on.Name}");

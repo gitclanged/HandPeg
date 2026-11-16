@@ -6,13 +6,13 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Views;
 
-// ----- Pass 5.6A (lane A): the Color Grade card's footer: what the Color Studio holds (wheels, curves) and Open Color Studio -----
-// The card's wheels and curves are edited in the Color tab only (EffectParam.StudioOnly): the footer says whether they are in use (two
-// chips, lit while they change the picture) and opens the tab. The chips follow the card while the footer is in a window (the card's
-// ValueChanged, let go when the footer leaves: a rebuilt pane never keeps an old footer alive).
+// ----- Color Grade card footer: Color Studio usage chips (wheels, curves) and Open Color Studio -----
+// Wheels and curves are edited only in the Color tab (EffectParam.StudioOnly); the footer shows two chips lit while each affects the
+// picture, plus a button to open the tab. Chips track the card via ValueChanged only while loaded (unsubscribed on Unloaded, so a
+// rebuilt pane never keeps an old footer alive).
 public partial class EffectsPane
 {
-    /// <summary>Raised by the Color Grade card's Open Color Studio button: the window brings the Color tab forward.</summary>
+    /// <summary>Raised by the card's Open Color Studio button; the window activates the Color tab.</summary>
     public event Action? OpenColorStudioRequested;
 
     private partial FrameworkElement BuildColorGradeFooter(EffectInstance card, string title);
@@ -66,7 +66,7 @@ public partial class EffectsPane
         return footer;
     }
 
-    /// <summary>A small chip naming a part of the grade, lit (the accent) while that part is in use.</summary>
+    /// <summary>Small labelled chip, accent-lit while that grade component is in use.</summary>
     private static Border Chip(string text, string tip)
     {
         var words = new TextBlock { Text = text, FontSize = 11 };

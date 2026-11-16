@@ -6,17 +6,16 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The Game Presets HandPeg comes with (5.1-Release, the user's call): ordinary .hpstyle files written into the Styles folder, made
-/// exactly as the Cutout Studio makes one (<c>MainViewModel.SaveCutoutPreset</c>): a tall frame, each video clip it goes on zoomed
-/// across its middle with its blur fill, and each element of the game's HUD a Cutout of its own with a mask of its own, drawn from
-/// outlines the Studio opens and edits like any it drew. Nothing is locked: a built-in can be changed, renamed, saved over or deleted.
+/// Built-in Game Presets: ordinary .hpstyle files seeded into the Styles folder, identical to Cutout Studio output
+/// (<c>MainViewModel.SaveCutoutPreset</c>): vertical frame, centre-zoomed video with blur fill, and one masked Cutout per HUD element
+/// using editable outlines. Fully editable: rename, overwrite or delete.
 ///
-/// They are written once per <see cref="Version"/>, only under a name the folder does not have yet: a file there already, the user's
-/// or an earlier built-in the user changed, is never written over, and HandPeg never deletes a Game Preset.
+/// Written once per <see cref="Version"/>, only for names not already present: existing files (custom or modified built-ins) are
+/// never overwritten, and Game Presets are never deleted.
 /// </summary>
 public static class GamePresetLibrary
 {
-    /// <summary>The zoom of the video clip a Game Preset starts with: what its edges lose is what the Cutouts are for.</summary>
+    /// <summary>Initial video zoom; the cropped edges are what the Cutouts restore.</summary>
     public const double DefaultZoom = 1.7;
 
     /// <summary>The blurred background a vertical Game Preset starts with.</summary>
@@ -24,27 +23,26 @@ public static class GamePresetLibrary
 
     public const int BlurPasses = 2;
 
-    // Raised when a built-in is added or changed, so that it is written (where the folder has no file of its name).
-    // 1: Overwatch 2 (traced from the user's own mask and laid out as their own Game Preset), Marvel Rivals, Valorant, CS2, Apex Legends, The Finals.
-    // 2 (5.5.0): "Overwatch 2 Vertical HUD" named "Overwatch Vertical" (the user's own name for it; one untouched under the old name is
-    // renamed, see WriteMissingAsync), and "Fortnite Vertical", taken from the user's own Fortnite Game Preset.
+    // Bumped when built-ins are added or changed so missing files are written.
+    // 1: Overwatch 2, Marvel Rivals, Valorant, CS2, Apex Legends, The Finals.
+    // 2: "Overwatch 2 Vertical HUD" renamed "Overwatch Vertical" (untouched old files renamed, see WriteMissingAsync); "Fortnite Vertical" added.
     public const int Version = 2;
 
-    /// <summary>The built-in Overwatch Game Preset's name before 5.5.0.</summary>
+    /// <summary>Legacy name of the built-in Overwatch Game Preset.</summary>
     public const string OldOverwatchFile = "Overwatch 2 Vertical HUD" + StyleFile.Extension;
 
-    // The date WriteMissingAsync gave the first built-in it wrote (one a user saved over has a date of its own).
+    // Write date WriteMissingAsync assigns to built-ins (a saved-over file has a different date).
     private static readonly DateTime FirstStamp = new(2026, 1, 1, 12, 0, 0, DateTimeKind.Local);
 
     // The frame the outlines below are written in, in pixels; the masks are drawn at this size too.
     private const double W = 2560, H = 1440;
 
-    /// <summary>Where a piece goes on the tall frame: its left and top edges and its width, as fractions of the frame.</summary>
+    /// <summary>Placement on the vertical frame: left, top and width as frame fractions.</summary>
     public readonly record struct Spot(double X, double Y, double Width);
 
-    /// <summary>One piece of a game's HUD: its outlines as a mask's text (fractions of a 16:9 frame, see <see cref="MaskStore"/>).</summary>
-    /// <param name="Source">The box it is cut from; null for the box round its outlines with 8 pixels spare.</param>
-    /// <param name="Place">Where it goes; null to be laid out with the others by <see cref="HudLibrary.LayOutVertically"/>.</param>
+    /// <summary>One HUD element: outlines as mask text (16:9 frame fractions, see <see cref="MaskStore"/>).</summary>
+    /// <param name="Source">Source crop; null for the outline bounds plus 8 px padding.</param>
+    /// <param name="Place">Placement; null for automatic layout via <see cref="HudLibrary.LayOutVertically"/>.</param>
     public sealed record Piece(string Name, string Shapes, Rect? Source = null, Spot? Place = null, int FeatherRadius = 1, int MaskGrow = 0, int CornerRadius = 0);
 
     /// <summary>A built-in Game Preset: its name (the file's) and its pieces.</summary>
@@ -60,17 +58,16 @@ public static class GamePresetLibrary
     /// <summary>A polygon through points given as x, y, x, y... in pixels of the 2560 x 1440 frame.</summary>
     private static List<Point> Poly(params double[] xy) => Enumerable.Range(0, xy.Length / 2).Select(i => P(xy[2 * i], xy[2 * i + 1])).ToList();
 
-    /// <summary>A rectangle from one corner to the other in pixels of the 2560 x 1440 frame, its corners rounded by so many of them.</summary>
+    /// <summary>Rounded rectangle outline from corner pixels on a 2560 x 1440 frame, with the given corner radius.</summary>
     private static List<Point> Box(double left, double top, double right, double bottom, double radius = 6) =>
         MaskStore.RoundedRectangle(left / W, top / H, (right - left) / W, (bottom - top) / H, radius * 1080 / H);
 
     /// <summary>The built-ins, in the order the lists show them.</summary>
     public static IReadOnlyList<BuiltIn> All { get; } =
     [
-        // Traced from the user's own mask (their Photoshop cutout, the one HandPeg 5.0 shipped: 12 islands, within 0.32 % of its
-        // pixels), and cut, placed, feathered and grown as in the vertical Game Preset the user made by hand in HandPeg ("Overwatch
-        // Vertical HUDv2": its mask within 1.1 % of these outlines, all at their soft edges; its boxes and places these exactly). First:
-        // the drop overlay's first target and the top of the lists (the user's call, 5.5.0).
+        // Traced from a reference bitmap mask (12 islands, within 0.32 % of its pixels) with crops, placement, feather and grow matching
+        // a hand-built vertical preset (mask within 1.1 % at soft edges; boxes and placement exact). Listed first: the drop overlay's
+        // first target and top of the lists.
         new("Overwatch Vertical",
         [
             new("Killfeed",
@@ -97,8 +94,7 @@ public static class GamePresetLibrary
                 new Rect(0.7278, 0.76598, 0.2722, 0.23402), new Spot(0.46788, 0.74208, 0.58282), FeatherRadius: 2, CornerRadius: 10),
         ]),
 
-        // The user's own Fortnite Game Preset (5.5.0: "Fortnite draft", made in the Cutout Studio on a 16:9 recording): its outlines,
-        // boxes and places as they drew them.
+        // From a Cutout Studio preset authored on a 16:9 recording: outlines, crops and placement as drawn.
         new("Fortnite Vertical",
         [
             new("Inventory",
@@ -115,8 +111,7 @@ public static class GamePresetLibrary
                 new Rect(0.79521, 0.02761, 0.18903, 0.23625), new Spot(0.261, 0.03, 0.4781)),
         ]),
 
-        // The rest are HandPeg's own outlines of each game's default HUD at 16:9 (as 5.0 had them; Valorant new), to be redrawn on a
-        // recording in the Cutout Studio where a game's HUD settings move them.
+        // Remaining presets: generic outlines of each game's default 16:9 HUD; redraw in Cutout Studio when HUD settings differ.
         new("Marvel Rivals Vertical HUD",
         [
             new("Killfeed", Text(Box(1880, 110, 2530, 400, 4))),
@@ -157,8 +152,7 @@ public static class GamePresetLibrary
     ];
 
     /// <summary>
-    /// A built-in as the Cutout Studio saves one: its pieces as masked Cutouts, each mask its outlines alone (no picture, no
-    /// Base64 inside: 5.1-Release). Pure data, on any thread.
+    /// Builds a built-in as Cutout Studio would save it: masked Cutouts with outline-only masks (no embedded bitmaps). Pure; any thread.
     /// </summary>
     public static StylePreset Build(BuiltIn preset)
     {
@@ -198,10 +192,9 @@ public static class GamePresetLibrary
     }
 
     /// <summary>
-    /// Writes the built-ins the Styles folder has no file of, when <see cref="AppSettings.BuiltInGamePresetsVersion"/> is behind, on a
-    /// pool thread (call it off the interface's thread). Returns the files written; their dates keep the lists' order (older than
-    /// anything the user saves, so the user's own stay on top); empty when nothing was due. The caller records the version on the
-    /// interface's thread (<see cref="Seeded"/>).
+    /// Writes missing built-ins when <see cref="AppSettings.BuiltInGamePresetsVersion"/> is behind (pool thread; call off the UI thread).
+    /// Returns written files, dated to preserve list order and sort below custom presets; empty if nothing was due. The caller records
+    /// the version on the UI thread (<see cref="Seeded"/>).
     /// </summary>
     public static Task<IReadOnlyList<string>> WriteMissingAsync()
     {
@@ -216,8 +209,8 @@ public static class GamePresetLibrary
                 Directory.CreateDirectory(AppPaths.Styles);
                 var options = new JsonSerializerOptions { WriteIndented = true };
 
-                // 5.5.0: the Overwatch built-in as 5.1 wrote it, never saved over (its date still the one it was written with), takes
-                // its new name instead of a second copy beside it. One the user changed keeps its name (it is theirs), and the new one is written.
+                // An untouched legacy Overwatch built-in (original write date) is renamed rather than duplicated; a modified one keeps
+                // its name and the new built-in is written beside it.
                 var old = Path.Combine(AppPaths.Styles, OldOverwatchFile);
                 var renamed = Path.Combine(AppPaths.Styles, All[0].FileName);
                 if (File.Exists(old) && !File.Exists(renamed) && File.GetLastWriteTime(old) == FirstStamp)
@@ -251,10 +244,9 @@ public static class GamePresetLibrary
     }
 
     /// <summary>
-    /// Records that the built-ins are written, on the interface's thread. An empty drop-overlay list takes every built-in; a list the user
-    /// made gets the first built-in (Overwatch Vertical) once per version where it does not have it. 5.5.0 (the user's call): it goes
-    /// first, the overlay's left-most target, and an entry of the old Overwatch file whose file took the new name (WriteMissingAsync)
-    /// becomes it. Asked of the folder, not of what this run wrote: a version not yet recorded still lists what an earlier run wrote.
+    /// Records seeding on the UI thread. An empty drop-overlay list gets every built-in; a custom list gets Overwatch Vertical once per
+    /// version if missing, placed first (left-most target), replacing a renamed legacy Overwatch entry (WriteMissingAsync). Queries the
+    /// folder, so files from an earlier unrecorded run still count.
     /// </summary>
     public static void Seeded()
     {
@@ -277,9 +269,8 @@ public static class GamePresetLibrary
     }
 
     /// <summary>
-    /// The drop overlay's list once the built-ins are written (pure: Seeded, built-in-game-presets): empty, every built-in there is in the
-    /// lists' order; else the user's own with Overwatch Vertical first (an old Overwatch entry whose file is gone taken for it), the rest
-    /// of theirs in their order.
+    /// Drop overlay list after seeding (pure; golden built-in-game-presets): empty lists get all present built-ins in order; custom lists
+    /// get Overwatch Vertical first (replacing a stale legacy Overwatch entry), then their existing order.
     /// </summary>
     public static List<string> SeededList(IReadOnlyList<string> list, Func<string, bool> exists)
     {

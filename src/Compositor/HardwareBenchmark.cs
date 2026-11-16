@@ -8,33 +8,30 @@ using HandPegApp.Services;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// HandPeg.exe --hw-benchmark &lt;clip&gt; (Pass 5.0-Core, micro-step 5.0-0): measures the graphics cards for the GPU roles,
-/// in a process of its own (a driver that falls over takes only it down), and writes one JSON line per step on its
-/// standard output (<see cref="HardwareBenchmarkLine"/>, read by HardwareBenchmarkService). In about two seconds:
+/// HandPeg.exe --hw-benchmark &lt;clip&gt;: measures the adapters for the GPU roles in a separate process (a crashing driver takes only it
+/// down) and writes one JSON line per step to stdout (<see cref="HardwareBenchmarkLine"/>, read by HardwareBenchmarkService). In about two
+/// seconds:
 /// <list type="bullet">
-/// <item>every card (DXGI), its video memory, the decoders its driver offers (ID3D11VideoDevice profiles) and the
-/// hardware encoders Media Foundation lists for it;</item>
-/// <item>the test clip (1080p60 H.264) decoded by the processor once, and by each card into video memory: frames per
-/// second, the median time of six seeks, and the cards' frames against the processor's (PSNR, SSIM, bit-exactness: a
-/// driver with a chroma or stride fault shows here);</item>
-/// <item>each card's bus: a frame read back and one uploaded (MB/s); with two cards, decoding on the second and handing
-/// the frames to the first, against decoding on the first;</item>
-/// <item>the four roles that follows from it;</item>
-/// <item>(5.2-Arm64AndNpu) whether each card shares the computer's memory, the codecs Media Foundation decodes here and those the
-/// compositor's FFmpeg fallback decodes instead (HandPeg.exe --hw-benchmark &lt;clip&gt; --ffmpeg &lt;path&gt;: its decoders asked
-/// for), and the NPUs (DXCore), nothing measured on them yet.</item>
+/// <item>every DXGI adapter, its VRAM, driver decode profiles (ID3D11VideoDevice) and MF hardware encoders;</item>
+/// <item>the 1080p60 H.264 test clip decoded once on the CPU and on each adapter into VRAM: fps, median of six seeks, and GPU frames vs. the
+/// CPU reference (PSNR, SSIM, bit-exactness; exposes chroma or stride driver faults);</item>
+/// <item>each adapter's bus: one frame read back and one uploaded (MB/s); with two adapters, decoding on the second and copying to the first
+/// vs. decoding on the first;</item>
+/// <item>the four recommended roles;</item>
+/// <item>unified-memory flag per adapter, the codecs MF decodes and those the compositor's FFmpeg fallback decodes instead
+/// (--ffmpeg &lt;path&gt;: its decoder list), and NPUs via DXCore (listed, not measured).</item>
 /// </list>
-/// The first-run window's two quicker modes (5.5A) are in HardwareBenchmark.Profile.cs: --estimate (the cards, their encoders and
-/// the roles, nothing measured) and --quick (decoding and the bus on the cards that hold a role).
+/// The first-run window's faster modes are in HardwareBenchmark.Profile.cs: --estimate (adapters, encoders and roles, nothing measured) and
+/// --quick (decode and bus on the adapters holding a role).
 /// </summary>
 public static unsafe partial class HardwareBenchmark
 {
     public const string Argument = "--hw-benchmark";
 
-    /// <summary>The first-run window's modes (5.5A): the instant estimate, the quick check, and the cards the quick check measures ("0,2").</summary>
+    /// <summary>First-run window modes: instant estimate, quick check, and the adapters the quick check measures ("0,2").</summary>
     public const string EstimateOption = "--estimate", QuickOption = "--quick", AdaptersOption = "--adapters";
 
-    // The FFmpeg the app uses (--ffmpeg), for the codecs its fallback decodes; empty when none was given.
+    // The app's FFmpeg (--ffmpeg), for the codecs its fallback decodes; empty when not given.
     private static string _ffmpeg = "";
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
@@ -48,15 +45,15 @@ public static unsafe partial class HardwareBenchmark
     {
         _ = HandPegApp.Native.Kernel32.SetErrorMode(0x0001 | 0x0002);
 
-        // An exception nothing caught (a driver call on one of the timing threads) is logged with its stack before the process ends:
-        // the test's result line only carries the message.
+        // Log unhandled exceptions (e.g. a driver call on a timing thread) with their stack before exit; the result line carries only
+        // the message.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             if (e.ExceptionObject is Exception unhandled)
                 AppLog.Write("Hardware test: unhandled exception", unhandled);
         };
 
-        // The clip is optional (the estimate has none, a quick check may have none: the bus only), and the mode picks the body.
+        // The clip is optional (none for the estimate; a quick check without one measures only the bus); the mode selects the body.
         var clip = args.Length > 1 && !args[1].StartsWith("--", StringComparison.Ordinal) ? args[1] : "";
         _ffmpeg = CompositorWorker.OptionValue(args, CompositorWorker.FfmpegOption);
         _out = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
@@ -73,9 +70,9 @@ public static unsafe partial class HardwareBenchmark
     }
 
     /// <summary>
-    /// The full test. The clip is optional (a fresh install has no FFmpeg to make it yet): without it the cards are listed and each
-    /// card's bus measured, and the compositor timed, with no decoding (the window runs it again once FFmpeg is here). The compositor stage
-    /// times the cards the roles point to and those in <paramref name="chosen"/> (--adapters: the roles chosen in Settings).
+    /// Full test. The clip is optional (a fresh install has no FFmpeg to generate it): without it adapters are listed, buses measured and the
+    /// compositor timed, with no decoding (the window reruns once FFmpeg is installed). The compositor stage times the recommended adapters
+    /// and those in <paramref name="chosen"/> (--adapters: roles chosen in Settings).
     /// </summary>
     private static int Measure(string clip, IReadOnlySet<int> chosen)
     {
@@ -94,12 +91,12 @@ public static unsafe partial class HardwareBenchmark
                 ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{result.Adapters.Count} graphics card(s), {result.Npus.Count} NPU(s)")
                 : $"{result.Adapters.Count} graphics card(s)", result);
 
-            // A card DXGI lists twice is measured once.
+            // An adapter DXGI lists twice is measured once.
             NoteRepeats(result);
             var hardware = result.Adapters.Where(a => a.Note.Length == 0).ToList();
             var share = 0.6 / Math.Max(hardware.Count + 1, 1);
 
-            // The processor's decode, once: the reference for every card's pictures (only with a test clip).
+            // CPU decode once: the reference for every adapter's frames (test clip only).
             byte[][]? reference = null;
             if (decodes)
             {
@@ -142,7 +139,7 @@ public static unsafe partial class HardwareBenchmark
                 }
             }
 
-            // The compositor's all-slots frame on the cards that hold a role (HardwareBenchmark.Compositor.cs).
+            // Time the compositor's all-slots frame on adapters holding a role (HardwareBenchmark.Compositor.cs).
             TimeCompositors(result, CompositorTargets(result, chosen), 0.7, 0.88);
 
             if (decodes && hardware.Where(a => a.DecodesInHardware && a.SameCardAs < 0).Select(a => (a.VendorId, a.DeviceId)).Distinct().Count() >= 2)
@@ -154,7 +151,7 @@ public static unsafe partial class HardwareBenchmark
                 }
                 catch (Exception ex) when (ex is GpuException or IOException or InvalidOperationException)
                 {
-                    // The cards' own results stand; only the comparison is missing.
+                    // Per-adapter results stand; only the comparison is missing.
                     Report("cross-adapter", -1, 0.92, $"The two-card test stopped short: {ex.Message}", result);
                 }
             }
@@ -181,12 +178,11 @@ public static unsafe partial class HardwareBenchmark
 
     private static void Write(HardwareBenchmarkLine line) => _out!.WriteLine(JsonSerializer.Serialize(line, Json));
 
-    // ----- The cards -----
+    // ----- Adapters -----
 
     /// <summary>
-    /// Every card DXGI lists (but the software renderer), its memory, the decoders its driver offers and the hardware encoders
-    /// Media Foundation has for it. Without <paramref name="decoderProfiles"/> (5.5A, the estimate) no Direct3D 11 device is made, so
-    /// no card's video driver is loaded: the decoders' list is then left empty.
+    /// Every DXGI adapter except the software renderer: memory, driver decode profiles and MF hardware encoders. Without
+    /// <paramref name="decoderProfiles"/> (the estimate) no D3D11 device is created, so no video driver loads and the decoder list stays empty.
     /// </summary>
     internal static List<HardwareBenchmarkAdapter> EnumerateAdapters(bool decoderProfiles = true)
     {
@@ -233,7 +229,7 @@ public static unsafe partial class HardwareBenchmark
 
         EncodersByAdapter(adapters);
 
-        // One physical card listed twice: the repeats point at the first listing.
+        // One physical adapter listed twice: repeats point at the first listing.
         foreach (var adapter in adapters)
         {
             var first = adapters.First(a => a.VendorId == adapter.VendorId && a.DeviceId == adapter.DeviceId);
@@ -252,7 +248,7 @@ public static unsafe partial class HardwareBenchmark
         (new("b8be4ccb-cf53-46ba-8d59-d6b8a6da5d2a"), "AV1"),
     ];
 
-    /// <summary>The decoders the card's driver offers (ID3D11VideoDevice::GetVideoDecoderProfile).</summary>
+    /// <summary>Decode profiles the adapter's driver exposes (ID3D11VideoDevice::GetVideoDecoderProfile).</summary>
     private static List<string> DecodeProfiles(nint adapter)
     {
         var codecs = new List<string>();
@@ -292,9 +288,8 @@ public static unsafe partial class HardwareBenchmark
     private static readonly (Guid Subtype, string Codec)[] EncodedCodecs = [(MfGuids.H264, "H.264"), (MfGuids.Hevc, "HEVC"), (MfGuids.Av1, "AV1")];
 
     /// <summary>
-    /// The hardware encoders Media Foundation has for each card: MFTEnum2 narrowed to its LUID (MFT_ENUM_ADAPTER_LUID). 5.5A: every
-    /// card's every codec listed at once (each listing waits about 20 ms on the drivers' registrations; the first-run estimate's time is
-    /// the slowest one's, not their sum), the codecs then put in their order.
+    /// MF hardware encoders per adapter: MFTEnum2 filtered by LUID (MFT_ENUM_ADAPTER_LUID). All adapter/codec pairs are enumerated in
+    /// parallel (each waits ~20 ms on driver registrations, so the estimate costs the slowest, not the sum), then sorted into codec order.
     /// </summary>
     private static void EncodersByAdapter(List<HardwareBenchmarkAdapter> adapters)
     {
@@ -317,7 +312,7 @@ public static unsafe partial class HardwareBenchmark
         }
     }
 
-    /// <summary>Whether Media Foundation lists a hardware encoder to <paramref name="subtype"/> on the card of <paramref name="luid"/>.</summary>
+    /// <summary>True when MF lists a hardware encoder for <paramref name="subtype"/> on adapter <paramref name="luid"/>.</summary>
     private static bool HasHardwareEncoder(long luid, Guid subtype)
     {
         nint attributes;
@@ -331,7 +326,7 @@ public static unsafe partial class HardwareBenchmark
         }
         catch (GpuException)
         {
-            // No encoders known for this card.
+            // No encoders registered for this adapter.
             return false;
         }
         finally
@@ -344,9 +339,8 @@ public static unsafe partial class HardwareBenchmark
         [(MfGuids.H264, "H.264"), (MfGuids.Hevc, "HEVC"), (MfGuids.Vp9, "VP9"), (MfGuids.Av1, "AV1")];
 
     /// <summary>
-    /// The codecs Media Foundation has a decoder for (MFTEnumEx over every kind: the card's, the processor's, the Store's
-    /// extensions): what the compositor's decoders can open without FFmpeg. A card's own decoder profiles (DecodeProfiles) are
-    /// not enough: Windows reaches the card's HEVC decoder only through the HEVC Video Extensions.
+    /// Codecs with an MF decoder of any kind (MFTEnumEx: hardware, software, Store extensions), i.e. what the compositor opens without FFmpeg.
+    /// Driver decode profiles (DecodeProfiles) are not enough: Windows reaches the hardware HEVC decoder only via the HEVC Video Extensions.
     /// </summary>
     internal static List<string> MediaFoundationDecoders()
     {
@@ -369,7 +363,7 @@ public static unsafe partial class HardwareBenchmark
         return codecs;
     }
 
-    /// <summary>How many Media Foundation decoders of every kind take <paramref name="subtype"/> (-1 when the call fails). Media Foundation started.</summary>
+    /// <summary>Number of MF decoders of any kind accepting <paramref name="subtype"/> (-1 on failure). Requires MF started.</summary>
     internal static int CountDecoders(Guid subtype)
     {
         var input = new MftRegisterTypeInfo { MajorType = MfGuids.Video, Subtype = subtype };
@@ -377,11 +371,10 @@ public static unsafe partial class HardwareBenchmark
     }
 
     /// <summary>
-    /// How many transforms MFTEnumEx (no <paramref name="attributes"/>) or MFTEnum2 lists, each let go and the array freed; -1 when the
-    /// call fails. The array is null and the count 0 before each call, and only an array the call gave is freed. Before, a local
-    /// declared in the loop kept the array freed on the pass before, and was freed again by a pass whose call left it as it was: a
-    /// heap corruption (0xC0000374) in the hardware benchmark every time on a Windows 11 IoT LTSC PC (no HEVC, VP9 or AV1 decoder), gone
-    /// with this (5.2E). Windows on ARM's MFTEnumEx nulls the pointer when it finds nothing.
+    /// Counts transforms listed by MFTEnumEx (no <paramref name="attributes"/>) or MFTEnum2, releasing each and freeing the array; -1 on
+    /// failure. The pointer and count are reset before every call and only a returned array is freed: reusing a stale pointer across calls
+    /// that leave it untouched caused a double free (heap corruption 0xC0000374) on systems lacking HEVC/VP9/AV1 decoders. Windows on ARM's
+    /// MFTEnumEx nulls the pointer when nothing is found.
     /// </summary>
     private static int CountMfts(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint attributes)
     {
@@ -403,13 +396,13 @@ public static unsafe partial class HardwareBenchmark
         return result < 0 ? -1 : (int)count;
     }
 
-    // FFmpeg's decoders for each codec (ffmpeg -decoders): its own, and dav1d for AV1 (FFmpeg's own AV1 decoder needs a card).
+    // FFmpeg decoder names per codec (ffmpeg -decoders): native ones, plus dav1d/libaom for AV1 (FFmpeg's native AV1 decoder needs a GPU).
     private static readonly (string Codec, string[] Decoders)[] FfmpegDecoders =
         [("H.264", new[] { "h264" }), ("HEVC", new[] { "hevc" }), ("VP9", new[] { "vp9", "libvpx-vp9" }), ("AV1", new[] { "libdav1d", "libaom-av1" })];
 
     /// <summary>
-    /// The codecs Media Foundation has no decoder for that the compositor's FFmpeg fallback decodes (FfmpegVideoDecoder), as the
-    /// FFmpeg the app uses lists its decoders; empty when none was given, it is not there, or it will not say.
+    /// Codecs without an MF decoder that the compositor's FFmpeg fallback (FfmpegVideoDecoder) can decode, per the app FFmpeg's decoder list;
+    /// empty when no FFmpeg was given, it is missing, or it fails to report.
     /// </summary>
     private static List<string> FfmpegFallbackCodecs(List<string> mediaFoundation)
     {
@@ -442,7 +435,7 @@ public static unsafe partial class HardwareBenchmark
             return codecs;
         }
 
-        // One decoder a line: " V....D hevc   HEVC (High Efficiency Video Coding)".
+        // One decoder per line: " V....D hevc   HEVC (High Efficiency Video Coding)".
         var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var line in listed.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
@@ -463,8 +456,8 @@ public static unsafe partial class HardwareBenchmark
     // ----- Decoding -----
 
     /// <summary>
-    /// The clip decoded front to back (frames per second), six seeks (median ms), and the frames at the accuracy points; with
-    /// <paramref name="quick"/> (5.5A, the first run's quick check) the frames per second only.
+    /// Decodes the clip start to end (fps), runs six seeks (median ms) and reads back the frames at the accuracy points; with
+    /// <paramref name="quick"/> (first-run quick check) fps only.
     /// </summary>
     private static (double Fps, double SeekMs, byte[][]? Frames) DecodeRun(GpuDevice gpu, string clip, bool hardware, out int frameCount, bool quick = false)
     {
@@ -509,7 +502,7 @@ public static unsafe partial class HardwareBenchmark
         return (fps, (seeks[2] + seeks[3]) / 2, frames);
     }
 
-    /// <summary>Waits for the card to finish what it was given (an event query).</summary>
+    /// <summary>Waits for the GPU to drain submitted work (event query).</summary>
     private static void Finish(GpuDevice gpu)
     {
         var query = gpu.Device.CreateQuery(D3D11.QueryEvent);
@@ -526,7 +519,7 @@ public static unsafe partial class HardwareBenchmark
         }
     }
 
-    /// <summary>The card's frames against the processor's: PSNR over every plane, SSIM over luma, bit-exactness.</summary>
+    /// <summary>Compares GPU frames to the CPU reference: PSNR over all planes, luma SSIM, bit-exactness.</summary>
     private static void Compare(HardwareBenchmarkAdapter adapter, byte[][] reference, byte[][] frames)
     {
         double squared = 0;
@@ -591,9 +584,9 @@ public static unsafe partial class HardwareBenchmark
         return blocks > 0 ? total / blocks : 0;
     }
 
-    // ----- The bus -----
+    // ----- Bus -----
 
-    /// <summary>A 1080p BGRA frame (8 MB) read back and uploaded, eight times each: MB/s both ways.</summary>
+    /// <summary>Reads back and uploads a 1080p BGRA frame (8 MB) eight times each: MB/s in both directions.</summary>
     private static (double Readback, double Upload) Bus(GpuDevice gpu)
     {
         const int width = 1920, height = 1080, rounds = 8;
@@ -631,7 +624,7 @@ public static unsafe partial class HardwareBenchmark
         }
     }
 
-    /// <summary>Decoding on the second card, every frame carried to the first over the bus, against decoding on the first.</summary>
+    /// <summary>Decoding on the second adapter with every frame copied to the first over the bus, vs. decoding on the first.</summary>
     private static HardwareBenchmarkCrossAdapter CrossAdapter(string clip, List<HardwareBenchmarkAdapter> hardware)
     {
         var cards = hardware.Where(a => a.SameCardAs < 0).ToList();
@@ -694,9 +687,9 @@ public static unsafe partial class HardwareBenchmark
         }
     }
 
-    // ----- The roles -----
+    // ----- Roles -----
 
-    /// <summary>The four roles the measurements point to, each with its reason.</summary>
+    /// <summary>The four recommended roles from the measurements, each with its reason.</summary>
     public static HardwareBenchmarkRoles Recommend(HardwareBenchmarkResult result)
     {
         var roles = new HardwareBenchmarkRoles();
@@ -711,17 +704,17 @@ public static unsafe partial class HardwareBenchmark
         roles.Compositor = compositor.Index;
         roles.Reasons.Add($"Compositor: {compositor.Name}, the card with the most video memory ({compositor.DedicatedVideoMemoryMb:N0} MB).");
 
-        // 5.4.4 (the user's standing rule, CLAUDE.md 8): Decode and Background stay Auto, the Compositor GPU, whatever a second card measured.
-        // Strip workers and decodes on the Desktop's Arc A310 beside its RX 7900 XTX ended in 0x116 VIDEO_TDR_FAILURE in the Arc's driver; a
-        // second card is the user's to pick in Settings, never the test's.
+        // Decode and Background stay Auto (the compositor GPU) whatever a secondary adapter measured: strip workers and decodes on a
+        // secondary Intel Arc beside an RX 7900 XTX caused 0x116 VIDEO_TDR_FAILURE in the Arc driver. A secondary adapter is chosen only
+        // manually in Settings.
         roles.Decode = -1;
         roles.Reasons.Add(result.CrossAdapter is { CrossIsFaster: true } cross
             ? $"Decode: Auto, the compositor's card. Card {cross.DecodeAdapter} decoding across the bus measured faster ({cross.CrossDecodeFps:0} against {cross.LocalDecodeFps:0} fps), but a second card is never chosen for you: pick it here if you want it."
-            // 5.5A: the first-run window's estimate measures nothing (the same roles, the decoding measured next), and its quick check
-            // without a test clip (no FFmpeg yet) measures the bus only.
+            // The first-run estimate measures nothing (same roles, decoding measured next); its quick check without a test clip
+            // (no FFmpeg yet) measures only the bus.
             : result.Kind == HardwareBenchmarkResult.KindEstimate
                 ? "Decode: Auto, the compositor's card (measured next)."
-            // The full test without a test clip (no FFmpeg yet) measures the bus and the compositor only, as the quick check does.
+            // The full test without a test clip (no FFmpeg yet) measures only bus and compositor, like the quick check.
             : result.Kind != HardwareBenchmarkResult.KindEstimate && !compositor.DecodesInHardware && result.Clip.Length == 0
                 ? "Decode: Auto, the compositor's card (its decoding is measured once FFmpeg is here)."
             : compositor.DecodesInHardware
@@ -736,9 +729,9 @@ public static unsafe partial class HardwareBenchmark
             : "Background: Auto, the compositor's card.");
 
         static int Score(HardwareBenchmarkAdapter a) => (a.EncodeCodecs.Contains("AV1") ? 4 : 0) + (a.EncodeCodecs.Contains("HEVC") ? 2 : 0) + (a.EncodeCodecs.Contains("H.264") ? 1 : 0);
-        // Since 5.4C the Export GPU is where exports are composited (GpuExport.ExportAdapter), so the compositor's card keeps it on a tie
-        // (a 7900 XTX and an A310 both encode AV1, HEVC and H.264): another card takes it only when it encodes more in hardware, and the
-        // compositor's own card is written as Auto (5.4C review).
+        // Exports are composited on the Export GPU (GpuExport.ExportAdapter), so the compositor adapter wins ties (e.g. two adapters both
+        // encoding AV1, HEVC and H.264); another adapter is chosen only when it encodes more codecs in hardware, and the compositor's own
+        // adapter is stored as Auto.
         var encoder = working.Where(a => a.EncodeCodecs.Count > 0).OrderByDescending(Score).ThenBy(a => a == compositor ? 0 : 1).ThenBy(a => a.Index).FirstOrDefault();
         roles.Export = encoder is not null && encoder != compositor ? encoder.Index : -1;
         roles.Reasons.Add(encoder is null

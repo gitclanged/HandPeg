@@ -21,8 +21,7 @@ public partial class MainViewModel
     /// <summary>Whether the caption options can be set: always, since Generate Captions uses them too.</summary>
     public bool CaptionOptionsEnabled => true;
 
-    // What captions listen to: one of the video's own audio tracks (when neither of these is set), a
-    // separate audio file, or the voiceover recorded in the mixer pane.
+    // Caption audio source: a video audio track (when neither flag is set), a separate audio file, or the mixer voiceover.
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CaptionUseVideoAudio))]
     private bool _captionUseExternalAudio;
@@ -31,7 +30,7 @@ public partial class MainViewModel
     [NotifyPropertyChangedFor(nameof(CaptionUseVideoAudio))]
     private bool _captionUseVoiceover;
 
-    /// <summary>The first of the three radio buttons: neither of the others.</summary>
+    /// <summary>First radio button: use a video audio track (neither alternative selected).</summary>
     public bool CaptionUseVideoAudio
     {
         get => !CaptionUseExternalAudio && !CaptionUseVoiceover;
@@ -75,10 +74,7 @@ public partial class MainViewModel
 
     // ----- The caption box -----
 
-    /// <summary>
-    /// Where the captions are drawn on the output frame: a layer like the layers, placed and sized on the
-    /// Edit Layout canvas, and always the top one.
-    /// </summary>
+    /// <summary>Caption box on the output frame: a pseudo-layer placed and sized on the Edit Layout canvas.</summary>
     public Layer CaptionLayer { get; } = CreateCaptionLayer();
 
     private static Layer CreateCaptionLayer() => new()
@@ -92,7 +88,7 @@ public partial class MainViewModel
         SizeHeight = DefaultCaptionHeight,
     };
 
-    // The lower part of the frame, nearly its whole width.
+    // Default box: lower frame area, nearly full width.
     private const double DefaultCaptionX = 0.05;
     private const double DefaultCaptionY = 0.70;
     private const double DefaultCaptionWidth = 0.90;
@@ -105,7 +101,7 @@ public partial class MainViewModel
         CaptionLayer.SizeHeight = state is { SizeHeight: > 0 } ? state.SizeHeight : DefaultCaptionHeight;
         CaptionLayer.Opacity = Math.Clamp(state?.Opacity ?? 100, 0, 100);
 
-        // The same style a picture has: corners, soft edges and a drop shadow.
+        // Same box styling as pictures: corners, feather and drop shadow.
         (CaptionLayer.CornerRadius, CaptionLayer.Feather) = (Math.Clamp(state?.CornerRadius ?? 0, 0, 50), state?.Feather ?? false);
         CaptionLayer.FeatherRadius = state?.FeatherRadius ?? 12;
         CaptionLayer.TakeShadow(state);
@@ -115,14 +111,14 @@ public partial class MainViewModel
     [RelayCommand]
     private void ResetCaptionLayer() => SetCaptionLayer(null);
 
-    // ----- The captions' place in the stack (5.1-Polish, the user's Q2) -----
+    // ----- Caption stacking position -----
 
     /// <summary>The tracks the captions can be put under: those with pictures (or an adjustment's), bottom first.</summary>
     private List<TimelineTrackModel> CaptionPlaces() => [.. Document.Tracks.Where(t => t.Kind is not (TimelineTrackKind.Audio or TimelineTrackKind.Subtitle))];
 
     /// <summary>
-    /// Where the captions are in the stack: under the picture track at this index (<see cref="CaptionPlaces"/>, the bottom 0),
-    /// or, at their count, over everything (the fades too), where they always were.
+    /// Caption stack position: under the picture track at this index of <see cref="CaptionPlaces"/> (0 = bottom), or at its count,
+    /// over everything including fades (the default).
     /// </summary>
     public int CaptionsPlace
     {
@@ -134,9 +130,9 @@ public partial class MainViewModel
         }
     }
 
-    // ----- Strict order (5.1-TrackEqualityAndVram, the user's directive): the timeline's order top to bottom is the stack's -----
+    // ----- Strict order: timeline order top to bottom equals compositing order -----
 
-    // The next track up from a track and all under it: what captions drawn right over them lie beneath; null for none.
+    // The next track above a track's subtree (captions directly over it sit beneath this); null for none.
     private TimelineTrackModel? TrackAboveFamilyOf(TimelineTrackModel track)
     {
         var family = new HashSet<Guid> { track.Id };
@@ -152,7 +148,7 @@ public partial class MainViewModel
         return last >= 0 && last + 1 < places.Count ? places[last + 1] : null;
     }
 
-    /// <summary>Captions just made go right over the track they were heard on: as their row sits on the timeline, so they are drawn. No step of Undo: the one that made them.</summary>
+    /// <summary>Places new captions directly above their source track (row order = draw order). No undo step of its own.</summary>
     private void PlaceCaptionsOverTheirTrack()
     {
         if (CaptionAnchorTrackId is not { } id || Document.Tracks.Find(t => t.Id == id) is not { } anchor)
@@ -163,19 +159,19 @@ public partial class MainViewModel
             Edit("place the captions over their track", edit => edit.SetCaptionsUnder(above), undoable: false);
     }
 
-    /// <summary>Whether the captions are drawn right over the track they follow: their row is then that track's child; moved anywhere else, their row goes where they are drawn.</summary>
+    /// <summary>Whether captions sit directly above their source track (row shown as its child); elsewhere the row follows the draw position.</summary>
     public bool CaptionsAreOverTheirTrack =>
         CaptionAnchorTrackId is { } id && Document.Tracks.Find(t => t.Id == id) is { } anchor && ReferenceEquals(TrackAboveFamilyOf(anchor), Document.CaptionsUnderTrack);
 
-    /// <summary>A track's place among those the captions can be put under (<see cref="CaptionsPlace"/>); -1 for one they cannot (a sound's).</summary>
+    /// <summary>A track's index among valid caption positions (<see cref="CaptionsPlace"/>); -1 for audio tracks.</summary>
     public int CaptionPlaceOf(TimelineTrackModel track) => CaptionPlaces().IndexOf(track);
 
     /// <summary>Whether the captions are over everything (no track has them under it).</summary>
     public bool CaptionsOnTop => CaptionsPlace >= CaptionPlaces().Count;
 
     /// <summary>
-    /// Puts the captions under the picture track at <paramref name="place"/> (<see cref="CaptionsPlace"/>; the count or more:
-    /// over everything), one undo step. False when they are there already, or the edit was refused.
+    /// Moves captions under the picture track at <paramref name="place"/> (<see cref="CaptionsPlace"/>; count or more = top). One undo
+    /// step; false if unchanged or refused.
     /// </summary>
     public bool PutCaptionsAt(int place, string label)
     {
@@ -187,11 +183,11 @@ public partial class MainViewModel
         return Edit(label, edit => edit.SetCaptionsUnder(track));
     }
 
-    /// <summary>Puts the captions right under a track (null: over everything), as the 3D view's lift does: one undo step.</summary>
+    /// <summary>Moves captions directly under a track (null = top), as the 3D view lift does. One undo step.</summary>
     public bool PutCaptionsUnder(TimelineTrackModel? track, string label) =>
         track is null ? PutCaptionsAt(int.MaxValue, label) : CaptionPlaces().IndexOf(track) is >= 0 and var at && PutCaptionsAt(at, label);
 
-    /// <summary>The captions a track forward (towards the front, <paramref name="step"/> 1) or back (-1) in the stack.</summary>
+    /// <summary>Moves captions one track up (<paramref name="step"/> 1) or down (-1) in the stack.</summary>
     public bool MoveCaptionsInStack(int step)
     {
         var moved = PutCaptionsAt(CaptionsPlace + Math.Sign(step), step > 0 ? "bring the captions forward" : "send the captions back");
@@ -209,7 +205,7 @@ public partial class MainViewModel
             : $"The captions are under {places[place].DisplayName} and everything over it, over {(place > 0 ? places[place - 1].DisplayName : "the background")}.";
     }
 
-    /// <summary>The layout pane always has something to show: the frame every clip is composed on (5.2-AuditB: there is no other way to compose it).</summary>
+    /// <summary>The layout pane always shows the output frame all clips are composited onto.</summary>
     public bool CanEditLayout => true;
 
     partial void OnAutoCaptionsChanged(bool value)
@@ -220,7 +216,7 @@ public partial class MainViewModel
         SyncEditorCaptions();
     }
 
-    /// <summary>The caption box on an output frame of the given size, in pixels, with even sides as a video frame needs.</summary>
+    /// <summary>Caption box in pixels for a given output size, with even sides.</summary>
     private (int X, int Y, int Width, int Height) GetCaptionRect(int frameWidth, int frameHeight)
     {
         var (x, y, width, height) = CaptionLayer.GetOutputRect(frameWidth, frameHeight, 0, 0);
@@ -231,9 +227,8 @@ public partial class MainViewModel
     [ObservableProperty] private string _captionAudioPath = "";
 
     /// <summary>
-    /// A sound clip has just been marked as the voice (its Voiceover / Dialogue tick, 4.4; a stream found by its name on loading,
-    /// 4.3E), or unmarked: marked, Auto-Captions listen to it from now on (a separate file or the voiceover, chosen in the
-    /// Auto-Captions dialog, stays chosen); unmarked, the choice of it goes, and they fall back to what is set.
+    /// Handles a clip's voice mark (Voiceover / Dialogue tick, or a stream detected by name on load): marked becomes the caption
+    /// source unless a separate file or voiceover is chosen; unmarked clears that choice and falls back to the defaults.
     /// </summary>
     private void ListenToVoice(Layer clip)
     {
@@ -260,9 +255,8 @@ public partial class MainViewModel
         CaptionStyle = style;
         OnPropertyChanged(nameof(CaptionStyleSummary));
 
-        // The player shows the style the captions have now (5.4.1A): the style is no observable property, so the player is told
-        // here whenever it draws captions (Burn Captions on). Only the preview-only transcription is made again, once the
-        // changes stop (the words are kept; the lines are broken by the style's word count).
+        // Style is not observable, so notify the player here whenever it draws captions (Burn Captions on). Only the preview
+        // transcription is rebuilt once changes settle (words are cached; lines re-break by the style's word count).
         if (AutoCaptions && !_isBackgroundWorker)
             CaptionsChanged?.Invoke();
         if (PreviewSubtitles && !HasTextCues)
@@ -270,20 +264,16 @@ public partial class MainViewModel
     }
 
     // ----- Preview Subtitles -----
-    // The captions as they will be drawn, over the picture in the player: the words whisper heard, in the
-    // style that is set, in the caption box where it sits, timed to the sequence as it plays (cuts and all).
-    //
-    // The GPU preview draws them from the words themselves (GpuCaptions: TextRasterizer draws each cue as the export's
-    // libass draws its file), so nothing is written for it: making them transcribes the words the first time (they are
-    // kept after), and CaptionsChanged tells the preview to take them again.
+    // Player overlay of styled captions in the caption box, timed to the sequence including cuts.
+    // The GPU preview rasterizes cues directly (GpuCaptions -> TextRasterizer, same as export), so no file is written; the first
+    // build transcribes (words are cached) and CaptionsChanged makes the preview re-read them.
 
-    /// <summary>Whether the player draws the styled captions. Switching it on makes them first, which takes a transcription the first time.</summary>
+    /// <summary>Whether the player draws styled captions; enabling builds them (first time transcribes).</summary>
     [ObservableProperty] private bool _previewSubtitles;
 
     /// <summary>
-    /// Raised on the UI thread when what the player draws of the captions or the subtitle track changed (the track's cues or the
-    /// caption style changed (5.4.1A), the captions made again, Preview Subtitles switched off, the picture track's pictures read or
-    /// paired again): the GPU preview takes <see cref="GpuCaptions"/> and <see cref="PreviewPictureSubtitles"/> again.
+    /// Raised on the UI thread when drawn captions or subtitles change (cues, style, rebuild, Preview Subtitles off, picture
+    /// subtitles re-read); the GPU preview re-reads <see cref="GpuCaptions"/> and <see cref="PreviewPictureSubtitles"/>.
     /// </summary>
     public event Action? CaptionsChanged;
 
@@ -301,7 +291,7 @@ public partial class MainViewModel
 
     private CancellationTokenSource? _liveCaptionsWait;
 
-    /// <summary>Makes the previewed captions again once the caption box has stopped being moved, resized or restyled.</summary>
+    /// <summary>Debounced rebuild of preview captions after caption box move, resize or restyle.</summary>
     private void RefreshLiveCaptionsSoon() => Faults.Forget(RefreshLiveCaptionsSoonAsync(), nameof(RefreshLiveCaptionsSoon));
 
     private async Task RefreshLiveCaptionsSoonAsync()
@@ -315,12 +305,12 @@ public partial class MainViewModel
         }
         catch (OperationCanceledException)
         {
-            // Changed again: the later change makes them.
+            // Superseded by a later change.
         }
     }
 
-    /// <summary>Makes the previewed captions again (the words are kept, so only the first time transcribes) and has the player draw them.</summary>
-    /// <param name="asked">Whether the button was pressed. A refresh that follows a change of style or size is simply skipped while something else is running.</param>
+    /// <summary>Rebuilds preview captions (cached words; only the first run transcribes) and shows them in the player.</summary>
+    /// <param name="asked">True for an explicit button press; style/size refreshes are skipped while another operation runs.</param>
     private async Task RefreshLiveCaptionsAsync(bool asked = true)
     {
         if (_isBackgroundWorker || (!asked && (IsBusy || !PreviewSubtitles)))
@@ -338,7 +328,7 @@ public partial class MainViewModel
 
         const string shown = "Subtitles preview on: the player draws the captions over the picture as they are styled.";
 
-        // A subtitle track with words is what the captions say: the player draws its cues as they stand, nothing is heard.
+        // A subtitle track with words takes precedence: draw its cues as-is, no transcription.
         if (HasTextCues)
         {
             CaptionsChanged?.Invoke();
@@ -361,9 +351,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The captions the player draws when there is no subtitle track with words: what they listen to, transcribed with
-    /// whisper.cpp (or as it was kept from the last time), shown through every clip that plays it, on the sequence's clock
-    /// (what the caption row shows too). Returns null, or what went wrong.
+    /// Builds player captions when no subtitle track has words: transcribes the source with whisper.cpp (or uses the cache) and
+    /// projects through every clip playing it on the sequence clock. Returns null or an error message.
     /// </summary>
     private async Task<string?> HearPreviewCaptionsAsync(CancellationToken cancellationToken)
     {
@@ -379,10 +368,10 @@ public partial class MainViewModel
         return null;
     }
 
-    /// <summary>The subtitle file the encode draws. Rewritten by every encode that uses captions.</summary>
+    /// <summary>Caption hand-off file for the export (GpuExport reads its words); rewritten by every captioned encode.</summary>
     public string CaptionsFilePath => Path.Combine(_workFolder, "captions.ass");
 
-    /// <summary>What stands between the user and captions, if anything.</summary>
+    /// <summary>Reason captions are unavailable, or null.</summary>
     public string CaptionHint
     {
         get
@@ -411,19 +400,17 @@ public partial class MainViewModel
         }
     }
 
-    // Whether the export draws captions (5.2-Audit: the compositor draws them from the caption file's words, wherever the command
-    // was edited; no command names the file any more): Auto-Captions on, and a picture drawn (not a Copy export).
-    // An Audio Only export (5.4C) has no picture to draw them on: none.
+    // Whether the export burns captions (the compositor draws the caption file's words; the command never names the file):
+    // Auto-Captions on and a rendered picture (not Copy, not Audio Only).
     private bool CommandUsesCaptions(string command) =>
         AutoCaptions && command.Length > 0 && !IsAudioOnlyExport && !(VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput);
 
-    // Transcribing is the slow part, and the words do not change when only the style does. So the words are
-    // kept, by what was listened to and with which model.
+    // Transcription cache keyed by source and model: style changes reuse the words.
     private readonly Dictionary<string, List<CaptionWord>> _captionWords = [];
 
     /// <summary>
-    /// Makes the caption file a command is about to draw, when it draws one. Returns a message when
-    /// captions are wanted but cannot be made; null when all is well (or no captions are involved).
+    /// Writes the caption file before an export that burns captions. Returns an error message when captions are required but
+    /// cannot be made; null otherwise.
     /// </summary>
     private async Task<string?> PrepareCaptionsForEncodeAsync(string command, CancellationToken cancellationToken)
     {
@@ -439,14 +426,13 @@ public partial class MainViewModel
         return await PrepareCaptionsAsync(CaptionsFilePath, cancellationToken);
     }
 
-    // ----- What captions listen to, and where they are on the timeline (4.4) -----
+    // ----- Caption source and timeline projection -----
 
-    // The source last chosen by hand (the Auto-Captions dialog, a track's or a clip's menu); null to follow the defaults.
+    // Manually chosen source (Auto-Captions dialog, track or clip menu); null follows the defaults.
     private CaptionSource? _captionSourceChoice;
 
     /// <summary>
-    /// Makes a source what Auto-Captions listen to from now on: the voiceover and an external file through their switches
-    /// (which a project keeps), a clip's file and stream as the choice made by hand.
+    /// Sets the caption source: voiceover and external file via their persisted switches; a clip's file and stream as the manual choice.
     /// </summary>
     public void ChooseCaptionSource(CaptionSource source)
     {
@@ -470,11 +456,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// What captions are made from, for the request given: a stream of the file last opened (<see cref="AudioTrack"/>), a clip with
-    /// sound (<see cref="Layer"/>), a <see cref="CaptionSource"/>, or null for what is set. With nothing given: the voiceover or the
-    /// external file when switched to; else the source last chosen by hand; else what the captions on the timeline were made
-    /// from; else a sound clip marked as the voice (4.4); else the first stream of the video clip at the playhead (or the selected
-    /// one: <see cref="ListenedSound"/>, 5.2-AuditB). Null when there is nothing to listen to.
+    /// Resolves the caption source from a request (<see cref="AudioTrack"/>, <see cref="Layer"/>, <see cref="CaptionSource"/>) or, with
+    /// none: voiceover/external file if switched on; else the manual choice; else the existing captions' source; else a voice-marked
+    /// clip; else the first stream of the playhead/selected video (<see cref="ListenedSound"/>). Null when nothing is available.
     /// </summary>
     public CaptionSource? ResolveCaptionSource(object? requested = null)
     {
@@ -494,7 +478,7 @@ public partial class MainViewModel
             return new CaptionSource(CaptionSourceKind.Voiceover, VoiceoverPath, 0);
         if (CaptionUseExternalAudio)
         {
-            // A file the timeline plays as clips of its own is followed through them.
+            // A file played as clips is projected through those clips.
             var external = CaptionAudioPath.Trim().Trim('"');
             var clip = new CaptionSource(CaptionSourceKind.Clip, external, 0);
             return PlaysCaptionSource(clip) ? clip : new CaptionSource(CaptionSourceKind.External, external, 0);
@@ -505,11 +489,11 @@ public partial class MainViewModel
         if (_captionAnchorSource is { } anchored && PlaysCaptionSource(anchored))
             return anchored;
 
-        // The sound marked as the voice, else the first stream of the video at the playhead (or the selected one).
+        // Voice-marked audio, else the first stream of the playhead (or selected) video.
         return ListenedSound() is var (path, stream) ? new CaptionSource(CaptionSourceKind.Clip, path, stream) : null;
     }
 
-    /// <summary>What Auto-Captions listen to now, in a few words: for the Auto-Captions dialog and the track header's tooltip.</summary>
+    /// <summary>Short description of the current caption source (Auto-Captions dialog, track header tooltip).</summary>
     public string CaptionSourceSummary => ResolveCaptionSource() is { } source ? DescribeCaptionSource(source) : "Nothing to listen to yet.";
 
     /// <summary>A source in a few words.</summary>
@@ -521,7 +505,7 @@ public partial class MainViewModel
         _ => CaptionLaneOf(source) is { Name.Length: > 0 } lane ? $"{Path.GetFileName(source.Path)}: {lane.Name}" : $"Sound clip: {Path.GetFileName(source.Path)}",
     };
 
-    /// <summary>Whether something on the timeline still plays a source: a clip of its file, the voiceover.</summary>
+    /// <summary>Whether the timeline still plays a source (a clip of its file, or the voiceover).</summary>
     private bool PlaysCaptionSource(CaptionSource source) => source.Kind switch
     {
         CaptionSourceKind.External => source.Path.Length > 0,
@@ -530,17 +514,16 @@ public partial class MainViewModel
     };
 
     /// <summary>
-    /// The clips that play a source's file: with sound from its stream (a file's streams on lanes of their own play at one moment
-    /// each: one is the source), or, for stream -1, its picture (5.2-AuditB: a top-level video clip of it).
+    /// Clips playing a source: those whose audio comes from its stream (stream lanes each carry one), or for stream -1 its
+    /// top-level picture clips.
     /// </summary>
     private IEnumerable<(TimelineTrackModel Track, TimelineClip Clip)> CaptionClips(CaptionSource source) => source.Stream < 0
         ? Document.Tracks.SelectMany(t => t.Clips.Where(c => c is { ContentKind: LayerKind.VideoFile, ParentClipId: null } && SameFile(c.SourcePath, source.Path)).Select(c => (t, c)))
         : Document.Tracks.SelectMany(t => t.Clips.Where(c => c.HasSound && SameFile(c.SourcePath, source.Path) && Math.Max(c.AudioStreamIndex, 0) == source.Stream).Select(c => (t, c)));
 
     /// <summary>
-    /// Every window of the timeline that plays a source, in order (4.4): the clips of a file for a clip's source (each with its J and
-    /// L cut and its slip while unlinked; for stream -1, the shown pictures of the file, SequenceSpans), where the voiceover is
-    /// placed for it, and the timeline's own clock for an external recording.
+    /// Ordered timeline windows playing a source: its file's clips (with J/L cuts and unlinked slip; stream -1 uses visible picture
+    /// spans), the voiceover placement, or the timeline clock for an external recording.
     /// </summary>
     private List<CaptionSpan> CaptionSpans(CaptionSource source)
     {
@@ -569,7 +552,7 @@ public partial class MainViewModel
         return spans;
     }
 
-    /// <summary>A clip's window onto its file: its picture's, or its sound's (with its J or L cut, its slip while unlinked, and the stream's own slip).</summary>
+    /// <summary>A clip's window onto its file: picture span, or audio span including J/L cut, unlinked slip and stream slip.</summary>
     private static CaptionSpan SpanOf(TimelineClip clip, bool sound, double slip)
     {
         var speed = clip.Speed > 0 ? clip.Speed : 1;
@@ -579,7 +562,7 @@ public partial class MainViewModel
         return new CaptionSpan(start + shift, Math.Max(clip.End + tail, start) + shift, clip.MediaOffset - lead * speed, speed);
     }
 
-    /// <summary>How long a source is, in its own seconds; 0 when it is not known.</summary>
+    /// <summary>Source duration in seconds; 0 when unknown.</summary>
     private double CaptionSourceSeconds(CaptionSource source) => source.Kind switch
     {
         CaptionSourceKind.Clip => CaptionClips(source).Select(c => c.Clip.SourceDuration).DefaultIfEmpty(0).Max(),
@@ -587,24 +570,22 @@ public partial class MainViewModel
         _ => 0,
     };
 
-    /// <summary>The document track the captions follow (4.4): the first clip's that plays their source; null for none.</summary>
+    /// <summary>The track captions follow: that of the first clip playing their source; null when none.</summary>
     public Guid? CaptionAnchorTrackId => _captionAnchorSource switch
     {
-        // (A stream's lane speaks for the video's track it is under: the captions go in that one's stack.)
+        // A stream lane resolves to its parent video track, so captions join that track's stack.
         { Kind: CaptionSourceKind.Clip } source => CaptionClips(source).OrderBy(c => c.Clip.Start).Select(c => (Guid?)(c.Track.Kind == TimelineTrackKind.Audio ? c.Track.ParentTrackId ?? c.Track.Id : c.Track.Id)).FirstOrDefault(),
         _ => null,
     };
 
     /// <summary>
-    /// The pipeline: extract the audio that will be heard as a 16 kHz mono wave file, transcribe it with whisper.cpp, show
-    /// its words on the timeline through the clips that play them, and write them as an ASS file in the chosen style, for
-    /// the caption box, which is how the export's graph draws it. A subtitle track with words is written as it stands
-    /// instead. Returns null, or what went wrong. The whole sequence, on its own clock (5.4.1A: the stretches and the offset only
-    /// Render Preview asked for went with it).
+    /// Caption pipeline over the whole sequence: extract 16 kHz mono WAV, transcribe with whisper.cpp, project words through playing
+    /// clips, and write the styled ASS hand-off file for the caption box (a subtitle track with words is written as-is).
+    /// Returns null or an error message.
     /// </summary>
     private async Task<string?> PrepareCaptionsAsync(string assPath, CancellationToken cancellationToken)
     {
-        // A subtitle track with words is what the captions say: nothing is listened to.
+        // A subtitle track with words takes precedence: no transcription.
         if (HasTextCues)
         {
             var cues = CaptionProjection.ToOutputClock(GetCueCaptions(), [], 0);
@@ -620,7 +601,7 @@ public partial class MainViewModel
         if (words is null)
             return problem;
 
-        // Heard in the source's time; shown through every clip that plays it, on the sequence's clock.
+        // Words are in source time; project through every playing clip onto the sequence clock.
         var lines = CaptionProjection.ProjectLines(words, CaptionSpans(source), CaptionStyle);
         var output = CaptionProjection.ToOutputClock(lines, [], 0);
         WriteCaptionFile(output.SelectMany(l => l).ToList(), output, assPath, 0);
@@ -629,8 +610,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The words spoken in a source, in its own time, transcribed with whisper.cpp (or as they were kept from the last time);
-    /// or why they could not be. Only the stretches the timeline plays are listened to, with a little around them.
+    /// Transcribed words of a source in source time (whisper.cpp or cache), or an error. Only timeline-played ranges plus padding are transcribed.
     /// </summary>
     private async Task<(List<CaptionWord>? Words, string? Problem)> GetCaptionWordsAsync(CaptionSource source, CancellationToken cancellationToken)
     {
@@ -639,9 +619,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Everything a transcription takes, gathered now and without listening to anything: what is heard, how
-    /// whisper is set, the clips the words are shown through, and the style and size the words are written in. Run at once
-    /// by an export; kept by a queued job until it runs. Returns the reason instead when captions cannot be made from the source.
+    /// Captures a transcription job without running it: audio source, whisper settings, projection clips, style and size. Run
+    /// immediately by exports, deferred by queued jobs. Returns the failure reason when the source cannot be captioned.
     /// </summary>
     private (CaptionJob? Job, string? Problem) CreateCaptionJob(CaptionSource source, string assPath, double timeOffset)
     {
@@ -652,7 +631,7 @@ public partial class MainViewModel
         if (!File.Exists(modelPath))
             return (null, $"Auto-captions need the speech model {AppSettings.Current.WhisperModel}: download it in Settings (Tools).");
 
-        // What to listen to: one of the video's tracks, a clip's file, a separate file, or the voiceover; and which of it.
+        // Audio input: a video track, a clip's file, a separate file or the voiceover, plus its range.
         var spans = CaptionSpans(source);
         var audioPath = source.Path;
         var trackIndex = Math.Max(source.Stream, 0);
@@ -664,7 +643,7 @@ public partial class MainViewModel
                     return (null, "Auto-captions are set to the Recorded Voiceover Track, but there is no voiceover yet (Voiceover Studio, on the Audio tab).");
                 audioPath = VoiceoverPath;
 
-                // The part of the recording between its trim handles is all that is heard, as it is all that is mixed in.
+                // Only the trimmed range is transcribed, matching what is mixed.
                 var (start, end) = (Math.Max(VoiceoverTrimStart, 0), Math.Min(VoiceoverTrimEnd, VoiceoverDuration));
                 ranges = start < 0.05 && end > VoiceoverDuration - 0.05 || end - start < 0.1 ? [] : [(start, end)];
                 break;
@@ -675,8 +654,7 @@ public partial class MainViewModel
                 if (!File.Exists(audioPath))
                     return (null, $"The external audio file for captions was not found: {audioPath}");
                 break;
-            // A file the timeline plays as clips is heard whole (4.4): its words are kept in its own time, so the same
-            // transcription serves every cut, trim, fold and undo after it, and a stretch put back brings its words back.
+            // Transcribe clip-played files whole in source time so one transcription survives later cuts, trims, folds and undo.
             default:
                 if (spans.Count == 0)
                     return (null, $"{Path.GetFileName(source.Path)} is not on the timeline any more: there is nothing of it to make captions for.");
@@ -685,26 +663,25 @@ public partial class MainViewModel
                 break;
         }
 
-        // Written for the caption box, as an export draws it: see WriteCaptionFile.
+        // Sized for the caption box (WriteCaptionFile).
         var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
         var (_, _, width, height) = GetCaptionRect(frameWidth, frameHeight);
         var textScale = Math.Min(frameWidth, frameHeight) / 1080.0 * (height / (DefaultCaptionHeight * frameHeight));
 
-        // How whisper decodes and what counts as silence, from the settings as they are now.
+        // Snapshot whisper decoding and silence settings.
         return (new CaptionJob(audioPath, trackIndex, ranges, modelPath, WhisperLanguage, WhisperPrompt.Trim(), WhisperTranslate,
             AppSettings.Current.UseVad, WhisperOptions.FromSettings(AppSettings.Current), CaptionStyle.Clone(), width, height, textScale, timeOffset, assPath,
             spans), null);
     }
 
     /// <summary>
-    /// Listens: extracts what the job names as a 16 kHz mono wave file and has whisper.cpp find the words in
-    /// it, or takes them as they were kept from the last time the same thing was heard the same way.
+    /// Runs a transcription job: extracts 16 kHz mono WAV and runs whisper.cpp, or returns cached words for an identical job.
     /// </summary>
-    /// <param name="label">What the status bar calls the step: "Captions" for an export, the job's name for the queue.</param>
-    /// <param name="onPercent">Told how far through the sound whisper is, as well as the progress bar.</param>
+    /// <param name="label">Status bar step label: "Captions" for exports, the job name for the queue.</param>
+    /// <param name="onPercent">Progress callback (percent through the audio), in addition to the progress bar.</param>
     private async Task<List<CaptionWord>> HearCaptionsAsync(CaptionJob job, CancellationToken cancellationToken, string label = "Captions", Action<double>? onPercent = null)
     {
-        // A job that waited in the queue may find that what it was to use has gone since.
+        // Queued jobs may find their inputs gone.
         if (!File.Exists(DependencyUpdater.WhisperPath))
             throw new InvalidOperationException("whisper.cpp is not installed any more: see Settings (Tools & Backup).");
         if (!File.Exists(job.ModelPath))
@@ -712,13 +689,12 @@ public partial class MainViewModel
         if (!File.Exists(job.AudioPath))
             throw new InvalidOperationException($"the audio to transcribe was not found: {job.AudioPath}");
 
-        // Voice activity detection: whisper is only handed the stretches with speech in them, so it has no
-        // silence to make words up for. Used whenever its model is there and this whisper.exe knows the option.
+        // VAD: feed whisper only speech so it cannot hallucinate over silence; used when the model exists and whisper.exe supports it.
         var vadModel = job.UseVad && File.Exists(DependencyUpdater.VadModelPath) && await CaptionGenerator.SupportsVadAsync(cancellationToken)
             ? DependencyUpdater.VadModelPath
             : null;
 
-        // Words heard one way are not those heard another: the decoding and silence settings are part of what was heard.
+        // Decoding and silence settings are part of the cache key.
         var key = $"{job.AudioPath}|{job.TrackIndex}|{File.GetLastWriteTimeUtc(job.AudioPath).Ticks}|{job.ModelPath}|{job.Language}|{job.Translate}|{job.Prompt}|{vadModel is not null}|{job.Options}|"
                   + string.Join(",", job.Ranges.Select(r => $"{r.Start:0.###}-{r.End:0.###}"));
         if (!_captionWords.TryGetValue(key, out var words))
@@ -733,7 +709,7 @@ public partial class MainViewModel
                     CaptionGenerator.BuildExtractCommand(job.AudioPath, job.TrackIndex, job.Ranges, wavPath), new Progress<FfmpegProgress>(), cancellationToken);
 
                 StatusText = $"{label}: transcribing with {Path.GetFileName(job.ModelPath)}{(vadModel is null ? "" : ", skipping silence")}...";
-                // Whisper says how far through the sound it is; the bar shows that, and no longer just that something is happening.
+                // Switch the bar from indeterminate to whisper's reported progress.
                 var heard = new Progress<double>(percent =>
                 {
                     IsProgressIndeterminate = false;
@@ -743,7 +719,7 @@ public partial class MainViewModel
                 words = await Task.Run(
                     () => CaptionGenerator.TranscribeAsync(wavPath, job.ModelPath, job.Language, job.Prompt, job.Translate, vadModel, cancellationToken, heard, job.Options), cancellationToken);
 
-                // Heard on the clock of the stretches joined end to end; kept in the source's own time (4.4).
+                // Map from concatenated-range time back to source time.
                 words = CaptionGenerator.JoinedToSource(job.Ranges, words);
             }
             finally
@@ -758,11 +734,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The captions as the GPU preview engine draws them (5.0): line by line on the sequence clock, with the style and the
-    /// text scale the export's .ass uses (<see cref="WriteCaptionFile"/>). 5.4.1A: shown whenever the user's Burn Captions into
-    /// Export switch (<see cref="AutoCaptions"/>) is on, as the export would draw them: the subtitle track's cues whenever it has
-    /// words; only the preview-only transcription (no track) waits for Preview Subtitles, so a stale one never outlives its track.
-    /// No lines while Burn Captions is off.
+    /// Caption lines for the GPU preview on the sequence clock, with the export's style and text scale (<see cref="WriteCaptionFile"/>).
+    /// Shown while Burn Captions (<see cref="AutoCaptions"/>) is on: subtitle track cues when it has words; the preview-only
+    /// transcription also requires Preview Subtitles. Empty when Burn Captions is off.
     /// </summary>
     public (IReadOnlyList<IReadOnlyList<CaptionWord>>? Lines, CaptionStyle Style, double TextScale) GpuCaptions()
     {
@@ -772,7 +746,7 @@ public partial class MainViewModel
         return (lines.Count > 0 ? lines : null, CaptionStyle, CaptionTextScale());
     }
 
-    /// <summary>What the caption style's sizes (given for a 1080-pixel frame) are multiplied by in the caption box, as <see cref="WriteCaptionFile"/> works it out.</summary>
+    /// <summary>Scale applied to style sizes (authored for 1080 px) inside the caption box, as computed by <see cref="WriteCaptionFile"/>.</summary>
     private double CaptionTextScale()
     {
         var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
@@ -780,13 +754,12 @@ public partial class MainViewModel
         return Math.Min(frameWidth, frameHeight) / 1080.0 * (height / (DefaultCaptionHeight * frameHeight));
     }
 
-    /// <summary>Writes the captions as an ASS file for the caption box, which is how the export draws them.</summary>
-    /// <param name="lines">The captions line by line, when they are given that way (a subtitle track's cues); otherwise the words are grouped by the style.</param>
+    /// <summary>Writes captions as an ASS file sized for the caption box; GpuExport reads its words for burn-in.</summary>
+    /// <param name="lines">Explicit lines (subtitle track cues); null groups words by the style.</param>
     private void WriteCaptionFile(IReadOnlyList<CaptionWord> words, IReadOnlyList<List<CaptionWord>>? lines, string assPath, double timeOffset)
     {
-        // The file is written for the caption box, not the frame: that is the canvas it is drawn on.
-        // Text size follows the frame (so a style looks the same at 720p and 4K) and the height of the
-        // box (so making the box taller makes the words bigger).
+        // Canvas is the caption box, not the frame. Text scales with frame height (same look at 720p and 4K) and box height
+        // (a taller box means larger text).
         var (frameWidth, frameHeight) = GetOutputSize() ?? (DefaultSourceWidth, DefaultSourceHeight);
         var (_, _, width, height) = GetCaptionRect(frameWidth, frameHeight);
         var textScale = Math.Min(frameWidth, frameHeight) / 1080.0 * (height / (DefaultCaptionHeight * frameHeight));
@@ -795,7 +768,7 @@ public partial class MainViewModel
 
     // ----- whisper.cpp model -----
 
-    // The models by the names they are known by: "base.en", "large-v3", "turbo". Their files are "ggml-<name>.bin".
+    // Models by name ("base.en", "large-v3", "turbo"); files are "ggml-<name>.bin".
     private const string TurboFile = "ggml-large-v3-turbo.bin";
 
     private static string ModelLabel(string file) =>
@@ -804,8 +777,7 @@ public partial class MainViewModel
     public IReadOnlyList<string> WhisperModelChoices { get; } = DependencyUpdater.WhisperModels.Select(ModelLabel).ToList();
 
     /// <summary>
-    /// The speech model the captions are transcribed with, for the box in the Auto-Captions dialog. Choosing one
-    /// makes it the model in the settings; when its file has not been downloaded yet, the download starts.
+    /// Whisper model for the Auto-Captions dialog; selecting one saves it to settings and starts its download if missing.
     /// </summary>
     public string WhisperModelChoice
     {
@@ -828,8 +800,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Makes a model (by its label) the one captions are transcribed with, without fetching it now: Generate Captions
-    /// fetches what it needs first, asking (the Auto-Captions dialog, 4.4).
+    /// Selects a model by label without downloading; Generate Captions fetches it later after confirmation.
     /// </summary>
     public void UseWhisperModel(string label)
     {
@@ -870,7 +841,7 @@ public partial class MainViewModel
     /// <summary>The presets by name, for the rules to choose from.</summary>
     public ObservableCollection<string> PresetNames { get; } = [];
 
-    /// <summary>The same, with "(None)" in front: the choices for the global default.</summary>
+    /// <summary>Preset names prefixed with "(None)": choices for the global default.</summary>
     public ObservableCollection<string> DefaultPresetChoices { get; } = [];
 
     /// <summary>The preset applied when no rule matches, or "(None)".</summary>
@@ -916,7 +887,7 @@ public partial class MainViewModel
                 DefaultPresetChoices.Add(preset.Name);
             }
 
-            // Emptying the list cleared the selection that was bound to it.
+            // Clearing the list reset the bound selection; restore it.
             DefaultPresetChoice = DefaultPresetChoices.Contains(chosen) ? chosen : NoPreset;
         }
         finally
@@ -954,8 +925,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Writes the rules and the default preset to the settings file. There is no Save button on the tab:
-    /// this runs after every change. Rules still missing their text or preset stay on the tab but are not saved.
+    /// Persists rules and the default preset after every change (no Save button); incomplete rules stay on the tab unsaved.
     /// </summary>
     public void SaveAutomation()
     {

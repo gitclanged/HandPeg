@@ -8,10 +8,9 @@ using HandPegApp.Native;
 namespace HandPegApp.Services.Audio;
 
 /// <summary>
-/// A meter's reading since it was last read: the peaks and RMS of each side (factors; see the dB properties), and (5.2B) the loudness an
-/// export of the mix would have: EBU R128's momentary, short-term and gated integrated loudness, the 4x-oversampled true peak and its 3 s
-/// hold, whether anything reached full scale, and the three bands' energies of the latest block (AudioBandFollower). All of it measured on
-/// the mix after the Sequence's master gain, before the monitor volume and Mute.
+/// Meter reading since the last read: per-channel peak and RMS (linear; see the dB properties) plus export-equivalent loudness: EBU R128
+/// momentary, short-term and gated integrated loudness, 4x-oversampled true peak with 3 s hold, clip flag, and latest-block band energies
+/// (AudioBandFollower). Measured on the mix after sequence master gain, before monitor volume and Mute.
 /// </summary>
 public readonly record struct AudioMeterReading(float PeakLeft, float PeakRight, float RmsLeft, float RmsRight, int Frames)
 {
@@ -20,25 +19,25 @@ public readonly record struct AudioMeterReading(float PeakLeft, float PeakRight,
     public float RmsLeftDb => AudioMath.Decibels(RmsLeft);
     public float RmsRightDb => AudioMath.Decibels(RmsRight);
 
-    /// <summary>The highest 4x-oversampled true peak of both sides since the last read, dBTP (negative infinity in silence).</summary>
+    /// <summary>Highest 4x-oversampled true peak of both channels since the last read, dBTP (negative infinity in silence).</summary>
     public float TruePeakDb { get; init; }
 
-    /// <summary>The highest true peak over the last 3 s, dBTP.</summary>
+    /// <summary>Highest true peak over the last 3 s, dBTP.</summary>
     public float TruePeakHoldDb { get; init; }
 
-    /// <summary>EBU R128's momentary loudness (400 ms), LUFS; negative infinity when silent.</summary>
+    /// <summary>EBU R128 momentary loudness (400 ms), LUFS; negative infinity when silent.</summary>
     public float MomentaryLufs { get; init; }
 
-    /// <summary>EBU R128's short-term loudness (3 s), LUFS.</summary>
+    /// <summary>EBU R128 short-term loudness (3 s), LUFS.</summary>
     public float ShortTermLufs { get; init; }
 
-    /// <summary>The gated integrated loudness since play started or the last seek, LUFS.</summary>
+    /// <summary>Gated integrated loudness since playback start or the last seek, LUFS.</summary>
     public float IntegratedLufs { get; init; }
 
-    /// <summary>A sample or a true peak reached 0 dBFS since the last read.</summary>
+    /// <summary>True when a sample or true peak reached 0 dBFS since the last read.</summary>
     public bool Clipped { get; init; }
 
-    /// <summary>The bands' energies of the latest block, 0 to 1 (AudioBandFollower: 20-160 Hz, 160 Hz-2 kHz, 2-10 kHz).</summary>
+    /// <summary>Latest-block band energies, 0 to 1 (AudioBandFollower: 20-160 Hz, 160 Hz-2 kHz, 2-10 kHz).</summary>
     public float Bass { get; init; }
 
     public float Mid { get; init; }
@@ -47,27 +46,24 @@ public readonly record struct AudioMeterReading(float PeakLeft, float PeakRight,
 }
 
 /// <summary>
-/// The v5.0 sound engine and master clock (Pass 5.0-AudioAnd3D, 5.0C): a shared-mode, event-driven WASAPI stream (under
-/// 15 ms queued: IAudioClient3's smallest engine period that keeps half the target, else IAudioClient's), mixed by
-/// <see cref="AudioMixer"/> on a thread of its own under MMCSS ("Pro Audio"), written in the device's own mix format (the
-/// sound on its first two channels, the others silent; a one-channel device gets both sides' average).
-/// <para><b>The clock.</b> <see cref="Position"/> is the sequence moment being heard: the device's position (IAudioClock, at
-/// the speakers) carried forward by the processor's counter since it was read, through the transport's lines (a seek, a
-/// change of speed), plus the Audio Sync Offset. While paused it is exactly the last seek or pause. With no device at all
-/// the same engine runs on the processor's counter alone.</para>
-/// <para><b>Threads.</b> Every public member may be called from any thread and returns at once: it writes what it wants
-/// into the engine's fields and wakes the mixer, which acts at its next turn. Seeks reach the decoders through the
-/// mixer's requests (AudioVoices.cs). Nothing blocks the mixer: a voice not decoded yet is silent and catches up.</para>
-/// <para><b>Devices.</b> The default device's changes, and the chosen device going or coming back, arrive by
-/// IMMNotificationClient (a COM object made by hand: immediate, and nothing wakes while nothing changes, which polling
-/// could not be); a stream whose device is gone (AUDCLNT_E_DEVICE_INVALIDATED) is opened again. A chosen device that is
-/// not there plays on the default one until it comes back.</para>
+/// Audio engine and master clock: a shared-mode, event-driven WASAPI stream (under 15 ms queued: IAudioClient3's smallest engine period
+/// keeping half the target, else IAudioClient), mixed by <see cref="AudioMixer"/> on a dedicated MMCSS ("Pro Audio") thread and written in
+/// the device mix format (stereo on the first two channels, others silent; mono devices get the channel average).
+/// <para><b>Clock.</b> <see cref="Position"/> is the sequence time being heard: the device position (IAudioClock, at the speakers)
+/// extrapolated by the QPC counter since it was read, through transport lines (seek, speed change), plus the Audio Sync Offset. Paused,
+/// it equals the last seek or pause exactly. Without a device the engine runs on QPC alone.</para>
+/// <para><b>Threads.</b> All public members are thread-safe and return immediately: they write engine fields and wake the mixer, which
+/// acts on its next turn. Seeks reach decoders via mixer requests (AudioVoices.cs). Nothing blocks the mixer: undecoded voices are silent
+/// and catch up.</para>
+/// <para><b>Devices.</b> Default-device changes and the chosen device disappearing or returning arrive via a hand-built
+/// IMMNotificationClient COM object (immediate, zero wakeups while idle, unlike polling); a stream whose device is invalidated
+/// (AUDCLNT_E_DEVICE_INVALIDATED) is reopened. A missing chosen device plays on the default until it returns.</para>
 /// </summary>
 public sealed unsafe class WasapiAudioEngine : IDisposable
 {
     private const int NoDeviceRate = 48000;
 
-    // ----- What the callers want: written by any thread, read by the mixer's -----
+    // ----- Caller requests: written by any thread, read by the mixer -----
 
     private string _deviceId;
     private int _bufferMs;
@@ -85,7 +81,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     private readonly object _programGate = new();
     private AudioProgram _program = AudioProgram.Empty;
 
-    // ----- The mixer's thread -----
+    // ----- Mixer thread state -----
 
     private AudioMixer? _mixer;
     private nint _enumerator, _device, _client, _render, _clock, _audioEvent, _timer;
@@ -105,7 +101,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     private bool _lineJump;
     private string _openedId = "";
 
-    // ----- What the mixer's thread tells the callers: a seqlock -----
+    // ----- Mixer-to-caller state (seqlock) -----
 
     private long _clockLock;
     private double _clockHeard;
@@ -117,8 +113,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     private long _seekPublished;
     private double _clockExtrapolate = 0.03;
 
-    // The meter: accumulated by the mixer, published by a seqlock, cleared when read. Since 5.2B also the loudness (the mixer's
-    // LiveLoudness), the true peak (cleared when read, as the peaks are) and the bands (AudioBandFollower): made when the device opens.
+    // Meter: accumulated by the mixer, published via seqlock, cleared on read; includes loudness (LiveLoudness), true peak (cleared on read
+    // like peaks) and bands (AudioBandFollower), created when the device opens.
     private long _meterLock;
     private float _meterPeakL, _meterPeakR;
     private double _meterSumL, _meterSumR;
@@ -130,15 +126,15 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     private LiveLoudness _loudness = new(NoDeviceRate);
     private AudioBandFollower _bands = new(NoDeviceRate);
 
-    // Position's monotonic hold (callers' threads only), and when its last good reading was made (Stopwatch ticks, 0 for
-    // none in this run of playback) at what rate its line ran, which carry it on while the clock cannot be read.
+    // Position's monotonic hold (caller threads only), plus the last good reading's time (Stopwatch ticks, 0 = none this playback run)
+    // and line rate, used to extrapolate while the clock is unreadable.
     private readonly object _positionGate = new();
     private double _lastPosition;
     private long _lastPositionLine = -1;
     private long _lastPositionTicks;
     private double _lastPositionRate;
 
-    // How long Position carries on from its last good reading when the clock cannot be read; then it holds there.
+    // Maximum extrapolation from the last good reading while the clock is unreadable (s); then Position holds.
     private const double LongestCarry = 0.25;
 
     private volatile bool _hasDevice;
@@ -155,9 +151,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     }
 
     /// <summary>
-    /// Starts the engine on a device (its id, as <see cref="AudioDevices.List"/> gives it; null or "" for the system's
-    /// default), with Settings' buffer and sync offset. Never throws, and returns at once: the device is opened on the
-    /// engine's own thread; with no device it runs silent on the processor's clock (logged).
+    /// Starts the engine on a device (id from <see cref="AudioDevices.List"/>; null or "" = system default) with the Settings buffer and sync
+    /// offset. Never throws and returns immediately: the device opens on the engine thread; without a device it runs silent on QPC (logged).
     /// </summary>
     public static WasapiAudioEngine Create(string? deviceId = null)
     {
@@ -174,9 +169,9 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         return new WasapiAudioEngine(deviceId, buffer, offset);
     }
 
-    // ----- The public surface -----
+    // ----- Public API -----
 
-    /// <summary>The program to play from the next buffer on: the position stays, what was decoded for unchanged voices too.</summary>
+    /// <summary>Sets the program played from the next buffer; position and decoded audio of unchanged voices are kept.</summary>
     public void SetProgram(AudioProgram program)
     {
         ArgumentNullException.ThrowIfNull(program);
@@ -189,7 +184,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         Wake();
     }
 
-    /// <summary>The mixer's decoders not in use, disposed (any thread; a project tab put behind, Pass 5.4A: <see cref="AudioMixer.ReleaseIdleDecoders"/>).</summary>
+    /// <summary>Disposes the mixer's idle decoders (any thread; tab deactivated: <see cref="AudioMixer.ReleaseIdleDecoders"/>).</summary>
     public void ReleaseIdleDecoders() => Volatile.Read(ref _mixer)?.ReleaseIdleDecoders();
 
     public void Play()
@@ -198,17 +193,17 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         Wake();
     }
 
-    /// <summary>Stops at the moment being heard, which <see cref="Position"/> then holds exactly (and Play starts from).</summary>
+    /// <summary>Stops at the time being heard; <see cref="Position"/> then holds it exactly and Play resumes from it.</summary>
     public void Pause()
     {
-        // The moment is held before the stop is asked for, so Position never shows an older one in between.
+        // Capture the time before requesting the stop so Position never shows an older value in between.
         var at = Position;
         SeekCore(at);
         Volatile.Write(ref _wantPlaying, 0);
         Wake();
     }
 
-    /// <summary>A jump to a sequence moment: under a microsecond here; the decoders follow on their threads.</summary>
+    /// <summary>Seeks to a sequence time (sub-microsecond here; decoders follow on their own threads).</summary>
     public void Seek(double sequenceSeconds) => SeekCore(double.IsFinite(sequenceSeconds) ? Math.Max(sequenceSeconds, 0) : 0);
 
     private void SeekCore(double at)
@@ -221,8 +216,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     public bool IsPlaying => Volatile.Read(ref _wantPlaying) != 0;
 
     /// <summary>
-    /// J/K/L: 0.25 to 4 forward, pitch kept. 0 stands (silent, the clock held). Negative plays backward: the clock runs
-    /// backward at that speed and the sound is silent (reverse sound is not made).
+    /// J/K/L rate: 0.25 to 4 forward with pitch preserved; 0 stops (silent, clock held); negative runs the clock backward at that speed with
+    /// silent audio (no reverse audio rendering).
     /// </summary>
     public double Rate
     {
@@ -235,7 +230,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         }
     }
 
-    /// <summary>The master volume as a factor (1 is 0 dB; up to 4, +12 dB).</summary>
+    /// <summary>Master volume as a linear factor (1 = 0 dB; max 4 = +12 dB).</summary>
     public float MasterVolume
     {
         get => BitConverter.Int32BitsToSingle(Volatile.Read(ref _volumeBits));
@@ -252,12 +247,12 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
 
     public string DeviceName => _deviceName;
 
-    /// <summary>The device was opened: at the start, and again after a change (on a thread-pool thread).</summary>
+    /// <summary>Raised (on a thread-pool thread) when the device opens: at start and after each change.</summary>
     public event Action? DeviceChanged;
 
     /// <summary>
-    /// The master clock: the sequence moment being heard now (see the class's remarks). Monotonic while playing forward
-    /// on one line; exact while paused. Cheap enough for every frame of the compositor.
+    /// Master clock: the sequence time currently heard (see class remarks). Monotonic while playing forward on one line; exact while
+    /// paused. Cheap enough to call every compositor frame.
     /// </summary>
     public double Position
     {
@@ -282,7 +277,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
                 : previous.Origin + (heard - previous.Frame) * previous.Rate / rate;
             var position = sound + SyncOffset;
 
-            // Never back on one line while it runs forward (the counter's estimate is corrected by each device reading).
+            // Never step backward within a forward-running line (QPC extrapolation is corrected by each device reading).
             lock (_positionGate)
             {
                 if (_lastPositionLine == line.Id && line.Rate > 0 && position < _lastPosition)
@@ -297,16 +292,16 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         }
     }
 
-    // Paused, seeking or not started yet: the moment asked for, and no reading for this run of playback to carry on from.
+    // Paused, seeking or not yet started: return the requested time and reset the extrapolation baseline.
     private double Paused(double paused)
     {
         Volatile.Write(ref _lastPositionTicks, 0);
         return paused;
     }
 
-    // Playing, but the clock could not be read (its writer held it through every try): carried on from the last good
-    // reading at its line's rate, as far as LongestCarry, never back to the paused moment (where this playback began: one
-    // frame was drawn there, mid-play). Only before the first reading of a run is that moment the answer.
+    // Playing but the clock is unreadable (writer held the seqlock every try): extrapolate from the last good reading at its line rate,
+    // up to LongestCarry, never jumping back to the paused time (which would draw a stray frame mid-play). The paused time is returned
+    // only before the run's first reading.
     private double Carried(double paused)
     {
         lock (_positionGate)
@@ -319,8 +314,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     }
 
     /// <summary>
-    /// The peaks and RMS since the last read, and the loudness, true peak and bands (5.2B, <see cref="AudioMeterReading"/>): measured on the
-    /// mix after the Sequence's master gain, before the master volume (the monitor's) and Mute, so it reads what an export gets.
+    /// Peaks and RMS since the last read plus loudness, true peak and bands (<see cref="AudioMeterReading"/>), measured after sequence
+    /// master gain and before monitor volume and Mute, i.e. what an export receives.
     /// </summary>
     public AudioMeterReading Meter
     {
@@ -357,8 +352,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     }
 
     /// <summary>
-    /// The bands' energies of the latest block played (5.2B, 0 to 1: the audio-reactive effects' bus while nothing better is known), read
-    /// without clearing the meter.
+    /// Band energies of the latest played block (0 to 1; fallback source for audio-reactive effects), read without clearing the meter.
     /// </summary>
     public (float Bass, float Mid, float High) LiveBands
     {
@@ -379,10 +373,10 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         }
     }
 
-    // A true peak (a factor) in dBTP, negative infinity for silence.
+    // Converts a linear true peak to dBTP (negative infinity for silence).
     private static float PeakDecibels(float factor) => factor > 0 ? 20f * MathF.Log10(factor) : float.NegativeInfinity;
 
-    /// <summary>Settings changed: the device (null or "" for the default), the buffer (ms) and the sync offset (ms). The device opens again only when it or the buffer changed.</summary>
+    /// <summary>Applies Settings: device (null or "" = default), buffer (ms) and sync offset (ms). Reopens only when the device or buffer changed.</summary>
     public void ApplySettings(string? deviceId, int bufferMs, double syncOffsetMs)
     {
         var id = deviceId ?? "";
@@ -412,15 +406,15 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         _stopping = true;
         Kernel32.SetEvent(_commands);
 
-        // The mixer thread unregisters the device watch (whose callbacks signal _commands) in its finally block. If it has not stopped,
-        // the event stays open: closing it would let a late callback, or a Wake from a resumed pump, signal a recycled handle.
+        // The mixer thread unregisters the device watch (whose callbacks signal _commands) in its finally. If it has not stopped, keep the
+        // event open: closing it would let a late callback or a Wake from a resumed pump signal a recycled handle.
         if (!ThreadStop.Join(_thread, 3000, "Sound engine mixer"))
             return;
         Kernel32.CloseHandle(_commands);
         Volatile.Write(ref _closed, 1);
     }
 
-    // Set once _commands is closed: a late Wake (a pump still running after its join timed out) must not signal a recycled handle.
+    // Set once _commands is closed: a late Wake (pump still running after a join timeout) must not signal a recycled handle.
     private int _closed;
 
     private double SyncOffset => BitConverter.Int64BitsToDouble(Volatile.Read(ref _syncOffsetBits));
@@ -431,7 +425,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             Kernel32.SetEvent(_commands);
     }
 
-    // ----- The mixer's thread -----
+    // ----- Mixer thread -----
 
     private void Run()
     {
@@ -455,7 +449,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
-                    // Never down: the device is opened again, and the clock goes on from where it was.
+                    // Never stay down: reopen the device; the clock continues from where it was.
                     AppLog.Write("Sound engine: the mixer failed; the device is opened again", ex);
                     Volatile.Write(ref _reopen, 1);
                     Thread.Sleep(50);
@@ -468,8 +462,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         }
         finally
         {
-            // The device watch goes first: its callbacks signal _commands, and the teardown below (the mixer and its feeders) can take
-            // up to 2 s, during which Dispose may already be deciding whether to close that event.
+            // Unregister the device watch first: its callbacks signal _commands, and the teardown below (mixer and feeders) can take up to
+            // 2 s, during which Dispose may be deciding whether to close that event.
             _watch?.Dispose(_enumerator);
             Close();
             Com.Release(ref _enumerator);
@@ -492,11 +486,11 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         _mixer?.Prime(_written);
         PublishClock();
 
-        // Only now that the clock carries the seek's line may Position stop holding the seek's moment.
+        // Only now that the clock carries the seek's line may Position stop holding the seek time.
         Volatile.Write(ref _seekPublished, _seenSeek);
     }
 
-    // Until the device wants more, the timer ticks (no device) or a caller wants something.
+    // Waits until the device needs data, the timer ticks (no device), or a caller signals.
     private void Wait()
     {
         var handles = stackalloc nint[2];
@@ -554,7 +548,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         mixer.SetLine(frame, origin, rate, jump);
         (_lineNow, _lineJump) = (mixer.Line, jump);
 
-        // A jump (a seek, a pause, play from there): the integrated loudness counts from here (5.2B).
+        // On a jump (seek, pause, play from there), integrated loudness restarts here.
         if (jump)
             _loudness.Restart();
     }
@@ -591,12 +585,12 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             AudioNative.Reset(_client);
         }
 
-        // What was queued is gone: play goes on from the moment paused at, exactly (Pause held it before it stopped).
+        // Queued audio is discarded: playback resumes exactly from the paused time (Pause captured it before stopping).
         if (_mixer is { } mixer)
             Line(mixer, _written, BitConverter.Int64BitsToDouble(Volatile.Read(ref _pausedBits)) - SyncOffset, _rate1, jump: true);
     }
 
-    // As much as the device has room for, up to the target: each turn tops the queue up to it.
+    // Fills the device queue up to the target (bounded by free buffer space) each turn.
     private void Render()
     {
         if (_mixer is not { } mixer)
@@ -617,7 +611,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         }
         else
         {
-            // No device: the processor's counter is the device, the target its queue.
+            // No device: QPC stands in for the device clock, the target for its queue.
             var played = _streamStart + (long)((Stopwatch.GetTimestamp() - _clockStartTicks) * (double)_rate / Stopwatch.Frequency);
             want = (int)Math.Clamp(played + _targetFrames - _written, 0, mixer.MaxFrames * 4L);
         }
@@ -651,7 +645,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         mixer.WakeFeeders();
     }
 
-    // The meter (5.2B: before the monitor's volume, on the mix as an export has it), the master volume, then the device's format (nothing
+    // Meters the mix (before monitor volume, as an export sees it), applies master volume, then converts to the device format (nothing is
     // written without a device).
     private void Finish(int frames, byte* data)
     {
@@ -674,7 +668,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             (sumL, sumR) = (sumL + l * l, sumR + r * r);
         }
 
-        // The loudness, the true peak and the bands, all of it the mixer's alone until published below.
+        // Loudness, true peak and bands: mixer-owned until published below.
         _loudness.Add(mix, frames);
         _bands.Process(mix, frames);
 
@@ -686,7 +680,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         (_meterBass, _meterMid, _meterHigh) = (_bands.Bass, _bands.Mid, _bands.High);
         Volatile.Write(ref _meterLock, _meterLock + 1);
 
-        // The monitor's volume: what the speakers get, not what the meter reads.
+        // Monitor volume affects the speakers only, not the meter.
         AudioMath.Scale(mix, MasterVolume);
         if (data == null)
             return;
@@ -811,7 +805,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
 
     private void Reopen()
     {
-        // From the moment being heard, on the new device: nothing jumps but what was queued for the old one.
+        // Resume from the time being heard on the new device; only audio queued for the old device is lost.
         var at = _mixer is { } mixer ? mixer.Line.SoundAt((long)Math.Min(_clockHeard, _written), _rate) : 0;
         var wasPlaying = _playing;
         Close();
@@ -876,7 +870,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         AppLog.Write(string.Create(CultureInfo.InvariantCulture,
             $"Sound engine: {(_hasDevice ? $"\"{_deviceName}\"" : "no device")}, {_rate} Hz, {_channels} channel(s), {(_float ? "float" : "integer")} {_bits}-bit, {_targetFrames * 1000.0 / _rate:0.0} ms queued (buffer {_bufferFrames} frames)"));
 
-        // Opened (at the start, or again): whoever shows the device's name is told, off this thread.
+        // Notify device-name observers off this thread (at start and on every reopen).
         if (DeviceChanged is { } changed)
             ThreadPool.QueueUserWorkItem(_ => changed());
     }
@@ -895,7 +889,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         WaveFormat format = default;
         try
         {
-            // A plain WAVEFORMATEX is 18 bytes: only what the device gave is read.
+            // A plain WAVEFORMATEX is 18 bytes: read only what the device returned.
             var size = mixFormat->FormatTag == WaveFormat.Extensible && mixFormat->ExtraSize >= 22 ? 40 : 18;
             Buffer.MemoryCopy(mixFormat, &format, sizeof(WaveFormat), size);
             if (size == 18)
@@ -913,8 +907,8 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         if (_rate < 8000 || _rate > 768000 || (_float && _bits != 32) || (!_float && _bits is not (16 or 24 or 32)))
             throw new GpuException(unchecked((int)0x88890008), "the device's mix format is not one HandPeg writes");
 
-        // The engine's period: IAudioClient3's smallest that keeps half the target queued (a multiple of its step), else
-        // IAudioClient's with the target as the buffer.
+        // Engine period: IAudioClient3's smallest keeping half the target queued (rounded to its step), else IAudioClient with the target
+        // as the buffer.
         var bufferMs = Volatile.Read(ref _bufferMs);
         var initialized = false;
         var period = 0u;
@@ -942,7 +936,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         Com.Check(AudioNative.GetService(_client, AudioNative.AudioClockId, out _clock), "IAudioClient::GetService (clock)");
         Com.Check(AudioNative.GetFrequency(_clock, out _clockFrequency), "IAudioClock::GetFrequency");
 
-        // The target: the setting, never less than a period and a half (the event comes once a period), never past the buffer.
+        // Target queue: the setting, at least 1.5 periods (one event per period), at most the buffer.
         _targetFrames = (int)Math.Clamp(Math.Max(_rate * bufferMs / 1000, period * 3 / 2 + 32), 64, _bufferFrames);
         _clockExtrapolate = Math.Max(2.0 * period / _rate, 0.005);
     }
@@ -970,9 +964,9 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     }
 
     /// <summary>
-    /// IMMNotificationClient, made by hand: a block of native memory holding the method table's address, a count of
-    /// references and a handle back to this object. Its methods only set flags and wake the mixer (Windows calls them on a
-    /// thread of its own, where nothing may wait); the mixer looks at the flags on its next turn.
+    /// Hand-built IMMNotificationClient: a native block holding the vtable pointer, a refcount and a GCHandle back to this object. Methods
+    /// only set flags and wake the mixer (Windows calls them on its own thread, which must not block); the mixer checks the flags on its
+    /// next turn.
     /// </summary>
     private sealed class DeviceWatch
     {
@@ -1002,7 +996,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             return watch;
         }
 
-        /// <summary>Whether the device should be opened again: the default changed while it is followed, the chosen one changed, or one came while there is none.</summary>
+        /// <summary>True when the device should reopen: default changed while following it, the chosen device changed, or a device arrived while none was open.</summary>
         public bool Take(string openedId, bool followsDefault, bool hasDevice)
         {
             var defaultChanged = Interlocked.Exchange(ref _defaultChanged, 0) != 0;
@@ -1097,7 +1091,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             }
             catch
             {
-                // Nothing may leave a method Windows calls.
+                // Exceptions must not escape a native callback.
             }
 
             return 0;
@@ -1119,7 +1113,7 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             }
             catch
             {
-                // Nothing may leave a method Windows calls.
+                // Exceptions must not escape a native callback.
             }
 
             return 0;
@@ -1127,13 +1121,18 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
     }
 }
 
-/// <summary>A sound output Windows lists: its id (what the setting keeps) and its name.</summary>
+/// <summary>An audio endpoint: id (persisted in Settings), friendly name and default flag.</summary>
 public sealed record AudioDevice(string Id, string Name, bool IsDefault);
 
-/// <summary>The active sound outputs, for Settings. Call it off the interface's thread (it asks the audio service).</summary>
+/// <summary>Enumerates active audio outputs (Settings) and inputs (Voiceover). Call off the UI thread (queries the audio service).</summary>
 public static unsafe class AudioDevices
 {
-    public static IReadOnlyList<AudioDevice> List()
+    public static IReadOnlyList<AudioDevice> List() => Endpoints(AudioNative.Render);
+
+    /// <summary>Active capture endpoints (microphones, virtual mixers such as a streaming app's input).</summary>
+    public static IReadOnlyList<AudioDevice> Microphones() => Endpoints(AudioNative.Capture);
+
+    private static List<AudioDevice> Endpoints(int flow)
     {
         var list = new List<AudioDevice>();
         var classId = AudioNative.DeviceEnumeratorClass;
@@ -1144,8 +1143,8 @@ public static unsafe class AudioDevices
         nint collection = 0, standard = 0;
         try
         {
-            var defaultId = AudioNative.GetDefaultAudioEndpoint(enumerator, AudioNative.Render, AudioNative.Console, out standard) >= 0 ? AudioNative.DeviceId(standard) : "";
-            if (AudioNative.EnumAudioEndpoints(enumerator, AudioNative.Render, AudioNative.DeviceStateActive, out collection) < 0)
+            var defaultId = AudioNative.GetDefaultAudioEndpoint(enumerator, flow, AudioNative.Console, out standard) >= 0 ? AudioNative.DeviceId(standard) : "";
+            if (AudioNative.EnumAudioEndpoints(enumerator, flow, AudioNative.DeviceStateActive, out collection) < 0)
                 return list;
             var count = AudioNative.CollectionCount(collection);
             for (uint i = 0; i < count; i++)

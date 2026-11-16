@@ -5,29 +5,28 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- The audio-reactive shader bus (Pass 5.2B) -----
-// The Sequence's sound in three bands, frame by frame, for the GPU effects that pulse with it (Film Halation & Glow, Neon Rim Light, Impact
-// Shockwave, Anime Lines: their Audio Reactive Pulse and Pulse Band, EffectRegistry.GpuFx.cs). One analyzer, deterministic, for every path
-// (AudioBandFollower): the mix made mono; Bass 20-160 Hz, Mid 160 Hz-2 kHz and High 2-10 kHz each between two fourth-order Butterworth
-// edges; each band's square followed fast up (5 ms) and slowly down (120 ms), its root taken against a quarter of full scale (a band
-// reaching -12 dBFS is 1). The export's frames take theirs from an AudioEnergyMap of the program its sound is rendered from (GpuExport), and
-// so do the player's while it can (GpuPreviewEngine: built in the background while an effect pulses, made again when the sound changes), so
-// a paused frame is the exported one; else, while playing, the engine's own bands of what it is playing (WasapiAudioEngine.LiveBands), and
-// otherwise 0, which pulses nothing. The bands reach the compositor in FrameSceneHeader.AudioBass / AudioMid / AudioHigh.
+// ----- Audio-reactive shader bus -----
+// Sequence audio as three band energies per frame for pulsing GPU effects (Film Halation & Glow, Neon Rim Light, Impact Shockwave, Anime
+// Lines: Audio Reactive Pulse and Pulse Band, EffectRegistry.GpuFx.cs). One deterministic analyzer for every path (AudioBandFollower): mono
+// mix; Bass 20-160 Hz, Mid 160 Hz-2 kHz, High 2-10 kHz, each between two 4th-order Butterworth edges; each band's square follows fast up
+// (5 ms) and slow down (120 ms), rooted against 0.25 full scale (-12 dBFS reads 1). Exports read an AudioEnergyMap of the rendered program
+// (GpuExport); the player uses the same map when ready (built in the background while an effect pulses, rebuilt on audio changes) so paused
+// frames match the export, else the engine's live bands while playing (WasapiAudioEngine.LiveBands), else 0. Bands reach the compositor in
+// FrameSceneHeader.AudioBass / AudioMid / AudioHigh.
 
-/// <summary>The three bands' energies of a sound as it goes (see the top of this file). One thread at a time; nothing made while it runs.</summary>
+/// <summary>Streaming three-band energy follower (see file header). Single-threaded; allocation-free while running.</summary>
 internal sealed class AudioBandFollower
 {
-    /// <summary>The bands' edges, Hz.</summary>
+    /// <summary>Band edges, Hz.</summary>
     public const double BassLow = 20, BassHigh = 160, MidHigh = 2000, HighHigh = 10000;
 
-    /// <summary>The level a band reads 1 at: a quarter of full scale (-12 dBFS).</summary>
+    /// <summary>Level that reads 1: a quarter of full scale (-12 dBFS).</summary>
     public const double Reference = 0.25;
 
-    // A fourth-order Butterworth edge is two biquads of these Qs.
+    // A 4th-order Butterworth edge = two biquads with these Qs.
     private const double FirstQ = 0.54119610014619701, SecondQ = 1.3065629648763764;
 
-    // Per band: its two high-pass sections, then its two low-pass ones.
+    // Per band: two high-pass sections, then two low-pass sections.
     private readonly RbjSection[] _sections = new RbjSection[12];
     private readonly double _attack, _release;
     private double _bass, _mid, _high;
@@ -57,7 +56,7 @@ internal sealed class AudioBandFollower
 
     private static float Energy(double meanSquare) => (float)Math.Min(Math.Sqrt(meanSquare) / Reference, 1);
 
-    /// <summary>A block of interleaved stereo.</summary>
+    /// <summary>Processes a block of interleaved stereo.</summary>
     public void Process(ReadOnlySpan<float> stereo, int frames)
     {
         var sections = _sections;
@@ -88,16 +87,15 @@ internal sealed class AudioBandFollower
 }
 
 /// <summary>
-/// A sound's three bands moment by moment (5.2B): the AudioBandFollower's reading every 5 ms from <see cref="Origin"/> (a second of the
-/// Sequence), as the follower stands once the sound before that moment has passed through it, to a 255th. Filled from its start as it is
-/// made (on a thread of its own): what is not made yet is not known (<see cref="TryAt"/> false). Read from any thread.
+/// A sound's three band energies over time: the follower's state every 5 ms from <see cref="Origin"/> (sequence seconds), quantized to
+/// 1/255. Filled progressively from the start on its own thread; unfilled ticks are unknown (<see cref="TryAt"/> false). Reads are thread-safe.
 /// </summary>
 public sealed class AudioEnergyMap
 {
-    /// <summary>Readings a second.</summary>
+    /// <summary>Readings per second.</summary>
     public const int TicksPerSecond = 200;
 
-    /// <summary>The rate the program is rendered at to be analysed.</summary>
+    /// <summary>Sample rate of the analysis render.</summary>
     internal const int Rate = 48000;
 
     private const int FramesPerTick = Rate / TicksPerSecond;
@@ -111,16 +109,16 @@ public sealed class AudioEnergyMap
         (_bass, _mid, _high) = (new byte[ticks], new byte[ticks], new byte[ticks]);
     }
 
-    /// <summary>The second of the Sequence the first reading is of.</summary>
+    /// <summary>Sequence time of the first reading.</summary>
     public double Origin { get; }
 
-    /// <summary>How many readings it holds when it is made.</summary>
+    /// <summary>Total readings when complete.</summary>
     public int Count => _bass.Length;
 
-    /// <summary>Whether all of it is made.</summary>
+    /// <summary>True when every reading is filled.</summary>
     public bool IsComplete => Volatile.Read(ref _ready) >= _bass.Length;
 
-    /// <summary>The bands at a moment of the Sequence (the nearest reading); false, and 0, where nothing is known (outside it, not made yet).</summary>
+    /// <summary>Band energies at a sequence time (nearest reading); false and 0 when unknown (outside the map or not yet filled).</summary>
     public bool TryAt(double sequenceSeconds, out float bass, out float mid, out float high)
     {
         var at = (sequenceSeconds - Origin) * TicksPerSecond;
@@ -135,7 +133,7 @@ public sealed class AudioEnergyMap
         return true;
     }
 
-    /// <summary>An empty map of a stretch of the Sequence, to be filled by <see cref="Fill"/>.</summary>
+    /// <summary>Empty map over a sequence range, filled later by <see cref="Fill"/>.</summary>
     public static AudioEnergyMap Of(double fromSeconds, double toSeconds)
     {
         var from = double.IsFinite(fromSeconds) ? Math.Max(fromSeconds, 0) : 0;
@@ -143,7 +141,7 @@ public sealed class AudioEnergyMap
         return new AudioEnergyMap(from, (int)Math.Ceiling(seconds * TicksPerSecond) + 1);
     }
 
-    /// <summary>A program's map of a stretch, made now (off the interface's thread: it decodes and mixes the whole stretch).</summary>
+    /// <summary>Builds and fills a map now (call off the UI thread: decodes and mixes the whole range).</summary>
     public static AudioEnergyMap Build(AudioProgram program, double fromSeconds, double toSeconds, CancellationToken token)
     {
         var map = Of(fromSeconds, toSeconds);
@@ -151,7 +149,7 @@ public sealed class AudioEnergyMap
         return map;
     }
 
-    /// <summary>Fills the map from a program's mix, rendered by the sound engine from its first moment; throws when cancelled.</summary>
+    /// <summary>Fills the map from the program's mix, rendered by the sound engine from <see cref="Origin"/>; throws when cancelled.</summary>
     public void Fill(AudioProgram program, CancellationToken token)
     {
         if (_bass.Length <= 1)
@@ -174,7 +172,7 @@ public sealed class AudioEnergyMap
 
     private static byte Quantized(float energy) => (byte)Math.Clamp((int)MathF.Round(energy * 255), 0, 255);
 
-    /// <summary>The render's output (interleaved stereo floats) through the follower, a reading at every tick.</summary>
+    /// <summary>Stream sink that feeds the render's interleaved stereo floats through the follower, recording at every tick.</summary>
     private sealed class Analyzer : Stream
     {
         private readonly AudioEnergyMap _map;
@@ -229,21 +227,21 @@ public sealed class AudioEnergyMap
     }
 }
 
-/// <summary>What the audio-reactive effects need of a state (5.2B): whether any pulses, the map of its sound, and a key of what it hears.</summary>
+/// <summary>Audio-reactive helpers for a state: whether anything pulses, its energy map, and a content key for its program.</summary>
 public static class AudioReactive
 {
-    /// <summary>The cards' parameters: the Audio Reactive Pulse (%) and the Pulse Band (Bass, Mid, High, All).</summary>
+    /// <summary>Card parameters: Audio Reactive Pulse (%) and Pulse Band (Bass, Mid, High, All).</summary>
     public const string PulseKey = EffectRegistry.AudioPulseKey, BandKey = EffectRegistry.AudioBandKey;
 
-    /// <summary>The effects that carry the pulse.</summary>
+    /// <summary>Effects that support the pulse.</summary>
     public static IReadOnlySet<string> Effects { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
         EffectRegistry.Glow, EffectRegistry.NeonRim, EffectRegistry.Shockwave, EffectRegistry.AnimeLines,
     };
 
     /// <summary>
-    /// Whether any card of the state pulses with its sound: one of <see cref="Effects"/>, on, its pulse above 0 (set, or anywhere along its
-    /// keyframes), on a clip, a track's look, the Sequence Output or the blur fill. Only then is a map worth its making.
+    /// True when any enabled card in <see cref="Effects"/> has a pulse above 0 (static or anywhere in its keyframes) on a clip, the Sequence
+    /// Output or the blur fill. Only then is a map worth building.
     /// </summary>
     public static bool Pulses(SequenceExportState state)
     {
@@ -269,7 +267,7 @@ public static class AudioReactive
             if (!card.On || !Effects.Contains(card.Type))
                 continue;
 
-            // In use as the card's packets have it (EffectRegistry.PulseInUse: its keys when it has any, else its value).
+            // In use as the packets see it (EffectRegistry.PulseInUse: keyframes when present, else the static value).
             var keyed = card.Keys?.GetValueOrDefault(PulseKey);
             var pulse = card.Values is { } values && values.TryGetValue(PulseKey, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var set) ? set : 0;
             if (EffectRegistry.PulseInUse(keyed, pulse))
@@ -280,19 +278,19 @@ public static class AudioReactive
     }
 
     /// <summary>
-    /// The program the bands are taken from: the state's sound as an export hears it (every track, whatever is soloed), mixed to one bus.
-    /// The export's frames and the player's paused ones take theirs from the same.
+    /// Program the bands come from: the state's audio as the export hears it (all tracks, solo ignored) on one bus. Export frames and paused
+    /// player frames share it.
     /// </summary>
     public static AudioProgram ProgramOf(SequenceExportState state) => AudioProgram.Build(state, new AudioBuildOptions { IgnoresSolo = true });
 
-    /// <summary>The map of a state's sound over a stretch of the Sequence, made now (a thread of its own: it decodes and mixes).</summary>
+    /// <summary>Builds a state's energy map over a sequence range now (run on its own thread: decodes and mixes).</summary>
     public static AudioEnergyMap MapOf(SequenceExportState state, double fromSeconds, double toSeconds, CancellationToken token)
     {
         var program = ProgramOf(state);
         return AudioEnergyMap.Build(program, fromSeconds, Math.Min(toSeconds, program.SequenceSeconds), token);
     }
 
-    /// <summary>What a program hears, as one number: a map made of it is still the map of another with the same key.</summary>
+    /// <summary>Content key of a program: a map built for one program stays valid for another with the same key.</summary>
     public static int KeyOf(AudioProgram program)
     {
         var hash = new HashCode();

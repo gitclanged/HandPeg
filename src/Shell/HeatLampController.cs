@@ -12,21 +12,20 @@ using HandPegApp.ViewModels;
 namespace HandPegApp.Shell;
 
 /// <summary>
-/// Makes ready what the pointer is about to open while it rests near it. Over the editor's header: the Layout Selector's cards (made
-/// by the window at idle) and, once a session, the lists other windows read (Styles, recent projects, audio devices), read on the pool
-/// so their files and drivers are warm. Over the Timeline, after <see cref="TimelineQuietMs"/> with nothing playing, scrubbed or
-/// dragged: its tools made, and one picture of the still the Cutout Studio would open on, decoded on the pool.
+/// Hover-intent prewarming. Header hover: realizes Layout Selector cards (at idle) and once per session reads Styles, recent projects
+/// and audio devices on the pool to warm files and drivers. Timeline hover, after <see cref="TimelineQuietMs"/> without playback,
+/// scrub or drag: realizes timeline tools and decodes the Cutout Studio's opening still on the pool.
 /// </summary>
 /// <remarks>
-/// Made after Frame 1 (Law 1) and used on the window's thread only. The warm picture is one slot (Media Foundation, about 8 MB at most):
-/// a newer target replaces it and a decode that finishes late for an older target is dropped.
+/// Created after Frame 1 (Law 1); UI thread only. The warm still is a single slot (Media Foundation, ~8 MB max) holding the decode
+/// task, running or done, so a Studio opened mid-decode awaits it rather than starting over; a newer target replaces the slot.
 /// </remarks>
 internal sealed class HeatLampController : IDisposable
 {
-    /// <summary>How long the pointer rests over the Timeline, nothing moving, before its next windows are made ready, ms.</summary>
+    /// <summary>Quiet hover time over the Timeline before prewarming (ms).</summary>
     internal const int TimelineQuietMs = 250;
 
-    /// <summary>The tallest the Cutout Studio's warm picture is decoded (its own height when smaller).</summary>
+    /// <summary>Max decode height of the warm Cutout Studio still (source height if smaller).</summary>
     internal const int WarmStillMostHeight = 1080;
 
     private readonly MainViewModel _viewModel;
@@ -39,17 +38,16 @@ internal sealed class HeatLampController : IDisposable
     private readonly Debounce _timelineQuiet;
     private bool _sessionWarmed;
 
-    // The one warm picture for the Cutout Studio, and the file and moment being decoded now (null: none).
-    private MaskDrawWindow.WarmStill? _warmCutoutStill;
-    private (string Source, double Seconds)? _warmingCutout;
+    // Single warm still slot: the decode for the latest target (file, time), running or done; null result when it failed.
+    private (string Source, double Seconds, Task<MaskDrawWindow.WarmStill?> Still)? _warmCutout;
 
-    /// <param name="viewModel">The window's view model (what is open, playing, the source's height).</param>
-    /// <param name="header">The editor's header: resting on it warms the selector's cards and the session's lists.</param>
-    /// <param name="timeline">The Timeline's panel: resting on it, quiet, warms its tools and the Cutout Studio's picture.</param>
-    /// <param name="warmHeaderCards">Makes the Layout Selector's cards; called at idle while the pointer is still on the header.</param>
-    /// <param name="timelineHeld">Whether the Timeline is scrubbed or a block dragged now.</param>
-    /// <param name="realizeTimelineTools">Makes the Timeline's tools.</param>
-    /// <param name="cutoutClip">The clip the Cutout Studio would open for (null: the video at the playhead).</param>
+    /// <param name="viewModel">Window VM (open state, playback, source height).</param>
+    /// <param name="header">Editor header; hover warms selector cards and session lists.</param>
+    /// <param name="timeline">Timeline panel; quiet hover warms its tools and the Cutout Studio still.</param>
+    /// <param name="warmHeaderCards">Realizes Layout Selector cards; invoked at idle while still hovering the header.</param>
+    /// <param name="timelineHeld">Whether a scrub or block drag is in progress.</param>
+    /// <param name="realizeTimelineTools">Realizes Timeline tools.</param>
+    /// <param name="cutoutClip">Selected clip the Cutout Studio would resolve its base clip from (null = video at playhead).</param>
     public HeatLampController(MainViewModel viewModel, UIElement header, UIElement timeline, Action warmHeaderCards, Func<bool> timelineHeld,
         Action realizeTimelineTools, Func<Layer?> cutoutClip)
     {
@@ -62,11 +60,11 @@ internal sealed class HeatLampController : IDisposable
         timeline.MouseLeave += Timeline_MouseLeave;
     }
 
-    /// <summary>The warm picture for a Cutout Studio opening now (it uses it only when it is of its own still); the slot is emptied.</summary>
-    public MaskDrawWindow.WarmStill? TakeWarmCutoutStill()
+    /// <summary>Takes the warm still (decoded or decoding) for an opening Cutout Studio, used only if it matches, and empties the slot.</summary>
+    public Task<MaskDrawWindow.WarmStill?>? TakeWarmCutoutStill()
     {
-        var warm = _warmCutoutStill;
-        _warmCutoutStill = null;
+        var warm = _warmCutout?.Still;
+        _warmCutout = null;
         return warm;
     }
 
@@ -83,7 +81,7 @@ internal sealed class HeatLampController : IDisposable
     {
         WarmSessionOnce();
 
-        // At idle, never in the pointer's own event (the cards' key serializes every layout).
+        // Defer to idle, never inside the pointer event (card keys serialize every layout).
         _header.Dispatcher.BeginInvoke(() =>
         {
             if (_header.IsMouseOver)
@@ -95,7 +93,7 @@ internal sealed class HeatLampController : IDisposable
 
     private void Timeline_MouseLeave(object sender, MouseEventArgs e) => _timelineQuiet.Cancel();
 
-    /// <summary>Styles, recent projects and audio devices read once on the pool (their files and drivers warm for the windows that list them).</summary>
+    /// <summary>Reads Styles, recent projects and audio devices once on the pool to warm files and drivers.</summary>
     private void WarmSessionOnce()
     {
         if (_sessionWarmed)
@@ -122,40 +120,32 @@ internal sealed class HeatLampController : IDisposable
             WarmTimeline();
     }
 
-    /// <summary>The Timeline quiet under the pointer: its tools made, and the Cutout Studio's picture for the selected clip (or the one at the playhead) decoded ahead.</summary>
+    /// <summary>Quiet Timeline hover: realizes tools and pre-decodes the Cutout Studio still for the selected (or playhead) clip.</summary>
     private void WarmTimeline()
     {
         _realizeTimelineTools();
         if (!_viewModel.HasSource || MaskDrawWindow.StillTarget(_viewModel, _cutoutClip()) is not { } target || !System.IO.File.Exists(target.Source))
             return;
-        if (_warmCutoutStill is { } warm && SameStill(warm.Source, warm.Seconds, target) || _warmingCutout is { } busy && SameStill(busy.Source, busy.Seconds, target))
+        // Same target already held (a failed decode is tried again).
+        if (_warmCutout is { } held && SameStill(held.Source, held.Seconds, target) && !(held.Still.IsCompletedSuccessfully && held.Still.Result is null))
             return;
 
-        _warmingCutout = target;
         var height = Math.Min(_viewModel.SourceHeight > 0 ? (int)_viewModel.SourceHeight : WarmStillMostHeight, WarmStillMostHeight);
-        var dispatcher = _timeline.Dispatcher;
-        _ = Task.Run(() =>
+        _warmCutout = (target.Source, target.Seconds, Task.Run(() =>
         {
-            System.Windows.Media.Imaging.BitmapSource? picture = null;
             try
             {
-                picture = MfPoster.Decode(target.Source, target.Seconds, Math.Max(height, 16));
+                // Frozen by the decoder, so the UI thread can show it.
+                return MfPoster.Decode(target.Source, target.Seconds, Math.Max(height, 16)) is { } picture
+                    ? new MaskDrawWindow.WarmStill(target.Source, target.Seconds, picture)
+                    : null;
             }
             catch (Exception ex) when (ex is GpuException or InvalidOperationException or System.IO.IOException or ArgumentException)
             {
                 AppLog.Write("Heat lamp: the Cutout Studio's picture could not be decoded ahead", ex);
+                return null;
             }
-
-            dispatcher.BeginInvoke(() =>
-            {
-                // Only the latest target is kept (one slot); a decode for an older one is dropped.
-                if (_warmingCutout is not { } asked || !SameStill(asked.Source, asked.Seconds, target))
-                    return;
-                _warmingCutout = null;
-                if (picture is not null)
-                    _warmCutoutStill = new MaskDrawWindow.WarmStill(target.Source, target.Seconds, picture);
-            }, DispatcherPriority.Background);
-        });
+        }));
 
         static bool SameStill(string source, double seconds, (string Source, double Seconds) other) =>
             string.Equals(source, other.Source, StringComparison.OrdinalIgnoreCase) && Math.Abs(seconds - other.Seconds) < 0.001;

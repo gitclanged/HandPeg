@@ -3,17 +3,16 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Project Media (5.4C) -----
-// The project's bin of files (TimelineDocument.MediaPool), saved with it: the files picked in the New Project studio, those dropped onto
-// the Media Browser, and every file a clip has played (a clip placed puts its file there: PoolsPlacedFiles), kept after its clips are
-// deleted until it is taken out of the bin. Every change is an edit of the document (Edit), so Undo keeps it in step with the clips: an
-// add or a removal by hand is a step of its own, a clip's file goes in with the clip's own step, and (5.4D) a used file taken out goes
-// with its clips in one step, once the user has said so.
+// ----- Project Media -----
+// Persisted project file bin (TimelineDocument.MediaPool): New Project picks, Media Browser drops, and every file a placed clip used
+// (PoolsPlacedFiles), retained after clip deletion until removed. All changes are document Edits so Undo stays consistent with clips:
+// manual add/remove is its own step, a clip's file joins with the clip's step, and removing a used file deletes its clips in the same
+// step after confirmation.
 public partial class MainViewModel
 {
     /// <summary>
-    /// Project Media as the Media Browser lists it: the bin's files in the order they came in, then any other file the project uses that
-    /// is not in it (the voiceover, the captions' sound, or a project from before 5.4C until it is opened again).
+    /// Media Browser listing: bin files in insertion order, then other used files not in the bin (voiceover, caption audio, or files of
+    /// legacy projects without a bin).
     /// </summary>
     public IReadOnlyList<string> ProjectMediaFiles()
     {
@@ -29,9 +28,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts files into Project Media: only media HandPeg reads (MediaFiles.KindOf), each once. One step of Undo ("add 3 files to
-    /// Project Media"); with <paramref name="undoable"/> false none (the New Project studio's picks, put in before the project's first
-    /// file is opened, so a file that fails to open stays in the bin). How many went in.
+    /// Adds supported media (MediaFiles.KindOf), deduplicated, in one undo step ("add 3 files to Project Media"); with
+    /// <paramref name="undoable"/> false, no step (New Project picks added before the first open, so a failed open keeps the file).
+    /// Returns the count added.
     /// </summary>
     public int AddToProjectMedia(IEnumerable<string> files, bool undoable = true)
     {
@@ -50,11 +49,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Takes files out of Project Media, one step of Undo. A file a clip on the Sequence still plays (a clip's file is always in the bin)
-    /// goes only with its clips (5.4D, Q5 b): the user is asked first (<see cref="ConfirmWarning"/>, else <see cref="Confirm"/>), and on
-    /// yes one step deletes exactly those clips (into the recycle bin, as Delete does) and takes every file asked for out of the bin. Declined,
-    /// or with no one to ask, such a file is refused as before (the status line says how many clips use it) and the others go. How many
-    /// files went out.
+    /// Removes files in one undo step. Files still used on the Sequence require confirmation (<see cref="ConfirmWarning"/>, else
+    /// <see cref="Confirm"/>); on yes, one step deletes exactly those clips (to the recycle bin) and removes all requested files. If
+    /// declined or headless, used files are refused (status shows clip count) and the rest removed. Returns the count removed.
     /// </summary>
     public int RemoveFromProjectMedia(IEnumerable<string> files)
     {
@@ -85,12 +82,11 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A question that goes ahead only on a deliberate click (5.4D: Cancel is the button Enter presses): title, message, what the
-    /// confirming button says. Null: <see cref="Confirm"/> asks instead.
+    /// Destructive confirmation (Enter = Cancel): title, message, confirm label. Null falls back to <see cref="Confirm"/>.
     /// </summary>
     public Func<string, string, string, bool>? ConfirmWarning { get; set; }
 
-    // The clips that play the used files, once the user has said yes to deleting them with the files; null when declined or no one asks.
+    // Clips to delete with used files after confirmation; null when declined or headless.
     private List<TimelineClip>? AskToDeleteClipsOf(List<(string File, int Clips)> used)
     {
         if ((ConfirmWarning ?? Confirm) is not { } ask)
@@ -107,13 +103,12 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The files asked for out of Project Media with the clips that play them (5.4D, Q5 b), one step of Undo: exactly those clips deleted
-    /// (each by itself, its children left as the Delete key leaves a clip's: withChildren false) into the recycle bin, then the files out
-    /// of the bin. A clip on a locked track refuses the whole step (its status text). How many files went out.
+    /// Removes files together with their clips in one undo step: deletes exactly those clips to the recycle bin (withChildren false,
+    /// like the Delete key), then removes the files. A clip on a locked track refuses the whole step. Returns the count removed.
     /// </summary>
     private int RemoveWithClips(List<string> asked, List<TimelineClip> clips)
     {
-        // The files that go: those in the bin, and a used file listed without being in it (a project from before 5.4C) once its clips go.
+        // Files removed: bin entries, plus listed-but-unbinned used files (legacy projects) once their clips are deleted.
         var pooled = asked.Where(Document.PoolHolds).ToList();
         var gone = asked.Where(f => Document.PoolHolds(f) || clips.Exists(c => string.Equals(TimelineDocument.PoolFileOf(c), f, StringComparison.OrdinalIgnoreCase))).ToList();
         var binned = clips.Where(c => Document.TrackOf(c) is not null)
@@ -149,13 +144,13 @@ public partial class MainViewModel
         return gone.Count;
     }
 
-    /// <summary>Whether a clip on the Sequence (not one in the recycle bin) plays the file.</summary>
+    /// <summary>Whether any Sequence clip (excluding the recycle bin) uses the file.</summary>
     public bool IsFileInUse(string file) => ClipsUsing(file) > 0;
 
-    /// <summary>How many clips on the Sequence play the file (its Cutouts count as clips of it).</summary>
+    /// <summary>Count of Sequence clips using the file (Cutouts included).</summary>
     public int ClipsUsing(string file) => ClipsOf(file).Count();
 
-    /// <summary>The clips on the Sequence that play the file (5.4D: those <see cref="ClipsUsing"/> counts), in the tracks' order.</summary>
+    /// <summary>Sequence clips using the file (as counted by <see cref="ClipsUsing"/>), in track order.</summary>
     internal IReadOnlyList<TimelineClip> ClipsPlaying(string file) => ClipsOf(file).ToList();
 
     private IEnumerable<TimelineClip> ClipsOf(string file)

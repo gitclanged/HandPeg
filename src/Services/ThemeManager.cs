@@ -7,14 +7,11 @@ using Microsoft.Win32;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The application's colours: five themes (Pass 4.1B), chosen in Settings or on the Layout selector's Themes row.
-/// Windows System follows Windows' light or dark mode and its accent; the others are fixed palettes with an accent of
-/// their own (OLED Black keeps Windows' accent on true black). Every brush is replaced in the application's resources,
-/// which everything refers to dynamically, so a change shows at once in every open window. Beside the colours each theme
-/// sets its look (Pass 4.1C): the button faces, bevels and borders, hover and chosen fills, the active tab's trace and
-/// the corner rounding, read by the one set of control templates in App.xaml. Since Pass 4.1C.2 a palette may give an
-/// edge lit from the top left as "upper/lower" (<see cref="EdgeTokens"/>): raised controls and sunken wells, drawn by the
-/// one element each control already has (ButtonChrome, the time bars), with no element added.
+/// Application themes (five), selected in Settings or the Layout selector. Windows System follows OS light/dark and accent; others are
+/// fixed palettes (OLED Black keeps the OS accent). Brushes are replaced in application resources (all DynamicResource), so changes apply
+/// live. Themes also set look tokens (button faces, bevels, borders, hover/selection fills, active tab trace, corner radius) used by the
+/// shared App.xaml templates; palettes may define two-tone "upper/lower" edges (<see cref="EdgeTokens"/>) for raised/sunken styling
+/// without extra elements.
 /// </summary>
 public static partial class ThemeManager
 {
@@ -57,8 +54,7 @@ public static partial class ThemeManager
         ["WarningTextBrush"] = "#F0A840", ["InsetBrush"] = "#000000",
     };
 
-    // The look of a dark grading studio (Pass 4.1C): near-black bars, slate panels and cards, a dark viewer well, quiet
-    // flat buttons, and one coral-red that traces what is active (the tab shown, the card or row chosen).
+    // Dark grading-studio palette: near-black bars, slate panels/cards, dark viewer well, flat buttons, coral-red active accent.
     private static readonly Dictionary<string, string> LeonardoPalette = new()
     {
         ["WindowBackgroundBrush"] = "#161619", ["PanelBrush"] = "#212126", ["ControlBrush"] = "#28282E", ["ControlHoverBrush"] = "#35353E",
@@ -70,13 +66,10 @@ public static partial class ThemeManager
         ["SelectedFillBrush"] = "#3A2C2E", ["SelectedBorderBrush"] = "#E64B35", ["SelectedTextBrush"] = "#E6E7EB", ["ActiveTabTraceBrush"] = "#E64B35",
     };
 
-    // A classic studio mid-tone (Pass 4.1C; 4.1.1 took it back from the warm tan of 4.1C.2 to pewter, and 4.1.1-D about a
-    // fifth darker, to cut the glare): pewter panels over darker grooves, a slate title bar apart from the workspace,
-    // darker pewter for the tabs not shown and the cards, each tab outlined, warm taupe wells (track bars, lists, the
-    // ruler, the layout canvas), muted stone inputs, never a glaring white; squared stone buttons raised by a lit edge
-    // (light top and left, dark bottom and right), wells and viewports sunk by the reverse; a soft parchment chosen row;
-    // steel-blue under the pointer and on what is chosen; crisp near-black text. 4.2B-3: a ticked box stays a sunken well
-    // with a near-black mark, and what is focused, checked or chosen is ringed by a classic 1 px dotted rectangle.
+    // Classic mid-tone studio palette (low-glare pewter): pewter panels over darker grooves, slate title bar, darker inactive tabs and
+    // cards (outlined), warm taupe wells, muted stone inputs; bevelled square buttons (light top-left, dark bottom-right) and inverse
+    // sunken wells; parchment selection row; steel-blue hover/selection; near-black text. Check boxes stay sunken with a dark mark;
+    // focus/checked/selected use a 1 px dotted rectangle.
     private static readonly Dictionary<string, string> RenoPalette = new()
     {
         ["WindowBackgroundBrush"] = "#7C7E83", ["PanelBrush"] = "#9A9B9E", ["ControlBrush"] = "#ACA9A1", ["ControlHoverBrush"] = "#9AB8D6",
@@ -92,10 +85,8 @@ public static partial class ThemeManager
         ["CheckedBoxBrush"] = "#848179", ["CheckedBoxBorderBrush"] = "#4A4843/#B0AEA6", ["CheckMarkBrush"] = "#141517", ["DottedFocusBrush"] = "#2B2D32",
     };
 
-    // Reno in the dark (Pass 4.1C; to Reno's measure in 4.1.1): gunmetal surfaces under a near-black title bar, the same
-    // squared buttons raised by a lit edge and wells sunk by the reverse (4.1C.2), darker tabs not shown, each tab
-    // outlined (lit top and left), a warm-grey chosen row, steel-blue under the pointer and on what is checked; 4.2B-3: a
-    // ticked box stays a sunken well with a light-blue mark, and a pale dotted rectangle rings what is focused or chosen.
+    // Dark variant of Reno: gunmetal surfaces, near-black title bar, the same bevelled buttons and sunken wells, darker outlined inactive
+    // tabs, warm-grey selection row, steel-blue hover/checked; check boxes sunken with a light-blue mark; pale dotted focus rectangle.
     private static readonly Dictionary<string, string> RenoDarkPalette = new()
     {
         ["WindowBackgroundBrush"] = "#1A1C20", ["PanelBrush"] = "#24272D", ["ControlBrush"] = "#1E2126", ["ControlHoverBrush"] = "#2B4A68",
@@ -112,11 +103,8 @@ public static partial class ThemeManager
     };
 
     /// <summary>
-    /// The edges a palette may light from the top left, as "upper/lower" (Pass 4.1C.2): the upper colour is the token,
-    /// along the top and left; the lower one, along the bottom and right, is the same name with "LowerBrush" for
-    /// "Brush" (ButtonBorderLowerBrush, ...), and is null (one colour all round) in a theme that gives a plain colour.
-    /// Light over dark raises a control (buttons, toggles, combo boxes, cards), dark over light sinks a well (lists, text
-    /// boxes, check boxes, the player, the layout canvas, the time bars).
+    /// Tokens that may be two-tone "upper/lower": upper colour on top/left uses the token; lower on bottom/right uses the "LowerBrush"
+    /// variant (ButtonBorderLowerBrush, ...), null for single-colour themes. Light-over-dark raises controls; dark-over-light sinks wells.
     /// </summary>
     private static readonly string[] EdgeTokens = ["ButtonBorderBrush", "NeutralButtonBorderBrush", "RaisedBorderBrush", "WellBorderBrush", "TabEdgeBrush", "ActiveTabEdgeBrush",
         "CheckedBoxBorderBrush"];
@@ -124,9 +112,8 @@ public static partial class ThemeManager
     private static string LowerOf(string edgeToken) => edgeToken[..^"Brush".Length] + "LowerBrush";
 
     /// <summary>
-    /// A theme: its palette, its accent (null: Windows' own), the colour of text on that accent, the rounding of its
-    /// controls, cards and boxed tabs (whose bottom corners are always square: they join the panel under them), and the
-    /// sunken edge it gives the wells that have none in a flat theme (track bars, ruler, waveforms, the layout canvas).
+    /// Theme definition: palette, accent (null = OS accent), on-accent text colour, corner radius for controls/cards/tabs (tab bottoms
+    /// stay square), and the sunken edge for wells that flat themes lack.
     /// </summary>
     private sealed record Theme(Dictionary<string, string> Palette, bool Dark, Color? Accent, Color OnAccent,
         double ControlRadius = 4, double CardRadius = 6, double TabRadius = 6, double WellEdge = 0);
@@ -141,13 +128,9 @@ public static partial class ThemeManager
     };
 
     /// <summary>
-    /// The look of buttons, hovered and chosen things and active tabs (Pass 4.1C), for a theme whose palette does not
-    /// give its own: the accent's buttons, as HandPeg always had, flat (no bevel), hover in the control hover colour;
-    /// lists on the inputs' colour, their edges, the combo boxes' and the cards' the plain control border, and the tabs
-    /// not shown open to what is behind them (4.1C.2), with no outline (4.1.1), the title bar the window's own colour; a
-    /// ticked check box filled with the accent and a mark in the colour on it, and no dotted rectangle (4.2B-3). The line between
-    /// two panes (5.3-Stage2) is a near-black hairline on a dark palette, and the controls' border colour on a light one, where a
-    /// near-black line would cut the panels apart.
+    /// Default look tokens for palettes that do not override them: flat accent buttons, control-hover fill, lists on input colour with
+    /// plain borders, open unoutlined inactive tabs, title bar in the window colour, accent-filled check boxes, no dotted focus rectangle.
+    /// Pane dividers are a near-black hairline on dark palettes and the control border colour on light ones.
     /// </summary>
     private static Dictionary<string, Color> LookDefaults(Dictionary<string, string> palette, bool dark, Color accent, Color hover, Color pressed, Color onAccent)
     {
@@ -155,12 +138,11 @@ public static partial class ThemeManager
         return new()
         {
             ["PaneSeamBrush"] = dark ? Color.FromRgb(0x22, 0x22, 0x28) : Of("ControlBorderBrush"),
-            // The Sequence Overview Scrubber's pane (the user's call after 5.3.0): a little darker than the panes and than the window's
-            // own colour (the bands above and below it), so the bar reads apart from what is round it; a light palette's a touch darker.
+            // Overview Scrubber pane: slightly darker than panes and window background so it reads as separate (light palettes slightly less).
             ["ScrubberBrush"] = Mix(Of("WindowBackgroundBrush"), Colors.Black, dark ? 0.25 : 0.04),
             ["CardBrush"] = Of("ControlBrush"), ["InactiveTabBrush"] = Colors.Transparent, ["TitleBarBrush"] = Of("WindowBackgroundBrush"),
-            // The inspector cards (5.4B, CLAUDE.md 10.3: the Export tab's columns): #1E1E22 edged #2A2A30 on a dark palette; on a light one
-            // a step darker than the panels, edged as the controls are.
+            // Inspector cards (Export tab columns): #1E1E22 with #2A2A30 border on dark palettes; one step darker than panels with control
+            // borders on light palettes.
             ["InspectorCardBrush"] = dark ? Color.FromRgb(0x1E, 0x1E, 0x22) : Mix(Of("PanelBrush"), Colors.Black, 0.06),
             ["InspectorCardBorderBrush"] = dark ? Color.FromRgb(0x2A, 0x2A, 0x30) : Of("ControlBorderBrush"),
             ["TabEdgeBrush"] = Colors.Transparent, ["ActiveTabEdgeBrush"] = Colors.Transparent,
@@ -175,8 +157,7 @@ public static partial class ThemeManager
     }
 
     /// <summary>
-    /// One of <see cref="Themes"/> for a saved name: the settings of HandPeg 4.0 and before said Follow System, Dark or
-    /// Light, now Windows System, Reno Dark and Reno (the neutral palettes nearest them).
+    /// Maps a saved name to one of <see cref="Themes"/>; legacy Follow System/Dark/Light map to Windows System/Reno Dark/Reno.
     /// </summary>
     public static string Normalize(string? theme) => theme switch
     {
@@ -194,16 +175,16 @@ public static partial class ThemeManager
     /// <summary>Whether the palette in effect is a dark one.</summary>
     public static bool IsDark { get; private set; } = true;
 
-    /// <summary>The theme in effect: the saved one, or one being previewed (the Layout selector's Themes row).</summary>
+    /// <summary>Active theme (saved or currently previewed).</summary>
     public static string Current { get; private set; } = WindowsSystem;
 
-    /// <summary>The fill of a keyframe's diamond on the time bars and in the Keyframes pane, for the theme in effect (frozen).</summary>
+    /// <summary>Frozen keyframe diamond fill for the active theme.</summary>
     public static Brush KeyFill { get; private set; } = Brushes.Gold;
 
     /// <summary>The fill of an unkeyed property's hollow diamond in the Keyframes pane (frozen).</summary>
     public static Brush HollowKeyFill { get; private set; } = Brushes.Gold;
 
-    /// <summary>Raised after a theme is put into effect (saved or previewed), for what draws with colours of its own.</summary>
+    /// <summary>Raised after a theme is applied (saved or preview) for custom-drawn elements.</summary>
     public static event Action? Applied;
 
     /// <summary>Sets the colours now, and again whenever Windows reports a change of colours or of its own theme.</summary>
@@ -226,15 +207,14 @@ public static partial class ThemeManager
         };
     }
 
-    // Windows' colours changed: the theme in effect (a preview stays a preview) is put in again.
+    // OS colours changed: reapply the active theme (previews stay previews).
     private static void Reapply() => Apply(Current);
 
     /// <summary>Puts the theme named in the settings into effect, in every window.</summary>
     public static void Apply() => Apply(AppSettings.Current.Theme);
 
     /// <summary>
-    /// Puts a theme into effect without saving it: the Layout selector's live preview (<see cref="Apply()"/> puts the
-    /// saved one back). Each brush is made and frozen once per change.
+    /// Applies a theme without saving (live preview; <see cref="Apply()"/> restores the saved one). Brushes are created and frozen once per change.
     /// </summary>
     public static void Apply(string theme)
     {
@@ -268,7 +248,7 @@ public static partial class ThemeManager
                 resources[key] = Brush(color);
         }
 
-        // The chosen row of a list (a track, a segment, a tile): the chosen fill unless the palette gives its own (Reno: soft parchment).
+        // List selection fill: the selection colour unless the palette overrides it (Reno: parchment).
         foreach (var (row, fill) in new[] { ("SelectedRowBrush", "SelectedFillBrush"), ("SelectedRowBorderBrush", "SelectedBorderBrush") })
         {
             if (!chosen.Palette.ContainsKey(row))
@@ -281,11 +261,10 @@ public static partial class ThemeManager
         resources["WellEdgeThickness"] = new Thickness(chosen.WellEdge);
         resources["TabEdgeThickness"] = chosen.Palette.ContainsKey("TabEdgeBrush") ? new Thickness(1, 1, 1, 0) : new Thickness(0);
 
-        // A theme that draws its own dotted rectangle (4.2B-3) drops WPF's focus rectangle, so focus is never ringed twice.
+        // Themes with their own dotted focus rectangle disable WPF's FocusVisualStyle to avoid double rings.
         resources["ThemeFocusVisual"] = resources[chosen.Palette.ContainsKey("DottedFocusBrush") ? "NoFocusVisual" : "StandardFocusVisual"];
 
-        // The keyframe accent (4.1.1): gold on a dark palette; on a light one a deep amber (diamonds) and a darker one for
-        // text (Key All), which pale gold on grey never was.
+        // Keyframe accent: gold on dark palettes; deep amber (diamonds) and darker amber (text) on light ones for contrast.
         KeyFill = Brush(chosen.Dark ? Colors.Gold : Color.FromRgb(0xB8, 0x6E, 0x00));
         HollowKeyFill = Brush(chosen.Dark ? Color.FromArgb(90, 255, 215, 0) : Color.FromArgb(110, 0xB8, 0x6E, 0x00));
         resources["KeyAccentBrush"] = chosen.Dark ? KeyFill : Brush(Color.FromRgb(0x8A, 0x4F, 0x00));
@@ -306,9 +285,8 @@ public static partial class ThemeManager
     }
 
     /// <summary>
-    /// A theme's look tokens as colours, without applying it: what the Settings window's live preview stage draws its
-    /// miniature workspace with (4.3-0B). The same colours <see cref="Apply(string)"/> sets (an edge given as two colours
-    /// by its upper one), and the theme's corner rounding of controls and tabs.
+    /// Theme look tokens as colours without applying them (Settings preview stage): same colours as <see cref="Apply(string)"/> (two-tone
+    /// edges by their upper colour) plus control and tab corner radii.
     /// </summary>
     public static (IReadOnlyDictionary<string, Color> Tokens, double ControlRadius, double TabRadius) Look(string theme)
     {
@@ -328,8 +306,7 @@ public static partial class ThemeManager
     private static partial int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
     /// <summary>
-    /// Gives a window the dark or the light title bar, to match; and a window with Windows' own title bar the theme's title
-    /// colours, as the main window draws its own (TitleBarBrush, its words in TextBrush). For a window whose handle exists.
+    /// Applies immersive dark/light mode and, for native title bars, the theme's caption colours (TitleBarBrush, TextBrush). Requires an HWND.
     /// </summary>
     public static void ApplyTitleBar(Window window)
     {
@@ -341,9 +318,8 @@ public static partial class ThemeManager
         var dark = IsDark ? 1 : 0;
         _ = DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
 
-        // A window that draws its title bar itself (WindowChrome): Windows' frame line in its own background (DWMWA_BORDER_COLOR,
-        // Windows 11; earlier versions refuse it). Since 5.3 such a window never has frame on the screen (maximized beside a taskbar
-        // that hides itself it is placed short of it, MainWindow.MaximizedPlace), so there is no strip to paint again.
+        // Custom-chrome windows: set the DWM border colour to the background (DWMWA_BORDER_COLOR, Windows 11 only). Maximized placement
+        // (MainWindow.MaximizedPlace) leaves no frame strip on screen to repaint.
         if (System.Windows.Shell.WindowChrome.GetWindowChrome(window) is not null)
         {
             if (window.Background is SolidColorBrush background)
@@ -356,8 +332,7 @@ public static partial class ThemeManager
             return;
         }
 
-        // DWMWA_CAPTION_COLOR and DWMWA_TEXT_COLOR (Windows 11; earlier versions refuse them and keep their own). Not for a
-        // window that has no title bar.
+        // DWMWA_CAPTION_COLOR/DWMWA_TEXT_COLOR (Windows 11 only); skipped for windows without a title bar.
         if (window.WindowStyle == WindowStyle.None)
             return;
 
@@ -382,13 +357,9 @@ public static partial class ThemeManager
         DependencyProperty.RegisterAttached("Corners", typeof(int), typeof(ThemeManager), new PropertyMetadata(0));
 
     /// <summary>
-    /// A window that draws its own frame (WindowChrome) asks Windows 11 for its corners by its state (5.3,
-    /// DWMWA_WINDOW_CORNER_PREFERENCE): rounded while it has a size of its own, square while maximized, where it fills the screen
-    /// edge to edge. Minimized, it keeps what it had, for the state it comes back to. Called with the window's state
-    /// (MainWindow.ApplyWindowState, the Settings screen's ApplyFrame) and its title bar (<see cref="ApplyTitleBar"/>); DWM is asked
-    /// only when the preference changes, never mid-drag for nothing. Windows 10 refuses the attribute and keeps its square corners.
-    /// The frame itself stays DWM's: WindowChrome's GlassFrameThickness is never zero (a zero one gives the window a region, which
-    /// turns DWM's frame, its shadow and its corners off).
+    /// Sets DWMWA_WINDOW_CORNER_PREFERENCE for custom-chrome windows by state: rounded when restored, square when maximized, unchanged
+    /// when minimized. Called from MainWindow.ApplyWindowState, Settings ApplyFrame and <see cref="ApplyTitleBar"/>; DWM is called only on
+    /// change. Windows 10 ignores it. GlassFrameThickness is never zero (that creates a window region and disables DWM frame, shadow and corners).
     /// </summary>
     public static void ApplyCorners(Window window)
     {
@@ -408,8 +379,7 @@ public static partial class ThemeManager
     private static int ColorRef(Color color) => color.R | color.G << 8 | color.B << 16;
 
     /// <summary>
-    /// Hides a window from the screen while it keeps being drawn (DWMWA_CLOAK), or shows it again: a window cloaked
-    /// before it is shown appears only once it has a frame to show, instead of as an empty white rectangle first.
+    /// Cloaks/uncloaks a window (DWMWA_CLOAK) while it keeps rendering, so a window cloaked before Show appears with content instead of a white flash.
     /// </summary>
     public static void SetCloaked(Window window, bool cloaked)
     {
@@ -438,7 +408,7 @@ public static partial class ThemeManager
     }
 
     /// <summary>
-    /// The accent colour from where Windows keeps it, then the window-frame colour WPF reports, then the fallback.
+    /// OS accent colour from the registry, else WPF's window-frame colour, else the fallback.
     /// </summary>
     private static Color ReadAccent()
     {

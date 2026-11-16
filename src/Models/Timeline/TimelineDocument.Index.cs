@@ -1,23 +1,20 @@
 namespace HandPegApp.Models.Timeline;
 
 /// <summary>
-/// The clip id index: <see cref="FindClip"/>, <see cref="Locate"/> and <see cref="TrackOf"/> in O(1) instead of a walk over every track
-/// and clip (row rebuilds called them several times per block, which made a rebuild O(C²) on Dead Air and multicam projects).
-/// <para>The index is an immutable dictionary, published through a volatile field and replaced, never changed in place, so a thread
-/// reading a document (a render snapshot) never sees it half-built. It is dropped when the outermost transaction closes (commit or
-/// rollback) and rebuilt by the next lookup; lookups made while a transaction is open walk the tracks, because a transaction moves,
-/// splits and re-ids clips as it goes.</para>
-/// <para>Self-healing rather than trusted: a hit is verified in O(1) (the same id, and the track and the clip still at the positions they
-/// had when the index was built); a miss or a failed verification falls back to the walk, and the index is dropped when the walk finds what the index did not
-/// (a clip added or moved outside a transaction: project loading, legacy conversion, the playback test's sequence). So a direct change to
-/// <see cref="Tracks"/> or a track's clips can only cost speed, never a wrong answer. Genuine misses (a parent id whose clip is gone) keep
-/// the index.</para>
+/// Clip id index giving O(1) <see cref="FindClip"/>, <see cref="Locate"/> and <see cref="TrackOf"/> (linear walks made row rebuilds
+/// O(C^2) on Dead Air and multicam projects).
+/// <para>An immutable dictionary published via a volatile field and replaced wholesale, so concurrent readers (render snapshots) never
+/// see partial state. Dropped when the outermost transaction closes and rebuilt lazily; lookups during a transaction walk the tracks
+/// since clips move, split and change ids.</para>
+/// <para>Self-healing: hits are verified in O(1) (same id, track and clip positions unchanged); misses or failed checks fall back to the
+/// walk, and the index is dropped if the walk finds what it missed (out-of-transaction changes: loading, legacy conversion, test
+/// sequences). Direct <see cref="Tracks"/> edits can only cost speed, never correctness; genuine misses keep the index.</para>
 /// </summary>
 public sealed partial class TimelineDocument
 {
     private volatile Dictionary<Guid, Entry>? _clipIndex;
 
-    // Where a clip was when the index was built: its track's position in Tracks and its own on the track (both checked on every hit).
+    // Track and clip positions at build time (verified on every hit).
     private readonly record struct Entry(TimelineClip Clip, TimelineTrackModel Track, int TrackAt, int ClipAt);
 
     /// <summary>How many times the index was built (for the goldens: lookups between edits must not rebuild it).</summary>
@@ -26,10 +23,10 @@ public sealed partial class TimelineDocument
     /// <summary>Drops the id index; the next lookup rebuilds it. Called when the outermost transaction closes.</summary>
     internal void InvalidateClipIndex() => _clipIndex = null;
 
-    /// <summary>The clip with this id, or null when no track holds it (the first in track and clip order, as a walk finds it).</summary>
+    /// <summary>Clip by id (first in track/clip order), or null.</summary>
     public TimelineClip? FindClip(Guid id) => Locate(id)?.Clip;
 
-    /// <summary>A clip by its id with its track, or null when no track holds it (the first, as <see cref="FindClip"/> finds it).</summary>
+    /// <summary>Clip and track by id (same match as <see cref="FindClip"/>), or null.</summary>
     internal (TimelineClip Clip, TimelineTrackModel Track)? Locate(Guid id)
     {
         if (OpenTransactions.Count > 0)
@@ -57,8 +54,7 @@ public sealed partial class TimelineDocument
         if (Locate(clip.Id) is { } hit && ReferenceEquals(hit.Clip, clip))
             return hit.Track;
 
-        // A clip that is not the document's clip of its id (a snapshot, a clip with a duplicated id): binary search on each track,
-        // then the long way, as before the index.
+        // Not the indexed instance (snapshot or duplicate id): binary search per track, then a full walk.
         foreach (var track in Tracks)
         {
             if (track.Find(clip) >= 0)
@@ -98,7 +94,7 @@ public sealed partial class TimelineDocument
         {
             var track = Tracks[t];
             for (var c = 0; c < track.Clips.Count; c++)
-                index.TryAdd(track.Clips[c].Id, new Entry(track.Clips[c], track, t, c)); // first in track and clip order wins, as the walk
+                index.TryAdd(track.Clips[c].Id, new Entry(track.Clips[c], track, t, c)); // first in track/clip order wins, matching the walk
         }
 
         ClipIndexBuilds++;

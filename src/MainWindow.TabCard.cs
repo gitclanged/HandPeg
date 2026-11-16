@@ -4,13 +4,13 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- Project tabs: a tab behind scrubbed from its hover card (Pass 5.4.2A; its own file since 5.4.4) -----
+// ----- Project tabs: hover-card scrubbing of background tabs -----
 public partial class MainWindow
 {
     /// <summary>
-    /// The pointer across a tab behind with its card open: its overview sheet's picture there, when it keeps one in memory (a frozen
-    /// cell of the sheet already held: nothing decoded, nothing asked of the engine). 5.4.4: <paramref name="value"/> is where across the
-    /// tab or the card (0 to 1), or with <paramref name="aboutPlayhead"/> an offset from the tab's playhead (a narrowed tab).
+    /// Hover scrub over a background tab with its card open: shows the in-memory overview sheet cell at that point (frozen cell, no decode,
+    /// no engine request). <paramref name="value"/> is the 0..1 position across the tab or card, or with <paramref name="aboutPlayhead"/>
+    /// an offset from the tab's playhead (narrowed tab).
     /// </summary>
     private void ScrubTabCard(ProjectTabItem item, double value, bool aboutPlayhead)
     {
@@ -33,9 +33,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Where along a tab's Sequence a hover card scrub is (pure, 5.4.4: the golden tab-hover-scrub), 0 to 1: <paramref name="value"/> itself,
-    /// or with <paramref name="aboutPlayhead"/> that offset from the middle of the playhead's cell (<paramref name="playheadCell"/> of
-    /// <paramref name="count"/>), so the narrowed tab's middle shows the picture the tab is paused on.
+    /// Scrub position along the tab's Sequence, 0..1 (pure; tab-hover-scrub golden): <paramref name="value"/> clamped, or with
+    /// <paramref name="aboutPlayhead"/> offset from the centre of the playhead cell (<paramref name="playheadCell"/> of
+    /// <paramref name="count"/>), so a narrowed tab's centre shows its paused frame.
     /// </summary>
     internal static double ScrubFraction(int count, int playheadCell, double value, bool aboutPlayhead)
     {
@@ -47,7 +47,7 @@ public partial class MainWindow
         return Math.Max(0, Math.Min(centre + value, 1));
     }
 
-    /// <summary>The sheet's cell a scrub at <paramref name="fraction"/> shows (pure): the last for the very end.</summary>
+    /// <summary>Sheet cell index for a scrub at <paramref name="fraction"/> (pure); 1.0 maps to the last cell.</summary>
     internal static int ScrubCell(int count, double fraction) =>
         count <= 0 || !double.IsFinite(fraction) ? 0 : Math.Max(0, Math.Min((int)(fraction * count), count - 1));
 }

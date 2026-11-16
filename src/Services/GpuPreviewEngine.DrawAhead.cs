@@ -2,17 +2,14 @@ using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.Services;
 
-// ----- Drawing ahead while playing (5.4.4-Final, the user's Q2 a) -----
-// On the XPS (unified memory) a playing turn drew its frame and waited for it inside the refresh it was to be shown on: a turn that took a little
-// longer than a refresh (the worker's draw, a decode lane's turn on the card) let the next timeline frame pass unpublished (5 to 16 skipped
-// frames in an 11 s play). Drawing ahead, each turn first shows the frame the worker drew during the refresh before (waiting only for what is
-// left of it), then hands the worker the next frame at once: the worker draws while the frame before is on the screen, and a turn is a present
-// and a publish. The next frame is drawn for its own moment on the screen: the swap chain's measured lead from the turn that handed it over
-// (GpuViewport.DisplayLeadSeconds, which then holds the refresh it waits), at least two refreshes until that is known. Off unless
-// HANDPEG_DRAW_AHEAD=1 (DrawsAhead: the bench did not show it helping); without it every turn draws its own frame, as before.
+// ----- Draw-ahead playback (experimental) -----
+// Default turns draw and wait within the target refresh; on unified-memory systems a slightly long turn skips a timeline frame. Draw
+// ahead pipelines it: each turn presents the frame drawn during the previous refresh (waiting only for its remainder), then hands the
+// worker the next frame, timed for its display moment via GpuViewport.DisplayLeadSeconds (at least two refreshes until measured).
+// Off unless HANDPEG_DRAW_AHEAD=1 (DrawsAhead), since benchmarks showed no improvement.
 public sealed partial class GpuPreviewEngine
 {
-    // The frame handed over on the last turn (its scene's sequence, 0: none) and that turn's QPC (its origin for the measured lead).
+    // Scene sequence handed over last turn (0 = none) and that turn's QPC (lead-measurement origin).
     private long _aheadSequence;
     private long _aheadOrigin;
 
@@ -20,28 +17,25 @@ public sealed partial class GpuPreviewEngine
     private long _aheadFrame = long.MinValue;
 
     /// <summary>
-    /// Whether playing draws ahead: only when HANDPEG_DRAW_AHEAD=1 asks (5.4.4-Final). The XPS play bench (two rounds each way, same build) did not
-    /// show it skipping fewer frames than drawing in the turn (S2: 62 against 57 % on time and 96 against 90 %, S1: 78 against 94 %, the
-    /// skipped frames alike), so it is off until it does: the user's call (USERRESPONSE Q2).
+    /// True only with HANDPEG_DRAW_AHEAD=1. A/B play benchmarks showed no reduction in skipped frames versus in-turn drawing, so it stays
+    /// off by default.
     /// </summary>
     private bool DrawsAhead => _drawsAhead ??= Environment.GetEnvironmentVariable("HANDPEG_DRAW_AHEAD") == "1";
 
     private bool? _drawsAhead;
 
     /// <summary>
-    /// The lead a frame drawn ahead is drawn for (pure, for the golden test): the measured one when known and within reason, at least two
-    /// refreshes (its turn's, and the one it waits in the worker's hands); two refreshes until it is known.
+    /// Draw-ahead lead (pure, golden-tested): the measured lead when known and sane, floored at two refreshes; two refreshes until known.
     /// </summary>
     internal static double AheadLead(double refresh, double measured) => GpuViewport.PlayingLead(2 * refresh, measured);
 
     /// <summary>
-    /// One playing turn while drawing ahead: the frame drawn during the last refresh presented, then the next one handed over. <paramref name="now"/>
-    /// is the turn's lead origin (its QPC, or 0 for a stalled turn: GpuViewport.LeadOrigin).
+    /// One draw-ahead turn: present the frame drawn last refresh, then hand over the next. <paramref name="now"/> is the lead origin (QPC,
+    /// or 0 for a stalled turn: GpuViewport.LeadOrigin).
     /// </summary>
     private void DrawAheadTurn(GpuScenePlan plan, long now, Span<GpuSeekHint> hints, ref bool owedTurn, ref bool presentedLast)
     {
-        // 1. On the screen now: the frame handed over on the last turn (waited for at most a refresh: the worker had the refresh between),
-        // else the frame shown last again (the swap chain keeps its beat).
+        // 1. Present last turn's frame (wait at most one refresh), else re-present the previous frame to keep cadence.
         var (shownFrame, shownSequence) = (_aheadFrame, _aheadSequence);
         if (shownSequence > 0)
         {
@@ -72,7 +66,7 @@ public sealed partial class GpuPreviewEngine
             return;
         }
 
-        // The same timeline frame as the one handed over last, nothing else changed: nothing new to draw (the next turn shows the last again).
+        // Same timeline frame and nothing changed: skip drawing (next turn re-presents).
         var frame = CanvasFrameOf(at);
         var moved = false;
         CameraMoving(ref moved);

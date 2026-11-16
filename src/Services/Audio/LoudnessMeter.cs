@@ -2,24 +2,22 @@ using System.Runtime.Intrinsics;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- Loudness: an export's (integrated, after the render) and the live meter's (Pass 5.2B, on the mixer's thread) -----
-// Both after ITU-R BS.1770-4 / EBU R128 and both K-weighted by the same two filters (KFilter): the export's normalization measures a whole
-// track once it is rendered (LoudnessMeter, until 5.2B in ExportSound.cs); the meter measures the mix as it is played, an export's level
-// (after the Sequence's master gain, before the monitor volume: WasapiAudioEngine.Meter), its momentary, short-term and gated integrated
-// loudness, its 4x-oversampled true peak and a hold of it (LiveLoudness), with nothing made while it runs.
+// ----- Loudness: export integrated loudness (post-render) and the live meter (mixer thread) -----
+// Both follow ITU-R BS.1770-4 / EBU R128 with the same K-weighting filters (KFilter). LoudnessMeter measures a rendered export track for
+// normalization; LiveLoudness meters the mix during playback at export level (after the master gain, before monitor volume:
+// WasapiAudioEngine.Meter): momentary, short-term and gated integrated loudness, 4x-oversampled true peak and its hold, allocation-free.
 
 /// <summary>
-/// Integrated loudness after ITU-R BS.1770-4 / EBU R128 (5.2-Audit, loudness normalization of an export): each channel K-weighted
-/// (the standard's high shelf and high-pass, worked out for the sample rate), mean squares over 400 ms blocks a quarter apart,
-/// summed with the standard's weights (the surround channels 1.41, the LFE left out), gated at -70 LUFS and then 10 LU under the
-/// mean of what is left. The sample peak beside it.
+/// Integrated loudness per ITU-R BS.1770-4 / EBU R128 (export loudness normalization): K-weighted channels (high shelf + high-pass derived
+/// for the sample rate), mean squares over 400 ms blocks with 75 % overlap, channel weights (surrounds 1.41, LFE excluded), gated at -70 LUFS,
+/// then 10 LU below the mean of the remainder. Tracks the sample peak alongside.
 /// </summary>
 public sealed class LoudnessMeter
 {
     private readonly int _channels, _step, _blockSteps;
     private readonly double[] _weights;
 
-    // The channels two at a time (5.3), a lane each: their filters, the sums of their squares over the step, and their peaks.
+    // Channels processed in pairs (one SIMD lane each): filters, per-step square sums and peaks.
     private readonly BiquadPair[] _shelf, _pass;
     private readonly Vector128<double>[] _stepSums;
     private Vector128<double> _peaks;
@@ -39,10 +37,10 @@ public sealed class LoudnessMeter
         _pass = Enumerable.Range(0, pairs).Select(_ => KFilter.HighPass(sampleRate).Paired()).ToArray();
     }
 
-    /// <summary>The largest sample magnitude seen.</summary>
+    /// <summary>Largest sample magnitude seen.</summary>
     public double SamplePeak => Math.Max(_peaks.GetElement(0), _peaks.GetElement(1));
 
-    /// <summary>One frame (a sample of each channel; one the frame lacks is silence).</summary>
+    /// <summary>Adds one frame (one sample per channel; missing channels are silence).</summary>
     public void Add(ReadOnlySpan<float> frame)
     {
         if (frame.Length >= _channels)
@@ -56,7 +54,7 @@ public sealed class LoudnessMeter
         Add(whole, 1);
     }
 
-    /// <summary>Frames of interleaved samples, each a sample of each channel (5.3: an export's track, a block at a time).</summary>
+    /// <summary>Adds interleaved frames (one sample per channel each), e.g. an export track block by block.</summary>
     public void Add(ReadOnlySpan<float> interleaved, int frames)
     {
         frames = Math.Min(frames, interleaved.Length / _channels);
@@ -82,9 +80,8 @@ public sealed class LoudnessMeter
         }
     }
 
-    // A pair of channels' frames K-weighted, a lane each (each lane the scalar filters' arithmetic in its order: the loudness is the same to the
-    // bit as one channel at a time), their squares summed and their peaks kept. An odd count's last channel has its own sound in the second
-    // lane too, which is never summed.
+    // K-weights a channel pair, one lane each (lane arithmetic matches the scalar filter order, so loudness is bit-identical to per-channel
+    // processing), summing squares and tracking peaks. With an odd channel count the last channel also fills the unused second lane.
     private void Weigh(ReadOnlySpan<float> samples, int frames, int pair)
     {
         var (channels, first) = (_channels, 2 * pair);
@@ -101,7 +98,7 @@ public sealed class LoudnessMeter
         (_shelf[pair], _pass[pair], _stepSums[pair], _peaks) = (shelf, pass, sum, peaks);
     }
 
-    /// <summary>The integrated loudness so far, LUFS; negative infinity for silence (or less than one block).</summary>
+    /// <summary>Integrated loudness so far, LUFS; negative infinity for silence or less than one block.</summary>
     public double IntegratedLufs
     {
         get
@@ -118,8 +115,8 @@ public sealed class LoudnessMeter
 }
 
 /// <summary>
-/// A direct-form biquad in double precision: BS.1770's K-weighting, its two stages (LoudnessMeter's, LiveLoudness's, which since 5.3 run it on
-/// two channels at once: <see cref="Paired"/>, the same arithmetic a lane each).
+/// Direct-form double-precision biquad for BS.1770 K-weighting (both stages); LoudnessMeter and LiveLoudness run it on channel pairs via
+/// <see cref="Paired"/> with identical per-lane arithmetic.
 /// </summary>
 internal sealed class KFilter(double b0, double b1, double b2, double a1, double a2)
 {
@@ -132,7 +129,7 @@ internal sealed class KFilter(double b0, double b1, double b2, double a1, double
         return y;
     }
 
-    /// <summary>Denormals let go of, in the silence after a sound.</summary>
+    /// <summary>Flushes denormals in the silence after a sound.</summary>
     public void Flush()
     {
         if (Math.Abs(_x1) < 1e-25)
@@ -145,10 +142,10 @@ internal sealed class KFilter(double b0, double b1, double b2, double a1, double
             _y2 = 0;
     }
 
-    /// <summary>The filter on two channels at once (<see cref="BiquadPair"/>), its history cleared.</summary>
+    /// <summary>The same filter on two channels at once (<see cref="BiquadPair"/>), history cleared.</summary>
     public BiquadPair Paired() => new(b0, b1, b2, a1, a2);
 
-    // BS.1770's pre-filter: a high shelf of about +4 dB from 1.5 kHz (its published 48 kHz coefficients, re-derived for any rate).
+    // BS.1770 pre-filter: ~+4 dB high shelf from ~1.5 kHz (published 48 kHz coefficients re-derived for any rate).
     public static KFilter Shelf(int rate)
     {
         const double f0 = 1681.974450955533, gain = 3.999843853973347, q = 0.7071752369554196;
@@ -159,7 +156,7 @@ internal sealed class KFilter(double b0, double b1, double b2, double a1, double
         return new KFilter((vh + vb * k / q + k * k) / a0, 2 * (k * k - vh) / a0, (vh - vb * k / q + k * k) / a0, 2 * (k * k - 1) / a0, (1 - k / q + k * k) / a0);
     }
 
-    // BS.1770's RLB weighting: a second-order high-pass at about 38 Hz.
+    // BS.1770 RLB weighting: 2nd-order high-pass at ~38 Hz.
     public static KFilter HighPass(int rate)
     {
         const double f0 = 38.13547087602444, q = 0.5003270373238773;
@@ -170,12 +167,11 @@ internal sealed class KFilter(double b0, double b1, double b2, double a1, double
 }
 
 /// <summary>
-/// The live meter's loudness and true peak (5.2B), on the mixer's thread with everything made beforehand: stereo, each side K-weighted, mean
-/// squares over 100 ms steps; the momentary loudness over the last 4 steps (400 ms), the short-term over the last 30 (3 s), and the gated
-/// integrated loudness since <see cref="Restart"/> over every 400 ms block a step apart (a histogram of the blocks, a tenth of an LU a bin from
-/// -70 to +5 LUFS, so the gates never need the blocks themselves: the absolute gate at -70, the relative one 10 LU under what passes it).
-/// The true peak is the largest of the samples and of the three points between each two that a 4x polyphase interpolator finds (ITU-R
-/// BS.1770-4 Annex 2's structure: four phases of twelve taps, a Kaiser-windowed sinc made here, each phase's gain 1), held over 3 s too.
+/// Live loudness and true peak on the mixer thread, allocation-free: stereo, K-weighted, mean squares per 100 ms step; momentary over 4 steps
+/// (400 ms), short-term over 30 (3 s), and gated integrated since <see cref="Restart"/> over 400 ms blocks at 100 ms hops via a histogram
+/// (0.1 LU bins from -70 to +5 LUFS, so gating never stores blocks: absolute gate -70, relative gate -10 LU). True peak = max of the samples
+/// and the three inter-sample points of a 4x polyphase interpolator (BS.1770-4 Annex 2 structure: 4 phases x 12 taps, Kaiser-windowed sinc,
+/// unity gain per phase), held over 3 s.
 /// </summary>
 internal sealed class LiveLoudness
 {
@@ -183,8 +179,8 @@ internal sealed class LiveLoudness
     private const double Lowest = -70, Highest = 5, BinWidth = 0.1;
     private static readonly int Bins = (int)Math.Round((Highest - Lowest) / BinWidth);
 
-    // The interpolator's phases 1 to 3 (phase 0 is the sample itself), tap j weighing the sample j before the newest: each tap in both lanes
-    // of a vector (5.3: both sides at once, each lane the sum one side alone makes, in its order, so the peaks are the same to the bit).
+    // Interpolator phases 1-3 (phase 0 is the sample itself); tap j weights the sample j before the newest, broadcast to both lanes (per-lane
+    // arithmetic identical to one channel alone, so peaks are bit-identical).
     private static readonly Vector128<double>[] Interpolator = [.. MakeInterpolator().Select(tap => Vector128.Create(tap))];
 
     private readonly int _step;
@@ -194,7 +190,7 @@ internal sealed class LiveLoudness
     private readonly int[] _histogramCount = new int[Bins];
     private readonly float[] _holdSteps = new float[HoldSteps];
 
-    // Both sides' last Taps samples (a lane each), twice over, so the newest's window is always whole: the newest at _historyAt.
+    // Both channels' last Taps samples (one lane each), stored twice so the newest's window is contiguous; newest at _historyAt.
     private readonly Vector128<double>[] _history = new Vector128<double>[2 * Taps];
     private int _historyAt, _stepCount, _stepAt, _holdAt, _inStep;
     private double _stepSum;
@@ -206,25 +202,25 @@ internal sealed class LiveLoudness
         (_shelf, _pass) = (KFilter.Shelf(sampleRate).Paired(), KFilter.HighPass(sampleRate).Paired());
     }
 
-    /// <summary>The momentary loudness (400 ms), LUFS; negative infinity in silence and before the first step.</summary>
+    /// <summary>Momentary loudness (400 ms), LUFS; negative infinity in silence and before the first step.</summary>
     public float MomentaryLufs { get; private set; } = float.NegativeInfinity;
 
-    /// <summary>The short-term loudness (3 s), LUFS.</summary>
+    /// <summary>Short-term loudness (3 s), LUFS.</summary>
     public float ShortTermLufs { get; private set; } = float.NegativeInfinity;
 
-    /// <summary>The gated integrated loudness since <see cref="Restart"/>, LUFS.</summary>
+    /// <summary>Gated integrated loudness since <see cref="Restart"/>, LUFS.</summary>
     public float IntegratedLufs { get; private set; } = float.NegativeInfinity;
 
-    /// <summary>The highest true peak (a factor) of both sides since <see cref="TakePeak"/> was last called.</summary>
+    /// <summary>Highest true peak (linear) of both channels since the last <see cref="TakePeak"/>.</summary>
     public float Peak { get; private set; }
 
-    /// <summary>The highest true peak over the last 3 s (a factor).</summary>
+    /// <summary>Highest true peak over the last 3 s (linear).</summary>
     public float HeldPeak { get; private set; }
 
-    /// <summary>A sample or a point between two reached full scale since <see cref="TakePeak"/>.</summary>
+    /// <summary>True when a sample or inter-sample point reached full scale since the last <see cref="TakePeak"/>.</summary>
     public bool Clipped { get; private set; }
 
-    /// <summary>The peak and the clip since the last call, and from now on afresh.</summary>
+    /// <summary>Returns the peak and clip flag since the last call, then resets them.</summary>
     public (float Peak, bool Clipped) TakePeak()
     {
         var taken = (Peak, Clipped);
@@ -232,7 +228,7 @@ internal sealed class LiveLoudness
         return taken;
     }
 
-    /// <summary>From here on (play started, a seek): the loudness and its blocks begin afresh; the filters and the peak's hold run on.</summary>
+    /// <summary>Restarts loudness measurement (play start, seek); the filters and the peak hold continue.</summary>
     public void Restart()
     {
         Array.Clear(_steps);
@@ -242,7 +238,7 @@ internal sealed class LiveLoudness
         (MomentaryLufs, ShortTermLufs, IntegratedLufs) = (float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity);
     }
 
-    /// <summary>A block of the mix (interleaved stereo).</summary>
+    /// <summary>Adds a block of the mix (interleaved stereo).</summary>
     public void Add(ReadOnlySpan<float> stereo, int frames)
     {
         var history = _history;
@@ -251,7 +247,7 @@ internal sealed class LiveLoudness
         {
             var sample = Vector128.Create((double)stereo[2 * i], stereo[2 * i + 1]);
 
-            // The true peak: the sample and the three points the interpolator puts before it.
+            // True peak: the sample plus the three interpolated points before it.
             _historyAt = _historyAt == 0 ? Taps - 1 : _historyAt - 1;
             history[_historyAt] = history[_historyAt + Taps] = sample;
             var window = history.AsSpan(_historyAt, Taps);
@@ -272,7 +268,7 @@ internal sealed class LiveLoudness
             if (truePeak >= 1)
                 Clipped = true;
 
-            // The loudness: each side K-weighted, its square summed over the step.
+            // Loudness: K-weight each channel and sum squares over the step.
             var weighted = _pass.Next(_shelf.Next(sample));
             var squares = weighted * weighted;
             _stepSum += squares.GetElement(0) + squares.GetElement(1);
@@ -286,7 +282,7 @@ internal sealed class LiveLoudness
 
     private static float Lufs(double meanSquare) => meanSquare > 0 ? (float)(-0.691 + 10 * Math.Log10(meanSquare)) : float.NegativeInfinity;
 
-    // A 100 ms step done: the windows' loudness, the block ending here into the histogram, the integrated loudness, the peak's hold.
+    // End of a 100 ms step: window loudness, histogram entry for the block ending here, integrated loudness, peak hold.
     private void EndStep()
     {
         _steps[_stepAt] = _stepSum / _step;
@@ -319,7 +315,7 @@ internal sealed class LiveLoudness
         HeldPeak = held;
     }
 
-    // The mean square of the last so many steps (those there are, while fewer have passed).
+    // Mean square of the last N steps (fewer while warming up).
     private double Mean(int steps)
     {
         var count = Math.Min(steps, _stepCount);
@@ -331,7 +327,7 @@ internal sealed class LiveLoudness
         return sum / count;
     }
 
-    // The gated integrated loudness from the histogram: the blocks over -70 LUFS, then those over 10 LU under their mean.
+    // Gated integrated loudness from the histogram: blocks above -70 LUFS, then those above 10 LU below their mean.
     private float Integrated()
     {
         var (energy, count) = (0.0, 0L);
@@ -351,8 +347,8 @@ internal sealed class LiveLoudness
         return count == 0 ? float.NegativeInfinity : Lufs(energy / count);
     }
 
-    // Phases 1 to 3 of the 4x interpolator: a sinc cut at the input's Nyquist frequency, under a Kaiser window (beta 6) 48 taps long and
-    // centred on tap 24, so phase 0 is the sample itself and phase p the point p/4 of the way from the sample 6 before the newest to the next.
+    // Interpolator phases 1-3: Nyquist-cutoff sinc under a 48-tap Kaiser window (beta 6) centred on tap 24, so phase 0 is the sample itself
+    // and phase p is the point p/4 of the way from the sample 6 before the newest to the next.
     private static double[] MakeInterpolator()
     {
         const int length = Taps * Phases, centre = length / 2;

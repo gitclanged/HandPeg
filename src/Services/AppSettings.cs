@@ -5,8 +5,7 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// "Apply this preset to videos like this": those in a folder such as D:\Shadowplay\, those whose name or
-/// path contains a word such as Overwatch, or those with an extension such as *.mkv.
+/// Smart Rule mapping matching videos to a preset: by folder (D:\Shadowplay\), path keyword (Overwatch) or extension (*.mkv).
 /// </summary>
 public sealed class SmartRule
 {
@@ -16,15 +15,15 @@ public sealed class SmartRule
 
     public static IReadOnlyList<string> Types { get; } = [Folder, Keyword, Extension];
 
-    /// <summary>One of <see cref="Types"/>. Rules saved before there were keyword rules have none; see <see cref="Normalize"/>.</summary>
+    /// <summary>One of <see cref="Types"/>; empty in rules that predate keyword rules (<see cref="Normalize"/>).</summary>
     public string Type { get; set; } = "";
 
-    /// <summary>What the rule looks for: the folder, the keyword, or the extension written as *.ext.</summary>
+    /// <summary>Match value: folder path, keyword, or extension as *.ext.</summary>
     public string Path { get; set; } = "";
 
     public string Preset { get; set; } = "";
 
-    /// <summary>Gives an older rule its type: it was an extension rule when it was written as *.ext, otherwise a folder rule.</summary>
+    /// <summary>Infers a legacy rule's type: *.ext means extension, anything else folder.</summary>
     public void Normalize()
     {
         (Type, Path, Preset) = (Type ?? "", Path ?? "", Preset ?? "");
@@ -33,7 +32,7 @@ public sealed class SmartRule
     }
 }
 
-/// <summary>A layout of the user's own (Layout button, Save Current Layout): its name, its place (1 to 3), and the arrangement (Docking.DockLayoutState as JSON).</summary>
+/// <summary>Saved custom layout (Save Current Layout): name, slot 1-3, and Docking.DockLayoutState JSON.</summary>
 public sealed class SavedDockLayout
 {
     public int Slot { get; set; }
@@ -49,112 +48,107 @@ public sealed partial class AppSettings
     public const string DefaultYtDlpReleaseUrl = "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest";
     public const string DefaultFfmpegReleaseUrl = "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest";
 
-    /// <summary>Where HandPeg's own releases are published. The updater (Velopack) reads them from here.</summary>
+    /// <summary>HandPeg release feed read by the Velopack updater.</summary>
     public const string HandPegRepositoryUrl = "https://github.com/gitclanged/HandPeg";
 
-    // The file as it has always been written (indented, the default rules), through the generated metadata (AppSettingsJsonContext).
+    // Indented JSON with default naming, via source-generated metadata (AppSettingsJsonContext).
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true, TypeInfoResolver = AppSettingsJsonContext.Default };
 
     /// <summary>
-    /// The list of whisper.cpp releases rather than "the latest": its numbered releases carry no programs,
-    /// which are attached to separate build releases, so the newest release that has the Windows build is used.
+    /// whisper.cpp release list (not /latest): numbered releases carry no binaries, so the newest one with a Windows build is picked.
     /// </summary>
     public const string DefaultWhisperReleaseUrl = "https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=30";
 
-    /// <summary>Where the speech models are downloaded from: this address followed by the model's file name.</summary>
+    /// <summary>Speech model download base URL; the model file name is appended.</summary>
     public const string WhisperModelBaseUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
 
     public static string FilePath => AppPaths.SettingsFile;
 
     /// <summary>
-    /// Editor Mode's saved views were brought to 4.1.1's (no status bar, the Audio tab after Layers), once (see <see cref="Load"/>).
-    /// True in every file written since; kept so that a file is read as it was written.
+    /// One-time Editor Mode view migration marker (no status bar, Audio tab after Layers; see <see cref="Load"/>). True in all newer files.
     /// </summary>
     public bool Migrated411Defaults { get; set; }
 
-    /// <summary>The settings in effect. Replaced as a whole when the user saves the settings window.</summary>
+    /// <summary>Active settings instance; replaced wholesale when the Settings window saves.</summary>
     public static AppSettings Current { get; private set; } = Load();
 
     public string YtDlpPath { get; set; } = "";
     public string FfmpegPath { get; set; } = "";
     public string FfprobePath { get; set; } = "";
 
-    /// <summary>A whisper.cpp program of the user's own (whisper-cli.exe, say), used instead of the downloaded one.</summary>
+    /// <summary>Custom whisper.cpp executable (e.g. whisper-cli.exe) used instead of the downloaded build.</summary>
     public string WhisperPath { get; set; } = "";
 
-    /// <summary>A while after startup, the tools HandPeg installed are replaced by their newest releases, in the background.</summary>
+    /// <summary>Background update of HandPeg-installed tools, shortly after startup.</summary>
     public bool AutoUpdateDependencies { get; set; } = true;
 
-    /// <summary>Looks for a newer HandPeg at startup and offers the Update button; nothing is downloaded until it is pressed.</summary>
+    /// <summary>Checks for a HandPeg update at startup and shows the Update button; downloads only on click.</summary>
     public bool CheckAppUpdatesOnStartup { get; set; } = true;
 
-    /// <summary>Downloads a newer HandPeg as soon as it is found (and puts it in when HandPeg closes), instead of waiting for the Update button.</summary>
+    /// <summary>Downloads updates as soon as found and applies them on exit, without waiting for the Update button.</summary>
     public bool AutoDownloadAppUpdates { get; set; }
 
     public string YtDlpReleaseUrl { get; set; } = "";
     public string FfmpegReleaseUrl { get; set; } = "";
 
     /// <summary>
-    /// Installs the FFmpeg 8.1 build instead of the newest one. Newer FFmpeg asks for an NVIDIA driver (610 or
-    /// later) that cards up to the GTX 10 series never get, and NVENC does not start at all without it. Turned
-    /// on by the hardware encoder check when it sees exactly that; see <see cref="EncoderProber.NvencNeedsOlderFfmpeg"/>.
+    /// Pins FFmpeg 8.1: newer builds require NVIDIA driver 610+, which GTX 10-series and older never receive, so NVENC fails.
+    /// Set by the encoder probe on that failure (<see cref="EncoderProber.NvencNeedsOlderFfmpeg"/>).
     /// </summary>
     public bool UseFfmpegForOlderNvidiaDrivers { get; set; }
 
     public string WhisperReleaseUrl { get; set; } = "";
 
-    // ----- Pinned dependency builds (v4.1) -----
+    // ----- Pinned dependency builds -----
 
     /// <summary>
-    /// Off (the default): FFmpeg and whisper.cpp are installed and updated only to the builds this version of HandPeg
-    /// was tested with (see <see cref="DependencyUpdater.PinnedBuilds"/>). On: to their newest upstream releases, untested.
-    /// Turned on only after a warning; Restore Pinned Recommended Versions turns it off again. yt-dlp follows its newest release either way.
+    /// False (default): FFmpeg and whisper.cpp stay on the tested builds (<see cref="DependencyUpdater.PinnedBuilds"/>); true tracks
+    /// untested upstream releases (enabled behind a warning). yt-dlp always tracks upstream.
     /// </summary>
     public bool AllowUnpinnedDependencyUpdates { get; set; }
 
     /// <summary>File name of the speech model auto-captions use, in the models folder.</summary>
     public string WhisperModel { get; set; } = "ggml-base.en.bin";
 
-    // ----- How whisper listens: the Auto-Captions tab. The defaults are whisper.cpp's own. -----
+    // ----- Auto-Captions whisper parameters (defaults match whisper.cpp) -----
 
-    /// <summary>The spoken language a new window starts with, as whisper names it (en, es...), or auto. A preset or a project sets its own.</summary>
+    /// <summary>Default spoken language (whisper code: en, es, ... or auto); presets and projects override it.</summary>
     public string WhisperDefaultLanguage { get; set; } = "en";
 
-    /// <summary>Beam search: how many candidate sentences whisper follows at once, 1 to 16. More is more careful and slower.</summary>
+    /// <summary>Beam search width, 1-16; wider is more accurate and slower.</summary>
     public int WhisperBeamSize { get; set; } = 5;
 
-    /// <summary>How many candidates whisper keeps when it samples, 1 to 16.</summary>
+    /// <summary>Sampling best-of candidate count, 1-16.</summary>
     public int WhisperBestOf { get; set; } = 5;
 
-    /// <summary>The sampling temperature, 0 to 1: 0 always takes the likeliest word.</summary>
+    /// <summary>Sampling temperature, 0-1 (0 is greedy).</summary>
     public double WhisperTemperature { get; set; }
 
-    /// <summary>When a stretch fails to decode, whisper tries it again at a higher temperature.</summary>
+    /// <summary>Retries a failed segment at a higher temperature.</summary>
     public bool WhisperTemperatureFallback { get; set; } = true;
 
-    /// <summary>Silence detection (VAD): whisper is handed only the stretches with speech in them, when its model is installed.</summary>
+    /// <summary>Voice activity detection: only speech segments are sent to whisper (requires the VAD model).</summary>
     public bool UseVad { get; set; } = true;
 
-    /// <summary>How sure the detector has to be that a sound is speech, 0 to 1. Higher leaves more out.</summary>
+    /// <summary>VAD speech probability threshold, 0-1; higher rejects more.</summary>
     public double VadThreshold { get; set; } = 0.5;
 
-    /// <summary>Speech shorter than this, in milliseconds, is taken for noise.</summary>
+    /// <summary>Minimum speech duration (ms); shorter bursts are treated as noise.</summary>
     public int VadMinSpeechMs { get; set; } = 250;
 
-    /// <summary>A silence has to last this long, in milliseconds, to end a stretch of speech.</summary>
+    /// <summary>Minimum silence (ms) that ends a speech segment.</summary>
     public int VadMinSilenceMs { get; set; } = 100;
 
-    /// <summary>Milliseconds kept on either side of a stretch of speech, so that words are not clipped.</summary>
+    /// <summary>Padding (ms) added to each side of a speech segment to avoid clipping words.</summary>
     public int VadSpeechPadMs { get; set; } = 30;
 
     /// <summary>
-    /// When a new video is loaded, the audio track whose title names a microphone or a voice ("Mic", "Track 2: Microphone")
-    /// is marked as its Voice track (4.3E, <see cref="VoiceTrackScanner"/>): Auto-Captions listen to it, and the sounds set
-    /// to Duck make room for it. A project or a queued job keeps its tracks as they were saved.
+    /// On load, marks the audio track titled like a microphone ("Mic", "Track 2: Microphone") as the Voice track
+    /// (<see cref="VoiceTrackScanner"/>) for Auto-Captions and ducking. Saved projects and queued jobs keep their own tracks.
     /// </summary>
     public bool AutoMarkVoiceTrack { get; set; } = true;
 
-    /// <summary>The caption style a new window starts with; null for the built-in one. A preset or a project sets its own.</summary>
+    /// <summary>Default caption style (null: built-in); presets and projects override it.</summary>
     public HandPegApp.Models.CaptionStyle? DefaultCaptionStyle { get; set; }
 
     /// <summary>Preset applied to a newly loaded video when no smart rule matches. Blank for none.</summary>
@@ -163,10 +157,9 @@ public sealed partial class AppSettings
     public List<SmartRule> SmartRules { get; set; } = [];
 
     /// <summary>
-    /// Gives the Smart Rules and the default preset that name a renamed built-in Export Preset by its old name the new one (5.4B,
-    /// ExportPresetCatalog.RenamedBuiltIns), unless the user still has a preset of the old name (<paramref name="userHas"/>: a changed
-    /// old built-in, kept as theirs). Called as the presets are read (PresetStore.Load, off the window's thread); saved with the
-    /// settings the next time they are. Whether anything was renamed.
+    /// Rewrites Smart Rules and the default preset that reference a renamed built-in Export Preset (ExportPresetCatalog.RenamedBuiltIns),
+    /// unless a custom preset still uses the old name (<paramref name="userHas"/>). Called from PresetStore.Load off the UI thread;
+    /// persisted on the next save. Returns true when anything changed.
     /// </summary>
     public bool RenamePresetReferences(IReadOnlyDictionary<string, string> renamed, Func<string, bool> userHas)
     {
@@ -184,10 +177,8 @@ public sealed partial class AppSettings
     }
 
     /// <summary>
-    /// Gives the drop overlay's Game Presets (<see cref="SplashStylePresets"/>, by file name) that name one by its name before 5.5.0 the
-    /// new one (<see cref="LegacyPresetNames"/>), as the settings are read; saved with them the next time they are. Game Presets only
-    /// (Pass 5.5.2, the user's Q2): the Smart Rules and the default preset name Export Presets and are never mapped here. An entry that
-    /// maps onto a name already in the list is dropped, so the list keeps one of each in its order. Whether anything changed.
+    /// Maps legacy Game Preset file names in <see cref="SplashStylePresets"/> to current ones (<see cref="LegacyPresetNames"/>) on load;
+    /// Export Preset references are never mapped here. Duplicates created by the mapping are dropped, order kept. Returns true on change.
     /// </summary>
     public bool MapLegacyPresetNames()
     {
@@ -210,71 +201,67 @@ public sealed partial class AppSettings
         return true;
     }
 
-    /// <summary>When on, saving a preset also stores the Target File Size that is set at the time.</summary>
+    /// <summary>Saving a preset also stores the current Target File Size.</summary>
     public bool SaveTargetSizeInPresets { get; set; }
 
-    // Timeline
+    // ----- Timeline -----
     /// <summary>
-    /// The Playback Controls pane of its own (the transport, frame steps and speed), not the transport folded into the Sequence
-    /// Overview Scrubber's row. On by default (5.2E, the user's report): the first-run window always turned it on
-    /// (ApplyEditorDefaults), but a copy whose settings skip that window showed the folded row, a window no user sees. Every settings
-    /// file since 4.2 writes it, so a user's own choice is kept.
+    /// Separate Playback Controls pane (transport, frame step, speed) instead of the transport folded into the Overview Scrubber row.
+    /// Defaults on so installs that skip the first-run window match ApplyEditorDefaults; existing files keep their value.
     /// </summary>
     public bool ShowAdvancedPlayback { get; set; } = true;
 
     /// <summary>True puts the frame-step and speed controls on their own row above the timeline; false keeps them inline.</summary>
     public bool AdvancedPlaybackAboveTimeline { get; set; }
 
-    /// <summary>True shows times as HH:MM:SS:FF (frames, the default since 5.3.2); false as HH:MM:SS.mmm (milliseconds).</summary>
+    /// <summary>True formats times as HH:MM:SS:FF (frames, default); false as HH:MM:SS.mmm.</summary>
     public bool ShowTimesAsFrames { get; set; } = true;
 
     public bool SnapTimelineToIFrames { get; set; }
 
-    /// <summary>Whether the I-frame lines are drawn on the timeline: the "Show I-frames" box of the main window.</summary>
+    /// <summary>Draws I-frame markers on the timeline ("Show I-frames").</summary>
     public bool ShowIFrames { get; set; } = true;
 
-    /// <summary>When on, ticking or clearing "Show I-frames" switches <see cref="SnapTimelineToIFrames"/> with it.</summary>
+    /// <summary>Toggling "Show I-frames" also toggles <see cref="SnapTimelineToIFrames"/>.</summary>
     public bool AutoToggleTimelineSnap { get; set; }
 
-    /// <summary>How far the timeline thumb is pulled towards an I-frame while dragging: 1 (weak) to 5 (strong).</summary>
+    /// <summary>I-frame snap pull while dragging the thumb, 1 (weak) to 5 (strong).</summary>
     public int TimelineMagnetism { get; set; } = 3;
 
-    /// <summary>Builds a sheet of thumbnails after each load, shown when the pointer is over the timeline.</summary>
+    /// <summary>Builds a hover thumbnail sheet after each load.</summary>
     public bool GenerateHoverPreviews { get; set; }
 
-    /// <summary>Seconds between hover thumbnails. Stretched automatically for videos too long for one sheet.</summary>
+    /// <summary>Seconds between hover thumbnails; stretched automatically when the video exceeds one sheet.</summary>
     public int ThumbnailIntervalSeconds { get; set; } = 5;
 
-    /// <summary>Size of the hover thumbnail on screen, 1 to 5: 1 is as generated, 5 is four times that.</summary>
+    /// <summary>Hover thumbnail display scale step, 1 (native) to 5 (4x).</summary>
     public int HoverPreviewScale { get; set; } = 1;
 
-    /// <summary>What a hover preview size on the 1-to-5 scale multiplies the thumbnail by: 1 at one end, 4 at the other.</summary>
+    /// <summary>Maps a 1-5 hover size step to a 1x-4x magnification.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public double HoverPreviewZoom => 1 + (Math.Clamp(HoverPreviewScale, 1, 5) - 1) * 0.75;
 
-    /// <summary>How many of the most recent yt-dlp downloads are kept between sessions.</summary>
+    /// <summary>Number of recent yt-dlp downloads kept in the cache between sessions.</summary>
     public int DownloadCacheSize { get; set; } = 5;
 
     /// <summary>
-    /// Where a URL's download is saved, to keep; blank keeps downloads in the cache, where only the most recent
-    /// <see cref="DownloadCacheSize"/> are kept. Files saved here are never deleted by HandPeg.
+    /// Permanent download folder (never cleaned by HandPeg); blank keeps downloads in the cache, capped at <see cref="DownloadCacheSize"/>.
     /// </summary>
     public string DownloadFolder { get; set; } = "";
 
     /// <summary>
-    /// The cookies a download that a site walls off (age check, sign-in, 403) is tried again with, so it is fetched as
-    /// the signed-in browser would: "auto" tries each browser found on this PC (Waterfox, Firefox, Edge, Chrome, Brave)
-    /// and the cookies file when one is named; a browser's name, that browser only; "file", <see cref="YtDlpCookiesFilePath"/>
-    /// only; "off", never. The first try is always without cookies. One of <see cref="YtDlpCookieSources"/>.
+    /// Cookie source for retrying a gated download (age check, sign-in, 403); the first attempt never uses cookies. "auto" tries each
+    /// installed browser then the cookies file; a browser name uses only it; "file" uses <see cref="YtDlpCookiesFilePath"/>; "off" never
+    /// retries. One of <see cref="YtDlpCookieSources"/>.
     /// </summary>
     public string YtDlpCookieSource { get; set; } = CookiesAuto;
 
-    /// <summary>A cookies.txt (Netscape format, exported from a browser) for <see cref="YtDlpCookieSource"/> "file" or "auto"; blank for none.</summary>
+    /// <summary>Netscape-format cookies.txt for <see cref="YtDlpCookieSource"/> "file" or "auto"; blank for none.</summary>
     public string YtDlpCookiesFilePath { get; set; } = "";
 
     public const string CookiesAuto = "auto", CookiesFile = "file", CookiesOff = "off";
 
-    /// <summary>What <see cref="YtDlpCookieSource"/> can be, with the words Settings shows for each.</summary>
+    /// <summary>Allowed <see cref="YtDlpCookieSource"/> values with their Settings labels.</summary>
     public static IReadOnlyList<KeyValuePair<string, string>> YtDlpCookieSources { get; } =
     [
         new(CookiesAuto, "Automatic (Any Browser Found)"),
@@ -287,91 +274,89 @@ public sealed partial class AppSettings
         new(CookiesOff, "Off (Never Use Cookies)"),
     ];
 
-    // Preview caches (see PreviewCache)
-    /// <summary>Keeps the timeline's pictures of the videos loaded (hover sheet, strips of frames, waveforms, I-frames) on disk between sessions.</summary>
+    // ----- Preview caches (PreviewCache) -----
+    /// <summary>Persists timeline previews (hover sheet, filmstrips, waveforms, I-frames) across sessions.</summary>
     public bool CacheTimelinePreviews { get; set; } = true;
 
-    /// <summary>How large the timeline's cache may grow, in megabytes, before what was used longest ago is deleted.</summary>
+    /// <summary>Timeline preview cache cap (MB); least recently used entries are evicted.</summary>
     public int TimelineCacheMegabytes { get; set; } = 1024;
 
-    /// <summary>Keeps the media browser's frames of each video on disk between sessions.</summary>
+    /// <summary>Persists Media Browser frames across sessions.</summary>
     public bool CacheBrowserPreviews { get; set; } = true;
 
     /// <summary>How large the media browser's cache may grow, in megabytes.</summary>
     public int BrowserCacheMegabytes { get; set; } = 512;
 
-    // ----- Proxies (Settings > Preview & Cache > Proxies; see ProxyCache) -----
+    // ----- Proxies (ProxyCache) -----
 
     /// <summary>
-    /// A video whose I-frames are further apart than this, in seconds (at the median), is long-GOP: every seek decodes that
-    /// far. Its clip's right-click menu offers Optimize Long-GOP Clip for Scrubbing when the preview cannot decode it fast
-    /// (MainViewModel.OptimizeIsUseful). Settings > Preview &amp; Cache > Proxies.
+    /// Median I-frame spacing (s) above which a video counts as long-GOP; such clips offer Optimize Long-GOP Clip for Scrubbing when
+    /// preview decode is slow (MainViewModel.OptimizeIsUseful).
     /// </summary>
     public double ProxyHeavyIFrameSeconds { get; set; } = 2;
 
     public static IReadOnlyList<int> ProxyTiers { get; } = [480, 540, 720];
 
-    /// <summary>How tall proxies are made, in pixels: 480, 540 or 720.</summary>
+    /// <summary>Proxy height in pixels: 480, 540 or 720.</summary>
     public int ProxyTier { get; set; } = 540;
 
     public const string ProxyCodecH264 = "H.264 (short GOP)", ProxyCodecMjpeg = "MJPEG (every frame an I-frame)";
 
     public static IReadOnlyList<string> ProxyCodecs { get; } = [ProxyCodecH264, ProxyCodecMjpeg];
 
-    /// <summary>What proxies are encoded as: H.264 with an I-frame every 15 frames and no B-frames, or MJPEG (instant seeks, about three times the size).</summary>
+    /// <summary>Proxy codec: H.264 (GOP 15, no B-frames) or MJPEG (all-intra seeks, ~3x larger).</summary>
     public string ProxyCodec { get; set; } = ProxyCodecH264;
 
     public const string ProxyEncoderAuto = "Auto", ProxyEncoderProcessor = "Processor";
 
     public static IReadOnlyList<string> ProxyEncoders { get; } = [ProxyEncoderAuto, "NVENC", "Quick Sync", "AMF", ProxyEncoderProcessor];
 
-    /// <summary>Which encoder makes H.264 proxies: Auto (the background card's, then the main card's, then the processor), or one named.</summary>
+    /// <summary>H.264 proxy encoder: Auto (background GPU, then compositor GPU, then CPU) or a named encoder.</summary>
     public string ProxyEncoder { get; set; } = ProxyEncoderAuto;
 
-    /// <summary>A proxy being made is paused (its FFmpeg suspended) while the player plays, and goes on after.</summary>
+    /// <summary>Suspends the proxy FFmpeg process during playback and resumes it afterwards.</summary>
     public bool PauseProxiesWhilePlaying { get; set; } = true;
 
-    /// <summary>How large the proxy cache may grow, in gigabytes, before the proxies used longest ago are deleted.</summary>
+    /// <summary>Proxy cache cap (GB); least recently used proxies are evicted.</summary>
     public double ProxyCacheGigabytes { get; set; } = 20;
 
     public const string ProxiesInCache = "In the cache folder", ProxiesBesideProject = "Beside the project";
 
     public static IReadOnlyList<string> ProxyLocations { get; } = [ProxiesInCache, ProxiesBesideProject];
 
-    /// <summary>Where proxies are kept: with the other caches, or in a folder beside the project file (Name.proxies) when there is one.</summary>
+    /// <summary>Proxy location: the cache folder, or Name.proxies beside the project file when saved.</summary>
     public string ProxyLocation { get; set; } = ProxiesInCache;
 
     /// <summary>The proxies of files that have been deleted are deleted too, at startup.</summary>
     public bool PurgeProxiesOfDeletedFiles { get; set; } = true;
 
-    /// <summary>The proxies of the project's files are deleted when the project is closed (another opened, or HandPeg closed).</summary>
+    /// <summary>Deletes the project's proxies when the project closes.</summary>
     public bool ClearProjectProxiesOnExit { get; set; }
 
     /// <summary>
-    /// Whether the proxy cache is on: always (5.0D; no on/off switch, the user's Q6 in 5.0-Verify). A proxy is there only
-    /// because a clip asked for one (Optimize Long-GOP Clip for Scrubbing), so the cache's controls are its size limit, its
-    /// usage and Clear Proxy Cache (Settings > Preview &amp; Cache > Caches); off, a proxy asked for would have nowhere to go.
+    /// Always true: proxies exist only on explicit request (Optimize Long-GOP Clip), so the cache is controlled by its size cap and
+    /// Clear Proxy Cache rather than an on/off switch.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public bool UsesProxies => true;
 
     // ----- Cache clean-up at startup -----
 
-    /// <summary>The previews of files that have been deleted (or changed) are deleted from the caches, a while after startup.</summary>
+    /// <summary>Purges cached previews of deleted or changed files shortly after startup.</summary>
     public bool PurgeMissingAtStartup { get; set; } = true;
 
     /// <summary>How long after startup the clean-up runs, in seconds.</summary>
     public int PurgeDelaySeconds { get; set; } = 60;
 
-    /// <summary>A file on a drive that is not there (unplugged, offline) counts as deleted. Off: its previews are kept until the size limit takes them.</summary>
+    /// <summary>Treats files on missing drives as deleted; false keeps their previews until size eviction.</summary>
     public bool MissingDrivesCountAsDeleted { get; set; }
 
-    // ----- Media browser: indexing the folder shown -----
+    // ----- Media Browser folder indexing -----
 
-    /// <summary>How long a folder stays open in the media browser before all of its videos are prepared, in seconds; 0 for never.</summary>
+    /// <summary>Seconds a folder must stay open before its videos are pre-indexed; 0 disables.</summary>
     public int BrowserIndexDelaySeconds { get; set; } = 40;
 
-    /// <summary>The most videos of one folder prepared that way.</summary>
+    /// <summary>Maximum videos pre-indexed per folder.</summary>
     public int BrowserIndexMaxFiles { get; set; } = 500;
 
     /// <summary>Folders are indexed on battery power too.</summary>
@@ -385,23 +370,22 @@ public sealed partial class AppSettings
 
     // ----- Downloads used by projects -----
 
-    /// <summary>A download in the download cache that a project uses is not deleted when the cache is trimmed.</summary>
+    /// <summary>Cache trimming skips downloads referenced by a project.</summary>
     public bool KeepDownloadsUsedByProjects { get; set; } = true;
 
     /// <summary>Saving a project that uses files from the download cache offers to copy them into the download folder.</summary>
     public bool AskToCopyDownloadsOnSave { get; set; } = true;
 
     /// <summary>
-    /// Saving such a project copies them without asking (the question's "Remember my choice", or Settings, 4.4). Read only
-    /// while <see cref="AskToCopyDownloadsOnSave"/> is off; both off leaves the downloads in the download cache.
+    /// Copies referenced downloads on save without prompting; read only while <see cref="AskToCopyDownloadsOnSave"/> is false.
+    /// Both false leaves them in the cache.
     /// </summary>
     public bool AlwaysCopyDownloadsOnSave { get; set; }
 
     public const string DownloadsAsk = "ask", DownloadsCopy = "copy", DownloadsKeep = "keep";
 
     /// <summary>
-    /// The two flags above as the one choice Settings shows ("Downloaded videos in saved projects"): one of
-    /// <see cref="SavedProjectDownloadChoices"/>. Not saved itself: the flags are.
+    /// Single Settings choice combining the two flags above (one of <see cref="SavedProjectDownloadChoices"/>); not serialized.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public string SavedProjectDownloads
@@ -414,7 +398,7 @@ public sealed partial class AppSettings
         }
     }
 
-    /// <summary>What <see cref="SavedProjectDownloads"/> can be, with the words Settings shows for each.</summary>
+    /// <summary>Allowed <see cref="SavedProjectDownloads"/> values with their Settings labels.</summary>
     public static IReadOnlyList<KeyValuePair<string, string>> SavedProjectDownloadChoices { get; } =
     [
         new(DownloadsAsk, "Ask each time"),
@@ -422,27 +406,26 @@ public sealed partial class AppSettings
         new(DownloadsKeep, "Leave them in the download cache"),
     ];
 
-    // Media browser
-    /// <summary>How many frames are taken from each video in the media browser, for the picture that follows the pointer over its tile.</summary>
+    // ----- Media Browser -----
+    /// <summary>Hover-scrub frames extracted per Media Browser video.</summary>
     public int BrowserPreviewFrames { get; set; } = 15;
 
-    /// <summary>How tall those frames are made, in pixels.</summary>
+    /// <summary>Hover-scrub frame height in pixels.</summary>
     public int BrowserPreviewHeight { get; set; } = 480;
 
-    /// <summary>A clip dragged or dropped on the time bars snaps to the edges of the others, the end of the sequence and the playhead.</summary>
+    /// <summary>Dragged clips snap to clip edges, the Sequence end and the playhead.</summary>
     public bool SnapClips { get; set; } = true;
 
     /// <summary>
-    /// A clip dropped on a track that has room for it at that moment joins it. Off (the default), every
-    /// clip dropped gets a track of its own, just above the row it was dropped on. Either way nothing is ever laid over
-    /// a clip already there: a clip that would overlap one goes on a new track instead.
+    /// True drops a clip onto the target track when it has room; false (default) always creates a new track above the drop row.
+    /// Drops never overlap an existing clip.
     /// </summary>
     public bool DroppedClipsJoinTrack { get; set; }
 
     /// <summary>The folder the media browser last showed.</summary>
     public string BrowserFolder { get; set; } = "";
 
-    /// <summary>How large the media browser's tiles are, 0 to 100: the smallest few are the list; 38 is about 200 pixels wide.</summary>
+    /// <summary>Tile size 0-100 (lowest values render as a list; 38 is ~200 px wide).</summary>
     public int BrowserTileSize { get; set; } = 38;
 
     /// <summary>What the media browser's files are sorted by: Name, Date, Size or Type.</summary>
@@ -450,117 +433,114 @@ public sealed partial class AppSettings
 
     public bool BrowserSortDescending { get; set; }
 
-    /// <summary>The media browser lists the files the open project uses (Project Media) instead of a folder (Folder Browser).</summary>
+    /// <summary>Lists the open project's files (Project Media) instead of a folder.</summary>
     public bool BrowserShowsProject { get; set; }
 
-    /// <summary>The media browser shows the Clip Library (5.2C: the user's own clips, ClipLibrary) rather than the project's files or a folder.</summary>
+    /// <summary>Shows the Clip Library (ClipLibrary) instead of project files or a folder.</summary>
     public bool BrowserShowsLibrary { get; set; }
 
-    /// <summary>How the media browser lays its files out (5.4C): "Grid" (tiles), "List" (a table of each file's details) or "Filmstrip"
-    /// (a preview and sub-clip cutter beside a list). Empty: Grid, or List where the tile size was a list's.</summary>
+    /// <summary>Media Browser layout: "Grid", "List" (details table) or "Filmstrip" (preview and sub-clip cutter beside a list).
+    /// Empty resolves to Grid, or List when the zoom is in list range.</summary>
     public string BrowserView { get; set; } = "";
 
-    /// <summary>The width of the list beside the Filmstrip view's preview, in DIPs (5.4C).</summary>
+    /// <summary>Width (DIP) of the list beside the Filmstrip preview.</summary>
     public double BrowserFilmstripListWidth { get; set; } = 240;
 
-    // Interface
+    // ----- Interface -----
     public bool ShowCommandPreviewTab { get; set; }
 
-    /// <summary>Shows the Advanced tab: colour correction, sharpening and the live frame preview.</summary>
+    /// <summary>Shows the Advanced tab (colour correction, sharpening, live frame preview).</summary>
     public bool ShowAdvancedFiltersTab { get; set; } = true;
 
-    /// <summary>The Export Presets selector in the Export tab's first card (5.4B; the preset bar of 5.4A; "Show in Summary Tab", the retired tab's, reads as it).</summary>
+    /// <summary>Shows the Export Presets selector in the Export tab's first card (the legacy "Show in Summary Tab" value maps here).</summary>
     public const string PresetBarInExport = "Show in Export Tab";
     public const string PresetBarAtTop = "Show at top of Window";
 
     public static IReadOnlyList<string> PresetBarLocations { get; } = [PresetBarInExport, PresetBarAtTop];
 
-    /// <summary>Where the bar for choosing and saving presets is: one of <see cref="PresetBarLocations"/>.</summary>
+    /// <summary>Preset bar placement; one of <see cref="PresetBarLocations"/>.</summary>
     public string PresetBarLocation { get; set; } = PresetBarInExport;
 
-    /// <summary>Draws waveforms after each load: the mix of the active tracks behind the timeline, and each track in the Audio tab.</summary>
+    /// <summary>Draws waveforms after each load (active-track mix on the timeline, per-track in the Audio tab).</summary>
     public bool ShowTimelineWaveform { get; set; } = true;
 
-    /// <summary>How tall the timeline is, 1 (a slim bar) to 5 (room for a readable waveform).</summary>
+    /// <summary>Timeline height step, 1 (slim bar) to 5 (readable waveform).</summary>
     public int TimelineHeight { get; set; } = 3;
 
-    /// <summary>How tall each track's row is in the Audio tab, 1 to 5: taller rows show more of the waveform.</summary>
+    /// <summary>Audio tab row height step, 1-5.</summary>
     public int AudioTrackHeight { get; set; } = 2;
 
     /// <summary>
-    /// Draws a strip of pictures from the video along the timeline, behind the waveform. Null until it has been decided once:
-    /// it then starts out on.
+    /// Draws a filmstrip behind the timeline waveform; null until first decided, then defaults on.
     /// </summary>
     public bool? ShowTimelineThumbnails { get; set; }
 
     // ----- Launch -----
 
-    /// <summary>How many style presets the drag-and-drop overlay offers, from the top of <see cref="SplashStylePresets"/>: 0 to 8.</summary>
+    /// <summary>Number of Game Presets the drop overlay offers from the top of <see cref="SplashStylePresets"/>, 0-8.</summary>
     public int SplashPresetCount { get; set; } = 3;
 
-    /// <summary>How many frames are taken from a video layer's file for the strip its block on the timeline is drawn with: 1 to 25.</summary>
+    /// <summary>Filmstrip frames per video clip block on the timeline, 1-25.</summary>
     public int LayerThumbnailCount { get; set; } = 8;
 
-    /// <summary>Every video that is opened starts as a vertical one: a tall frame with the picture across its middle.</summary>
+    /// <summary>Opens every video as a vertical project (tall frame, picture centred).</summary>
     public bool DefaultVerticalVideo { get; set; }
 
     /// <summary>
-    /// Hardware video decoding in the GPU preview: the graphics card decodes the preview's video (Media Foundation on the
-    /// compositor's Direct3D 11 device) as well as drawing it. Off, the processor decodes: for a driver whose decoder shows
-    /// broken (green, garbled) frames. Exports are not affected. Settings > Timeline &amp; Player > Player.
+    /// Preview hardware decode (Media Foundation on the compositor's D3D11 device). False forces CPU decode for drivers that emit
+    /// corrupt frames. Exports are unaffected.
     /// </summary>
     public bool PlayerHardwareAcceleration { get; set; } = true;
 
     /// <summary>
-    /// The Export GPU (Settings > Hardware, read as <see cref="ExportGpuAdapter"/>; stored under its old name): the graphics card an
-    /// export is composited on (its clips decoded there too), by its DXGI number, so the work can be given to a
-    /// second card (5.4C, GpuExport.ExportAdapter). -1, or a card no longer there: the Compositor GPU.
+    /// Export GPU DXGI index (legacy JSON name; read via <see cref="ExportGpuAdapter"/>): adapter that decodes and composites exports
+    /// (GpuExport.ExportAdapter). -1 or a missing adapter selects the Compositor GPU.
     /// </summary>
     public int HardwareDecodeAdapter { get; set; } = -1;
 
-    // ----- Performance: the tools HandPeg runs in the background (see WorkScheduler, JobObjects) -----
+    // ----- Background tool performance (WorkScheduler, JobObjects) -----
 
-    /// <summary>Background tools at once (thumbnails, waveforms, I-frame lists, proxies); 0 is Auto: one for every six processors not reserved.</summary>
+    /// <summary>Concurrent background jobs (thumbnails, waveforms, I-frame lists, proxies); 0 = Auto, one per six unreserved cores.</summary>
     public int BackgroundJobs { get; set; }
 
-    /// <summary>Processors kept free for the interface and the player: no tool runs on the first this many. -1 is Auto (2).</summary>
+    /// <summary>Cores reserved for UI and playback (background tools avoid the first N); -1 = Auto (2).</summary>
     public int ReservedCores { get; set; } = -1;
 
     public const string PriorityBelowNormal = "Below Normal", PriorityIdle = "Idle";
 
     public static IReadOnlyList<string> BackgroundPriorities { get; } = [PriorityBelowNormal, PriorityIdle];
 
-    /// <summary>The priority background tools run at: Below Normal, or Idle (only when nothing else wants the processor).</summary>
+    /// <summary>Background process priority: BelowNormal or Idle.</summary>
     public string BackgroundPriority { get; set; } = PriorityBelowNormal;
 
-    /// <summary>Background tools run in Windows' Efficiency mode (EcoQoS): slower cores, lower clocks.</summary>
+    /// <summary>Runs background tools under EcoQoS (Windows Efficiency mode).</summary>
     public bool BackgroundEfficiencyMode { get; set; } = true;
 
-    /// <summary>Background work waiting to start waits while the player plays (running tools carry on).</summary>
+    /// <summary>Holds queued (not running) background work during playback.</summary>
     public bool PauseBackgroundWhilePlaying { get; set; } = true;
 
-    /// <summary>Background work waiting to start waits while an export or the queue runs.</summary>
+    /// <summary>Holds queued background work while an export or the queue runs.</summary>
     public bool PauseBackgroundWhileExporting { get; set; } = true;
 
     /// <summary>
-    /// The graphics card background tools decode on (and proxies are encoded on): -1 Auto (5.4.4: the Compositor GPU, the card the
-    /// player draws on; never a second card on its own), -2 none (the processor), otherwise its DXGI number.
+    /// Background decode/proxy-encode adapter: -1 Auto (always the Compositor GPU, never an automatic secondary GPU), -2 CPU, else a
+    /// DXGI index.
     /// </summary>
     public int BackgroundGpu { get; set; } = -1;
 
-    /// <summary>Threads each background FFmpeg may use; 0 is Auto (FFmpeg's own choice).</summary>
+    /// <summary>Threads per background FFmpeg; 0 = FFmpeg default.</summary>
     public int BackgroundToolThreads { get; set; }
 
-    /// <summary>Threads whisper transcribes with; 0 is Auto (whisper's own default, at most 4).</summary>
+    /// <summary>whisper transcription threads; 0 = whisper default (max 4).</summary>
     public int WhisperThreads { get; set; }
 
-    /// <summary>The progress chip at the bottom left shows background work too, not only exports and loads.</summary>
+    /// <summary>Progress chip also shows background work, not only exports and loads.</summary>
     public bool ShowBackgroundTasks { get; set; } = true;
 
     /// <summary>How long a finished task stays in the progress flyout, in seconds.</summary>
     public int FinishedTaskSeconds { get; set; } = 5;
 
-    /// <summary>The processors reserved, Auto worked out: two on a machine with eight or more, one with four or more, else none.</summary>
+    /// <summary>Effective reserved cores: Auto gives 2 at 8+ cores, 1 at 4+, else 0.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public int EffectiveReservedCores => ReservedCores >= 0
         ? Math.Min(ReservedCores, Math.Max(Environment.ProcessorCount - 2, 0))
@@ -568,25 +548,24 @@ public sealed partial class AppSettings
 
     // ----- Dead air -----
 
-    /// <summary>Remove Dead Air: anything quieter than this, in decibels, counts as silence.</summary>
+    /// <summary>Remove Dead Air silence threshold (dB).</summary>
     public double DeadAirThresholdDb { get; set; } = -35;
 
-    /// <summary>Remove Dead Air: a silence has to last this long, in seconds, to be cut.</summary>
+    /// <summary>Remove Dead Air minimum silence duration (s) to cut.</summary>
     public double DeadAirMinSeconds { get; set; } = 1;
 
-    // ----- Diagnostics: crash reports (Settings > General > Diagnostics; see CrashReporter) -----
+    // ----- Diagnostics: crash reports (CrashReporter) -----
 
     /// <summary>
-    /// Writes a crash report (.hpcrash, with no names, paths or words from the media in it) to the crashes folder when
-    /// HandPeg falls over and runs the small sentinel process that catches native crashes. When a
-    /// <see cref="CrashReportEndpoint"/> is set, each report is also sent once to it a little after a start
-    /// (CrashReports.UploadPendingAsync). Off: nothing is written or sent and no sentinel runs.
+    /// Writes sanitized .hpcrash reports (no names, paths or media text) on a crash and runs the native-crash sentinel process.
+    /// With <see cref="CrashReportEndpoint"/> set, pending reports upload once after startup (CrashReports.UploadPendingAsync).
+    /// False disables writing, uploading and the sentinel.
     /// </summary>
     public bool SendCrashReports { get; set; } = true;
 
     /// <summary>
-    /// Where crash reports are sent (HTTPS; http only to this PC, for tests). Set in appsettings.json only, not in Settings.
-    /// Empty by default (the user's call, v4.1.0): HandPeg has no crash report service yet, so reports stay on the PC.
+    /// Crash report upload URL (HTTPS; plain http only to localhost for tests). appsettings.json only; empty by default, so reports
+    /// stay local until a collection service exists.
     /// </summary>
     public string CrashReportEndpoint { get; set; } = DefaultCrashReportEndpoint;
 
@@ -601,137 +580,119 @@ public sealed partial class AppSettings
     public string Theme { get; set; } = ThemeManager.FollowSystem;
 
     /// <summary>
-    /// What HandPeg's interface is called where a name is wanted (crash reports): the editor. Before 4.2 it was one of two
-    /// modes; Encoder Mode left for HandPeg Encoder.
+    /// Interface name reported where one is needed (crash reports); always the editor since Encoder Mode was removed.
     /// </summary>
     public const string EditorMode = "Editor Mode";
 
-    // (The two modes' leftovers in settings saved before 4.2, UiMode and ModeProfiles, are not read any more, 5.2-Arm64AndNpu: 4.2
-    // took them up once, Editor Mode's profile into the settings themselves, and wrote neither again. Every file saved since keeps
-    // the values in use at its top level, which is where they are read; a file that still has the two reads without them.)
+    // Legacy UiMode/ModeProfiles members are ignored on read; their values were migrated to top-level settings long ago.
 
-    /// <summary>The style presets the drag-and-drop overlay offers, by file name, in the order they are shown. Empty for the most recent ones.</summary>
+    /// <summary>Game Preset file names offered by the drop overlay, in display order; empty uses the most recent.</summary>
     public List<string> SplashStylePresets { get; set; } = [];
 
 
-    // What a freshly started window begins with. Unlike the settings above these are only starting points:
-    // the boxes they stand for are on the main window and can be changed there for the session. (4.2.0's "Play only cut
-    // segments" went with the cut list in 4.3C; a settings file that has it is read without it.)
+    // Session start values for main-window toggles; changes in the window last only for the session.
     public bool StartWithSnapToIFrames { get; set; } = true;
     public bool StartWithChapterMarkers { get; set; } = true;
     public bool StartWithChaptersAtCuts { get; set; }
 
     /// <summary>
-    /// How tall the Sequence Overview Scrubber is (named for the master timeline it was until 4.4), 1 (16 px) to 52, 4 px a step
-    /// (two steps lower than before 5.2-AuditB, ViewDefaultsVersion 5). 0 in settings from before the slider, which take it from
-    /// the old five-step <see cref="TimelineHeight"/>.
+    /// Sequence Overview Scrubber height step (legacy property name), 1 (16 px) to 52 in 4 px steps. 0 in older files, which derive
+    /// it from the five-step <see cref="TimelineHeight"/>.
     /// </summary>
     public int MasterTimelineHeight { get; set; }
 
     /// <summary>How tall each track's time bar is on the timeline, 1 to 50.</summary>
     public int LayerHeight { get; set; } = 25;
 
-    /// <summary>How tall each sound's row is on the Audio tab, 1 to 50: taller rows show more of the waveform.</summary>
+    /// <summary>Audio tab row height step, 1-50.</summary>
     public int AudioHeight { get; set; } = 25;
 
-    /// <summary>The panes and what the window starts with were given their defaults once, for settings from before there were any.</summary>
+    /// <summary>One-time marker: pane and window-start defaults were applied to a pre-defaults settings file.</summary>
     public int ViewDefaultsVersion { get; set; }
 
     public const string ResetToPreset = "Active Game Preset";
     public const string ResetToSystem = "System Default";
 
-    // What ResetToPreset was saved as by 5.2.0 and earlier (the canonical words are a Game Preset, never a "style"); read as ResetToPreset.
+    // Legacy JSON name of ResetToPreset, read for compatibility.
     internal const string LegacyResetToPreset = "Active Style Preset";
 
     public static IReadOnlyList<string> ResetTargets { get; } = [ResetToPreset, ResetToSystem];
 
-    /// <summary>What a double-click on a slider or a number box puts it back to: the value of the Game Preset in use, or the built-in default.</summary>
+    /// <summary>Double-click reset target for sliders and number boxes: the active Game Preset's value, or the built-in default.</summary>
     public string DoubleClickResetsTo { get; set; } = ResetToPreset;
 
     /// <summary>
-    /// The settings tabs hidden (Tabs and Panes, Pass 4.1B), by pane id ("Tab:Video"); null for the defaults
-    /// (<see cref="DefaultHiddenTabs"/>). Replaced whole when it changes, never changed in place (copies share lists).
+    /// Hidden tab pane ids ("Tab:Video"); null uses <see cref="DefaultHiddenTabs"/>. Replace the list, never mutate it (copies share it).
     /// </summary>
     public List<string>? HiddenTabs { get; set; }
 
     /// <summary>
-    /// What is hidden until asked: nothing (5.4B retired the Video tab, which was hidden to start with: its controls are the Export tab's
-    /// three columns; a saved list naming "Tab:Video" names a pane that is no longer there, and changes nothing).
+    /// Default hidden tabs: none. A stale "Tab:Video" entry names a retired pane and is ignored.
     /// </summary>
     public static IReadOnlyList<string> DefaultHiddenTabs { get; } = [];
 
-    /// <summary>The Sequence Overview Scrubber pane (Tabs and Panes; named for the master timeline it was until 4.4).</summary>
+    /// <summary>Shows the Sequence Overview Scrubber pane (legacy property name).</summary>
     public bool ShowMasterTimeline { get; set; } = true;
 
     /// <summary>
-    /// The status bar at the bottom of the window (HandPeg starts without it, 4.1.1: <see cref="ApplyEditorDefaults"/>). The
-    /// title bar carries the status and the progress either way (Pass 4.1B, always since 4.1.1). Off for everyone since 5.4D
-    /// (ViewDefaultsVersion 10, the user's call: the title bar's progress is the one home). The bar itself is retired (5.4.1-M5): kept only
-    /// so that a settings file naming it still reads; nothing shows it.
+    /// Retired status bar flag, kept only so older settings files deserialize; nothing reads it. Status and progress live in the
+    /// title bar.
     /// </summary>
     public bool ShowStatusBar { get; set; }
 
-    /// <summary>The Keyframes pane beside the player: the selected clip's keyframes on a timeline of their own.</summary>
+    /// <summary>Shows the Keyframes pane (selected clip's keyframe lanes).</summary>
     public bool ShowKeyframesPane { get; set; }
 
-    /// <summary>The Effects pane: the selected clip's effect stack, or the Sequence Output's. Tabbed with Keyframes to start with.</summary>
+    /// <summary>Shows the Effects pane (selected clip's or Sequence Output's effect stack).</summary>
     public bool ShowEffectsPane { get; set; } = true;
 
-    /// <summary>The media browser pane in the side column: a folder's videos, or the project's files, to drag onto the timeline. Shown to start with.</summary>
+    /// <summary>Shows the Media Browser pane.</summary>
     public bool ShowMediaBrowser { get; set; }
 
-    /// <summary>The controls the playback bar shows, by name (see PlaybackControlSet); null for the defaults.</summary>
+    /// <summary>Playback bar control names (PlaybackControlSet); null for defaults.</summary>
     public string? PlaybackControls { get; set; }
 
-    /// <summary>Where every pane is in the main window's arrangement (Docking.DockLayoutState as JSON; side windows: SideWindows, 5.4C);
-    /// null for where they start.</summary>
+    /// <summary>Main-window dock arrangement (Docking.DockLayoutState JSON; floating windows in SideWindows); null for defaults.</summary>
     public string? DockLayout { get; set; }
 
     /// <summary>
-    /// The built-in layout chosen in the first-run window (its name, as the Layout button lists it), not laid out yet: the
-    /// main window lays itself out so on its next dock build, writes that into <see cref="DockLayout"/> and clears this.
-    /// The layouts are made of the main window's own panes and tabs, so the first-run window cannot write them itself.
+    /// Pending built-in layout name from the first-run window. The next dock build applies it, stores it in <see cref="DockLayout"/>
+    /// and clears this (only the main window can build its own panes).
     /// </summary>
     public string? FirstRunLayout { get; set; }
 
     /// <summary>
-    /// The layouts of the user's own (the Layout button: Save Current Layout), at most <see cref="SavedLayoutSlots"/>,
-    /// each in its place. Replaced as a whole when one is saved or deleted, so a copy of the settings never shares it.
+    /// Custom saved layouts, at most <see cref="SavedLayoutSlots"/>, by slot. Replaced wholesale on save/delete so settings copies never share it.
     /// </summary>
     public List<SavedDockLayout> SavedLayouts { get; set; } = [];
 
-    /// <summary>How many layouts of the user's own are kept (the brief of Pass 2E).</summary>
+    /// <summary>Number of custom layout slots.</summary>
     public const int SavedLayoutSlots = 3;
 
     /// <summary>
-    /// The layout a fresh window opens in (Pass 5.4D: the Layout selector's "★ Default" pill, a first-run choice): a built-in
-    /// layout's name, or "saved:N" for the user's own layout in place N. Unknown or empty: the last arrangement (DockLayout). Null in
-    /// settings from before 5.4D that kept an arrangement (ViewDefaultsVersion 9), until the start-up names the built-in layout of its shape.
+    /// Startup layout (Layout selector's Default pill): a built-in name or "saved:N" for custom slot N; unknown or empty uses
+    /// <see cref="DockLayout"/>. Null in legacy files until startup resolves the built-in layout matching their arrangement.
     /// </summary>
     public string? DefaultStartupLayout { get; set; } = "Standard Editing";
 
-    /// <summary>Each project tab remembers its own window layout and takes it back when brought to the front (Pass 5.4D;
-    /// the Layout selector's footer and Settings). Off: every tab shares the window's layout.</summary>
+    /// <summary>Each project tab stores its own dock layout and restores it on activation; false shares one layout.</summary>
     public bool PerTabWindowLayouts { get; set; } = true;
 
-    /// <summary>Opening a project takes up the window it was saved in (Pass 5.4.1-M5: the "workspace" section of its .hproj, the layout,
-    /// the Media Browser's view and the 3D pose; the Layout selector's footer and Settings). Off: the window stays as it is.</summary>
+    /// <summary>Opening a project applies its saved workspace (.hproj "workspace": layout, Media Browser view, 3D pose).</summary>
     public bool RestoreProjectWorkspaceOnOpen { get; set; } = true;
 
-    /// <summary>A capture folder the Media Browser pre-indexes at idle (Pass 5.4.1-M5: posters, strips, waveforms and seek indexes ready
-    /// before anything is dropped on the Timeline); empty for none.</summary>
+    /// <summary>Capture folder pre-indexed at idle (posters, filmstrips, waveforms, seek indexes); empty for none.</summary>
     public string WatchedCaptureFolder { get; set; } = "";
 
-    /// <summary>The Export Quality Preview's Magnifier (Pass 5.4D, Q10 b): the loupe follows the pointer over the compare
-    /// without an edge slider held. A viewer preference; the preview itself is never saved.</summary>
+    /// <summary>Export Quality Preview magnifier: the loupe follows the pointer over the compare view. Viewer preference only.</summary>
     public bool ExportQualityPreviewLoupe { get; set; }
 
     /// <summary>Whether clips on the timeline show a diamond at each of their keyframes.</summary>
     public bool ShowClipKeyframes { get; set; } = true;
 
     /// <summary>
-    /// With keyframes enabled, what a change by hand keys: only the property that changed (true; a resize about the anchor
-    /// moves the corner too, so that is keyed with it), or every motion property at once (false, Key All, as before lanes).
+    /// With keyframing on, true keys only the changed property (an anchor-relative resize also keys position); false keys every
+    /// motion property (Key All).
     /// </summary>
     public bool KeyChangedOnly { get; set; }
 
@@ -742,45 +703,43 @@ public sealed partial class AppSettings
     public bool RippleAllTracks { get; set; } = true;
 
     /// <summary>
-    /// The Speed &amp; Time card's Ripple Timeline (5.6.0): a clip's new speed moves the later clips (of every track when
-    /// <see cref="RippleAllTracks"/>) by as much as it grew or shrank. Off, it leaves a gap when it shrinks and moves only its own track's
-    /// next clips out of its way when it grows (as before 5.6.0).
+    /// Speed &amp; Time Ripple Timeline: a speed change shifts later clips (all tracks when <see cref="RippleAllTracks"/>) by the
+    /// duration delta. False leaves a gap on shrink and pushes only same-track clips on growth.
     /// </summary>
     public bool SpeedRipplesTimeline { get; set; } = true;
 
-    /// <summary>A track's Solo button plays it alone (the others' solo goes off); off, solo is a set of tracks and Alt-click is alone.</summary>
+    /// <summary>Exclusive solo (clears other solos); false makes solo additive with Alt-click for exclusive.</summary>
     public bool SoloIsExclusive { get; set; }
 
     /// <summary>Clips with sound show a gain line and fade handles on their blocks, to be dragged.</summary>
     public bool ShowClipGainLines { get; set; } = true;
 
-    /// <summary>The Creator Hotbar on the Timeline's row of tools (5.2.1): since 5.3-Stage2 its one Quick FX button, whose flyout holds the five slots.</summary>
+    /// <summary>Shows the Creator Hotbar's Quick FX button (flyout with five slots) on the Timeline toolbar.</summary>
     public bool ShowCreatorHotbar { get; set; } = true;
 
     /// <summary>
-    /// A track's effects have lanes of their own under it, shown while that track's own stack is open (5.3, the user's call); off, a
-    /// clip's effects show only as the "fx N" badge on its block.
+    /// Shows effect lanes under a track while its stack is open; false shows only the clip's "fx N" badge.
     /// </summary>
     public bool ShowTimelineEffectLanes { get; set; } = true;
 
-    /// <summary>A Cutout's own Mask and Rounded &amp; Feathered Edges cards, which every Cutout is made with, get effect lanes too (5.3; off by default).</summary>
+    /// <summary>Also shows effect lanes for a Cutout's built-in Mask and Rounded &amp; Feathered Edges cards (default off).</summary>
     public bool ShowBuiltInMaskEffectLanes { get; set; }
 
-    /// <summary>The Timeline's video and picture clips show their media's frames along their blocks (5.3).</summary>
+    /// <summary>Draws filmstrips on video and picture clips.</summary>
     public bool ShowClipFilmstrips { get; set; } = true;
 
-    /// <summary>The Timeline's clips with sound draw their waveforms (5.3).</summary>
+    /// <summary>Draws waveforms on clips with audio.</summary>
     public bool ShowClipWaveforms { get; set; } = true;
 
-    /// <summary>While playing, the Timeline's view turns the page to keep the playhead in sight (5.3).</summary>
+    /// <summary>Page-scrolls the Timeline during playback to keep the playhead visible.</summary>
     public bool TimelineFollowsPlayhead { get; set; } = true;
 
-    /// <summary>The Timeline's row of tools shows Undo and Redo buttons (5.3; off by default: Ctrl+Z, Ctrl+Y and the Edit menu do the same).</summary>
+    /// <summary>Shows Undo/Redo buttons on the Timeline toolbar (default off; Ctrl+Z/Ctrl+Y cover it).</summary>
     public bool ShowTimelineUndoRedo { get; set; }
 
     /// <summary>
-    /// What each of the Creator Hotbar's five slots holds, as "kind:id" (Models.HotbarSlot); null for the defaults (HotbarSlot.Defaults).
-    /// Set by a slot's right-click menu. Replaced whole when it changes, never changed in place (copies share lists).
+    /// Creator Hotbar slot contents as "kind:id" (Models.HotbarSlot); null for HotbarSlot.Defaults. Replace the list, never mutate it
+    /// (copies share it).
     /// </summary>
     public List<string>? HotbarSlots { get; set; }
 
@@ -794,8 +753,7 @@ public sealed partial class AppSettings
     public bool SnapLayoutGuides { get; set; } = true;
 
     /// <summary>
-    /// The layers are moved, resized and turned on the player itself, as in the layout pane;
-    /// only the selected layer's outline and handles are drawn there, and none while playing (4.1.1-B).
+    /// On-player transform gizmo for the selected layer (move, resize, rotate); hidden during playback.
     /// </summary>
     public bool EditLayersOnPlayer { get; set; } = true;
 
@@ -809,32 +767,28 @@ public sealed partial class AppSettings
         MasterTimelineHeight = DefaultMasterTimelineHeight;
     }
 
-    // (StartWithFrameEngine went in 5.2-AuditB: the sequence is always the compositor's canvas. A settings file that has it
-    // is read without it, as every unknown member is.)
+    // Legacy StartWithFrameEngine is ignored on read (unknown members are skipped).
 
     /// <summary>
-    /// The video encoder a new window starts with, by its FFmpeg name (libx264, h264_nvenc...), as chosen in
-    /// the first-run window. Blank for the built-in default, Copy.
+    /// Default video encoder FFmpeg name (libx264, h264_nvenc, ...) from the first-run window; blank for Copy.
     /// </summary>
     public string DefaultVideoEncoder { get; set; } = "";
 
     /// <summary>
-    /// The audio codec and bitrate a new window starts with, as chosen in the first-run window: so that sound
-    /// is encoded from the start, and nothing an edit does to it runs into a copied track. Blank for Copy.
+    /// Default audio codec and bitrate from the first-run window, so audio edits never hit a stream-copied track; blank for Copy.
     /// </summary>
     public string DefaultAudioEncoder { get; set; } = "";
 
     public string DefaultAudioBitrate { get; set; } = "";
 
-    /// <summary>The export sample rate a new session starts with, in Hz; 0 is Auto (4.1.1).</summary>
+    /// <summary>Default export sample rate (Hz); 0 = Auto.</summary>
     public int DefaultAudioSampleRate { get; set; }
 
-    /// <summary>The export channels a new session starts with (<see cref="Models.AudioChannelChoice"/>; 4.1.1).</summary>
+    /// <summary>Default export channel layout (<see cref="Models.AudioChannelChoice"/>).</summary>
     public string DefaultAudioChannels { get; set; } = Models.AudioChannelChoice.Stereo;
 
-    // The rest of the default encoding settings (Settings, Export & Hardware), with the three above: what the Video and
-    // Audio tabs start with. A blank one leaves HandPeg's own default. An encoding preset applied afterwards always sets
-    // its own; a style preset does too, unless DefaultsOverrideStyles is on.
+    // Remaining default encoding settings; blank keeps the built-in default. Export Presets always override them; Game Presets
+    // override them unless DefaultsOverrideStyles is set.
     public string DefaultContainer { get; set; } = "";
     public bool DefaultWebOptimized { get; set; } = true;
     public string DefaultEncoderPreset { get; set; } = "";
@@ -843,7 +797,7 @@ public sealed partial class AppSettings
     /// <summary>The constant-quality value (CRF, CQ, CQP...); null for the built-in one.</summary>
     public int? DefaultQuality { get; set; }
 
-    /// <summary>The video bitrate in kbps; blank for the automatic one (5.4B: from the output's size and rate, MainViewModel.AutoBitrateKbps).</summary>
+    /// <summary>Video bitrate (kbps); blank for automatic (MainViewModel.AutoBitrateKbps, from output size and rate).</summary>
     public string DefaultTargetBitrate { get; set; } = "";
     public string DefaultFramerate { get; set; } = "";
     public string DefaultCustomFramerate { get; set; } = "";
@@ -859,31 +813,27 @@ public sealed partial class AppSettings
 
     public bool DefaultNormalizeAudio { get; set; }
 
-    // (The default of the dead "Enable Hardware Decoding (-hwaccel auto)" switch, DefaultHardwareDecoding, is not read any more, 5.4B: no
-    // export read it. A settings file that has it reads without it.)
+    // Legacy DefaultHardwareDecoding (-hwaccel auto) is ignored on read.
 
-    /// <summary>The default encoding settings are put back after a style preset is applied, where the style set something else (a vertical frame, say).</summary>
+    /// <summary>Re-applies default encoding settings after a Game Preset overrides them.</summary>
     public bool DefaultsOverrideStyles { get; set; }
 
     /// <summary>
-    /// Asks whether to save the project when HandPeg is closed with changes that have not been saved (the 5.5A addenda: or work never saved
-    /// as a project; with two project tabs or more holding work, one dialog lists them all, and keeping them for the next start is one of
-    /// its answers). Not asked while <see cref="KeepOpenTabsOnClose"/> is on.
+    /// Prompts on exit when there are unsaved changes or never-saved work; multiple tabs are listed in one dialog that can also
+    /// suspend them for the next launch. Skipped while <see cref="KeepOpenTabsOnClose"/> is set.
     /// </summary>
     public bool PromptToSaveOnExit { get; set; } = true;
 
     /// <summary>
-    /// Closing HandPeg keeps every open project tab, saved or not, in the session cache with no prompt (Pass 5.5A): they come back at the
-    /// next start, the one in front last time in front again. Off as HandPeg comes (the 5.5A addenda, the user's call; ViewDefaultsVersion
-    /// 12 turns it off once in a file a 5.5A preview saved it on in): closing then asks (<see cref="PromptToSaveOnExit"/>) whether to save
-    /// the tabs, keep them for the next start or close them.
+    /// Suspends all open tabs to the session cache on exit without prompting and restores them, with the same active tab, on the next
+    /// launch. Default off: exit then prompts (<see cref="PromptToSaveOnExit"/>) to save, suspend or close.
     /// </summary>
     public bool KeepOpenTabsOnClose { get; set; }
 
-    /// <summary>The Project Manager shows a picture of the video each project was opened with, scrubbed by the pointer (4.1.1-B).</summary>
+    /// <summary>Project Manager shows a hover-scrubbable poster of each project's source video.</summary>
     public bool ShowProjectPreviews { get; set; } = true;
 
-    // ----- The Social Sharing Squisher, on the startup dialog -----
+    // ----- Social Sharing Squisher (startup dialog) -----
 
     /// <summary>Whether the startup dialog has its Squisher section.</summary>
     public bool ShowSquisher { get; set; } = true;
@@ -894,7 +844,7 @@ public sealed partial class AppSettings
     /// <summary>How many of the presets, from the top of the list, the startup dialog shows.</summary>
     public int SquisherPresetCount { get; set; } = 4;
 
-    // ----- The window, when HandPeg starts -----
+    // ----- Startup window placement -----
     public const string DefaultWindowSize = "Default Size", RememberWindowSize = "Remember Last Size", MaximizedWindow = "Launch Maximized";
 
     public static IReadOnlyList<string> StartupWindowSizes { get; } = [DefaultWindowSize, RememberWindowSize, MaximizedWindow];
@@ -902,12 +852,12 @@ public sealed partial class AppSettings
     /// <summary>How large the window is when HandPeg starts: as designed, as it was left, or maximized.</summary>
     public string StartupWindowSize { get; set; } = DefaultWindowSize;
 
-    // The window as it was when HandPeg was last closed (its size while not maximized, and whether it was).
+    // Last restored bounds and maximized state.
     public double LastWindowWidth { get; set; }
     public double LastWindowHeight { get; set; }
     public bool LastWindowMaximized { get; set; }
 
-    /// <summary>How thick scrollbars are, everywhere in HandPeg, in pixels: 4 (a hairline) to 16 (as Windows draws them).</summary>
+    /// <summary>Global scrollbar thickness (px), 4 (hairline) to 16 (Windows default).</summary>
     public double ScrollbarThickness { get; set; } = 10;
 
     /// <summary>Megabytes kept in hand below a preset's size when the bitrate is worked out.</summary>
@@ -917,8 +867,8 @@ public sealed partial class AppSettings
     public bool SquisherManualPreset { get; set; }
 
     /// <summary>
-    /// The encoder preset used while the override is on: "veryslow", "p5", "balanced"... It starts at the slowest (5.4C: "medium"
-    /// before), so ticking the override does not quietly mean a faster step; a file that saved one keeps it.
+    /// Encoder preset used while the override is on ("veryslow", "p5", "balanced", ...). Defaults to the slowest so enabling the
+    /// override never silently lowers quality; saved values are kept.
     /// </summary>
     public string SquisherEncoderPreset { get; set; } = "veryslow";
 
@@ -929,16 +879,14 @@ public sealed partial class AppSettings
     public int AutosaveMinutes { get; set; } = 5;
 
     /// <summary>
-    /// Fully portable project saves (5.2A, off at first): a manual save (Ctrl+S, the Project Manager's Save) writes Projects\Name\Name.hproj and
-    /// puts every file the project reads in Projects\Name\media\ (hard-linked on the same drive, copied from another), named by relative paths,
-    /// so the folder can be carried to another PC (PortableProject). Autosaves and Save As to a file chosen by hand are left as they are.
+    /// Portable saves (default off): a manual save writes Projects\Name\Name.hproj and gathers every referenced file into
+    /// Projects\Name\media\ (hard link on the same volume, else copy) with relative paths (PortableProject). Autosave and Save As are unaffected.
     /// </summary>
     public bool FullyPortableProjectSave { get; set; }
 
     /// <summary>
-    /// A project bundle (.hpb, Save Project Bundle) carries a long recording the Sequence uses little of (over 2 minutes, under 60 % used) as
-    /// the stretches it uses, each a lossless stream copy with 5 s to spare at either end (5.2C, VodTrim); off, every file goes in whole. On
-    /// at first. The project itself and its files are never changed.
+    /// Bundles (.hpb) store long, sparsely used recordings (over 2 min, under 60 % used) as lossless stream-copied ranges with 5 s
+    /// handles (VodTrim); false bundles whole files. The project and its sources are never modified.
     /// </summary>
     public bool TrimLongVodsOnBundle { get; set; } = true;
 
@@ -946,8 +894,7 @@ public sealed partial class AppSettings
     public bool AutoOpenLayoutPane { get; set; }
 
     /// <summary>
-    /// Sets the interface as HandPeg starts it: the tools for cutting, captioning and laying out a video. Used by the
-    /// first-run window, and once for settings last saved in Encoder Mode with no Editor Mode of their own (<see cref="Load"/>).
+    /// Applies the default editor interface. Used by the first-run window and once for legacy Encoder Mode settings (<see cref="Load"/>).
     /// </summary>
     public void ApplyEditorDefaults()
     {
@@ -969,7 +916,7 @@ public sealed partial class AppSettings
         ShowTimelineThumbnails = true;
         (ShowKeyframesPane, ShowClipKeyframes) = (true, true);
         ShowMediaBrowser = true;
-        // No status bar (4.1.1): the title bar carries the status and the progress.
+        // No status bar: the title bar carries status and progress.
         (HiddenTabs, ShowMasterTimeline, ShowStatusBar) = (null, true, false);
 
         ThumbnailIntervalSeconds = 1;
@@ -982,7 +929,7 @@ public sealed partial class AppSettings
     /// <summary>When an encode fails on a hardware encoder, try again once with the matching software encoder.</summary>
     public bool AutoFallbackToSoftware { get; set; } = true;
 
-    // SponsorBlock categories yt-dlp cuts out of a download
+    // ----- SponsorBlock categories for yt-dlp -----
     public bool SponsorBlockSponsor { get; set; }
     public bool SponsorBlockIntro { get; set; }
     public bool SponsorBlockOutro { get; set; }
@@ -1003,9 +950,8 @@ public sealed partial class AppSettings
     public const string SponsorBlockCut = "cut", SponsorBlockChapters = "chapters", SponsorBlockIgnore = "ignore";
 
     /// <summary>
-    /// What a download does with the ticked SponsorBlock categories (Pass 4.2B-2): cuts them out (--sponsorblock-remove,
-    /// as before), keeps them as named chapters of the file (--sponsorblock-mark; Copy YouTube Timestamps lists them), or
-    /// leaves SponsorBlock alone. An unknown value is taken as cut.
+    /// SponsorBlock action for checked categories: cut (--sponsorblock-remove), mark as chapters (--sponsorblock-mark), or ignore.
+    /// Unknown values are treated as cut.
     /// </summary>
     public string SponsorBlockMode { get; set; } = SponsorBlockCut;
 
@@ -1017,21 +963,19 @@ public sealed partial class AppSettings
         new(SponsorBlockIgnore, "Ignore"),
     ];
 
-    /// <summary>What a download asks yt-dlp for: the categories (none when ignored or none ticked), and whether they are marked rather than cut.</summary>
+    /// <summary>yt-dlp SponsorBlock request: categories (empty when ignored or none checked) and whether to mark instead of cut.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public (string Categories, bool Mark) SponsorBlockRequest =>
         SponsorBlockMode == SponsorBlockIgnore ? ("", false) : (SponsorBlockCategories, SponsorBlockMode == SponsorBlockChapters);
 
-    // (UseEasySocialExport, the Export tab's Easy | Advanced switch of 4.2B-2, is not read any more, 5.4B: its cards are Export Presets now,
-    // ExportPresetCatalog. A settings file that has it reads without it.)
+    // Legacy UseEasySocialExport is ignored on read (superseded by ExportPresetCatalog).
 
     /// <summary>
-    /// The preset to apply automatically to a source. A rule for a folder the file is in wins over a rule
-    /// for a keyword, which wins over a rule for the extension; when none matches, the default applies.
-    /// Among several folder or keyword rules that match, the most specific (longest) one wins.
+    /// Resolves the auto-applied preset for a source. Precedence: folder rule, keyword rule, extension rule, then the default;
+    /// among matching folder or keyword rules the longest wins.
     /// </summary>
-    /// <param name="filePath">The file that is loaded.</param>
-    /// <param name="sourcePath">What the user asked for: the same file, or the address it was downloaded from.</param>
+    /// <param name="filePath">The loaded file.</param>
+    /// <param name="sourcePath">The requested source: the same file, or the URL it was downloaded from.</param>
     public string? FindPresetFor(string filePath, string sourcePath)
     {
         var rules = SmartRules.Where(r => !string.IsNullOrWhiteSpace(r.Path) && !string.IsNullOrWhiteSpace(r.Preset)).ToList();
@@ -1043,7 +987,7 @@ public sealed partial class AppSettings
         if (folderRule is not null)
             return folderRule.Preset;
 
-        // A keyword may be anywhere in what was loaded: the file's name, a folder above it, or a web address.
+        // Keywords match anywhere in the file name, parent folders or URL.
         var keywordRule = rules
             .Where(r => r.Type == SmartRule.Keyword
                         && (sourcePath.Contains(r.Path.Trim(), StringComparison.OrdinalIgnoreCase)
@@ -1075,7 +1019,7 @@ public sealed partial class AppSettings
         }
     }
 
-    /// <summary>A copy that can be edited without touching the settings in effect.</summary>
+    /// <summary>Editable deep copy, isolated from the active settings.</summary>
     public AppSettings Clone()
     {
         var copy = (AppSettings)MemberwiseClone();

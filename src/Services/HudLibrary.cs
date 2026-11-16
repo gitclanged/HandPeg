@@ -3,7 +3,7 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
-/// <summary>The ready-made shapes a layer can be cut to, stretched over the layer: see <see cref="HudLibrary.Outline"/>.</summary>
+/// <summary>Built-in layer mask shapes, stretched over the layer (<see cref="HudLibrary.Outline"/>).</summary>
 public enum HudShape
 {
     /// <summary>A plain rectangle with slightly rounded corners.</summary>
@@ -20,20 +20,18 @@ public enum HudShape
 }
 
 /// <summary>
-/// The shapes layers are cut to, and the vertical layout of pieces cut from the video. A game's HUD is a Game Preset: a built-in one
-/// (<see cref="GamePresetLibrary"/>) or the user's own, drawn in the Cutout Studio (MaskDrawWindow) and saved as a style; an ML cutout
-/// generator is bookmarked for v6.0. HandPeg never deletes a style.
+/// Layer mask shapes and vertical layout of Cutout pieces. Game HUDs are Game Presets: built-in (<see cref="GamePresetLibrary"/>) or
+/// custom, drawn in Cutout Studio (MaskDrawWindow) and saved as styles. Styles are never deleted automatically.
 /// </summary>
 public static class HudLibrary
 {
     /// <summary>
-    /// Places the pieces on a 9:16 frame around a 16:9 video that fills its width at <paramref name="zoom"/>: one row above the
-    /// video and one below, each as large as the row's width and the room above or below allow, in the left-to-right order
-    /// the pieces have on screen.
+    /// Lays out pieces on a 9:16 frame around a full-width 16:9 video at <paramref name="zoom"/>: one row above and one below, each
+    /// scaled to fit its row, preserving on-screen left-to-right order.
     /// </summary>
     public static void LayOutVertically(List<LayerState> states, double zoom = 1)
     {
-        // The share of the frame's height a video that fills its width takes; a piece's height is its width times this, per unit of its own shape.
+        // Frame-height fraction of a full-width video; a piece's height is width x this per unit of its aspect.
         const double band = 81.0 / 256, gap = 0.02, margin = 0.03, largest = 3.2;
         var room = (1 - band * Math.Max(zoom, 1)) / 2 - margin - 0.012;
 
@@ -59,10 +57,8 @@ public static class HudLibrary
     }
 
     /// <summary>
-    /// A ready shape's outline (5.2-Audit, the user's call: no picture is written to the Masks folder), as a drawn mask's text
-    /// (<see cref="MaskStore.FormatShapes"/>) on the layer's own picture, which it is stretched over: the shape a little in
-    /// from the edges, so the layer's Soft Edges (which blurs a mask) fades it out all the way round. Null for a plain panel,
-    /// which needs no mask: its rounded corners are the layer's own.
+    /// Built-in shape as drawn-mask text (<see cref="MaskStore.FormatShapes"/>, no bitmap written), stretched over the layer and inset so
+    /// Soft Edges fades it on all sides. Null for a plain panel (uses the layer's own rounded corners).
     /// </summary>
     public static string? Outline(HudShape shape)
     {
@@ -77,6 +73,6 @@ public static class HudLibrary
         return outline is null ? null : MaskStore.FormatShapes([outline]);
     }
 
-    /// <summary>How soft a ready shape's edge is when the layer's own Soft Edges is off: as soft as the shapes' pictures were before 5.2-Audit.</summary>
+    /// <summary>Default shape edge softness when the layer's Soft Edges is off (matches legacy bitmap shapes).</summary>
     public const int ShapeFeatherRadius = 24;
 }

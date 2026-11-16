@@ -9,12 +9,12 @@ using static HandPegApp.Native.Kernel32;
 
 namespace HandPegApp.Services;
 
-// The sentinel's side of the crash reporter: the shared memory it reads after a native fault, the two events through
-// which the fault filter asks it to name the module, and the sentinel process itself.
+// Sentinel integration: shared memory read after native faults, the two events the filter uses to request module resolution, and the
+// sentinel process.
 public static partial class CrashReporter
 {
-    // The shared memory, mapped for the rest of the session once made (never unmapped: a breadcrumb may be on its way
-    // into it from another thread). Zero until then; the filter and the breadcrumbs write nothing while it is.
+    // Shared memory, mapped for the session once created (never unmapped: another thread may be writing a breadcrumb). Zero until
+    // created; the filter and breadcrumbs skip writes meanwhile.
     private static nint _shared;
     private static MemoryMappedFile? _mapping;
     private static MemoryMappedViewAccessor? _view;
@@ -31,27 +31,26 @@ public static partial class CrashReporter
 
     private static readonly object WatchGate = new();
 
-    // The cards and the tool versions, learnt once after the first frame; a report written before that has none.
-    // The rest of the computer (processor, memory, display, power) is CrashHardware's, learnt at the same moment.
+    // Adapters and tool versions, captured once after Frame 1 (earlier reports lack them); CPU, memory, display and power come from
+    // CrashHardware at the same time.
     private static List<string>? _gpus;
     private static List<GpuAdapter> _cards = [];
     private static string? _ffmpegVersion;
 
     private static bool IsSentinelRunning => _sentinelProcess != 0 && WaitForSingleObject(_sentinelProcess, 0) == WaitTimeout;
 
-    /// <summary>Whether a sentinel is running and has the process in hand (it says so in the shared memory): a death now is seen.</summary>
+    /// <summary>True when a sentinel has signalled (via shared memory) that it is watching.</summary>
     public static unsafe bool IsWatching => IsSentinelRunning && _shared != 0
         && (CrashSharedMemory.Flags((byte*)_shared) & CrashSharedMemory.FlagSentinelWatching) != 0;
 
     private const uint WaitTimeout = 0x102;
 
-    // How long a sentinel just started is given to open the process and say it is watching: a .NET program's start,
-    // with room for a slow disk. Waited for on a pool thread; the window carries on meanwhile.
+    // Startup allowance for the sentinel to begin watching (.NET start plus slow-disk margin); awaited on the pool, not the UI.
     private const int SentinelStartWaitMs = 10_000;
 
     /// <summary>
-    /// Makes the shared memory (once), copies the breadcrumbs and the context left so far into it, starts the sentinel
-    /// and waits for it to say it is watching. On a pool thread, after the first frame, only when crash reports are on.
+    /// Creates the shared memory once, copies existing breadcrumbs and context, starts the sentinel and waits until it watches. Pool
+    /// thread, after Frame 1, only with crash reports on.
     /// </summary>
     private static void StartWatching()
     {
@@ -69,8 +68,7 @@ public static partial class CrashReporter
                 }
                 else
                 {
-                    // A sentinel stopped earlier (crash reports switched off, then on again) said it was watching: the
-                    // new one says so for itself.
+                    // Clear a previous sentinel's watching flag (reports toggled off/on); the new one sets its own.
                     unsafe
                     {
                         CrashSharedMemory.ClearFlag((byte*)_shared, CrashSharedMemory.FlagSentinelWatching);
@@ -95,7 +93,7 @@ public static partial class CrashReporter
         }
     }
 
-    /// <summary>Stops the sentinel (crash reports switched off). The shared memory stays, unused, for the rest of the session.</summary>
+    /// <summary>Stops the sentinel (reports disabled); the shared memory remains mapped but unused.</summary>
     private static void StopWatching()
     {
         lock (WatchGate)
@@ -112,8 +110,7 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// The graphics cards, the computer (<see cref="CrashHardware"/>: native calls, well under a millisecond) and the
-    /// engines' versions, learnt once: nothing is probed, and no tool is run.
+    /// Captures adapters, system facts (<see cref="CrashHardware"/>, native calls under 1 ms) and engine versions once; no probing or tool runs.
     /// </summary>
     private static void LearnEnvironment()
     {
@@ -142,7 +139,7 @@ public static partial class CrashReporter
         PackEnvironment();
     }
 
-    /// <summary>The computer's facts into their context slots, for the sentinel; again when the theme or Efficiency mode changes.</summary>
+    /// <summary>Publishes system facts to context slots for the sentinel; repeated on theme or Efficiency mode changes.</summary>
     private static void PackEnvironment()
     {
         var (theme, efficiency) = CurrentTheme();
@@ -150,7 +147,7 @@ public static partial class CrashReporter
             SetContext(key, value);
     }
 
-    /// <summary>Tells the crash reporter the theme or Efficiency mode changed (Settings, the Layout selector). Cheap; nothing before the environment is learnt.</summary>
+    /// <summary>Notifies of theme or Efficiency mode changes (Settings, Layout selector). Cheap; no-op before the environment is captured.</summary>
     public static void EnvironmentChanged()
     {
         if (_gpus is not null)
@@ -169,7 +166,7 @@ public static partial class CrashReporter
         }
     }
 
-    /// <summary>The version HandPeg wrote down when it installed a tool ("N-127957-g935f29eaae-20261023"); "custom" for one of the user's own.</summary>
+    /// <summary>Recorded install version of a tool (e.g. an FFmpeg build tag); "custom" for user-supplied binaries.</summary>
     private static string? InstalledVersion(string tool)
     {
         if (DependencyUpdater.CustomPath(tool).Length > 0)
@@ -202,8 +199,8 @@ public static partial class CrashReporter
         RefreshVitals(block, Now, force: true);
         PrepareFilter();
 
-        // Published first, then filled: a breadcrumb left meanwhile goes straight in, and the copy below never puts an
-        // older one over it (each slot keeps its number). The shared memory counts from the process's start.
+        // Publish before filling so concurrent breadcrumbs go straight in; the backfill never overwrites newer slots (sequence-checked).
+        // Times count from process start.
         _faultEvent = _faultSignal.SafeWaitHandle.DangerousGetHandle();
         _namedEvent = _namedSignal.SafeWaitHandle.DangerousGetHandle();
         _sharedName = name;
@@ -230,7 +227,7 @@ public static partial class CrashReporter
     // When the working set and the heap were last written into the header (breadcrumb clock seconds): at most once a second.
     private static double _vitalsAt = double.NegativeInfinity;
 
-    /// <summary>The working set and the managed heap, for a report the sentinel writes: refreshed as breadcrumbs and context arrive.</summary>
+    /// <summary>Working set and managed heap for sentinel reports, refreshed with each breadcrumb and context update.</summary>
     private static unsafe void RefreshVitals(byte* shared, double now, bool force = false)
     {
         if (!force && now - Volatile.Read(ref _vitalsAt) < 1)
@@ -241,17 +238,12 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// Starts the sentinel: this same program with --crash-sentinel, the process to watch, the shared memory's name and
-    /// the folder to write into (handed over so it never works out portable or installed paths itself).
+    /// Launches HandPeg.exe --crash-sentinel with the PID, shared memory name and crash folder (so it never resolves paths itself).
     ///
-    /// Deliberately not through ProcessPipes and its Job Objects, which every tool HandPeg starts goes through: those
-    /// jobs kill what is in them when HandPeg closes, and the sentinel has to outlive HandPeg to do its work. For the
-    /// same reason it is started out of any job HandPeg itself was started in, where that job allows it. It inherits no
-    /// handles (a pipe of a tool being started at that moment would otherwise be held open by it: Process.Start would
-    /// pass them all on), shows no window, and works in the system folder, so it holds no folder of the user's open. It
-    /// starts at HandPeg's own priority, so that its start (a few dozen milliseconds of processor time) is not held up
-    /// for seconds behind an export using every core, which would leave a crash in that time unseen; once it is
-    /// watching it moves itself to the lowest priority class (<see cref="CrashSentinel"/>).
+    /// Bypasses ProcessPipes Job Objects (which kill children on exit; the sentinel must outlive HandPeg) and breaks away from any parent
+    /// job when allowed. Inherits no handles (Process.Start would leak concurrent tool pipes), has no window, and uses the system folder
+    /// as working directory to avoid locking user folders. Starts at HandPeg's priority so an export cannot delay it for seconds, then
+    /// drops to idle once watching (<see cref="CrashSentinel"/>).
     /// </summary>
     private static unsafe void StartSentinel()
     {
@@ -262,9 +254,7 @@ public static partial class CrashReporter
         const uint CreateNoWindow = 0x08000000, CreateBreakawayFromJob = 0x01000000;
         const int AccessDenied = 5;
 
-        // STARTF_FORCEOFFFEEDBACK: HandPeg.exe is a windowed program, so without it Windows shows the "working in
-        // background" pointer for this child until it opens a window, which it never does: about five seconds of a
-        // spinning pointer just after HandPeg's own window had come up (measured in Pass 4.1C).
+        // STARTF_FORCEOFFFEEDBACK: otherwise Windows shows the app-starting cursor for this windowless GUI child (~5 s after launch).
         const int ForceOffFeedback = 0x00000080;
 
         var startup = new StartupInfo { Size = sizeof(StartupInfo), Flags = ForceOffFeedback };

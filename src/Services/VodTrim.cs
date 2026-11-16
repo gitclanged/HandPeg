@@ -6,17 +6,14 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Services;
 
-// ----- Long recordings trimmed into a project bundle (Pass 5.2C, AppSettings.TrimLongVodsOnBundle) -----
+// ----- Trimming long recordings in bundles (AppSettings.TrimLongVodsOnBundle) -----
 //
-// A bundle (.hpb) of a project cut from a two-hour stream recording would carry the whole recording, gigabytes of it, for the few minutes
-// the Sequence uses. With the setting on (as it comes), a video file longer than LongSeconds of which the clips use less than MostUsedShare
-// goes into the bundle as the stretches they use instead, each with HandleSeconds more at both ends (room to trim, a J or L cut, a
-// crossfade), stretches nearer than JoinGapSeconds made one. Each is a lossless stream copy (FFmpeg -c copy, every stream: all of an OBS
-// recording's audio tracks) that starts on the key frame at or before its first moment, so nothing is decoded or encoded again. The copy's
-// first frame is checked to be that very key frame (its packet's size and flag): where it is not, or FFmpeg is missing or fails, the
-// whole file goes in as before. The bundle's project names the stretches, each clip of the file (its Cutouts and stream lanes too, the
-// stretches Split & Mark folded out of it) on the one that holds it, its MediaOffset moved by where the stretch starts in the file, so
-// every frame and sample lands where it was. The working project is never touched: only the copy that is packed.
+// Avoids bundling multi-GB recordings for a few used minutes. With the setting on (default), videos longer than LongSeconds with under
+// MostUsedShare used are bundled as used ranges plus HandleSeconds at each end (trim, J/L cut, crossfade room), merging ranges closer
+// than JoinGapSeconds. Each is a lossless stream copy (FFmpeg -c copy, all streams) starting at the key frame at or before the range;
+// the first packet is verified (size and key flag), else (or if FFmpeg is missing or fails) the whole file is bundled. The bundled
+// project remaps each clip (including Cutouts, stream lanes and Split & Mark folds) to its piece with MediaOffset shifted, so every
+// frame and sample stays aligned. The working project is never modified.
 public static class VodTrim
 {
     public const double LongSeconds = 120, MostUsedShare = 0.6, HandleSeconds = 5, JoinGapSeconds = 30;
@@ -27,16 +24,15 @@ public static class VodTrim
     /// <summary>A file to trim: its length and the stretches its clips use.</summary>
     public sealed record Planned(string Path, double Duration, double UsedShare, IReadOnlyList<Stretch> Stretches);
 
-    /// <summary>A stretch cut into a file of its own: where its first frame is in the source's media seconds, and how long it is.</summary>
+    /// <summary>A cut piece: first-frame position in source media seconds and duration.</summary>
     public sealed record Piece(string Path, double From, double Length);
 
-    // Every clip of a project that plays a file: the tracks' and the folds' (a stretch Split & Mark folded out can be put back).
+    // All file-playing clips, on tracks and in folds (Split & Mark folds can be restored).
     private static IEnumerable<TimelineClip> ClipsOf(ProjectState state) =>
         state.Timeline.Tracks.SelectMany(t => t.Clips).Concat((state.Timeline.Folds ?? []).SelectMany(f => f.Clips).Select(f => f.Clip))
             .Where(c => c is { PlaysFile: true, SourcePath.Length: > 0 });
 
-    // The media seconds a clip reads: its picture's, its sound's J and L cuts and slip, and half its crossfade before its start (half the next
-    // clip's beyond its end is at most half the longest crossfade, 5 s: the handles).
+    // Media range a clip reads: picture, audio J/L cuts and slip, and half its leading crossfade (trailing overlap is covered by the 5 s handles).
     private static Stretch Reads(TimelineClip clip)
     {
         var speed = Math.Max(clip.Speed, 1e-6);
@@ -58,8 +54,8 @@ public static class VodTrim
     }
 
     /// <summary>
-    /// The video files of a project to trim (see the top of this file), with the stretches to keep: longer than <see cref="LongSeconds"/>
-    /// (as long as its clips say; <paramref name="durationOf"/> for one they do not), less than <see cref="MostUsedShare"/> of it used.
+    /// Plans trimming: videos longer than <see cref="LongSeconds"/> (clip-reported, else <paramref name="durationOf"/>) with under
+    /// <see cref="MostUsedShare"/> used, plus the ranges to keep.
     /// </summary>
     public static IReadOnlyList<Planned> Plan(ProjectState state, Func<string, double>? durationOf = null)
     {
@@ -104,10 +100,9 @@ public static class VodTrim
     }
 
     /// <summary>
-    /// A copy of the state whose clips of each trimmed file name the piece that holds what they read (see the top of this file), and the files
-    /// so trimmed with their pieces. A file one of whose clips no piece holds whole is not trimmed at all (it goes in whole, every clip of it
-    /// as it was). The recycle bin's clips of a trimmed file are left out (nothing of them may be in a piece), and the project's own names of
-    /// such a file (the file opened, the captions' sound) name its first piece. The state given is not changed.
+    /// Returns a remapped state copy (clips point at the piece containing their range) and the trimmed files with pieces. A file with any
+    /// clip not fully inside one piece is not trimmed. Recycle-bin clips of trimmed files are dropped; other references (opened file,
+    /// caption audio) map to the first piece. The input state is unchanged.
     /// </summary>
     public static (ProjectState State, Dictionary<string, IReadOnlyList<Piece>> Trimmed) Remap(ProjectState state, IReadOnlyDictionary<string, IReadOnlyList<Piece>> given)
     {
@@ -135,7 +130,7 @@ public static class VodTrim
                 return clip;
 
             var moved = clip.Snapshot();
-            // A piece is a file of its own: how long its picture is beside its container is not known (5.4A, PictureDuration 0).
+            // A piece's video-vs-container duration is unknown (PictureDuration 0).
             (moved.SourcePath, moved.MediaOffset, moved.SourceDuration, moved.PictureDuration) = (piece.Path, clip.MediaOffset - piece.From, piece.Length, 0.0);
             var look = TimelineTransaction.CopyOf(clip.State);
             (look.ImagePath, look.MediaOffset, look.MediaDuration) = (piece.Path, Math.Max(look.MediaOffset - piece.From, 0), piece.Length);
@@ -165,8 +160,7 @@ public static class VodTrim
     }
 
     /// <summary>
-    /// Cuts every planned file's stretches into <paramref name="folder"/> (see the top of this file). A file any stretch of which cannot be cut
-    /// exactly is not trimmed at all. Returns the pieces of each file trimmed (by its full path).
+    /// Cuts all planned ranges into <paramref name="folder"/>; a file with any inexact cut is not trimmed. Returns pieces per full path.
     /// </summary>
     public static Dictionary<string, IReadOnlyList<Piece>> Cut(IReadOnlyList<Planned> plan, string folder, CancellationToken cancel)
     {
@@ -200,8 +194,8 @@ public static class VodTrim
     }
 
     /// <summary>
-    /// One stretch as a file of its own: a stream copy from the key frame at or before its start (the file's own clock) to its end, checked to
-    /// begin on that key frame. Null when it cannot be cut so.
+    /// Stream-copies one range from the key frame at or before its start (file clock) to its end, verifying it begins on that key frame;
+    /// null on failure.
     /// </summary>
     internal static Piece? CutOne(string source, Stretch stretch, string target, CancellationToken cancel)
     {
@@ -238,10 +232,9 @@ public static class VodTrim
                 return null;
         }
 
-        // From the key frame, to the stretch's end, every stream as it is. FFmpeg's seek steps back before the point asked for (for B-frames,
-        // in a container that does not seek by presentation time), and by how much changes between its builds (5.2.0's re-cut: 3/23 s, then
-        // more than 0.13 s on Matroska and a hair on MP4 from its 2026-10-31 build on). So the seek goes a hair past the key frame, then further
-        // towards the next one, until the copy is seen to begin on it; never past the next key frame, so it lands on no later one.
+        // Copy all streams from the key frame to the range end. FFmpeg's seek backs off before the target (B-frames in non-PTS-seeking
+        // containers) by a build-dependent amount (from ~3/23 s to over 0.13 s on Matroska), so seek slightly past the key frame and
+        // advance toward the next until the copy starts on it, never past the next key frame.
         var from = key?.Time - videoStart ?? 0;
         var length = stretch.To - from;
         var gap = key is { } found ? (nextKey ?? found.Time + 1) - found.Time : 0;
@@ -341,7 +334,7 @@ public static class VodTrim
             cancel.ThrowIfCancellationRequested();
             if (process.ExitCode != 0)
             {
-                // GetResult, not Result: a failed read surfaces as itself (an IOException the filter below takes), not wrapped.
+                // GetResult (not Result) surfaces the IOException unwrapped for the filter below.
                 AppLog.Write($"Project bundle: {Path.GetFileName(tool)} failed ({process.ExitCode}): {errors.GetAwaiter().GetResult().Trim()}");
                 return null;
             }

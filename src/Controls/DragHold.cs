@@ -3,12 +3,12 @@ using System.Windows;
 namespace HandPegApp;
 
 /// <summary>
-/// Which thumbs' drags hold the player's boxes and the Crop boxes' clip (MainWindow.HoldForDrag): every thumb but those under an element
-/// marked <see cref="ExemptProperty"/> (inherited down the tree), set on the seek bar and on every scroll bar's style in App.xaml.
+/// Controls which Thumb drags freeze the player boxes and Crop target (MainWindow.HoldForDrag): all thumbs except those under an
+/// element marked <see cref="ExemptProperty"/> (inherited), which is set on the seek bar and on every scroll bar style in App.xaml.
 /// </summary>
 public static class DragHold
 {
-    /// <summary>A thumb under this element (or the element itself) is dragged without holding anything.</summary>
+    /// <summary>Inherited flag: thumbs at or under this element drag without freezing anything.</summary>
     public static readonly DependencyProperty ExemptProperty = DependencyProperty.RegisterAttached(
         "Exempt", typeof(bool), typeof(DragHold), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.Inherits));
 

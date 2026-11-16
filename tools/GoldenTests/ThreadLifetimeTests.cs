@@ -283,7 +283,7 @@ public static class ThreadLifetimeTests
     private static void ChildProcesses(Action<bool, string> expect)
     {
         // Process.Start only where the process is put in a job (Assign, Adopt, Track) or is the shell's (ShellOpen, ShellExecute).
-        string[] allowed = ["FfmpegLoopbackEncoder.cs", "FfmpegVideoDecoder.cs", "HardwareBenchmark.cs", "AudioTools.cs", "ShellOpen.cs", "VodTrim.cs", "ClipLibrary.cs", "ProcessPipes.cs"];
+        string[] allowed = ["FfmpegLoopbackEncoder.cs", "FfmpegVideoDecoder.cs", "HardwareBenchmark.cs", "ShellOpen.cs", "VodTrim.cs", "ClipLibrary.cs", "ProcessPipes.cs"];
         var starts = Directory.EnumerateFiles(Path.Combine(SourceProbe.Root, "src"), "*.cs", SearchOption.AllDirectories)
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}ShellThumbnails{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
             .Where(f => System.Text.RegularExpressions.Regex.IsMatch(File.ReadAllText(f), @"(?<!Worker)Process\.Start\(") && !allowed.Contains(Path.GetFileName(f)))

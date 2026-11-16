@@ -7,29 +7,27 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Media Browser's filmstrip cutter (5.4C): a compact strip of the chosen file's frames along a ruler, sliding under a playhead that
-/// stays in the middle (the Subtitle Studio's timeline's way, without its cue rows), and a sub-clip marked on it with In and Out.
+/// Media Browser filmstrip cutter: a compact frame strip over a ruler sliding under a fixed centre playhead (like the Subtitle Studio
+/// timeline, without cue rows), with an In/Out sub-clip.
 ///
-/// Dragging the strip scrubs (the moment under the playhead is the one shown); a flick coasts on with momentum (MomentumScroller, its
-/// two guards keeping careful moves still); a click puts the playhead where it was clicked. The wheel, Shift + wheel (down: later) and a
-/// sideways swipe or tilt (right: later) scroll in time with the same momentum, the Timeline's way (5.4.1A); Ctrl + wheel, or a precision
-/// touchpad's pinch, zooms about the pointer (the moment under it stays put, so the playhead's moves and is told as a scrub). The ends of the sub-clip are dragged to move them; the marked band on the ruler is dragged out onto the timeline (the pane
-/// carries it as a sub-clip). With the keyboard in it (IOwnsKeys, so the main window's shortcuts leave them to it): I and O mark In and
-/// Out at the playhead, Left and Right step a frame (Shift: ten), Home and End go to the file's ends, Space starts or stops the preview's
-/// stepping (J back, K stop, L forward), Enter inserts the sub-clip at the timeline's playhead.
+/// Strip drag scrubs; flicks coast (MomentumScroller with its precision guards); clicks seek. Wheel, Shift+wheel (down = later) and
+/// horizontal swipe/tilt (right = later) scroll with momentum like the Timeline; Ctrl+wheel or pinch zooms about the pointer (the time
+/// under it stays, so the playhead time changes and is raised as a scrub). Drag In/Out ends to move them; drag the ruler band out to
+/// the timeline as a sub-clip. Keyboard (IOwnsKeys, so main-window shortcuts yield): I/O mark at the playhead, Left/Right step a frame
+/// (Shift: ten), Home/End jump to the ends, Space/J/K/L control preview stepping, Enter inserts the sub-clip at the timeline playhead.
 ///
-/// Times are seconds of the file on its clips' MediaOffset clock. The strip is drawn into a visual of its own three screens wide and slid
-/// by a transform, drawn again only when the view runs past what was drawn or something on it changes (no drawing while it coasts).
+/// Times are file seconds on the MediaOffset clock. The strip renders into a three-screen-wide visual slid by a transform; it redraws
+/// only when the view passes the drawn range or content changes (never while coasting).
 /// </summary>
 public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISidewaysWheel
 {
-    /// <summary>DIPs the strip slides for a wheel delta of 1 (a notch of 120: 120 DIPs), the Timeline's Shift + wheel feel (PanWheelAt).</summary>
+    /// <summary>Strip DIPs per wheel delta unit (120 per notch), matching the Timeline's Shift+wheel (PanWheelAt).</summary>
     internal const double WheelDipsPerDelta = 1.0;
 
-    /// <summary>What a notch of Ctrl + wheel multiplies the zoom by.</summary>
+    /// <summary>Zoom multiplier per Ctrl+wheel notch.</summary>
     private const double ZoomStep = 1.2;
 
-    /// <summary>The ruler's height and the frame row's, DIPs; the cutter's whole height.</summary>
+    /// <summary>Ruler and frame-row heights and total preferred height, in DIPs.</summary>
     public const double RulerHeight = 16, FrameRowHeight = 46, PreferredHeight = RulerHeight + FrameRowHeight + 4;
 
     private const double LargestZoom = 1200, EdgePixels = 7, ShortestRange = 0.1;
@@ -80,7 +78,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         System.Windows.Automation.AutomationProperties.SetName(this, "Filmstrip Cutter");
         ToolTip = "Drag to scrub, click to go there; the wheel or a sideways swipe scrolls, Ctrl + wheel or a pinch zooms. I and O mark the sub-clip; drag the marked band (top) onto the timeline, or press Enter.";
 
-        // Nothing coasts while hidden or gone (the frame hook is let go).
+        // Stop coasting (and unhook the frame) when unloaded or hidden.
         Unloaded += (_, _) => StopCoasting();
         IsVisibleChanged += (_, _) =>
         {
@@ -93,7 +91,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
 
     protected override Visual GetVisualChild(int index) => index == 0 ? _strip : _head;
 
-    /// <summary>How long the file plays, seconds (0: nothing to cut). Setting it keeps the playhead and the sub-clip inside it.</summary>
+    /// <summary>File duration in seconds (0 = nothing to cut); setting it clamps the playhead and sub-clip into range.</summary>
     public double DurationSeconds
     {
         get => _duration;
@@ -111,10 +109,10 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         }
     }
 
-    /// <summary>Frames a second, for stepping a frame at a time (30 while not known).</summary>
+    /// <summary>Frame rate for single-frame steps (30 when unknown).</summary>
     public double FrameRate { get; set; } = 30;
 
-    /// <summary>The moment under the playhead. Set from outside (the stepping preview, a key), it stops a coast.</summary>
+    /// <summary>Time under the playhead; external sets (preview stepping, keys) stop any coast.</summary>
     public double PositionSeconds
     {
         get => _position;
@@ -125,15 +123,15 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         }
     }
 
-    /// <summary>The sub-clip's start and end, seconds (the whole file while none is marked).</summary>
+    /// <summary>Sub-clip In/Out in seconds (the whole file when unmarked).</summary>
     public double InSeconds => _in;
 
     public double OutSeconds => _out;
 
-    /// <summary>Whether a sub-clip shorter than the file is marked.</summary>
+    /// <summary>True when a sub-clip shorter than the file is marked.</summary>
     public bool HasRange => _duration > 0 && (_in > 0.0005 || _out < _duration - 0.0005);
 
-    /// <summary>The strip's frames, spread evenly over the file (the browser's strip of it); null for none (a sound, or not made yet).</summary>
+    /// <summary>Evenly spaced strip frames from the browser; null for audio or not yet generated.</summary>
     public IReadOnlyList<ImageSource>? Frames
     {
         get => _frames;
@@ -144,25 +142,25 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         }
     }
 
-    /// <summary>Pixels to the second; NaN until the cutter knows its width (then the whole file fills it).</summary>
+    /// <summary>Pixels per second; NaN until width is known (then initialised to fit the whole file).</summary>
     public double Zoom => _zoom;
 
-    /// <summary>The moment under the playhead changed by the user: <c>settled</c> false while the strip is dragged or coasting.</summary>
+    /// <summary>User-driven playhead change: (seconds, settled), settled false while dragging or coasting.</summary>
     public event Action<double, bool>? Scrubbed;
 
-    /// <summary>In or Out moved.</summary>
+    /// <summary>Raised when In or Out changes.</summary>
     public event Action<double, double>? RangeChanged;
 
-    /// <summary>The marked band was dragged out of the cutter: the pane carries the sub-clip onto the timeline.</summary>
+    /// <summary>Marked band dragged out; the pane starts a sub-clip drag-and-drop to the timeline.</summary>
     public event Action? DragOutRequested;
 
-    /// <summary>The preview's stepping: 2 Space (start or stop), 1 L (forward), -1 J (back), 0 K (stop).</summary>
+    /// <summary>Preview stepping command: 2 = Space (toggle), 1 = L (forward), -1 = J (back), 0 = K (stop).</summary>
     public event Action<int>? Shuttle;
 
-    /// <summary>Enter: the sub-clip put on the timeline at its playhead.</summary>
+    /// <summary>Enter: insert the sub-clip at the timeline playhead.</summary>
     public event Action? InsertRequested;
 
-    /// <summary>Takes up another file: its length, and the whole of it marked, the playhead at its start, zoomed to fit.</summary>
+    /// <summary>Loads a new file: whole range marked, playhead at 0, zoom reset to fit.</summary>
     public void Load(double durationSeconds, double frameRate)
     {
         StopCoasting();
@@ -172,7 +170,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         InvalidateVisual();
     }
 
-    /// <summary>Marks the sub-clip, each end kept inside the file and In before Out by at least a tenth of a second.</summary>
+    /// <summary>Sets the sub-clip, clamped into the file with Out at least 0.1 s after In.</summary>
     public void SetRange(double inSeconds, double outSeconds)
     {
         if (_duration <= 0)
@@ -186,10 +184,10 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         RangeChanged?.Invoke(_in, _out);
     }
 
-    /// <summary>A range kept inside a file of <paramref name="duration"/> seconds, In before Out by at least <see cref="ShortestRange"/> where it can be.</summary>
+    /// <summary>Clamps a range into [0, <paramref name="duration"/>] with Out >= In + <see cref="ShortestRange"/> where possible.</summary>
     internal static (double In, double Out) ClampRange(double inSeconds, double outSeconds, double duration)
     {
-        // Never Math.Clamp with bounds that rounding can cross (0.2 + 0.1 is over 0.3): it throws, and this runs in OnRender's reach.
+        // Avoid Math.Clamp: rounding can invert the bounds (0.2 + 0.1 > 0.3) and it would throw on a path reachable from OnRender.
         duration = Math.Max(duration, 0);
         var shortest = Math.Min(ShortestRange, duration);
         var start = Math.Max(0, Math.Min(double.IsFinite(inSeconds) ? inSeconds : 0, Math.Max(duration - shortest, 0)));
@@ -197,16 +195,16 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         return (start, end);
     }
 
-    /// <summary>I: In at the playhead (Out moved to the file's end when it would come before it).</summary>
+    /// <summary>I: In at the playhead (Out moves to the end if it would precede In).</summary>
     public void MarkIn() => SetRange(_position, _out <= _position + ShortestRange / 2 ? _duration : _out);
 
-    /// <summary>O: Out at the playhead (In moved to the file's start when it would come after it).</summary>
+    /// <summary>O: Out at the playhead (In moves to 0 if it would follow Out).</summary>
     public void MarkOut() => SetRange(_in >= _position - ShortestRange / 2 ? 0 : _in, _position);
 
-    /// <summary>The whole file marked again.</summary>
+    /// <summary>Resets the range to the whole file.</summary>
     public void ClearRange() => SetRange(0, _duration);
 
-    /// <summary>Moves the playhead by a number of frames, and says so (settled).</summary>
+    /// <summary>Steps the playhead by frames and raises a settled Scrubbed.</summary>
     public void StepFrames(int frames)
     {
         StopCoasting();
@@ -214,7 +212,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         Scrubbed?.Invoke(_position, true);
     }
 
-    /// <summary>Slides the strip by some DIPs (a drag's or a coast's): to the right brings earlier moments under the playhead.</summary>
+    /// <summary>Pans by DIPs (drag or coast); positive (rightward) moves earlier time under the playhead.</summary>
     public void PanBy(double dips)
     {
         if (!double.IsFinite(dips) || dips == 0 || !(Zoom > 0))
@@ -222,7 +220,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         MoveTo(_position - dips / _zoom);
     }
 
-    /// <summary>Stops a coast (a press, a key, the playhead set from outside, the cutter hidden).</summary>
+    /// <summary>Stops a coast (press, key, external seek, hide); raises a settled Scrubbed if one was running.</summary>
     public void StopCoasting()
     {
         var was = _momentum.IsCoasting;
@@ -232,7 +230,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
             Scrubbed?.Invoke(_position, true);
     }
 
-    /// <summary>The keys the cutter keeps while it has the keyboard (with no Ctrl, Alt or Windows key; Shift steps ten frames).</summary>
+    /// <summary>Keys owned while focused (no Ctrl/Alt/Win; Shift steps ten frames).</summary>
     public bool OwnsKey(Key key, ModifierKeys modifiers) =>
         (modifiers & (ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Windows)) == 0
         && key is Key.I or Key.O or Key.Space or Key.Left or Key.Right or Key.Home or Key.End or Key.J or Key.K or Key.L or Key.Enter;
@@ -250,8 +248,8 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
 
     private double ToSeconds(double x) => _position + (x - ActualWidth / 2) / _zoom;
 
-    // The least zoom: the whole file in half the width (the playhead in the middle can then reach either end with all of it in view).
-    // Never above the largest: a file under width / 2400 s would otherwise make the clamps below throw (a click.wav).
+    // Min zoom: whole file in half the width (the centre playhead can reach either end with all in view). Capped at LargestZoom, since
+    // very short files (under width/2400 s) would otherwise invert the clamp bounds and throw.
     private double SmallestZoom => _duration > 0 && ActualWidth > 0 ? Math.Min(ActualWidth / 2 / _duration, LargestZoom) : 1;
 
     protected override void OnRender(DrawingContext drawing)
@@ -263,7 +261,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         if (width > 0 && _duration > 0 && !(_zoom > 0))
             _zoom = Math.Clamp(width / _duration, SmallestZoom, LargestZoom);
 
-        // Something on the strip changed (the file, its frames, the sub-clip, the zoom, the size): it is drawn again.
+        // Content changed (file, frames, range, zoom, size): invalidate the drawn range and redraw.
         _drawn = (double.NaN, double.NaN);
         Slide();
     }
@@ -280,7 +278,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         InvalidateVisual();
     }
 
-    /// <summary>The strip slid so the playhead's moment is under the middle; drawn again only when the view runs past what was drawn.</summary>
+    /// <summary>Translates the strip to centre the playhead time; redraws only when the view passes the drawn range.</summary>
     private void Slide()
     {
         var width = ActualWidth;
@@ -314,7 +312,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         drawing.DrawLine(HeadPen, new Point(middle, 0), new Point(middle, ActualHeight));
     }
 
-    /// <summary>Draws a screen's width before and after what is on screen, its own origin at the first of those moments.</summary>
+    /// <summary>Renders one screen before to one screen after the visible range, with local origin at its start.</summary>
     private void DrawStrip(double firstSecond, double lastSecond)
     {
         var span = lastSecond - firstSecond;
@@ -337,7 +335,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
             return;
         drawing.DrawRectangle(FileBrush, null, rowRect);
 
-        // The frames: one slot after another as wide as a frame of the file's shape, each showing the strip's frame nearest its middle.
+        // Frame slots at the file's aspect, each showing the strip frame nearest its centre time.
         if (_frames is { Count: > 0 } frames && frames[0] is { Width: > 0, Height: > 0 } sample)
         {
             var slot = Math.Max(FrameRowHeight * sample.Width / sample.Height, 8);
@@ -356,7 +354,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
             drawing.Pop();
         }
 
-        // The ruler: a tick at every round step of time that leaves room for its label.
+        // Ruler ticks at the smallest round step leaving >= 64 px per label.
         var step = RulerSteps.FirstOrDefault(s => s * zoom >= 64, 7200);
         for (var tick = Math.Max(Math.Floor(from / step) * step, 0); tick <= Math.Min(to, _duration); tick += step)
         {
@@ -372,7 +370,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
             drawing.DrawText(label, new Point(x + 3, 1));
         }
 
-        // The sub-clip: the band on the ruler that is dragged out, the frames outside it shaded, its ends marked.
+        // Sub-clip: draggable ruler band, frames outside it shaded, In/Out brackets.
         var (inX, outX) = (X(_in), X(_out));
         var marked = HasRange;
         drawing.DrawRectangle(marked ? MarkedBandBrush : BandBrush, null, new Rect(inX, RulerHeight - 5, Math.Max(outX - inX, 1), 5));
@@ -413,9 +411,8 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
     }
 
     /// <summary>
-    /// A wheel notch over the cutter (test seam; OnMouseWheel calls it): Ctrl zooms about <paramref name="pointerX"/> (a pinch on a
-    /// precision touchpad arrives as Ctrl + wheel) and stops a coast; otherwise (none or Shift) the strip scrolls along the file, wheel
-    /// down later, a fast stream coasting on.
+    /// Test seam (called by OnMouseWheel): Ctrl zooms about <paramref name="pointerX"/> and stops coasting (pinch arrives as Ctrl+wheel);
+    /// otherwise (none or Shift) scrolls through the file, wheel down = later, fast streams coasting.
     /// </summary>
     internal void WheelAt(int delta, ModifierKeys modifiers, double nowMs, double pointerX)
     {
@@ -429,18 +426,18 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
             return;
         }
 
-        // Wheel up (positive) brings earlier moments: the strip slides right, the drag's way, as the coast that may follow goes on.
+        // Wheel up (positive) shows earlier time: the strip slides right, as a drag would, and any coast continues that way.
         PanWheel(delta * WheelDipsPerDelta, nowMs);
     }
 
-    /// <summary>A sideways swipe or tilt over the cutter (WM_MOUSEHWHEEL from the window's hook): positive is to the right, later.</summary>
+    /// <summary>Horizontal swipe/tilt (WM_MOUSEHWHEEL via the window hook); positive = right = later.</summary>
     public void SidewaysWheel(double delta, double nowMs)
     {
         if (_duration > 0 && _zoom > 0)
             PanWheel(-delta * WheelDipsPerDelta, nowMs);
     }
 
-    // The strip slid by a wheel tick of DIPs in the drag's sense (PanBy: to the right brings earlier moments), a fast stream coasting on.
+    // Wheel pan in drag-sense DIPs (PanBy: right = earlier); fast streams start a coast.
     private void PanWheel(double dips, double nowMs)
     {
         if (_drag is not null)
@@ -458,11 +455,10 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
             return;
         }
 
-        // A tick the coast had already covered: it coasts on.
+        // Tick already covered by the coast (step 0 while coasting): keep coasting.
         if (step != 0 || !_momentum.IsCoasting)
         {
-            // Held against either end (told nothing: a touchpad would ask the same still again and again), or a tick against the
-            // coast that stopped it where it was (told once, settled).
+            // Pinned at an end (no event, since touchpads repeat such ticks) or an opposing tick stopped the coast (one settled event).
             _momentum.Stop();
             Unhook();
             if (wasCoasting)
@@ -473,10 +469,10 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         Hook();
     }
 
-    // Zooms about a point of the cutter: the moment under it stays under it, so the playhead's moment (the middle) moves and is told, settled.
+    // Zooms about x keeping its time fixed; the centre playhead time therefore changes and is raised as a settled scrub.
     private void ZoomAt(double factor, double x)
     {
-        // Not while a drag holds the strip (its pointer maths would jump), and nothing at all at a zoom limit (no rounding drift, no seek).
+        // Ignored during drags (pointer maths would jump) and at zoom limits (avoids rounding drift and spurious seeks).
         if (_drag is not null)
             return;
         var at = ToSeconds(x);
@@ -491,10 +487,10 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
             Scrubbed?.Invoke(_position, true);
     }
 
-    /// <summary>Whether the strip is coasting on after a flick or a fast wheel stream (test seam).</summary>
+    /// <summary>Test seam: true while coasting after a flick or fast wheel stream.</summary>
     internal bool IsCoasting => _momentum.IsCoasting;
 
-    /// <summary>The moment at a point of the cutter, seconds of the file (test seam).</summary>
+    /// <summary>Test seam: cutter x to file seconds.</summary>
     internal double SecondsAt(double x) => ToSeconds(x);
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -540,7 +536,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
                 SetRange(_in, ToSeconds(point.X));
                 break;
             case Grip.Band:
-                // The marked band, taken out of the cutter: the pane starts the drag and drop (the cutter lets go of the pointer first).
+                // Band dragged out: release capture first, then the pane starts the drag-and-drop.
                 _drag = null;
                 ReleaseMouseCapture();
                 DragOutRequested?.Invoke();
@@ -563,7 +559,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         e.Handled = true;
         if (!drag.Moved)
         {
-            // A click: the playhead goes to the moment clicked.
+            // Click without drag: seek to the clicked time.
             if (drag.Grip is Grip.Pan or Grip.Band)
             {
                 MoveTo(ToSeconds(e.GetPosition(this).X));
@@ -576,7 +572,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         if (drag.Grip != Grip.Pan)
             return;
 
-        // A flick coasts on (the momentum's guards: too slow, or rested before letting go, and it stops dead).
+        // Flick may start a coast (momentum guards reject slow or rested releases).
         _momentum.Release(MomentumScroller.Now());
         if (_momentum.IsCoasting)
             Hook();
@@ -643,7 +639,7 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
         e.Handled = true;
     }
 
-    // ----- The coast: the frame hook held only while it moves -----
+    // ----- Coast (frame hook only while moving) -----
 
     private void Hook()
     {
@@ -663,14 +659,14 @@ public sealed class MediaFilmstripCutter : FrameworkElement, IOwnsKeys, ISideway
 
     private void Coast(object? sender, EventArgs e) => StepCoast(MomentumScroller.Now());
 
-    /// <summary>One frame of the coast at <paramref name="nowMs"/> (test seam; the frame hook calls it): whether it is still coasting.</summary>
+    /// <summary>Test seam (called per frame): advances the coast at <paramref name="nowMs"/>; returns whether still coasting.</summary>
     internal bool StepCoast(double nowMs)
     {
         var travel = _momentum.Tick(nowMs);
         var before = _position;
         PanBy(travel);
 
-        // At either end of the file, or slowed to a stop: the coast is over, and the moment it came to rest is the settled one.
+        // End reached or slowed to a stop: finish and raise the rest position as settled.
         if (!_momentum.IsCoasting || _position == before && travel != 0)
         {
             _momentum.Stop();

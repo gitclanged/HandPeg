@@ -4,11 +4,10 @@ using System.Text.Json.Serialization;
 namespace HandPegApp.Models.Timeline;
 
 /// <summary>
-/// A frame rate as an exact fraction: 30000/1001 is NTSC's 29.97, 60/1 is 60. Times on a <see cref="TimelineDocument"/>
-/// are seconds, and while it quantizes they lie on this rate's frames: a frame's time is one exact double
-/// (<see cref="Quantize"/>), so two clips that touch at a frame hold bit-identical edges.
+/// Exact rational frame rate (30000/1001 = NTSC 29.97, 60/1 = 60). With quantization on, <see cref="TimelineDocument"/> times snap to
+/// frames via <see cref="Quantize"/>, giving one exact double per frame so abutting clips share bit-identical edges.
 /// </summary>
-/// <remarks>A rate that is not positive (a default value, a file without one) counts as 60/1. Written to projects as its two numbers.</remarks>
+/// <remarks>Non-positive rates (default, missing) count as 60/1. Serialized as numerator and denominator.</remarks>
 public readonly record struct FrameRate(int Numerator, int Denominator)
 {
     public static readonly FrameRate Ntsc23976 = new(24000, 1001);
@@ -26,7 +25,7 @@ public readonly record struct FrameRate(int Numerator, int Denominator)
     public static IReadOnlyList<FrameRate> Standard { get; } =
         [Ntsc23976, Fps24, Fps25, Ntsc2997, Fps30, Fps50, Ntsc5994, Fps60, Ntsc11988, Fps120];
 
-    /// <summary>How near a rate has to be to a standard one to be taken as it: 0.5% (29.92, the average of a variable-rate 29.97 recording, is 29.97).</summary>
+    /// <summary>Snap tolerance to standard rates: 0.5% (e.g. a VFR average of 29.92 snaps to 29.97).</summary>
     private const double Nearness = 0.005;
 
     /// <summary>The slowest and fastest rates a project can have, in frames per second.</summary>
@@ -47,8 +46,8 @@ public readonly record struct FrameRate(int Numerator, int Denominator)
     public double FrameDuration => D / (double)N;
 
     /// <summary>
-    /// The rate meant by a number of frames per second: the standard rate nearest it, within 0.5% (23.976, 29.97, 59.94
-    /// and 119.88 are the NTSC fractions); otherwise a whole number from 1 to 1000 over 1 (48 is 48/1). Anything else is 60/1.
+    /// Maps fps to the nearest standard rate within 0.5% (23.976/29.97/59.94/119.88 become NTSC fractions), else an integer 1-1000 over 1
+    /// (48 to 48/1); otherwise 60/1.
     /// </summary>
     public static FrameRate FromFps(double fps)
     {
@@ -64,10 +63,9 @@ public readonly record struct FrameRate(int Numerator, int Denominator)
     }
 
     /// <summary>
-    /// A source's own rate, kept as it is, for a canvas that ticks with the source's frames (4.3B): an NTSC rate within a
-    /// hundredth of a frame a second is its exact fraction (29.97 is 30000/1001), any other is the number itself to a
-    /// thousandth, reduced (47.952 is 5994/125, 12.5 is 25/2, 30 is 30/1), never snapped to a standard one, as
-    /// <see cref="FromFps"/> snaps a project's rate. 30/1 for a rate that is not one (0, NaN), within 1 to 1000.
+    /// Preserves a source's rate for a source-locked canvas: NTSC rates within 0.01 fps become exact fractions (30000/1001); others are
+    /// reduced to the nearest thousandth (47.952 to 5994/125, 12.5 to 25/2), never snapped like <see cref="FromFps"/>. Invalid (0, NaN)
+    /// gives 30/1; clamped to 1-1000.
     /// </summary>
     public static FrameRate OfSource(double fps)
     {
@@ -86,8 +84,8 @@ public readonly record struct FrameRate(int Numerator, int Denominator)
     }
 
     /// <summary>
-    /// Reads "30000/1001" or "60/1" (reduced: "60000/2000" is 30/1), or "29.97" / "60" when <see cref="FromFps"/> knows the
-    /// number (invariant culture). False for anything else, or a rate outside 1 to 1000 frames per second.
+    /// Parses "30000/1001" or "60/1" (reduced), or a decimal fps recognized by <see cref="FromFps"/> (invariant culture). False otherwise
+    /// or outside 1-1000 fps.
     /// </summary>
     public static bool TryParse(string? text, out FrameRate rate)
     {
@@ -131,8 +129,8 @@ public readonly record struct FrameRate(int Numerator, int Denominator)
     public double SecondsFromFrame(long frame) => frame * (double)D / N;
 
     /// <summary>
-    /// The moment of the frame nearest <paramref name="seconds"/>, rounded to the microsecond: the one double every edit
-    /// that lands on that frame gets, whatever arithmetic led there. Unchanged while <paramref name="enabled"/> is false.
+    /// Snaps to the nearest frame time rounded to the microsecond: one canonical double per frame regardless of arithmetic path. Identity
+    /// when <paramref name="enabled"/> is false.
     /// </summary>
     public double Quantize(double seconds, bool enabled = true) =>
         enabled ? Math.Round(SecondsFromFrame(FrameFromSeconds(seconds)), 6, MidpointRounding.AwayFromZero) : seconds;

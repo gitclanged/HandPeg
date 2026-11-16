@@ -8,22 +8,21 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Subtitle Studio's picture (5.0-Verify, in place of its libmpv player): a black frame the shape of the caption box
-/// (of the output frame, for a picture track) with the subtitle that is up at the editor's playhead on it, drawn by WPF as
-/// the GPU preview's TextRasterizer draws a caption the way libass draws the export's: bold, the style's colours, outline and
-/// size at the box's scale, the line centred across and standing on a 12th of the box; TikTok Pop's spoken word in the
-/// highlight and a seventh larger, Karaoke Sweep's sung part swept across each word while it is said. Nothing is played or
-/// decoded: the editor moves <see cref="Time"/>, and a new moment is drawn only when what it shows has changed.
-/// <para>A picture track's subtitles are pictures that only a decoder can draw, so one that is up is shown as a marked bar
-/// where such subtitles sit, numbered: enough to see a retimed cue come and go.</para>
-/// <para>Not shown since 5.4C: the Subtitle Studio is a dock pane with no picture of its own, the main player drawing the captions
-/// as they are edited. Kept (with MainViewModel.SubtitleEditorCaptions and SubtitleFrameSize) for a caption preview of its own, should
-/// a studio torn off into a side window want one.</para>
+/// Standalone subtitle preview: a black frame shaped like the caption box (or the output frame for picture tracks) showing the cue
+/// active at <see cref="Time"/>, rendered in WPF to match the GPU TextRasterizer and the export's libass output: bold, style colours,
+/// outline and size at box scale, centred with its descender line a twelfth of the box above the bottom; TikTok Pop shows the spoken word
+/// highlighted and 15% larger, Karaoke Sweep sweeps the highlight across each word while it is spoken. No playback or decoding; it
+/// redraws only when the visible state changes.
+/// <para>Picture-track subtitles need a decoder to render, so an active cue is shown as a numbered placeholder bar in the subtitle
+/// area, enough to see retimed cues appear and disappear.</para>
+/// <para>Currently unused: the Subtitle Studio is a dock pane without its own picture, since the main player renders captions live.
+/// Kept (with MainViewModel.SubtitleEditorCaptions and SubtitleFrameSize) for a dedicated caption preview, e.g. in a torn-off side
+/// window.</para>
 /// </summary>
 public sealed class SubtitlePreview : FrameworkElement
 {
-    // A text track's lines on the timeline's clock, with when each is up (its end held to the next within a breath, as
-    // CaptionGenerator.WriteAss holds it). A picture track's cues are only their times.
+    // Text-track lines on the timeline clock with display intervals (ends extended to the next line across short gaps, as
+    // CaptionGenerator.WriteAss does). Picture-track cues carry only their times.
     private IReadOnlyList<List<CaptionWord>> _lines = [];
     private double[] _from = [], _to = [];
     private bool _pictures;
@@ -32,10 +31,10 @@ public sealed class SubtitlePreview : FrameworkElement
     private (int Width, int Height) _box = (1920, 1080);
     private double _time;
 
-    // What the last frame drawn showed: a moment that shows the same is not drawn again.
+    // Last rendered (line, word, sweep) state; unchanged states skip redraw.
     private (int Line, int Word, int Sweep) _shown = (-1, -1, -1);
 
-    /// <summary>The editor's playhead, in timeline seconds: the subtitle up then is drawn.</summary>
+    /// <summary>Editor playhead in timeline seconds; the cue active at this time is drawn.</summary>
     public double Time
     {
         get => _time;
@@ -48,8 +47,8 @@ public sealed class SubtitlePreview : FrameworkElement
     }
 
     /// <summary>
-    /// What a text track shows: its lines (each a cue's words, timed on the timeline's clock), the caption style, what the
-    /// style's sizes (given for a 1080-pixel frame) are multiplied by for the caption box, and the box's size in pixels.
+    /// Shows a text track: lines (each a cue's timed words on the timeline clock), the caption style, the scale applied to style sizes
+    /// (authored for a 1080-pixel frame) for this caption box, and the box size in pixels.
     /// </summary>
     public void ShowCaptions(IReadOnlyList<List<CaptionWord>> lines, CaptionStyle style, double textScale, (int Width, int Height) box)
     {
@@ -68,7 +67,7 @@ public sealed class SubtitlePreview : FrameworkElement
         Use(box);
     }
 
-    /// <summary>What a picture track shows: when each of its cues is up, on the timeline's clock, on a frame of <paramref name="box"/>.</summary>
+    /// <summary>Shows a picture track: cue intervals on the timeline clock, within a frame of size <paramref name="box"/>.</summary>
     public void ShowPictures(IReadOnlyList<(double Start, double End)> cues, (int Width, int Height) box)
     {
         _pictures = true;
@@ -84,8 +83,8 @@ public sealed class SubtitlePreview : FrameworkElement
         InvalidateVisual();
     }
 
-    // The line up at the playhead (the last to start by then, while it lasts), the word being said, and how far a karaoke
-    // sweep is through it (in hundredths of the box's width).
+    // Active state at the playhead: line (latest start at or before Time, while unexpired), spoken word, and karaoke sweep
+    // progress through that word (0..100, percent of the word's advance).
     private (int Line, int Word, int Sweep) Showing()
     {
         var line = -1;
@@ -120,7 +119,7 @@ public sealed class SubtitlePreview : FrameworkElement
         drawing.DrawRectangle(Brushes.Black, null, new Rect(RenderSize));
         _shown = Showing();
 
-        // The box as large as fits, centred, and everything in it drawn in the box's own pixels.
+        // Fit the box centred and draw in box-pixel coordinates via a scale transform.
         var (boxWidth, boxHeight) = _box;
         var scale = Math.Min(ActualWidth / boxWidth, ActualHeight / boxHeight);
         if (_shown.Line < 0 || !(scale > 0))
@@ -163,8 +162,8 @@ public sealed class SubtitlePreview : FrameworkElement
             across += texts[w].WidthIncludingTrailingWhitespace + (w + 1 < texts.Length ? space : 0);
         }
 
-        // Karaoke: the line as it is before it is sung, then the sung line cut at the sweep, which crosses each word and
-        // the space after it while it is said. Pop: one state, the spoken word lit.
+        // Karaoke: unsung line, then the highlighted line clipped at the sweep, which crosses each word plus its trailing space
+        // while spoken. Pop: single pass with the spoken word highlighted.
         var geometries = new Geometry[texts.Length];
         var (x, sweep) = ((width - across) / 2, 0.0);
         for (var w = 0; w < texts.Length; w++)
@@ -201,7 +200,7 @@ public sealed class SubtitlePreview : FrameworkElement
         drawing.Pop();
     }
 
-    // A picture subtitle that is up: a bar where subtitles sit, with its number.
+    // Active picture subtitle: numbered placeholder bar in the subtitle area.
     private void DrawPicture(DrawingContext drawing, int cue)
     {
         var (width, height) = _box;

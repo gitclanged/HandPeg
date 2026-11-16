@@ -166,6 +166,17 @@ internal static partial class User32
     [return: MarshalAs(UnmanagedType.Bool)]
     public static partial bool DestroyWindow(nint window);
 
+    [LibraryImport("user32.dll", EntryPoint = "SetClassLongPtrW")]
+    public static partial nint SetClassLongPtr(nint window, int index, nint value);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool InvalidateRect(nint window, nint rect, [MarshalAs(UnmanagedType.Bool)] bool erase);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool SetLayeredWindowAttributes(nint window, uint colorKey, byte alpha, uint flags);
+
     /// <summary>EnumDisplaySettingsW into a caller's DEVMODEW buffer (its dmSize set); <paramref name="device"/> null for the main display.</summary>
     [LibraryImport("user32.dll", EntryPoint = "EnumDisplaySettingsW")]
     [return: MarshalAs(UnmanagedType.Bool)]

@@ -6,23 +6,21 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// Holds still a time that changes many times a second (the position by the Sequence Overview Scrubber and in the playback
-/// bar, the Subtitle Studio's time, the Voiceover Studio's count; 5.3.1): its TextBlock's digits all one width (tabular figures),
-/// and the readout never narrower than <see cref="ReserveText"/> in its face (plus <see cref="Spare"/>) nor than the widest
-/// text it has shown, whatever its length (5.3.2: a frame number going from two digits to three above 100 fps, or the format
-/// switched, moved the scrubber beside it), so neither the readout nor what sits beside it moves sideways during playback.
-/// Another face or size, or collapsed and shown again, starts again from the reserve. A decorator, as TextBlock's own measure
-/// cannot be overridden.
+/// Width-stable decorator for rapidly changing time readouts (Overview Scrubber and playback bar position, Subtitle Studio time,
+/// Voiceover Studio counter): forces tabular figures on its TextBlock and never measures narrower than <see cref="ReserveText"/> in that
+/// font (plus <see cref="Spare"/>) or than the widest text shown so far, so frame-digit growth (e.g. two to three digits above 100 fps)
+/// or a format switch never shifts the readout or its neighbours during playback. A font change, or collapse and re-show, resets to the
+/// reserve. Implemented as a decorator because TextBlock's measure cannot be overridden.
 /// </summary>
 public sealed class TimeReadout : Decorator
 {
     private (double Size, FontFamily? Face, FontWeight Weight) _shape = (-1, null, default);
     private double _widest;
 
-    /// <summary>The text whose width the readout always keeps room for: a twelve-character time (HH:MM:SS:FFF or HH:MM:SS.mmm).</summary>
+    /// <summary>Minimum-width template: a twelve-character time (HH:MM:SS:FFF or HH:MM:SS.mmm).</summary>
     public string ReserveText { get; set; } = "00:00:00:000";
 
-    /// <summary>Room kept beyond the text, in DIPs (the scrubber's readouts keep 8, 5.3.2).</summary>
+    /// <summary>Extra width beyond the text in DIPs (the scrubber's readouts use 8).</summary>
     public double Spare { get; set; }
 
     protected override void OnVisualChildrenChanged(DependencyObject added, DependencyObject removed)
@@ -60,7 +58,7 @@ public sealed class TimeReadout : Decorator
         return arrangeSize;
     }
 
-    // The reserve's width in the TextBlock's face, size and weight, with tabular figures as the TextBlock has them.
+    // Measures ReserveText in the TextBlock's font family, size and weight with tabular figures.
     private double Reserved(TextBlock text)
     {
         var reserve = new TextBlock

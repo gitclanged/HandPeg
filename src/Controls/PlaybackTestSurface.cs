@@ -8,18 +8,18 @@ using static HandPegApp.Native.Kernel32;
 namespace HandPegApp;
 
 /// <summary>
-/// The Playback &amp; A/V Sync Test's picture (Pass 5.5.2-Release, PlaybackSyncCard): a plain native child window, black until the test's
-/// engine presents on it, so its swap chain is a real one on the screen (DWM composes it, and DXGI reports when each frame was shown). No
-/// overlay and no input of its own: the pointer passes through it to the card under it.
+/// Playback &amp; A/V Sync Test surface (PlaybackSyncCard): a plain native child window, black until the test engine presents, so the
+/// swap chain is a real on-screen one (DWM composes it and DXGI reports per-frame present times). No overlay or input: hit testing
+/// returns HTTRANSPARENT so the pointer reaches the card beneath.
 /// </summary>
 public sealed partial class PlaybackTestSurface : HwndHost
 {
     private const int WsChild = 0x40000000, WsClipSiblings = 0x04000000, BlackBrush = 4, WmNcHitTest = 0x0084, HtTransparent = -1;
 
-    /// <summary>The native window the test's engine presents on; zero until it is made.</summary>
+    /// <summary>HWND the test engine presents to; zero until created.</summary>
     public nint SurfaceHandle { get; private set; }
 
-    // Windows' own window procedure, painting black (VideoSurface's way); "static" if the class cannot be had.
+    // Window class using DefWindowProc with a black background brush (as VideoSurface does); falls back to "static" if registration fails.
     private static readonly Lazy<string> SurfaceClass = new(() =>
     {
         const string name = "HandPegSyncTestSurface";

@@ -6,16 +6,13 @@ using System.Windows.Interop;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Keeps Windows from beeping at HandPeg's keys (5.0-Release, the user's directive 2). A window with no menu bar still enters
-/// Windows' menu mode on Alt alone, F10 or Alt with a letter (WM_SYSCHAR, then WM_SYSCOMMAND SC_KEYMENU), and beeps at the next
-/// key or click that names nothing. Every HandPeg window (<see cref="Attach"/>, through a class handler on <see cref="Window"/>
-/// made in App.OnStartup) answers those itself, and a menu's unknown key (WM_MENUCHAR) closes it quietly. Alt + Space still
-/// opens the system menu. HandPeg has no access keys (no "_" in a header), and its Alt shortcuts are key downs
-/// (KeybindManager), which this leaves alone.
+/// Suppresses Windows menu-mode beeps: menu-less windows still enter menu mode on Alt, F10 or Alt+letter (WM_SYSCHAR, WM_SYSCOMMAND
+/// SC_KEYMENU) and beep on the next unmatched input. Every window (<see cref="Attach"/>, class handler registered in App.OnStartup)
+/// handles these itself, and unknown menu keys (WM_MENUCHAR) close silently. Alt+Space still opens the system menu; there are no access
+/// keys, and Alt shortcuts are KeyDown-based (KeybindManager) and unaffected.
 /// <para>
-/// HandPeg never touches Windows' accessibility settings (5.1-AutoHud-Part1, the user's diagnosis: switching the Sticky, Filter
-/// and Toggle Keys hotkeys off and on as HandPeg gained and lost focus made Windows play its accessibility siren, 440, 554, 659
-/// and 880 Hz). The one exception is <see cref="RepairStickyKeys"/>, which undoes what that build left behind.
+/// Never modifies Windows accessibility settings (toggling Sticky/Filter/Toggle Keys hotkeys on focus changes triggered the
+/// accessibility siren). Sole exception: <see cref="RepairStickyKeys"/>, which undoes a legacy build's changes.
 /// </para>
 /// </summary>
 internal static partial class QuietKeys
@@ -24,7 +21,7 @@ internal static partial class QuietKeys
 
     private const uint SpiGetStickyKeys = 0x003A, SpiSetStickyKeys = 0x003B, SpifUpdateIniFile = 0x1;
 
-    // Sticky Keys off, no audible feedback, its five-Shift hotkey off: the value the user asked to be put back.
+    // Restored Sticky Keys flags: off, no audible feedback, five-Shift hotkey off.
     private const uint StickyKeysStandard = 0x3A;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -74,9 +71,8 @@ internal static partial class QuietKeys
     }
 
     /// <summary>
-    /// At start, off the interface's thread: where the old hush left Sticky Keys' flags at zero (which Windows itself never
-    /// has) they are put back, once, with no broadcast and no sound, and the old hush's file goes. Written to the user's
-    /// profile only when the zero is in the profile too; a zero in memory ends with the sign-out anyway.
+    /// Startup repair (off the UI thread): if a legacy build left Sticky Keys flags at zero (a value Windows never sets), restore them once
+    /// silently without broadcast and delete the legacy marker. Persists to the profile only when the zero is persisted there too.
     /// </summary>
     private static void RepairStickyKeys()
     {
@@ -99,7 +95,7 @@ internal static partial class QuietKeys
         }
     }
 
-    /// <summary>Hooks the application up (App.OnStartup, before any window): every window as it loads, and the one-time repair.</summary>
+    /// <summary>Registers the window class handler and schedules the one-time repair (App.OnStartup, before any window).</summary>
     public static void Follow()
     {
         EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, _) =>
@@ -108,7 +104,7 @@ internal static partial class QuietKeys
                 Attach(window);
         }));
 
-        // A wheel turned with a button held that nothing took stops at the window: it is never left to Windows (5.1-DogfoodPolish).
+        // Swallow unhandled wheel-with-button input at the window so Windows never processes it.
         EventManager.RegisterClassHandler(typeof(Window), Mouse.MouseWheelEvent, new MouseWheelEventHandler((_, e) =>
         {
             if (e.LeftButton == MouseButtonState.Pressed || e.RightButton == MouseButtonState.Pressed || e.MiddleButton == MouseButtonState.Pressed)

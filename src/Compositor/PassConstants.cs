@@ -6,9 +6,8 @@ using HandPegApp.Models.Effects;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// The constant buffer every pass reads (cbuffer Pass, register b0, in Shaders/Common.hlsli): 20 registers, 320 bytes,
-/// laid out exactly as HLSL packs it. The packets sit where the contract puts them: nine scalars from register 0 (and
-/// a second packet from register 3, for an effect sent as two).
+/// Constant buffer read by every pass (cbuffer PassConstants, b0, Shaders/Common.hlsli): 20 registers, 320 bytes, matching HLSL
+/// packing exactly. Packets: nine scalars from register 0, plus a second packet from register 3 for two-packet effects.
 /// </summary>
 [StructLayout(LayoutKind.Explicit, Size = SizeInBytes)]
 internal struct PassConstants
@@ -35,7 +34,7 @@ internal struct PassConstants
     [FieldOffset(288)] public Vector4 YuvRow2;
     [FieldOffset(304)] public Vector4 Params4;
 
-    /// <summary>Sets the input's texel size and the target's size.</summary>
+    /// <summary>Sets the input texel size and the target size.</summary>
     public void Sizes(int sourceWidth, int sourceHeight, int targetWidth, int targetHeight)
     {
         SrcTexelX = 1f / Math.Max(sourceWidth, 1);
@@ -53,7 +52,7 @@ internal struct Vector4(float x, float y, float z, float w)
     public float X = x, Y = y, Z = z, W = w;
 }
 
-/// <summary>A 4 x 4 matrix, row-major, for row vectors (p' = p * M), as HLSL's row_major float4x4 reads it.</summary>
+/// <summary>Row-major 4x4 matrix for row vectors (p' = p * M), matching HLSL row_major float4x4.</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct Matrix4
 {
@@ -62,10 +61,9 @@ internal struct Matrix4
     public static Matrix4 Identity => new() { M11 = 1, M22 = 1, M33 = 1, M44 = 1 };
 
     /// <summary>
-    /// The quad's corner (0..1, 0..1) to clip space for a box on a target: scaled to the box, turned about its anchor
-    /// (degrees clockwise, y down), moved into place, then pixels to clip space. Tilted (5.2A, true 3D: <paramref name="tiltX"/> its
-    /// Pitch, <paramref name="tiltY"/> its Yaw, in degrees), it is also turned out of the frame's plane about its anchor and seen in
-    /// perspective (<see cref="Tilted"/>); untilted, the matrix is the flat one, number for number.
+    /// Maps the quad corner (0..1, 0..1) to clip space for a box on a target: scale to the box, rotate about the anchor (degrees
+    /// clockwise, y down), translate, then pixels to clip space. With tilt (<paramref name="tiltX"/> = pitch, <paramref name="tiltY"/> =
+    /// yaw, degrees) it also rotates out of plane and projects in perspective (<see cref="Tilted"/>); untilted it is exactly the flat matrix.
     /// </summary>
     public static Matrix4 Box(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float targetWidth, float targetHeight,
         float tiltX = 0, float tiltY = 0)
@@ -77,7 +75,7 @@ internal struct Matrix4
         var (cos, sin) = (MathF.Cos(radians), MathF.Sin(radians));
         var (ax, ay) = (x + anchorX * width, y + anchorY * height);
 
-        // Corner (u, v): local point (u*w - anchorX*w, v*h - anchorY*h), turned clockwise in a y-down frame, then + anchor.
+        // Corner (u, v): local point (u*w - anchorX*w, v*h - anchorY*h) rotated clockwise in a y-down frame, plus the anchor:
         //   px = ax + (u*w - axw) * cos - (v*h - ayh) * sin
         //   py = ay + (u*w - axw) * sin + (v*h - ayh) * cos
         var (ox, oy) = (-anchorX * width, -anchorY * height);
@@ -100,17 +98,16 @@ internal struct Matrix4
     }
 
     /// <summary>
-    /// A box turned in 3D (5.2A) and seen in perspective: its local point (u*w - anchorX*w, v*h - anchorY*h, 0) is turned by its Roll in its
-    /// own plane (as the flat box is), swung by its Yaw about the upright axis (its right edge away for a positive one), tilted by its Pitch
-    /// about the horizontal one (its top away), and seen by a camera on the anchor's line a distance D in front of the frame: a point at depth
-    /// z lands at anchor + (x, y) * D / (D + z). As a homogeneous matrix: w' = 1 + z / D, so the card divides and interpolates the quad's uv
-    /// in perspective (VSQuad: nothing else changes). D is 1.2 times the target's diagonal (a moderate lens), further back for a box so
-    /// large that a corner would come near the camera.
+    /// 3D-rotated box in perspective: the local point (u*w - anchorX*w, v*h - anchorY*h, 0) is rotated by roll in plane, yaw about the
+    /// vertical axis (positive = right edge away) and pitch about the horizontal axis (top away), then viewed by a camera on the anchor's
+    /// axis at distance D: a point at depth z projects to anchor + (x, y) * D / (D + z). As a homogeneous matrix w' = 1 + z / D, so the
+    /// rasterizer interpolates uv perspective-correctly (VSQuad unchanged). D = 1.2 x target diagonal, pushed back for boxes whose corners
+    /// would approach the camera.
     /// </summary>
     private static Matrix4 Tilted(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float targetWidth, float targetHeight,
         float tiltX, float tiltY)
     {
-        // The corner (u, v) is u * U + v * V + O, each turned: the three columns of the linear map.
+        // Corner (u, v) = u * U + v * V + O: the three columns of the rotated linear map.
         var (u, v, o) = Turned(width, height, rotationDegrees, anchorX, anchorY, tiltX, tiltY);
         var (ax, ay) = (x + anchorX * width, y + anchorY * height);
         var distance = TiltDistance(u, v, o, targetWidth, targetHeight);
@@ -135,10 +132,9 @@ internal struct Matrix4
     }
 
     /// <summary>
-    /// A box's three columns turned in 3D about its anchor (5.2A): its local point (u*w - anchorX*w, v*h - anchorY*h, 0) through its Roll in its
-    /// own plane, its Yaw about the upright axis (its right edge away) and its Pitch about the horizontal one (its top away), each tilt held to
-    /// 89 degrees. The corner (u, v) lies at anchor + u * U + v * V + O, Z its depth away from the viewer. <see cref="Tilted"/> and the 3D exploded
-    /// view's planes (ExplodedCamera.PlaneMatrix, 5.2B) turn a box by these, so the two lay it alike.
+    /// The box's three rotated columns about its anchor: local point through roll (in plane), yaw (vertical axis, right edge away) and
+    /// pitch (horizontal axis, top away), each tilt clamped to +-89 degrees. Corner (u, v) = anchor + u * U + v * V + O, Z = depth away
+    /// from the viewer. Shared by <see cref="Tilted"/> and ExplodedCamera.PlaneMatrix so both place a box identically.
     /// </summary>
     internal static ((float X, float Y, float Z) U, (float X, float Y, float Z) V, (float X, float Y, float Z) O) Turned(float width, float height,
         float rotationDegrees, float anchorX, float anchorY, float tiltX, float tiltY)
@@ -150,7 +146,7 @@ internal struct Matrix4
         var (cosY, sinY) = (MathF.Cos(yaw), MathF.Sin(yaw));
         var (cosP, sinP) = (MathF.Cos(pitch), MathF.Sin(pitch));
 
-        // A local vector (y down) through the three turns: roll in the plane, yaw about the upright axis, pitch about the horizontal one.
+        // Rotate a local vector (y down): roll in plane, then yaw, then pitch.
         (float X, float Y, float Z) Turn(float lx, float ly)
         {
             var (x1, y1) = (lx * cosR - ly * sinR, lx * sinR + ly * cosR);
@@ -161,7 +157,7 @@ internal struct Matrix4
         return (Turn(width, 0), Turn(0, height), Turn(-anchorX * width, -anchorY * height));
     }
 
-    // The distance a tilted box is seen from (Tilted): 1.2 times the target's diagonal, further back for a box so large that a corner would come near.
+    // Viewing distance for Tilted: 1.2 x target diagonal, pushed back when a corner would come near the camera.
     private static float TiltDistance(in (float X, float Y, float Z) u, in (float X, float Y, float Z) v, in (float X, float Y, float Z) o, float targetWidth, float targetHeight)
     {
         var deepest = MathF.Max(MathF.Max(MathF.Abs(o.Z), MathF.Abs(o.Z + u.Z)), MathF.Max(MathF.Abs(o.Z + v.Z), MathF.Abs(o.Z + u.Z + v.Z)));
@@ -169,8 +165,8 @@ internal struct Matrix4
     }
 
     /// <summary>
-    /// The four corners (TL, TR, BR, BL) of a box, in the target's pixels, as Box/Tilted lay them (perspective divided); untilted it is the
-    /// flat turned box (5.2B, the user's Q4: the Canvas's and the player's outlines and handles of a tilted clip follow its picture).
+    /// The box's four corners (TL, TR, BR, BL) in target pixels as Box/Tilted place them (after perspective divide); Canvas and player
+    /// outlines and handles use them so they follow a tilted clip's picture.
     /// </summary>
     internal static (float X, float Y)[] Corners(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY,
         float targetWidth, float targetHeight, float tiltX = 0, float tiltY = 0)
@@ -179,7 +175,7 @@ internal struct Matrix4
         var (ax, ay) = (x + anchorX * width, y + anchorY * height);
         if (tiltX == 0 && tiltY == 0)
         {
-            // As Box turns it: the local point about the anchor, turned clockwise in a y-down frame.
+            // Same rotation as Box: local point about the anchor, clockwise in a y-down frame.
             var radians = rotationDegrees * MathF.PI / 180f;
             var (cos, sin) = (MathF.Cos(radians), MathF.Sin(radians));
             for (var k = 0; k < 4; k++)
@@ -191,8 +187,8 @@ internal struct Matrix4
             return corners;
         }
 
-        // As Tilted sees it: a point at depth z lands at anchor + (x, y) * D / (D + z), D its distance (never behind the eye: the depth is held
-        // short of it, as no corner of a box Tilted draws comes so near).
+        // Same projection as Tilted: anchor + (x, y) * D / (D + z), with depth clamped short of the eye (no corner Tilted draws
+        // gets that close).
         var (u, v, o) = Turned(width, height, rotationDegrees, anchorX, anchorY, tiltX, tiltY);
         var distance = TiltDistance(u, v, o, Math.Max(targetWidth, 1), Math.Max(targetHeight, 1));
         for (var k = 0; k < 4; k++)
@@ -208,9 +204,8 @@ internal struct Matrix4
 }
 
 /// <summary>
-/// The compiled shaders, embedded in the program at build time (HandPegApp.csproj, CompileShaders: d3dcompiler_47 on
-/// every .hlsl under Compositor/Shaders, one blob per entry point named VS* or PS*): loaded and made into shader
-/// objects once per device, a few milliseconds, no compiler at run time.
+/// Shaders compiled at build time and embedded (HandPegApp.csproj CompileShaders: d3dcompiler_47 over Compositor/Shaders/*.hlsl, one
+/// blob per VS*/PS* entry point); shader objects are created once per device in a few ms, with no runtime compiler.
 /// </summary>
 internal sealed class ShaderLibrary : IDisposable
 {
@@ -237,7 +232,7 @@ internal sealed class ShaderLibrary : IDisposable
 
     public bool Has(string entry) => _shaders.ContainsKey(entry);
 
-    /// <summary>The shader of an entry point; throws for one that was not built (a missing entry is a build fault, never data).</summary>
+    /// <summary>Shader for an entry point; throws when missing (a build fault, never a data error).</summary>
     public nint this[string entry] => _shaders.TryGetValue(entry, out var shader) ? shader : throw new InvalidDataException($"The shader {entry} is not in this build.");
 
     public void Dispose()

@@ -8,14 +8,14 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The player's right-click menu (5.4.4-Final, the user's) -----
-// A right-click on the picture that does not move (pressed and let go within Windows' drag distance) opens a menu of what the player does
-// with its frame and its view: Export Frame as Image..., Copy Frame to Clipboard, Ping-to-Mark Highlight Here (at the point clicked), then
-// Full Screen Preview (F11), 3D Exploded View, Live Encoded Preview, Safe Margins and Reset Player Zoom & Pan. The picture's layer
-// (PlayerOverlay, PlayerHitBrush) takes the pointer, so the menu is WPF's own, made each time it opens (nothing of it before Frame 1).
+// ----- Player context menu -----
+// A stationary right-click on the picture (within the system drag distance) opens frame and view actions: Export Frame as Image...,
+// Copy Frame to Clipboard, Ping-to-Mark Highlight Here (at the click point), then Full Screen Preview (F11), 3D Exploded View, Live
+// Encoded Preview, Safe Margins and Reset Player Zoom & Pan. PlayerOverlay (with PlayerHitBrush) receives the input, so this is a
+// standard WPF menu built on each open (nothing before Frame 1).
 public partial class MainWindow
 {
-    // Where a right press on the player was, while it is held (null: none, or it moved and is no click).
+    // Overlay position of a pending right press; null when none.
     private Point? _playerRightPressAt;
 
     private void HookPlayerContextMenu()
@@ -34,11 +34,11 @@ public partial class MainWindow
         };
     }
 
-    /// <summary>Whether a press and its release are one click, not a drag: within the drag distance both ways. Pure, for the golden tests.</summary>
+    /// <summary>True when press and release stay within the drag distance on both axes (a click, not a drag). Pure; golden-tested.</summary>
     internal static bool IsStationaryClick(Point pressed, Point released, double dragX, double dragY) =>
         Math.Abs(released.X - pressed.X) <= dragX && Math.Abs(released.Y - pressed.Y) <= dragY;
 
-    /// <summary>The names of the player's right-click menu, in order (null a separator): what the golden test reads.</summary>
+    /// <summary>Player context menu labels in order (null = separator); read by the golden test.</summary>
     internal static readonly string?[] PlayerMenuItems =
     [
         "Export Frame as Image...", "Copy Frame to Clipboard", "Ping-to-Mark Highlight Here", null,
@@ -72,7 +72,7 @@ public partial class MainWindow
         menu.IsOpen = true;
     }
 
-    /// <summary>The player's zoom and pan put back (fitted, centred), the Canvas's view left as it is.</summary>
+    /// <summary>Resets player zoom and pan to fit-centred; the Canvas view is untouched.</summary>
     private void ResetPlayerView()
     {
         (_playerZoom, _playerPanX, _playerPanY) = (0, 0, 0);
@@ -83,7 +83,7 @@ public partial class MainWindow
         _viewModel.StatusText = "Player zoom and pan reset.";
     }
 
-    /// <summary>The frame on screen, as Export Frame saves it, put on the clipboard as a picture.</summary>
+    /// <summary>Copies the displayed composite frame (as Export Frame saves it) to the clipboard as an image.</summary>
     private void CopyFrameToClipboard() => Faults.Forget(CopyFrameToClipboardAsync(), nameof(CopyFrameToClipboard));
 
     private async Task CopyFrameToClipboardAsync()
@@ -106,7 +106,7 @@ public partial class MainWindow
         }
         catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or System.Runtime.InteropServices.ExternalException)
         {
-            // Another program holds the clipboard open (CLIPBRD_E_CANT_OPEN): said, never thrown.
+            // Clipboard locked by another process (CLIPBRD_E_CANT_OPEN): report via status, never throw.
             AppLog.Write("Copy Frame to Clipboard", ex);
             _viewModel.StatusText = "The clipboard is busy (another program has it open): try Copy Frame again.";
         }

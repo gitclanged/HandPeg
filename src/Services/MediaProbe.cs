@@ -16,16 +16,15 @@ public sealed record MediaInfo(
     IReadOnlyList<SubtitleStreamInfo> Subtitles)
 {
     /// <summary>
-    /// The time stamp of the file's first video frame, in seconds: 0 for most files, more for a transport stream
-    /// or a recording cut from a longer one. A filter graph that seeks in the file and cuts on its own time
-    /// stamps counts from here, as a graph that counts frames from the first one does.
+    /// Timestamp of the first video frame (s): 0 for most files, non-zero for transport streams or cut recordings. Media time is
+    /// measured from here.
     /// </summary>
     public double VideoStartSeconds { get; init; }
 
-    /// <summary>Where the container's clock starts, in seconds: the earliest of its streams. A seek point (movie='s sp=) is counted from here.</summary>
+    /// <summary>Container clock origin (s): the earliest stream start; container-time seeks are relative to it.</summary>
     public double ContainerStartSeconds { get; init; }
 
-    /// <summary>The file's chapters (4.2B-2), in seconds from its start: a download's own, and the SponsorBlock ones yt-dlp marked.</summary>
+    /// <summary>File chapters (s from start), including yt-dlp SponsorBlock marks.</summary>
     public IReadOnlyList<MediaChapter> Chapters { get; init; } = [];
 }
 
@@ -33,19 +32,17 @@ public sealed record MediaInfo(
 public sealed record MediaChapter(double Start, double End, string Title);
 
 /// <summary>
-/// Everything known about seeking in one video file, as it was when learnt (its size and last write, so that a changed
-/// file is never taken for it): kept in the Timeline cache (seekindex.bin) and in the projects that use the file, so a
-/// file opened again is ready to be seeked in before anything is probed.
+/// Cached seek facts for a video, keyed by size and last write so changed files are never matched; stored in seekindex.bin and in
+/// projects so reopened files can seek before probing.
 /// </summary>
 public sealed record SeekFacts(string Path, long Length, long WrittenTicks, double ContainerStart, double VideoStart, double Duration, double[] IFrames);
 
 /// <summary>
-/// What a graph needs to open a file exactly at an I-frame: where the container's clock starts, and the time stamps of
-/// the video's I-frames on that clock, ascending (from the packets' flags).
+/// Keyframe seek index: container clock origin and ascending I-frame timestamps on that clock (from packet flags).
 /// </summary>
 public sealed record SeekIndex(double ContainerStart, double[] IFrames)
 {
-    /// <summary>The I-frame at or before a moment of the file's own clock, and the one after it (infinity for none); null before the first.</summary>
+    /// <summary>I-frame at or before a file time and the next one (infinity if none); null before the first.</summary>
     public (double At, double Next)? Around(double moment)
     {
         var i = Array.BinarySearch(IFrames, moment);
@@ -73,8 +70,7 @@ public sealed record VideoStreamInfo(
     public string PixelFormat { get; init; } = "";
 
     /// <summary>
-    /// How long the video stream itself lasts, in seconds on its own clock (5.4A); 0 when the file does not say. A container is as long
-    /// as its longest stream, often its sound with a little padding: a clip of the file's picture ends where the picture does.
+    /// Video stream duration (s); 0 when unreported. Containers report their longest (often padded audio) stream, so picture clips use this.
     /// </summary>
     public double DurationSeconds { get; init; }
 }
@@ -84,20 +80,17 @@ public static class MediaProbe
     /// <summary>
     /// Inspects a file with ffprobe. Returns null when ffprobe is unavailable or cannot read the file.
     /// </summary>
-    /// <param name="lane">Who is waiting for it (see WorkScheduler): a file being loaded, or the media browser's tiles (Idle).</param>
+    /// <param name="lane">Scheduler lane (loading, or Idle for Media Browser tiles).</param>
     /// <param name="urgent">
-    /// A user's action waits on it this moment (4.3E: a file just dropped): it starts at once, never queued behind other
-    /// work of its lane (the media browser's posters and strips), and is never held (see WorkSpec.Urgent).
+    /// A user action is blocked on it (e.g. a drop): runs immediately, never queued or held (WorkSpec.Urgent).
     /// </param>
     /// <remarks>
-    /// A file already inspected this session, and not changed since, is answered from memory (4.3E): a file the media
-    /// browser has described is not inspected again when it is dropped. The tool is started on the thread pool, never on
-    /// the thread that asked (the interface's, for most), and what it wrote is read there too.
+    /// Unchanged files probed this session are answered from memory. ffprobe runs and its output is parsed on the thread pool, never on
+    /// the calling (usually UI) thread.
     /// </remarks>
     public static async Task<MediaInfo?> ProbeAsync(string path, CancellationToken cancellationToken, WorkLane lane = WorkLane.Interactive, bool urgent = false)
     {
-        // The file as it is now, looked at afresh (on the thread pool: a share or a sleeping drive may be slow to answer), before
-        // the tool reads it: what is kept of it is only good for exactly this.
+        // Snapshot file state (on the pool: shares or sleeping drives may be slow) before probing; the cached result is valid only for it.
         var before = await Task.Run(() => Stamp(path), cancellationToken).ConfigureAwait(false);
         if (before is { } stamp && Key(path) is { } known && Probed.TryGetValue(known, out var kept)
             && stamp.Length == kept.Length && stamp.WrittenTicks == kept.WrittenTicks)
@@ -134,14 +127,11 @@ public static class MediaProbe
         }
     }
 
-    // What each file was found to be this session, with the size and last write it had then (a file changed since is
-    // inspected again), so that a file is inspected once however many ask (the media browser, then a drop). The most kept:
-    // past it, they are all let go and kept again as they are asked for.
+    // Session probe cache keyed by path plus size/last write (changes force re-probe). Bounded: on overflow the cache is cleared.
     private const int ProbesKept = 256;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (MediaInfo Info, long Length, long WrittenTicks)> Probed = new(StringComparer.OrdinalIgnoreCase);
 
-    // Kept with the file as it was before the tool read it, and only when it is still so (a file being written as it was
-    // read is inspected again next time).
+    // Stored with the pre-probe file state, only if still unchanged after probing (files being written are re-probed).
     private static void KeepInfo(string path, MediaInfo info, (long Length, long WrittenTicks)? before)
     {
         if (before is not { } stamp || Key(path) is not { } key || Stamp(path) != stamp)
@@ -169,40 +159,37 @@ public static class MediaProbe
     // Where each file's picture starts, for every video file inspected this session: see MediaInfo.VideoStartSeconds.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> VideoStarts = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Where a file's picture starts, when the file has been inspected this session; null when it has not.</summary>
+    /// <summary>Video start (s) for a file probed this session; null otherwise.</summary>
     public static double? KnownVideoStart(string path) => Key(path) is { } key && VideoStarts.TryGetValue(key, out var start) ? start : null;
 
-    /// <summary>Where a probed file's container clock starts (seconds), even before its I-frames are listed; null when not probed.</summary>
+    /// <summary>Container clock origin (s) for a probed file, available before I-frames are listed; null when not probed.</summary>
     public static double? KnownContainerStart(string path) => Key(path) is { } key && ContainerStarts.TryGetValue(key, out var start) ? start : null;
 
-    // Where each file's container clock starts (the earliest of its streams), how long it is, and the time stamps of its
-    // video's I-frames (with the size and last write of the file they were listed from): what a seek in the file lands
-    // on. Learnt once per file and session, or taken up from what was kept of it (see Recall and Adopt).
+    // Per-file container origin, duration and I-frame timestamps (with source size/last write); learnt once per session or restored
+    // via Recall/Adopt.
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> ContainerStarts = new(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, double> Durations = new(StringComparer.OrdinalIgnoreCase);
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (double[] Times, long Length, long WrittenTicks)> IFrames = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// What a graph needs to seek in a file to an I-frame exactly (see <see cref="SeekIndex"/>), when the file has been
-    /// inspected and its I-frames listed this session, or both were taken up from what was kept; null otherwise.
+    /// <see cref="SeekIndex"/> for a file whose probe and I-frames are known this session (or restored); null otherwise.
     /// </summary>
     public static SeekIndex? KnownSeekIndex(string path) =>
         Key(path) is { } key && IFrames.TryGetValue(key, out var listed) && ContainerStarts.TryGetValue(key, out var start) ? new SeekIndex(start, listed.Times) : null;
 
     /// <summary>
-    /// What a file was found to be this session, when it was inspected and has not changed since (as FileState sees it now);
-    /// null otherwise. Never inspects: for a question asked on the interface's thread (a clip's right-click menu).
+    /// Cached probe for an unchanged file (per FileState), or null. Never probes; safe on the UI thread (e.g. context menus).
     /// </summary>
     public static MediaInfo? KnownInfo(string path) =>
         Key(path) is { } key && Probed.TryGetValue(key, out var kept) && FileState.Get(path) is { Exists: true } file
             && file.Length == kept.Length && file.WrittenUtc.Ticks == kept.WrittenTicks ? kept.Info : null;
 
-    /// <summary>A file's I-frame times when they are known for the file as it is now (not as it was before it changed); null otherwise.</summary>
+    /// <summary>I-frame times for the file's current state; null when unknown or stale.</summary>
     public static double[]? KnownIFrames(string path) =>
         Key(path) is { } key && IFrames.TryGetValue(key, out var listed) && FileState.Get(path) is { Exists: true } file
             && file.Length == listed.Length && file.WrittenUtc.Ticks == listed.WrittenTicks ? listed.Times : null;
 
-    /// <summary>Keeps a file's I-frame times (ascending, on the file's own clock), as FfmpegRunner.GetIFramesAsync lists them.</summary>
+    /// <summary>Stores ascending I-frame times (file clock) from FfmpegRunner.GetIFramesAsync.</summary>
     public static void NoteIFrames(string path, IReadOnlyList<double> times)
     {
         if (times.Count == 0 || Key(path) is not { } key)
@@ -223,8 +210,7 @@ public static class MediaProbe
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> SeekKept = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Everything known about seeking in a file as it is now (its start, length and I-frames, with its size and last
-    /// write), to be kept with a project; null while any of it is not known, or the file has changed since.
+    /// Complete seek facts (start, duration, I-frames, size, last write) for embedding in a project; null if incomplete or stale.
     /// </summary>
     public static SeekFacts? KnownFacts(string path)
     {
@@ -237,8 +223,7 @@ public static class MediaProbe
     }
 
     /// <summary>
-    /// Takes up facts kept elsewhere (a project file) for a file that is still exactly as it was then (same size, same
-    /// last write); false, and nothing taken, for a file that is gone or has changed.
+    /// Restores seek facts (e.g. from a project) when size and last write still match; false otherwise.
     /// </summary>
     public static bool Adopt(SeekFacts facts)
     {
@@ -255,8 +240,7 @@ public static class MediaProbe
     }
 
     /// <summary>
-    /// Makes a video file ready to be seeked in from what the Timeline cache kept of it (seekindex.bin, for the file as it
-    /// is now): a read of a few kilobytes, with no tool run. True when it is ready (now, or already was).
+    /// Loads seek facts from the Timeline cache (seekindex.bin) for the current file state: a few KB read, no tool run. True when ready.
     /// </summary>
     public static bool Recall(string path)
     {
@@ -275,7 +259,7 @@ public static class MediaProbe
         return true;
     }
 
-    /// <summary>Writes a file's facts into the Timeline cache once they are all known (once per file and session, off the caller's thread).</summary>
+    /// <summary>Persists complete seek facts to the Timeline cache (once per file per session, off the caller's thread).</summary>
     private static void KeepSeekFacts(string path)
     {
         if (KnownFacts(path) is not { } facts || !SeekKept.TryAdd(facts.Path, true))
@@ -288,8 +272,7 @@ public static class MediaProbe
         });
     }
 
-    // seekindex.bin: "HPSI", the version, the container's start, the picture's start, the length (doubles), the number of
-    // I-frames, then their times (doubles); little-endian.
+    // seekindex.bin layout (little-endian): "HPSI", version, container start, video start, duration (doubles), I-frame count, times (doubles).
     private static byte[] Encode(SeekFacts facts)
     {
         var bytes = new byte[4 + 4 + 3 * 8 + 4 + facts.IFrames.Length * 8];
@@ -322,7 +305,7 @@ public static class MediaProbe
             System.Buffers.Binary.BinaryPrimitives.ReadDoubleLittleEndian(bytes[24..]), times);
     }
 
-    /// <summary>A file's I-frame times written as the project file carries them: Base64 of the doubles, little-endian.</summary>
+    /// <summary>Encodes I-frame times for projects: Base64 of little-endian doubles.</summary>
     public static string PackTimes(double[] times)
     {
         var bytes = new byte[times.Length * 8];
@@ -367,11 +350,8 @@ public static class MediaProbe
     private const int SpreadPoints = 16, SpreadBytes = 16 * 1024;
 
     /// <summary>
-    /// Reads the start and the end of a file (2 MB of each) into the system's file cache, where containers keep their
-    /// seek tables (an MP4's moov, a Matroska file's Cues): the first seek a graph makes in the file then finds them
-    /// in memory instead of waiting on the disk. A file over 200 MB is also read 16 KB at a time at 16 points spread
-    /// evenly across it, so the drive and the file cache have pages from all along the timeline at hand. Nothing is
-    /// kept; a file that cannot be read is left alone.
+    /// Warms the OS file cache with the first and last 2 MB (where MP4 moov / Matroska Cues live) so the first seek avoids disk waits;
+    /// files over 200 MB also get 16 KB reads at 16 evenly spaced points. Nothing is retained; unreadable files are skipped.
     /// </summary>
     public static void WarmSeekTables(string path, CancellationToken cancellationToken)
     {

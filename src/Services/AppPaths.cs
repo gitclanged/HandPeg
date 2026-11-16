@@ -3,17 +3,15 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Every folder and file HandPeg writes to, in one place. Nothing is kept next to the program: the updater
-/// (Velopack) replaces that folder as a whole with each new version.
+/// Central registry of every folder and file HandPeg writes. Nothing lives beside the program (Velopack replaces that folder on update).
 ///
-/// Installed: projects and layouts under Documents\HandPeg, the settings under %AppData%\HandPeg, and the
-/// downloaded tools, caches and logs under %LocalAppData%\HandPeg-Data. That last one is deliberately not
-/// %LocalAppData%\HandPeg, which is the folder the installer owns and removes on uninstall or reinstall.
+/// Installed: projects and layouts in Documents\HandPeg, settings in %AppData%\HandPeg, tools/caches/logs in
+/// %LocalAppData%\HandPeg-Data (not %LocalAppData%\HandPeg, which the installer owns and removes).
 ///
-/// Portable (Velopack's portable archive): all of it in a HandPeg-Data folder beside HandPeg.exe and Update.exe, never
-/// inside "current", so the whole folder can be carried around and an update leaves the data as it was.
+/// Portable (Velopack portable archive): everything in HandPeg-Data beside HandPeg.exe and Update.exe, never inside "current", so the
+/// folder is movable and updates preserve data.
 ///
-/// Folders are not created by asking for their path: whoever writes into one creates it first.
+/// Path getters never create folders; writers create them.
 /// </summary>
 public static class AppPaths
 {
@@ -24,27 +22,24 @@ public static class AppPaths
 
     private const string PortableDataFolder = "HandPeg-Data";
 
-    /// <summary>A file of this name beside the program makes the copy self-contained: everything it reads and writes is in its own folder.</summary>
+    /// <summary>Marker file beside the program enabling self-contained mode (all I/O in its own folder).</summary>
     public const string PortableSentinel = "portable.txt";
 
     /// <summary>The same, asked for on the command line.</summary>
     public const string PortableArgument = "--portable";
 
     /// <summary>
-    /// A folder of this name beside the program makes the copy self-contained too, and holds all of it: the zero-install
-    /// portable zips (5.1-Release, the user's call) ship it empty, so that everything the copy writes stays in the unzipped folder.
+    /// Folder beside the program that enables self-contained mode and holds its data; zero-install portable zips ship it empty.
     /// </summary>
     public const string PortableFolder = "portable";
 
-    // Where a self-contained copy keeps what it writes (the "portable" folder, or else the program's own folder); null for
-    // any other copy. Found first: the rest follows from it.
+    // Self-contained root ("portable" folder, else the program folder); null otherwise. Resolved first; other paths derive from it.
     private static readonly string? LocalRoot = FindLocalRoot();
 
     /// <summary>
-    /// True for a self-contained copy (a "portable" folder or portable.txt beside the program, or --portable). Its tools
-    /// are in "deps" and its working files in "temp", and everything else under "data": settings, presets, projects,
-    /// caches, logs; all three in the "portable" folder when there is one, else beside the program. Nothing of it is in
-    /// %AppData%, %LocalAppData% or %TEMP%, and it neither looks for updates nor reads the registry for the Windows theme.
+    /// True for self-contained mode ("portable" folder, portable.txt, or --portable): tools in "deps", temp files in "temp", all else
+    /// in "data", inside the portable folder or beside the program. Never touches %AppData%, %LocalAppData% or %TEMP%, never checks
+    /// for updates or reads the registry theme.
     /// </summary>
     public static bool IsSelfContained => LocalRoot is not null;
 
@@ -74,10 +69,10 @@ public static class AppPaths
     /// <summary>True for Velopack's portable build (or a self-contained copy): its data is in its own folder.</summary>
     public static bool IsPortable { get; private set; }
 
-    /// <summary>Where an installed copy keeps its settings and presets: what a portable copy's first start brings over.</summary>
+    /// <summary>Installed settings and presets folder; imported by a portable copy's first start.</summary>
     public static string InstalledSettings { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), AppName);
 
-    /// <summary>Where an installed copy keeps what the user makes (Documents\HandPeg): projects, styles, effect presets, masks.</summary>
+    /// <summary>Installed user content folder (Documents\HandPeg): projects, styles, effect presets, masks.</summary>
     public static string InstalledUserRoot { get; } = Path.Combine(DocumentsFolder(), AppName);
 
     /// <summary>What the user makes and may want to find in Explorer: Documents\HandPeg.</summary>
@@ -122,12 +117,11 @@ public static class AppPaths
     public static string Logs { get; } = Path.Combine(DataRoot, "logs");
 
     /// <summary>
-    /// Crash reports (.hpcrash), one file each, kept here for the user to look at or to send on. Beside the logs,
-    /// under the data folder, so a portable copy (or HANDPEG_DATA_DIR) keeps its crashes with the rest of its data.
+    /// Crash reports (.hpcrash), one per file, beside the logs under the data folder (follows portable mode and HANDPEG_DATA_DIR).
     /// </summary>
     public static string Crashes { get; } = Path.Combine(DataRoot, "crashes");
 
-    /// <summary>Working files of the running sessions: removed when each closes, and at the next start if it could not.</summary>
+    /// <summary>Per-session temp files, removed on close or at the next start.</summary>
     public static string Temp { get; } = LocalRoot is not null ? Path.Combine(LocalRoot, "temp")
         : SingleRoot is null ? Path.Combine(Path.GetTempPath(), AppName)
         : Path.Combine(SingleRoot, "temp");
@@ -145,10 +139,9 @@ public static class AppPaths
             return Path.Combine(LocalRoot, "data");
         }
 
-        // Velopack's portable archive: HandPeg runs from "current", beside which are Update.exe and the ".portable" mark
-        // (Velopack's own test). Read from the disk, not from Velopack's locator: AppPaths is first asked for in Main,
-        // before Velopack's bootstrap has made a locator, and asking then fell back to the installed places (Pass
-        // 4.1C.2). An installed copy has Update.exe there too but no mark; a build folder has neither.
+        // Velopack portable: runs from "current" with Update.exe and the ".portable" marker beside it (Velopack's own test). Checked
+        // on disk because AppPaths is used in Main before Velopack's locator exists. Installs have Update.exe but no marker; builds
+        // have neither.
         if (PortableRoot() is { } root)
         {
             IsPortable = true;

@@ -12,15 +12,13 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// The keybind page's map (Settings > Keybinds &amp; Lightning Dial, 4.4), on the settings' stage: a keyboard and a mouse
-/// drawn from their shapes, each key showing what it does in the layer chosen above it (no modifier, Ctrl, Shift, Alt, or
-/// their pairs; 4.4-BugHunt: the held navigation keys are ordinary keys of the first, and Caps Lock is a key like the
-/// others). Clicking a key or a mouse button offers every action for it; a key two actions share is tinted. Edits go to the
-/// page's <see cref="KeybindDraft"/>, in effect once the settings are saved.
+/// Keybind map for Settings > Keybinds &amp; Lightning Dial (on the settings stage): a vector keyboard and mouse where each key shows
+/// its action in the selected modifier layer (none, Ctrl, Shift, Alt, Ctrl+Shift, Ctrl+Alt). Held navigation keys are ordinary
+/// unmodified-layer keys, and Caps Lock is bindable. Clicking a key or mouse button lists every action; conflicting keys are tinted.
+/// Edits go to the page's <see cref="KeybindDraft"/> and apply when settings are saved.
 ///
-/// As a glance (<see cref="Glance"/>, 4.4.0: over the player while Tab holds X-Ray) it changes nothing: the pointer on a key
-/// or a mouse button names its action, its chord and what it does, and a click on one (or on the "Edit Keybinds" pill)
-/// asks for the keybind page at it (<see cref="EditRequested"/>).
+/// In <see cref="Glance"/> mode (over the player while Tab holds X-Ray) it is read-only: hovering names the action, chord and
+/// behaviour; clicking a key or the "Edit Keybinds" pill raises <see cref="EditRequested"/>.
 /// </summary>
 public sealed class KeybindMapControl : FrameworkElement
 {
@@ -38,7 +36,7 @@ public sealed class KeybindMapControl : FrameworkElement
         new("Ctrl+Alt", ModifierKeys.Control | ModifierKeys.Alt),
     ];
 
-    // The keyboard, in key widths: a function row, the five main rows, and the editing and arrow keys beside them.
+    // Keyboard layout in key-width units: function row, five main rows, and the editing/arrow cluster.
     private static readonly KeyCap[] Caps = MakeCaps();
 
     private static KeyCap[] MakeCaps()
@@ -74,9 +72,8 @@ public sealed class KeybindMapControl : FrameworkElement
 
     private const double KeyboardUnits = 18.5, MouseUnits = 4.6, LayerRowHeight = 30, StatusHeight = 46, MaxUnit = 52;
 
-    // A narrow screen (a laptop at 150 %, Pass 5.0): under CompactKey a one-wide key shows only its name, centred, and what
-    // the key under the pointer does is said in the banner under the map. A key's own label (its action) is drawn only on a
-    // key at least LabelWidth by LabelHeight, on one line. Every key's text is clipped to the key.
+    // Narrow layouts (e.g. a laptop at 150 %): below CompactKey, 1-unit keys show only a centred name and the banner describes the
+    // hovered key. Action labels render only on keys at least LabelWidth x LabelHeight, single-line. All key text is clipped.
     private const double CompactKey = 42, LabelWidth = 44, LabelHeight = 34;
 
     private enum MousePart { None, Left, Right, Middle, Back, Forward }
@@ -89,13 +86,13 @@ public sealed class KeybindMapControl : FrameworkElement
     private bool _hoverEdit;
     private int _pickedCap = -1;
 
-    /// <summary>Shown over the editor (X-Ray): nothing is edited here; a click asks for the keybind page (<see cref="EditRequested"/>).</summary>
+    /// <summary>Read-only X-Ray overlay mode; clicks raise <see cref="EditRequested"/> instead of editing.</summary>
     public bool Glance { get; init; }
 
-    /// <summary>A glance's key or mouse button clicked (its chord), or its "Edit Keybinds" pill (null).</summary>
+    /// <summary>Glance click: the chord of the clicked key or mouse button, or null for the "Edit Keybinds" pill.</summary>
     public event Action<InputChord?>? EditRequested;
 
-    // What the keys show, made when the layer, the keys or the theme change (not when the pointer moves), with each key's clip.
+    // Cached key text and clip geometry, rebuilt on layer, binding or theme change (never on pointer move).
     private FormattedText?[] _names = [], _actions = [];
     private bool[] _bound = [], _conflict = [];
     private RectangleGeometry[] _clips = [];
@@ -132,7 +129,7 @@ public sealed class KeybindMapControl : FrameworkElement
 
     private Rect CapRect(KeyCap cap, double unit)
     {
-        // The function row stands a little apart from the others.
+        // Offset the main rows below the function row by 0.4 units.
         var top = KeyboardTop + cap.Row * unit + (cap.Row > 0 ? unit * 0.4 : 0);
         return new Rect(cap.X * unit + 1.5, top + 1.5, cap.Width * unit - 3, unit - 3);
     }
@@ -176,7 +173,7 @@ public sealed class KeybindMapControl : FrameworkElement
     private double[]? _layerWidths;
     private double _layerWidthsDpi;
 
-    // The layers' buttons are as wide as their names (measured once for the screen they are drawn on).
+    // Layer button widths fit their names; measured once per DPI.
     private double[] LayerWidths(double dpi)
     {
         if (_layerWidths is null || dpi != _layerWidthsDpi)
@@ -188,11 +185,11 @@ public sealed class KeybindMapControl : FrameworkElement
         return _layerWidths;
     }
 
-    // ----- What a key does -----
+    // ----- Key bindings -----
 
     private InputChord ChordOf(Key key) => new(Layers[_layer].Mods, key);
 
-    // (Caps Lock is not one: it can run an action, 4.4-BugHunt.)
+    // Caps Lock is deliberately excluded: it is bindable.
     private static bool IsModifier(Key key) => key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift or Key.LeftAlt or Key.RightAlt
         or Key.LWin or Key.RWin;
 
@@ -221,7 +218,7 @@ public sealed class KeybindMapControl : FrameworkElement
             clip.Freeze();
             _clips[i] = clip;
 
-            // One line each, cut short with an ellipsis: a name or a label never wraps out of its key.
+            // Single line with ellipsis trimming so names and labels never wrap out of the key.
             var name = _compact
                 ? Text(KeybindManager.KeyName(cap.Key), Math.Clamp(unit * 0.3, 8, 11), muted, dpi, rect.Width - 4)
                 : Text(KeybindManager.KeyName(cap.Key), Math.Clamp(unit * 0.24, 8, 11), muted, dpi, cap.Width * unit - 8);
@@ -242,7 +239,7 @@ public sealed class KeybindMapControl : FrameworkElement
         }
     }
 
-    // A one-wide key narrower than CompactKey: names only, centred, and the banner says what a key does.
+    // Compact mode when a 1-unit key is narrower than CompactKey: centred names only; the banner describes actions.
     private static bool IsCompact(double unit) => unit - 3 < CompactKey;
 
     private static FormattedText Text(string text, double size, Brush brush, double dpi, double maxWidth = 0)
@@ -255,7 +252,7 @@ public sealed class KeybindMapControl : FrameworkElement
 
     private static readonly Typeface Face = new("Segoe UI");
 
-    // Text over an accent fill: white on a dark accent, near-black on a light one, whatever the theme (WCAG relative luminance).
+    // Text over an accent fill: white on dark accents, near-black on light ones, theme-independent (Rec. 709 luma on sRGB bytes, > 150).
     private static readonly SolidColorBrush OnLightAccent = Frozen(Color.FromRgb(0x1A, 0x1A, 0x1A));
 
     internal static Brush OnAccent(Brush accent) =>
@@ -268,7 +265,7 @@ public sealed class KeybindMapControl : FrameworkElement
     private Pen? _edgePen, _hoverPen;
     private Brush? _edgeSource;
 
-    // The accent, see-through, for the keys that do something (made again when the theme's accent changes).
+    // Translucent accent fill for bound keys; rebuilt when the theme accent changes.
     private Brush BoundFill(Brush accent)
     {
         if (_boundFill is null || !ReferenceEquals(accent, _accentSource))
@@ -295,7 +292,7 @@ public sealed class KeybindMapControl : FrameworkElement
         return _edgePen;
     }
 
-    // ----- Drawing -----
+    // ----- Rendering -----
 
     protected override void OnRender(DrawingContext drawing)
     {
@@ -317,10 +314,10 @@ public sealed class KeybindMapControl : FrameworkElement
         var bound = BoundFill(accent);
         var onAccent = OnAccent(accent);
 
-        // The whole map takes the pointer (between the keys too), so its tooltip and hover follow it smoothly.
+        // Transparent backdrop makes the whole map hit-testable (gaps included) for smooth hover and tooltips.
         drawing.DrawRectangle(Brushes.Transparent, null, new Rect(RenderSize));
 
-        // A glance has a panel of its own under it (it is drawn over the picture), and its pill to the keybind page.
+        // Glance mode: opaque backing panel (drawn over the picture) and the Edit Keybinds pill.
         if (Glance)
         {
             drawing.DrawRoundedRectangle(Themed("PanelBrush", Color.FromRgb(0x20, 0x20, 0x20)), edge, new Rect(RenderSize), 8, 8);
@@ -330,7 +327,7 @@ public sealed class KeybindMapControl : FrameworkElement
             drawing.DrawText(label, new Point(pill.X + (pill.Width - label.Width) / 2, pill.Y + (pill.Height - label.Height) / 2));
         }
 
-        // The layers: the one shown filled with the accent.
+        // Layer pills; the active one is accent-filled.
         for (var i = 0; i < Layers.Length; i++)
         {
             var rect = LayerRect(i, dpi);
@@ -348,7 +345,7 @@ public sealed class KeybindMapControl : FrameworkElement
             var fill = held ? accent : _conflict[i] ? ConflictFill : _bound[i] ? bound : IsModifier(cap.Key) ? well : face;
             drawing.DrawRoundedRectangle(fill, i == _hoverCap || i == _pickedCap ? _hoverPen : edge, rect, 4, 4);
 
-            // Whatever a key holds stays inside it.
+            // Clip key content to the key bounds.
             drawing.PushClip(_clips[i]);
             if (_names[i] is { } name)
             {
@@ -366,8 +363,8 @@ public sealed class KeybindMapControl : FrameworkElement
         DrawBanner(drawing, unit, dpi, face, edge, text, muted);
     }
 
-    // The banner under the map: the key or mouse button under the pointer (else the one picked) with each of its actions as
-    // "Category: Action", prominent; under it what the pointer is on, or what was done last.
+    // Banner below the map: headline for the hovered key/button (else the picked key) listing "Category: Action" per binding, then a
+    // status line (hover details or the last change).
     private void DrawBanner(DrawingContext drawing, double unit, double dpi, Brush face, Pen edge, Brush text, Brush muted)
     {
         var width = ActualWidth;
@@ -390,7 +387,7 @@ public sealed class KeybindMapControl : FrameworkElement
         drawing.DrawText(status, new Point(8, y));
     }
 
-    // What the banner names: the key or the mouse button under the pointer, else the key picked; null for neither.
+    // Banner headline: hovered key or mouse button, else the picked key; null when neither applies.
     private string? Headline()
     {
         var cap = _hoverCap >= 0 ? _hoverCap : _hoverMouse == MousePart.None && _hoverLayer < 0 ? _pickedCap : -1;
@@ -421,7 +418,7 @@ public sealed class KeybindMapControl : FrameworkElement
             drawing.DrawRoundedRectangle(fill, part == _hoverMouse ? _hoverPen : edge, rect, radius, radius);
         }
 
-        // What the wheel and the side buttons do, under the mouse.
+        // Legend below the mouse for middle and side-button actions.
         var y = body.Bottom + 0.2 * unit;
         foreach (var part in (ReadOnlySpan<MousePart>)[MousePart.Middle, MousePart.Back, MousePart.Forward])
         {
@@ -441,14 +438,14 @@ public sealed class KeybindMapControl : FrameworkElement
 
     private const string EditPillText = "Click to Edit Keybinds...";
 
-    // The glance's pill, at the right end of the layers' row.
+    // Glance pill, right-aligned on the layer row.
     private Rect EditPillRect(double dpi)
     {
         var width = Text(EditPillText, 11.5, Brushes.White, dpi).Width + 24;
         return new Rect(Math.Max(ActualWidth - width - 4, 0), 2, width, LayerRowHeight - 6);
     }
 
-    // What a glance says of a chord: each action's name, its keys, its category and how it acts.
+    // Glance description of a chord: each action's label, category, keys and trigger behaviour.
     private string DescribeFully(InputChord chord)
     {
         var on = _draft.ActionsOn(chord);
@@ -469,7 +466,7 @@ public sealed class KeybindMapControl : FrameworkElement
         })) + " Click to change it.";
     }
 
-    /// <summary>The keybind page opened at a key (from a glance): its layer shown, the key marked and its menu of actions opened at it.</summary>
+    /// <summary>Opens the map at a chord (from a glance): selects its layer, marks the key and opens its action menu.</summary>
     public void Pick(InputChord chord)
     {
         var layer = Array.FindIndex(Layers, l => l.Mods == chord.Mods);
@@ -545,7 +542,7 @@ public sealed class KeybindMapControl : FrameworkElement
             : null;
         if (Glance)
         {
-            // A glance names what is under the pointer in its banner (a tooltip would come too late for a held key).
+            // Glance mode describes the hover target in the banner (a tooltip is too slow while Tab is held).
             _status = onEdit ? "Opens Settings at Keybinds & Lightning Dial."
                 : chord is { } over ? DescribeFully(over)
                 : cap >= 0 ? "Click Ctrl, Shift or Alt (or a layer above) to see what the keys do with it held."
@@ -620,7 +617,7 @@ public sealed class KeybindMapControl : FrameworkElement
         InvalidateVisual();
     }
 
-    // Clicking Ctrl, Shift or Alt on the drawing goes to the layer with that modifier added (or taken away), if there is one.
+    // Clicking a drawn Ctrl/Shift/Alt key toggles that modifier in the layer; falls back to the unmodified layer if no match.
     private void ToggleModifier(ModifierKeys modifier)
     {
         if (modifier == ModifierKeys.None)
@@ -631,7 +628,7 @@ public sealed class KeybindMapControl : FrameworkElement
         SetLayer(index >= 0 ? index : 0);
     }
 
-    // The menu of every action this layer's chord can run: the one it runs is checked; choosing one gives the chord to it.
+    // Action menu for a chord: current bindings are checked; choosing an action binds the chord to it.
     private void OfferActions(InputChord chord, Rect? at = null)
     {
         var menu = at is { } rect
@@ -659,7 +656,7 @@ public sealed class KeybindMapControl : FrameworkElement
         menu.Items.Add(clear);
         menu.Items.Add(new Separator());
 
-        // Every action, by category (one the chord cannot run says why when it is chosen).
+        // All actions grouped by category; invalid choices report the reason via Assign's status.
         foreach (var category in KeybindManager.Categories)
         {
             var into = new MenuItem { Header = category };
@@ -699,9 +696,8 @@ public sealed class KeybindMapControl : FrameworkElement
 }
 
 /// <summary>
-/// The keybind page's list (4.4): every action under its category with its keys as buttons. Click a key's button to change
-/// it, or + to add one, then press the keys (or a mouse's middle or side button here); Esc cancels; right-click a key's
-/// button to take it off. A key another action has moves to the new one.
+/// Keybind list: every action by category with its chords as buttons. Click a chord (or +) and press keys (or middle/side mouse
+/// button) to rebind; Esc cancels; right-click a chord to remove it. A chord owned by another action moves to the new one.
 /// </summary>
 public sealed class KeybindListControl : StackPanel
 {
@@ -710,10 +706,10 @@ public sealed class KeybindListControl : StackPanel
     private readonly Dictionary<string, WrapPanel> _rows = [];
     private (string Id, InputChord? Replacing, Button Button)? _listening;
 
-    // A conflicting key's text: light red on a dark theme, deep red on a light one (each over 4.5:1 on its panels).
+    // Conflict text colours: light red on dark themes, deep red on light ones (each above 4.5:1 contrast on its panels).
     private static readonly Brush ConflictTextOnDark = Frozen(Color.FromRgb(0xFF, 0x7A, 0x7A)), ConflictTextOnLight = Frozen(Color.FromRgb(0xB4, 0x23, 0x18));
 
-    /// <summary>The conflict text for the theme now (the theme's text colour dark means a light theme).</summary>
+    /// <summary>Conflict text brush for the current theme (a dark TextBrush implies a light theme).</summary>
     internal Brush ConflictText =>
         TryFindResource("TextBrush") is SolidColorBrush { Color: var c } && 0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B < 128 ? ConflictTextOnLight : ConflictTextOnDark;
 
@@ -817,7 +813,7 @@ public sealed class KeybindListControl : StackPanel
         button.Content = "Press a key...";
         _status.Text = $"Press the keys for {KeybindManager.Action(id)?.Label} (or a mouse's middle or side button over this list). Esc cancels.";
 
-        // The button keeps the keyboard (the list hears its keys on their way to it): the page does not scroll.
+        // Focus the button so keys tunnel through the list's PreviewKeyDown and never scroll the page.
         button.Focus();
     }
 
@@ -835,7 +831,7 @@ public sealed class KeybindListControl : StackPanel
         if (_listening is null)
             return;
 
-        // Every key is the binding's while it listens: Esc cancels it (and never closes Settings).
+        // Capture every key while listening; Esc cancels the capture (never closes Settings).
         e.Handled = true;
         var key = KeybindManager.KeyOf(e);
         if (key == Key.Escape)
@@ -845,7 +841,7 @@ public sealed class KeybindListControl : StackPanel
             return;
         }
 
-        // A modifier alone: the key it is held with is still to come.
+        // Modifier alone: wait for the non-modifier key.
         if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftShift or Key.RightShift or Key.LeftAlt or Key.RightAlt or Key.LWin or Key.RWin)
             return;
 

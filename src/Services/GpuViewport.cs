@@ -9,21 +9,15 @@ using static HandPegApp.Native.User32;
 namespace HandPegApp;
 
 /// <summary>
-/// The GPU engine's picture in the player (Pass 5.0-AudioAnd3D, 5.0D): a flip-model swap chain on the video surface's
-/// native window (<see cref="VideoSurface.SurfaceHandle"/>, the window mpv draws into when it is the engine), filled by
-/// copying the compositor's newest presented output texture into the back buffer, card to card, and presented. No pixel
-/// reaches the processor. The surface keeps everything else it does: black before the first frame, hidden until laid
-/// out, the overlay window above it (gizmos, crop, the key map) and its place through dock rebuilds.
-/// <para>One thread uses it (the GPU engine's frame pump): the reader's device and the swap chain belong to that thread.
-/// The swap chain has a frame-latency waitable object (one frame queued at most), so <see cref="WaitForTurn"/> paces the
-/// pump at the display's refresh while playing and a picture is never more than a frame old when it is shown. Every frame queued takes
-/// a turn of it, the paused pump's too (5.4.4, <see cref="FrameLatencyTurns"/>): a present without one let the playing pump run that many
-/// frames ahead of the display for the rest of the session.</para>
-/// <para>A lost device (a TDR) or a worker of a new generation on another card makes the reader's device anew; the
-/// swap chain follows it on the next present.</para>
-/// <para>Resized (5.4.1A), it never stretches: the player's swap chain is made with DXGI_SCALING_NONE, its buffers follow the window
-/// on the next present, and a frame of another size than the window (the worker's frame one step behind a dock splitter's drag) is
-/// laid 1:1 in the middle of black (<see cref="CenteredCopy"/>), never refused, so the window always shows a frame of its own size.</para>
+/// Player presentation: a flip-model swap chain on the video surface HWND (<see cref="VideoSurface.SurfaceHandle"/>), filled by a GPU
+/// copy of the compositor's newest output texture; pixels never touch the CPU. The surface still handles black-before-first-frame,
+/// visibility, the overlay window (gizmos, crop, key map) and dock rebuilds.
+/// <para>Owned by the frame pump thread (reader device and swap chain). The frame-latency waitable (max one queued frame) lets
+/// <see cref="WaitForTurn"/> pace playback at the display refresh. Every queued frame consumes a turn, paused ones included
+/// (<see cref="FrameLatencyTurns"/>); otherwise the pump drifts frames ahead of the display.</para>
+/// <para>Device loss (TDR) or a new worker generation on another adapter recreates the reader device; the swap chain follows on the next present.</para>
+/// <para>Never stretches on resize: DXGI_SCALING_NONE, buffers resized on the next present, and mismatched frames (worker lagging a
+/// splitter drag) are centred 1:1 on black (<see cref="CenteredCopy"/>).</para>
 /// </summary>
 internal sealed unsafe partial class GpuViewport : IDisposable
 {
@@ -37,21 +31,20 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     private int _framesSeen = -1;
     private int _generationSeen = -1;
 
-    // What the desktop does with a buffer of another size than the window (5.4.1A): none for the player, a stretch for a mirror.
+    // DXGI scaling for size mismatch: none for the player, stretch for mirrors.
     private readonly uint _scaling;
 
-    // The back buffer's render target view, made once a swap chain (flip model in D3D11: buffer 0 is always the one drawn next), for
-    // the black a centred frame lies on; let go before every ResizeBuffers.
+    // Back-buffer RTV (flip model: buffer 0 is always next) used to clear to black for centred frames; released before ResizeBuffers.
     private nint _backRtv;
 
-    // A mirror (5.4C) shares the player's reader, and so its device: it never disposes it.
+    // Mirrors share the player's reader and device and never dispose them.
     private readonly bool _ownsReader = true;
 
-    // The swap chain's frame-latency turns (5.4.4): every frame queued takes one, waited for or owed. The wait given to them.
+    // Frame-latency turn accounting: each queued frame consumes one, waited or owed.
     private FrameLatencyTurns _turns;
     private readonly Func<int, bool> _takeTurn;
 
-    // The last present queued nothing (DXGI_STATUS_OCCLUDED and the like, 5.4.4): the playing pump's next turn is paced by the clock.
+    // Last present queued nothing (e.g. DXGI_STATUS_OCCLUDED): the next playing turn is clock-paced.
     private bool _nothingQueued;
 
     public GpuViewport(CompositorClient client, nint window)
@@ -64,9 +57,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// A mirror of <paramref name="player"/> (5.4C: a side window's Live Video Preview) on another native window: the player's reader
-    /// and device (no second device, no second opening of the worker's output), its own swap chain, as large as the canvas's part of
-    /// the player's picture (<see cref="MirrorRegion"/>). Used by the pump's thread only, as the player's is.
+    /// Live Video Preview mirror of <paramref name="player"/> on another HWND: shares the player's reader and device, with its own swap
+    /// chain sized to the canvas region (<see cref="MirrorRegion"/>). Pump thread only.
     /// </summary>
     public GpuViewport(GpuViewport player, nint window)
     {
@@ -81,7 +73,7 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     /// <summary>The native window it presents into.</summary>
     public nint Window => _window;
 
-    /// <summary>The window's size in pixels now (what the worker is asked to render at); (0, 0) while it is hidden or gone.</summary>
+    /// <summary>Current window size in pixels (worker render size); (0, 0) when hidden or destroyed.</summary>
     public (int Width, int Height) PixelSize
     {
         get
@@ -93,41 +85,40 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// Windows' scale of the monitor the window is on now (2.0 at 200 %; 1 when the window is gone), asked at every call: a fullscreen player
-    /// can be on another monitor than the main window (5.4.4, Dynamic Preview Scaling's "1:1 DIP"). Not HandPeg's own content scale, which
-    /// follows its UI Scale. Any thread.
+    /// DPI scale of the window's current monitor (2.0 at 200 %; 1 if destroyed), queried per call since fullscreen may be on another
+    /// monitor (Dynamic Preview Scaling 1:1 DIP). Independent of UI Scale. Any thread.
     /// </summary>
     public double MonitorScale => GetDpiForWindow(_window) is var dpi and > 0 ? dpi / 96.0 : 1;
 
     /// <summary>Frames presented on the screen (diagnostics).</summary>
     public long Presents { get; private set; }
 
-    // The Playback & A/V Sync Test's sampler (5.5.2) reads the swap chain from a thread of its own: the pump lets it go only under this gate.
+    // A/V Sync Test sampler reads the swap chain from its own thread; the pump releases the swap chain only under this gate.
     private readonly object _statisticsGate = new();
 
-    /// <summary>The swap chain's last present count, 0 none (any thread: the sampler's; never while the pump lets the swap chain go).</summary>
+    /// <summary>Last present count, 0 if none (any thread; gated against swap chain release).</summary>
     internal uint SampleLastPresentCount()
     {
         lock (_statisticsGate)
             return Dxgi.LastPresentCount(Volatile.Read(ref _swapChain));
     }
 
-    /// <summary>The present shown at the last vblank and that vblank's QPC (any thread, as <see cref="SampleLastPresentCount"/>); false none.</summary>
+    /// <summary>Present shown at the last vblank and its QPC (any thread, gated like <see cref="SampleLastPresentCount"/>); false if none.</summary>
     internal bool SampleFrameStatistics(out uint presentCount, out long syncQpc)
     {
         lock (_statisticsGate)
             return Dxgi.FrameStatistics(Volatile.Read(ref _swapChain), out presentCount, out syncQpc);
     }
 
-    // The scene (its sequence number) in the frame last handed to IDXGISwapChain::Present (5.4.3): what is on the screen, not only drawn.
+    // Scene sequence of the frame last passed to IDXGISwapChain::Present (on screen, not merely rendered).
     private long _presentedSequence;
 
-    /// <summary>The scene of the frame last presented on the swap chain (any thread; the worker's PresentedSequence is only drawn).</summary>
+    /// <summary>Scene of the last presented frame (any thread); the worker's PresentedSequence only means rendered.</summary>
     public long PresentedSequence => Volatile.Read(ref _presentedSequence);
 
     /// <summary>
-    /// The frame on the screen now as a still (5.4.3, a project tab put behind with no still of its playhead): read back on the presenting
-    /// thread (its device's context), cropped and sampled by <paramref name="region"/> and <paramref name="step"/>. False when there is none.
+    /// Reads back the on-screen frame as a still (tab deactivation without a playhead still), on the presenting thread, cropped/subsampled
+    /// by <paramref name="region"/> and <paramref name="step"/>. False when none.
     /// </summary>
     internal bool TryReadStill(Func<int, int, (int Left, int Top, int Right, int Bottom)> region, Func<int, int, int> step, out byte[] bgra, out int width, out int height)
     {
@@ -136,10 +127,9 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// Waits until the swap chain can take another frame (its frame-latency object), at most <paramref name="milliseconds"/>: the turns
-    /// owed by frames queued without one taken back first (5.4.4, <see cref="FrameLatencyTurns.Wait"/>). Without a swap chain yet, or
-    /// after a present that queued nothing (an occluded window: minimised, a locked session; its turn is still held, so the wait would not
-    /// wait at all and the playing pump would spin), it is paced by the clock: a refresh at 60 Hz, at most that long.
+    /// Waits up to <paramref name="milliseconds"/> for the frame-latency object, first repaying owed turns (<see cref="FrameLatencyTurns.Wait"/>).
+    /// Without a swap chain, or after an occluded present (minimized, locked session; the waitable would not block and the pump would spin),
+    /// paces by clock at 60 Hz.
     /// </summary>
     public void WaitForTurn(int milliseconds)
     {
@@ -151,27 +141,24 @@ internal sealed unsafe partial class GpuViewport : IDisposable
         LastTurnMs = (float)System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds;
     }
 
-    // Pass 5.5.2 (the A/V bisect): how long the pump's last turn wait, back-buffer copy and IDXGISwapChain::Present call took, and what Present
-    // returned, for AvSync's trace (read by reflection; a few counter reads a frame).
+    // AvSync trace: last turn wait, back-buffer copy and Present durations plus Present's HRESULT (read via reflection; cheap per frame).
     internal float LastTurnMs, LastCopyMs, LastPresentCallMs;
     internal int LastPresentHr;
 
-    // One turn of the frame-latency object, waited for at most that long (5.4.4: FrameLatencyTurns' wait).
+    // Max wait per frame-latency turn (FrameLatencyTurns).
     private bool TakeTurn(int milliseconds) => _waitable != 0 && WaitForSingleObject(_waitable, (uint)milliseconds) == 0;
 
     /// <summary>
-    /// Whether the worker presented a frame this viewport has not shown yet, or the window changed size since the last present (5.4.1A:
-    /// the paused pump then shows the last frame at once in the resized window, centred, while the worker draws the new size).
+    /// True when the worker has an unshown frame or the window resized since the last present (paused pump re-presents the last frame
+    /// centred while the worker renders the new size).
     /// </summary>
     public bool HasNewFrame =>
         Volatile.Read(ref _client.Memory.Control.FramesRendered) != _framesSeen || Volatile.Read(ref _client.Memory.Control.OutputGeneration) != _generationSeen
         || (PixelSize is var (width, height) && width >= 8 && height >= 8 && (width, height) != _buffers);
 
     /// <summary>
-    /// Copies the worker's newest frame into the back buffer and presents it (with <paramref name="vsync"/>, on the next
-    /// refresh). A window that changed size presents again even with no new frame, and a frame of another size than the window
-    /// is laid 1:1 in its middle on black (5.4.1A: a resize under way, never stretched, never refused). False when there was no
-    /// new frame and no new size (and <paramref name="force"/> is not set), the frame was busy, or there is nothing to present on yet.
+    /// Copies the newest worker frame to the back buffer and presents (<paramref name="vsync"/> = next refresh). Resizes re-present without a
+    /// new frame; mismatched frames are centred 1:1 on black. False when nothing new (unless <paramref name="force"/>), the frame is busy, or no target.
     /// </summary>
     public bool PresentNewest(bool vsync, bool force = false)
     {
@@ -205,7 +192,7 @@ internal sealed unsafe partial class GpuViewport : IDisposable
                 LastCopyMs = (float)System.Diagnostics.Stopwatch.GetElapsedTime(copyStarted).TotalMilliseconds;
                 if (!copied)
                 {
-                    // A capture's frame (read back, 5.4.1A): seen, never shown; the player's next frame follows it.
+                    // Readback (capture) frame: consumed, never shown.
                     if (_reader.SkippedReadback)
                         (_framesSeen, _generationSeen) = (frames, generation);
                     return false;
@@ -226,7 +213,7 @@ internal sealed unsafe partial class GpuViewport : IDisposable
                 return false;
             }
 
-            // A frame queued takes its turn, the paused pump's (no wait before it) too (5.4.4).
+            // Every queued frame consumes a turn, including paused ones that skipped the wait.
             if (hr == 0)
             {
                 _turns.Queued(_takeTurn);
@@ -249,11 +236,10 @@ internal sealed unsafe partial class GpuViewport : IDisposable
         }
     }
 
-    // ----- The display's lead (5.4.4-Final, the user's Q4 a) -----
-    // How long after the pump chose a playing frame's moment (FrameOrigin: its turn) that frame is on the screen: the swap chain's own report
-    // (GetFrameStatistics: the present shown at a vblank, and that vblank's QPC) matched to the presents made, over the last 128 (5.4.4: the
-    // 500 Hz Desktop shows a frame 6-9 ms after its Present, three or four refreshes, where the pump had counted one: the picture ran late of
-    // the sound by the difference). The median of the last LeadSamples is DisplayLeadSeconds; the pump draws each frame for that moment.
+    // ----- Measured display lead -----
+    // Time from the pump's turn (FrameOrigin) to the vblank showing that frame, from GetFrameStatistics matched against the last 128
+    // presents (a 500 Hz display showed frames 6-9 ms after Present, several refreshes rather than one, so video lagged audio). The
+    // median of the last LeadSamples is DisplayLeadSeconds, used as the evaluation offset.
 
     private const int LeadRing = 128, LeadSamples = 31;
     private readonly uint[] _leadIds = new uint[LeadRing];
@@ -264,24 +250,20 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     private uint _leadSeen;
     private double _displayLead = double.NaN;
 
-    // The saved test's lead seeding a player's first play (5.6A, Q2b): SeedCopies samples of it, dropped again when no real sample has come
-    // after SeedExpiryPresents new frames (a swap chain DWM gives no statistics for).
+    // Seed from the saved A/V test lead: SeedCopies samples, dropped if no real sample arrives within SeedExpiryPresents frames (no DWM stats).
     internal const int SeedCopies = 4, SeedExpiryPresents = 60;
     private int _seedLeft;
 
-    /// <summary>The pump's turn that chose the frame presented next (QPC): set by the pump before it presents a playing frame.</summary>
+    /// <summary>QPC of the pump turn that chose the next presented frame; set before presenting a playing frame.</summary>
     public long FrameOrigin { get; set; }
 
     /// <summary>
-    /// The measured time from the pump's turn to the frame on the screen, in seconds (the median of the last 31 matched presents); NaN until
-    /// enough are known (a swap chain DWM does not report on: the pump then counts one refresh, as before).
+    /// Measured turn-to-screen latency (s), median of the last 31 matched presents; NaN until enough samples (or no DWM stats; then one refresh is assumed).
     /// </summary>
     public double DisplayLeadSeconds => Volatile.Read(ref _displayLead);
 
-    // After a vsync'd present: its count and the turn that made it kept when it has one (a new frame: FrameOrigin set); the swap chain asked
-    // which present the last vblank showed after every one. Pass 5.5.2: only new frames are kept. On the 500 Hz Desktop seven presents in
-    // eight are copies of a 60 fps timeline's frame (no draw, no wait for the worker), so a median over every present measured the copies'
-    // lead and left out the draw the new frames wait for: those were drawn for a moment a few ms too soon (1x median -4 ms, worst -24).
+    // After each vsync'd present, record (count, origin) for new frames only and query which present the last vblank showed. Copies are
+    // excluded: at 500 Hz with 60 fps content most presents are copies, whose shorter lead would bias the median low (frames drawn early).
     private void MeasureLead()
     {
         var id = Dxgi.LastPresentCount(_swapChain);
@@ -316,9 +298,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// Starts the measured lead at the saved Playback &amp; A/V Sync Test's (5.6A, the user's Q2 b; the pump's thread, before a player's first
-    /// play): <see cref="SeedCopies"/> samples of it, so the real ones outvote it after five, and the overshoot a cold play's backed-up first
-    /// samples gave is damped. Nothing when a lead is already measured or the value is not finite.
+    /// Seeds the lead from the saved A/V Sync Test value (pump thread, before first play) with <see cref="SeedCopies"/> samples, so real
+    /// samples dominate after five and cold-start outliers are damped. No-op when already measured or not finite.
     /// </summary>
     public void SeedLead(double seconds)
     {
@@ -338,9 +319,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// The saved test's lead as a seed for a player's first play (5.6A, Q2 b), seconds; NaN when it does not apply (pure): the test must have
-    /// had real frame statistics, a lead over 0 and at most 100 ms, and a refresh within 1.5 Hz (or 1 %) of this monitor's
-    /// (<paramref name="monitorPeriod"/>: EnumDisplaySettings' whole hertz against DWM's 59.94).
+    /// Seed lead (s) from the saved test, or NaN (pure). Requires real frame statistics, 0 &lt; lead &lt;= 100 ms, and a refresh within 1.5 Hz
+    /// or 1 % of <paramref name="monitorPeriod"/> (EnumDisplaySettings integer Hz vs DWM fractional rates).
     /// </summary>
     internal static double SeedLeadFor(double? leadMs, bool frameStatistics, double testHz, double monitorPeriod)
     {
@@ -352,7 +332,7 @@ internal sealed unsafe partial class GpuViewport : IDisposable
         return Math.Abs(testHz - monitorHz) <= Math.Max(1.5, monitorHz * 0.01) ? ms / 1000 : double.NaN;
     }
 
-    /// <summary>For the golden test: the lead as the next published median would be after these real samples follow a seed (pure).</summary>
+    /// <summary>Golden-test helper: median after real samples follow a seed (pure).</summary>
     internal static double SeededMedian(double seed, ReadOnlySpan<double> real)
     {
         var all = new double[Math.Min(SeedCopies + real.Length, LeadSamples)];
@@ -364,11 +344,11 @@ internal sealed unsafe partial class GpuViewport : IDisposable
         return Median(all.AsSpan(0, Math.Min(count, all.Length)));
     }
 
-    /// <summary>A turn and the vblank that showed its frame as a lead in seconds; null when out of reason (before the turn, or over 150 ms). Pure.</summary>
+    /// <summary>Lead (s) from turn to vblank; null when implausible (negative or over 150 ms). Pure.</summary>
     internal static double? LeadOf(long origin, long shownAt, long frequency) =>
         shownAt > origin && frequency > 0 && (shownAt - origin) / (double)frequency is var seconds and < 0.15 ? seconds : null;
 
-    /// <summary>The median of some values (the middle one of an odd count, the mean of the middle two of an even one). Pure.</summary>
+    /// <summary>Median (mean of the middle two for even counts). Pure.</summary>
     internal static double Median(ReadOnlySpan<double> values)
     {
         Span<double> sorted = stackalloc double[values.Length];
@@ -379,17 +359,14 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// The lead the pump draws a playing frame for (5.4.4-Final): the measured one while it is known and within reason (at least a refresh,
-    /// at most 100 ms), else one refresh (the frame drawn now is on the screen at the next one). Pure, for the golden test.
+    /// Evaluation lead: the measured lead when known and within [one refresh, 100 ms], else one refresh. Pure (golden-tested).
     /// </summary>
     internal static double PlayingLead(double refresh, double measured) =>
         double.IsFinite(measured) && measured >= refresh && measured <= 0.1 ? measured : refresh;
 
     /// <summary>
-    /// The origin a playing turn gives its frame's lead (pure, Pass 5.5.2-Release): the turn's QPC, or 0 (no lead measured) when the turn is a
-    /// stall, longer than 1.5 of the monitor's refresh (else of the pump's estimate). On the 500 Hz Desktop, with the player on screen (real
-    /// frame statistics: AvSync --onscreen), a cold play's first second turns every 20-60 ms and its frames reach the screen 50-60 ms after
-    /// their turn; those leads filled the median, and once the pipeline drained the frames were drawn 57-61 ms ahead of the sound.
+    /// Lead origin for a playing turn (pure): the turn's QPC, or 0 (not sampled) for stalls longer than 1.5x the monitor refresh (else the
+    /// pump estimate). Cold-start turns of 20-60 ms with 50-60 ms leads would otherwise skew the median and draw frames far ahead of audio.
     /// </summary>
     internal static long LeadOrigin(long now, double interval, double monitorPeriod, double refresh)
     {
@@ -398,10 +375,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// Where a frame of one size goes in a target of another (5.4.1A, the player while it is resized): 1:1, never scaled, in whole
-    /// pixels, centred: a smaller frame with margins round it (DstX, DstY), a larger one with its middle cropped out of it (the source
-    /// rectangle SrcLeft..SrcRight x SrcTop..SrcBottom). Empty (all zero) for a frame or target of no size. Pure: the golden test
-    /// player-resize-no-stretch checks it.
+    /// 1:1 centred placement of a frame in a differently sized target (integer pixels): smaller frames get margins (DstX, DstY), larger
+    /// ones are centre-cropped (Src rectangle). All zero for empty sizes. Pure (player-resize-no-stretch golden).
     /// </summary>
     internal static (int SrcLeft, int SrcTop, int SrcRight, int SrcBottom, int DstX, int DstY) CenteredCopy(int frameWidth, int frameHeight, int targetWidth, int targetHeight)
     {
@@ -414,9 +389,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// The part of the player's output a Live Video Preview shows (5.4C): the canvas fitted into the output and centred, as the player
-    /// lays it at no zoom (SceneRenderer.Letterbox), so the bars are left out; whole pixels, inside the output (left, top, right,
-    /// bottom). Empty (all zero) for an output or canvas of no size. Pure: the golden test side-window-mirror checks it.
+    /// Canvas region of the player output for Live Video Preview: letterboxed fit at zoom 1 (SceneRenderer.Letterbox), excluding bars, in
+    /// integer pixels (left, top, right, bottom). All zero for empty sizes. Pure (side-window-mirror golden).
     /// </summary>
     internal static (int Left, int Top, int Right, int Bottom) MirrorRegion(int outputWidth, int outputHeight, int canvasWidth, int canvasHeight)
     {
@@ -433,10 +407,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// A mirror's turn (5.4C), after the player presented: the canvas's part of the newest presented frame copied into its back buffer
-    /// (one region copy on the card) and presented with no wait for the display (sync interval 0), only when its swap chain can take a
-    /// frame now (its frame-latency object already set: never waited for), so the pump never waits on a side window. False when there
-    /// was nothing new, its window is hidden or gone, the frame was busy, or the swap chain was not ready (the next turn tries again).
+    /// Mirror present after the player: GPU-copies the canvas region and presents with sync interval 0, only if the frame-latency object
+    /// is already signalled (never blocks the pump). False when nothing new, hidden/destroyed, busy, or not ready (retried next turn).
     /// </summary>
     public bool PresentMirror(int canvasWidth, int canvasHeight)
     {
@@ -450,8 +422,7 @@ internal sealed unsafe partial class GpuViewport : IDisposable
 
         try
         {
-            // A capture's frame (read back) is never mirrored, nor the swap chain resized for it; else the presented frame's own size
-            // (5.4.1A: the worker's ring can be larger than its frames).
+            // Skip readback frames (no mirror, no resize); otherwise use the frame's content size (the ring may be larger).
             var presented = Volatile.Read(ref control.PresentedIndex);
             if (_reader.ReadbackIn(presented))
             {
@@ -472,8 +443,7 @@ internal sealed unsafe partial class GpuViewport : IDisposable
             if (_swapChain == 0)
                 return false;
 
-            // Copied first, then presented only if the swap chain can take it now: its frame-latency object is waited on only once a
-            // present follows (taken and not presented, it would never be set again).
+            // Copy first; consume the frame-latency signal only when a present follows (consuming without presenting would never re-signal).
             var back = Dxgi.BackBuffer(_swapChain);
             try
             {
@@ -521,7 +491,7 @@ internal sealed unsafe partial class GpuViewport : IDisposable
         _turns.Reset();
         _nothingQueued = false;
 
-        // A new swap chain counts its presents from 1 again: the presents kept for the lead are another's (the lead measured stays).
+        // New swap chain restarts present counts: drop pending samples (the measured lead is kept).
         Array.Clear(_leadIds);
         _leadSeen = 0;
         (_device, _buffers) = (device, (width, height));
@@ -529,7 +499,7 @@ internal sealed unsafe partial class GpuViewport : IDisposable
 
     private void Resize(int width, int height)
     {
-        // Nothing holds a buffer here between presents (the back buffer is let go after each copy; its view now).
+        // No buffer references between presents (back buffer released after each copy; RTV released here).
         Com.Release(ref _backRtv);
         var hr = Dxgi.ResizeBuffers(_swapChain, width, height);
         if (hr < 0)
@@ -552,11 +522,11 @@ internal sealed unsafe partial class GpuViewport : IDisposable
 
         if (_swapChain != 0)
         {
-            // Under the gate the Playback & A/V Sync Test's sampler reads its statistics under (5.5.2): never let go mid-call.
+            // Release under the sampler gate so the A/V Sync Test never reads a released swap chain.
             lock (_statisticsGate)
                 Com.Release(ref _swapChain);
 
-            // Destroyed for real (the window free for another swap chain) once the context lets go of it.
+            // Flush so the swap chain is actually destroyed and the HWND can take a new one.
             if (_device is { } device && device.Device.GetDeviceRemovedReason() >= 0)
             {
                 device.Context.ClearState();
@@ -579,8 +549,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     private static partial bool IsWindow(nint window);
 
     /// <summary>
-    /// The refresh period of the monitor the window is on (nearest one for a window off every screen), in seconds, from its current display
-    /// mode (whole Hz); NaN when it cannot be told (Pass 5.5.2: the pump's bound for its measured refresh, <see cref="NextRefresh"/>). Any thread.
+    /// Refresh period (s) of the window's (or nearest) monitor from its display mode (integer Hz); NaN if unknown. Bounds the pump's estimate
+    /// (<see cref="NextRefresh"/>). Any thread.
     /// </summary>
     public double MonitorRefreshSeconds
     {
@@ -604,11 +574,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// The pump's refresh estimate after one more paced turn <paramref name="interval"/> apart (seconds), pure for the golden test (Pass 5.5.2):
-    /// a moving average as before, except that a turn longer than 1.5 of the monitor's refresh (<paramref name="monitorPeriod"/>, when known) is
-    /// a stall, not a refresh, and leaves it as it was. On the 500 Hz Desktop a cold play's first half second has turns of 37-52 ms (frames
-    /// retired slowly while the decoders start): they took the estimate from 2 ms to ~18 ms, and with no measured display lead the frames were
-    /// drawn that far ahead of the sound (the paused step's worst +20..+35 ms).
+    /// Updated refresh estimate after a paced turn of <paramref name="interval"/> s (pure, golden-tested): moving average, ignoring stalls
+    /// longer than 1.5x <paramref name="monitorPeriod"/> when known (cold-start 37-52 ms turns would otherwise inflate a 2 ms estimate to ~18 ms).
     /// </summary>
     internal static double NextRefresh(double refresh, double interval, double monitorPeriod)
     {
@@ -620,8 +587,8 @@ internal sealed unsafe partial class GpuViewport : IDisposable
     }
 
     /// <summary>
-    /// Where a play begins its refresh estimate (pure, Pass 5.5.2): the monitor's period when known and the estimate is off it by more than half
-    /// (the 1/60 s start on a 500 Hz display, or a window moved to another monitor), else the estimate as it was.
+    /// Initial refresh estimate for a play (pure): the monitor period when known and the estimate differs by over 50 % (60 Hz default on a
+    /// 500 Hz display, monitor change), else the existing estimate.
     /// </summary>
     internal static double StartRefresh(double refresh, double monitorPeriod) =>
         double.IsFinite(monitorPeriod) && monitorPeriod > 0 && (refresh > 1.5 * monitorPeriod || refresh < 0.5 * monitorPeriod) ? monitorPeriod : refresh;

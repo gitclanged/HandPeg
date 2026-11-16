@@ -6,11 +6,11 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Compositor;
 
-// The decode lanes of the DecoderPool: what each lane picks next (MostUrgent), which decoder serves it (DecoderFor, OpenFor),
-// the decoding itself (WorkOn), and the idle decoders buried and disposed.
+// DecoderPool decode lanes: demand selection (MostUrgent), decoder assignment (DecoderFor, OpenFor), decoding (WorkOn), and
+// burial/disposal of idle decoders.
 internal sealed partial class DecoderPool
 {
-    // ----- The lanes -----
+    // ----- Lanes -----
 
     private void RunLane(int lane)
     {
@@ -36,7 +36,7 @@ internal sealed partial class DecoderPool
                 {
                     WaitWhileDrawing();
 
-                    // Idle work opens no decoder once the player has moved meanwhile (5.4.4): the open it counted on is undone.
+                    // Idle work opens no decoder if the player moved meanwhile: undo the reserved open.
                     if (demand.Kind == DemandKind.Idle)
                     {
                         bool mayOpen;
@@ -51,9 +51,8 @@ internal sealed partial class DecoderPool
                             continue;
                     }
 
-                    // Nor for a far cut a cold play's window opened on while this lane waited for the draw (5.5A review): no decoder opened
-                    // and none sought for it. The open it counted on is undone and the demand stays (not done), picked again once the window
-                    // closes or the cut comes within the cold play's lead.
+                    // Nor for a far cut when a cold-play window opened while this lane waited for the draw: no open or seek. Undo the
+                    // reserved open; the demand stays pending and is re-picked once the window closes or the cut comes within the lead.
                     bool held;
                     lock (_gate)
                     {
@@ -81,8 +80,7 @@ internal sealed partial class DecoderPool
             }
             catch (Exception ex) when (ex is GpuException or InvalidOperationException or IOException or ArgumentException)
             {
-                // A file that fails part way (a broken stream): its decoder goes; the source is tried again from scratch,
-                // that stretch of it only after three seconds.
+                // Mid-stream failure (broken stream): dispose the decoder; the source retries from scratch, that range only after 3 s.
                 AppLog.WriteOnce($"decode|{demand.Source.Path}|{ex.HResult}", $"Decode: {Path.GetFileName(demand.Source.Path)} failed", ex);
                 LastError = $"{Path.GetFileName(demand.Source.Path)}: {ex.Message}";
                 (demand.Source.FailedAt, demand.Source.FailedUntil) = (demand.Target, Stopwatch.GetTimestamp() + 3 * Stopwatch.Frequency);
@@ -109,31 +107,29 @@ internal sealed partial class DecoderPool
                     if (decoder is not null)
                         decoder.Owner = -1;
 
-                    // A pre-roll or a hint met stays (done): its stretch stays one of the cache's interests, so what was
-                    // decoded ahead is still there when it is asked for (the cuts' frames, until their hints go).
+                    // A satisfied pre-roll or hint stays (done) so its range remains a cache interest and the frames decoded ahead
+                    // survive until requested (cut frames, until their hints are removed).
                     if (demand.Cancelled || demand.Done && demand.Kind is not (DemandKind.PreRoll or DemandKind.Hinted or DemandKind.Hover or DemandKind.Idle))
                         _demands.Remove(demand);
                     if (demand.Source.Retired)
                         BuryIdle(demand.Source);
                 }
 
-                // A source retired while this lane read it (a tab put behind): its decoder is disposed now, on this thread, outside the lock
-                // (5.4.4: never left open for Tidy's next look).
+                // Source retired while this lane read it (tab deactivated): dispose the decoder now, on this thread, outside the lock
+                // (not left open until Tidy's next pass).
                 if (demand.Source.Retired)
                     DisposeBuried();
             }
         }
     }
 
-    // Picks made (under the lock): a demand no decoder can come for in a pick is passed over for the rest of it (Demand.PassedIn).
+    // Pick counter (under the lock): a demand no decoder can serve is skipped for the rest of that pick (Demand.PassedIn).
     private long _picks;
 
     /// <summary>
-    /// The most urgent demand no lane works on and whose frame is not there yet, with the decoder to work it with (the one
-    /// of its source that reaches it in the fewest frames, not one another lane holds; null: open one). One no decoder can
-    /// come for now (its source has as many as it may, each held by a lane or kept where it is wanted) is passed over for
-    /// the next most urgent (5.0-Release review: a seventh cut of one file within the horizon left the lanes idle, and the
-    /// pre-roll, the pointer's work and other files' cuts were never decoded while paused). Under the lock.
+    /// The most urgent unserved demand whose frame is missing, with its decoder (the source's free decoder reaching it in the fewest frames;
+    /// null = open one). A demand no decoder can serve now (source at its limit, each decoder held or parked where wanted) is skipped for the
+    /// next (otherwise a seventh cut of one file could idle all lanes and starve pre-roll, pointer work and other files). Under the lock.
     /// </summary>
     private (Demand?, MfVideoDecoder?) Pick(int lane)
     {
@@ -165,8 +161,8 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// How many lanes work that can wait may take at once: two, or one for each video on screen; never more than two on unified memory
-    /// (5.4.1-M4), where every speculative frame is the computer's memory and its bandwidth.
+    /// Maximum lanes for deferrable work: two, or one per visible video; at most two on unified memory, where every speculative frame costs
+    /// system RAM and bandwidth.
     /// </summary>
     private int BackgroundLanes => _gpu.UnifiedMemory ? UnifiedBackgroundLanes : Math.Clamp(_videosShown, 2, Math.Max(_lanes.Count - 1, 2));
 
@@ -174,7 +170,7 @@ internal sealed partial class DecoderPool
 
     private int _videosShown = 1;
 
-    // How many lanes are on work that can wait (under the lock).
+    // Lanes currently on deferrable work (under the lock).
     private int BackgroundBusy()
     {
         var busy = 0;
@@ -183,7 +179,7 @@ internal sealed partial class DecoderPool
         return busy;
     }
 
-    /// <summary>The most urgent demand to work now, not one passed over in this pick (under the lock).</summary>
+    /// <summary>Most urgent workable demand not skipped in this pick (under the lock).</summary>
     private Demand? MostUrgent(long pick)
     {
         Demand? best = null;
@@ -193,48 +189,48 @@ internal sealed partial class DecoderPool
             if (demand.Lane >= 0 || demand.Cancelled || demand.Done || demand.Source.Failed || demand.Source.Retired || demand.PassedIn == pick)
                 continue;
 
-            // Idle work (5.4.4: a tab's pre-roll, a drop's file) only while the player is quiet: never while playing or scrubbing, while a
-            // frame shown or played ahead is still to decode, or within IdleQuietMs of the playhead's last move.
+            // Idle work (a tab's pre-roll, a dropped file) only while the player is quiet: not while playing or scrubbing, while a visible
+            // or play-ahead frame is pending, or within IdleQuietMs of the last playhead move.
             if (demand.Kind == DemandKind.Idle && !(idleMayRun ??= IdleMayRunNow(countLanes: true)))
                 continue;
 
-            // Cold play (5.5A, the user's Q4 b): for ColdPlaySeconds after a cold start, a cut more than CutSoon ahead waits; it stays
-            // a demand (no memory taken) and is read after, earliest first.
+            // Cold play: for ColdPlaySeconds after a cold start, cuts more than CutSoon ahead wait as demands (no memory taken) and
+            // are read afterwards, earliest first.
             if (HeldForColdPlay(demand))
                 continue;
 
-            // The most urgent kind first; among hints of one kind, the one wanted soonest (the earliest cut); then the oldest.
+            // Order: most urgent kind; within a hint kind, soonest needed (earliest cut); then oldest.
             if (best is not null && !(demand.Rank < best.Rank || demand.Rank == best.Rank && (demand.At < best.At || demand.At == best.At && demand.Asked < best.Asked)))
                 continue;
 
-            // Its frame is there already (another lane passed through it), or a stretch's whole stretch is: nothing to
-            // decode, and no decoder opened for it (a pre-roll is never given the decoder parked at the playhead).
+            // Frame (or whole range) already cached, e.g. another lane passed through it: nothing to decode and no decoder opened
+            // (a pre-roll never gets the decoder parked at the playhead).
             if (!demand.Stretch ? _cache.Has(demand.Source.Serial, demand.Target) : _cache.Covers(demand.Source.Serial, demand.KeepFrom, demand.Target))
             {
                 demand.Done = true;
                 continue;
             }
 
-            // Another lane reads this file forward through it (or up to just short of it): one reader per stretch of a
-            // file, never a second decoder sought to the same key frame to decode the same frames (5.0-Verify).
+            // Another lane reads this file forward through (or up to just short of) it: one reader per file range, never a second
+            // decoder seeking the same key frame to decode the same frames.
             if (ReadByAnotherLane(demand) is not null)
                 continue;
 
-            // Playing, a file the playback reads forward is not opened or sought a second time for work that can wait until its
-            // moment is within CutSoon (5.4.3, the XPS 13's Overwatch freeze: five layers of one file, a lookahead decoder sought
-            // at every one-second key frame, and the Adreno's decoder lock held up the playing one for 40-100 ms each time).
+            // While playing, a file being read by playback is not opened or sought again for deferrable work until within CutSoon (five
+            // layers of one file once made a look-ahead decoder seek every 1 s key frame, and a shared hardware decoder lock stalled
+            // playback 40-100 ms each time).
             if (_lastWasPlaying && demand.Kind is DemandKind.PreRoll or DemandKind.Hover or DemandKind.Hinted &&
                 !(demand.At - _lastPlayhead <= CutReadAhead(_gpu.UnifiedMemory, Volatile.Read(ref _playRate))) && PlaybackReads(demand.Source))
                 continue;
 
-            // The pre-roll and the pointer's work wait while a frame on screen is being chased (and, paused, the cuts'): the
-            // card's decoder is one, and a second stream on it halves the chase (SeekBench: cold seeks a third slower with
-            // the pre-roll beside them). Playing, a cut ahead is not held up by one late frame.
+            // Pre-roll and pointer work (and, paused, cut hints) wait while a visible frame is being chased: the GPU has one decoder
+            // engine and a second stream halves the chase (SeekBench: cold seeks a third slower alongside pre-roll). While playing, a
+            // cut ahead is not held up by one late frame.
             if ((demand.Kind is DemandKind.PreRoll or DemandKind.Hover || demand.HintKind == GpuSeekHintKind.CutEntry && !_lastWasPlaying) && VisibleBeingDecoded())
                 continue;
 
-            // The lanes beyond two are for frames due on screen (5.1-TrackEqualityAndVram): a card's decoder is one, and work that
-            // can wait must not take them from a frame that cannot (SeekBench: 6 lanes and a wider pre-roll made 1 frame in 1000 late).
+            // Lanes beyond two are reserved for frames due on screen: the GPU has one decoder engine, and deferrable work must not
+            // take them from urgent frames (SeekBench: 6 lanes with a wider pre-roll made 1 frame in 1000 late).
             if (demand.Kind is DemandKind.PreRoll or DemandKind.Hover or DemandKind.Hinted or DemandKind.Idle && BackgroundBusy() >= BackgroundLanes)
                 continue;
             best = demand;
@@ -244,9 +240,9 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// The decoder a demand would be worked with now (under the lock): the free one of its source that reaches it in the
-    /// fewest frames and may be taken for it (<paramref name="choice"/>), or one more to be opened (<paramref name="open"/>).
-    /// False when none can come: its source has as many as it may, each held by a lane or kept where it is wanted.
+    /// Decoder for a demand now (under the lock): the source's free, takeable decoder reaching it in the fewest frames
+    /// (<paramref name="choice"/>), or a new one to open (<paramref name="open"/>). False when none is possible: the source is at its
+    /// limit with every decoder held by a lane or parked where wanted.
     /// </summary>
     private bool DecoderFor(Demand best, out MfVideoDecoder? choice, out bool open)
     {
@@ -262,10 +258,9 @@ internal sealed partial class DecoderPool
                 (choice, cost) = (decoder, c);
         }
 
-        // No decoder free, or only those parked at a visible layer's moment or a cut: one more, while the source has room
-        // (opening costs a file open, on this lane's thread; the cuts ahead may have a few more). With the pool full an open
-        // closes another (TrimToCapacity): the pointer's work never opens one then, and the other work ahead only when one
-        // parked nowhere it is wanted can go (never the playhead's, or a sooner cut's: those wait for it).
+        // No free decoder, or only ones parked at a visible layer or cut: open another while the source has room (a file open on this
+        // lane's thread; cuts ahead may get a few extra). With the pool full an open closes another (TrimToCapacity): pointer work never
+        // opens then, and other look-ahead work only when an unwanted parked decoder can go (never the playhead's or a sooner cut's).
         if (choice is not null && cost < 1e6)
             return true;
         var most = best.HintKind == GpuSeekHintKind.CutEntry ? MostPerSourceForCuts : MostPerSource;
@@ -280,25 +275,23 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Whether a free decoder may be taken for a demand, and the cost added for taking it (1e6: only when no other can
-    /// come). Under the lock.
+    /// Whether a free decoder may be taken for a demand, and the added cost (1e6 = only as a last resort). Under the lock.
     /// </summary>
     private bool MayTake(Demand best, MfVideoDecoder decoder, out double penalty)
     {
-        // For a hint or the pre-roll, a decoder that goes on forward from exactly there (its stretch decoded up to the
-        // decoder already) is the one: another would seek back to the same key frame and decode the same frames again.
+        // For a hint or pre-roll, prefer the decoder continuing forward from exactly there (range decoded up to it): another would
+        // seek back to the same key frame and decode the same frames again.
         penalty = 0;
         if (!(IsHint(best.Kind) || best.Kind == DemandKind.PreRoll) || best.Stretch && ContinuesStretch(best, decoder))
             return true;
 
-        // Idle work (5.4.4) never takes a decoder parked at a visible layer's moment (playing or paused); one at a cut is refused below.
+        // Idle work never takes a decoder parked at a visible layer (playing or paused); one parked at a cut is refused below.
         if (best.Kind == DemandKind.Idle && IsParkedAtVisible(decoder))
             return false;
 
-        // One parked at a visible layer's moment is never taken from it while playing (the frames shown next come from it:
-        // taking it would make playback chase), nor for a cut ahead (it opens one of its own, or waits: the playhead's own
-        // stretch is what Space plays first); paused, for the others only when no other can come (5.0-Release: with every
-        // decoder open, a cut's hint took the playing one, and playback stuttered at every new cut).
+        // A decoder parked at a visible layer is never taken while playing (the next shown frames come from it; taking it forces a
+        // chase), nor for a cut ahead (that opens its own or waits: the playhead's range plays first); paused, only as a last resort
+        // (a cut hint taking the playing decoder caused stutter at every new cut).
         if (IsParkedAtVisible(decoder))
         {
             if (_lastWasPlaying || best.HintKind == GpuSeekHintKind.CutEntry)
@@ -306,8 +299,8 @@ internal sealed partial class DecoderPool
             penalty = 1e6;
         }
 
-        // One parked at a cut's first frames waits there for the playhead (it reads on from there at real time): never
-        // taken for the pointer, the pre-roll or a later cut; for an earlier cut, only when no other can come.
+        // A decoder parked at a cut's first frames waits for the playhead (then reads on in real time): never taken for the pointer,
+        // pre-roll or a later cut; for an earlier cut only as a last resort.
         switch (ParkedAtCut(decoder, best))
         {
             case 2:
@@ -320,7 +313,7 @@ internal sealed partial class DecoderPool
         return true;
     }
 
-    /// <summary>The decoders open and being opened, every source's (under the lock).</summary>
+    /// <summary>Open and opening decoders across all sources (under the lock).</summary>
     private int OpenDecoders()
     {
         var open = 0;
@@ -329,7 +322,7 @@ internal sealed partial class DecoderPool
         return open;
     }
 
-    /// <summary>Whether a free decoder of any source is parked nowhere it is wanted (TrimToCapacity closes such first; under the lock).</summary>
+    /// <summary>True when any source has a free decoder not parked where wanted (TrimToCapacity closes those first; under the lock).</summary>
     private bool AnyIdleUnwanted()
     {
         foreach (var source in _sources.Values)
@@ -344,7 +337,7 @@ internal sealed partial class DecoderPool
         return false;
     }
 
-    /// <summary>Whether a decoder stands inside a stretch with all of it up to there decoded: the stretch goes on from it (StartOf).</summary>
+    /// <summary>True when a decoder sits inside a range decoded up to its position, so the range continues from it (StartOf).</summary>
     private bool ContinuesStretch(Demand stretch, MfVideoDecoder decoder)
     {
         var read = decoder.ReadTime;
@@ -352,9 +345,9 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Whether a decoder waits at the end of a cut's first frames for the playhead (under the lock): 0 not; 1 taken for
-    /// <paramref name="best"/> only when no other decoder can come (a scrub's heading, or a cut wanted sooner than the one it
-    /// waits at); 2 never taken for it (the pointer's work, the pre-roll, a cut wanted later or as soon).
+    /// Whether a decoder waits at the end of a cut's first frames for the playhead (under the lock): 0 no; 1 takeable for
+    /// <paramref name="best"/> only as a last resort (scrub direction, or a cut needed sooner than its own); 2 never (pointer work,
+    /// pre-roll, a cut needed later or at the same time).
     /// </summary>
     private int ParkedAtCut(MfVideoDecoder decoder, Demand best)
     {
@@ -375,13 +368,13 @@ internal sealed partial class DecoderPool
         return parked;
     }
 
-    // The share of the cache's frames a stretch of one source may take: what is kept behind a frame asked for, the paused
-    // pre-roll round it, what is read ahead while playing, a cut's first frames, the pointer's play-ahead.
+    // Cache budget share one source range may take: frames kept behind a request, the paused pre-roll around it, play-ahead, a cut's
+    // first frames, pointer play-ahead.
     private const double BehindShare = 0.2, PreRollShare = 0.4, AheadShare = 0.25, CutShare = 0.05, HoverShare = 0.1;
 
     /// <summary>
-    /// A stretch of a source, in seconds, held to the share of the cache's budget its frames may take (5.0-Verify: a 420 fps
-    /// 1440p recording's 3 s pre-roll is 1260 frames, more than a 3 GB cache holds: decoded, let go and decoded again).
+    /// Clamps a source range (seconds) to its cache budget share (a 3 s pre-roll of a 420 fps 1440p recording is 1260 frames, more than a
+    /// 3 GB cache holds, which would decode, evict and decode again).
     /// </summary>
     private double Fit(SourceState source, double seconds, double share)
     {
@@ -391,7 +384,7 @@ internal sealed partial class DecoderPool
         return Math.Min(seconds, Math.Max(frames, 8) * source.FrameDuration);
     }
 
-    /// <summary>Whether a lane is decoding toward a frame on screen now (under the lock).</summary>
+    /// <summary>True when a lane is decoding toward a visible frame (under the lock).</summary>
     private bool VisibleBeingDecoded()
     {
         foreach (var demand in _demands)
@@ -403,10 +396,10 @@ internal sealed partial class DecoderPool
         return false;
     }
 
-    /// <summary>How soon (sequence seconds) a cut into a file the playback reads may have a decoder opened or sought for it.</summary>
+    /// <summary>Lead (sequence seconds) within which a cut into a file being played may get a decoder opened or sought.</summary>
     internal const double CutSoon = 1.5;
 
-    /// <summary>Whether the playback reads a file now: a lane on a frame shown or played ahead, or a decoder parked at one (under the lock).</summary>
+    /// <summary>True when playback is reading a file: a lane on a visible or play-ahead frame, or a decoder parked at one (under the lock).</summary>
     private bool PlaybackReads(SourceState source)
     {
         foreach (var other in _demands)
@@ -424,17 +417,17 @@ internal sealed partial class DecoderPool
         return false;
     }
 
-    /// <summary>How far past a reader's own target a frame of its file is left to it (it is taken next, from where it stopped).</summary>
+    /// <summary>Distance past a reader's target within which frames of its file are left to it (it continues from where it stopped).</summary>
     private const double ReaderReach = 1.0;
 
     /// <summary>
-    /// The demand of another lane whose decoder reads <paramref name="demand"/>'s file forward to, through, or up to a
-    /// second short of its frame (under the lock); null when none does. A moment behind every reader, or farther ahead, gets
-    /// a decoder of its own (two moments of one file: a crossfade's head, a cut far into it).
+    /// Another lane's demand whose decoder reads <paramref name="demand"/>'s file forward to, through, or within a second of its frame
+    /// (under the lock); null when none. Times behind every reader or farther ahead get their own decoder (e.g. a crossfade head and a far
+    /// cut in one file).
     /// </summary>
     private Demand? ReadByAnotherLane(Demand demand)
     {
-        // A hint's stretch (a cut's first frames, the pointer's play-ahead) waits for a reader that passes its first frame.
+        // A hint range (cut first frames, pointer play-ahead) defers to a reader that passes its first frame.
         var at = demand.Stretch && demand.Kind != DemandKind.PreRoll ? demand.KeepFrom : demand.Target;
         foreach (var other in _demands)
         {
@@ -448,11 +441,10 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Whether a lane's read (its demand <paramref name="read"/>, its decoder <paramref name="reader"/>) will hand over the
-    /// frame at <paramref name="target"/> sooner than a chase of its own would (under the lock): the frame lies ahead of the
-    /// reader (or of the key frame it is landing on), no farther than the read goes, among the frames it keeps, and the
-    /// frames still to read before it are no more than a seek to the key frame before it and the chase from there (5.0-Verify
-    /// review: a click past a pre-roll's end must not wait for it).
+    /// True when a lane's read (demand <paramref name="read"/>, decoder <paramref name="reader"/>) will deliver the frame at
+    /// <paramref name="target"/> sooner than its own chase (under the lock): the frame is ahead of the reader (or its landing key frame),
+    /// within the read's range and kept frames, and the frames before it are no more than a seek to its key frame plus the chase (a click
+    /// past a pre-roll's end must not wait for it).
     /// </summary>
     private static bool Delivers(Demand read, MfVideoDecoder reader, double target)
     {
@@ -492,17 +484,17 @@ internal sealed partial class DecoderPool
         return false;
     }
 
-    /// <summary>Opens one more decoder for a source (on the lane's thread: a file open never holds up a frame).</summary>
+    /// <summary>Opens another decoder for a source on the lane thread (a file open never blocks a frame).</summary>
     private MfVideoDecoder? OpenFor(SourceState source, int lane)
     {
         TrimToCapacity();
         try
         {
-            // Opening a file on a sleeping disk or a share may take long: not the stuck-lane watchdog's business.
+            // Opening on a sleeping disk or share can be slow: exempt from the stuck-lane watchdog.
             Volatile.Write(ref _laneBusySince[lane], 0);
-            // On the card unless there is none (WARP) or the client asks for the processor (a driver that shows broken frames).
+            // Hardware decode unless on WARP or the client requests CPU decode (drivers producing broken frames).
             var hardware = !_gpu.IsWarp && Volatile.Read(ref _shared.Control.SoftwareDecodeRequest) == 0;
-            // An export on an ARM64 PC decodes HEVC with FFmpeg, the faster there (5.2C, the user's Q1: MfVideoDecoder.PreferFfmpeg).
+            // Exports on ARM64 decode HEVC with FFmpeg, which is faster there (MfVideoDecoder.PrefersFfmpegForHevcExports).
             var decoder = new MfVideoDecoder(_gpu, source.Path, source.StreamIndex, hardware, _cache, source.Serial,
                 preferFfmpeg: _exactOnly && MfVideoDecoder.PrefersFfmpegForHevcExports);
             Volatile.Write(ref _laneBusySince[lane], Stopwatch.GetTimestamp());
@@ -513,7 +505,7 @@ internal sealed partial class DecoderPool
             {
                 source.Opening = Math.Max(source.Opening - 1, 0);
 
-                // Its source retired while it opened: disposed after the lock, never under it (5.4.4).
+                // Source retired during the open: dispose after releasing the lock, never under it.
                 if (source.Retired)
                 {
                     _graveyard.Add(decoder);
@@ -524,7 +516,7 @@ internal sealed partial class DecoderPool
                     if (source.Duration <= 0)
                         source.Duration = Math.Max(decoder.DurationSeconds - decoder.FrameDuration * 0.5, 0);
 
-                    // The source's frame length: a known one is handed to the new decoder; the decoder's is taken only when known.
+                    // Frame duration: pass a known source value to the new decoder; adopt the decoder's only when it knows it.
                     if (source.FrameDurationKnown)
                         decoder.SeedFrameDuration(source.FrameDuration);
                     else if (decoder.FrameDurationKnown)
@@ -544,16 +536,15 @@ internal sealed partial class DecoderPool
             }
 
             Interlocked.Increment(ref _opens);
-            _arrived.Set(); // its first frame is in the cache now
+            _arrived.Set(); // first frame is now cached
             return decoder;
         }
         catch (Exception ex) when (ex is GpuException { IsDeviceLost: false } or DllNotFoundException or EntryPointNotFoundException)
         {
-            // A file Media Foundation cannot read (or no Media Foundation at all: a Windows N edition without its Media
-            // Feature Pack): not tried again until the client changes the entry. Solid, still and pattern layers still draw.
-            // A source that already decodes with another decoder is not failed for one more that would not open (a file
-            // busy for a moment): no more opens of it for a few seconds, its open decoders go on (5.0-Verify review: an
-            // export would otherwise leave the main video out from there on, its frames still counted exact).
+            // Unreadable by MF (or no MF at all, e.g. Windows N without the Media Feature Pack): not retried until the client changes
+            // the entry; solid, still and pattern layers still draw. A source already decoding elsewhere is not failed for one extra
+            // open that failed (file briefly busy): opens pause a few seconds while existing decoders continue (otherwise an export
+            // could silently drop the video while still counting its frames exact).
             lock (_gate)
             {
                 source.Opening = Math.Max(source.Opening - 1, 0);
@@ -577,13 +568,13 @@ internal sealed partial class DecoderPool
 
     private int _opens;
 
-    /// <summary>Decodes toward a demand, frame by frame, until its frame is there, it is taken back, or something more urgent waits.</summary>
+    /// <summary>Decodes toward a demand frame by frame until its frame is cached, the demand is withdrawn, or something more urgent waits.</summary>
     private void Work(int lane, Demand demand, MfVideoDecoder decoder)
     {
         var source = demand.Source;
         var target = demand.Target;
 
-        // A stretch that is all there already (frames stepped over, a chase that passed through it): nothing to do.
+        // Range already fully cached (stepped over, or a chase passed through it): nothing to do.
         if (demand.Stretch && _cache.Covers(source.Serial, demand.KeepFrom, target))
         {
             lock (_gate)
@@ -607,8 +598,8 @@ internal sealed partial class DecoderPool
         decoder.KeepingAhead = demand.Kind != DemandKind.Visible;
         WaitWhileDrawing();
 
-        // A far cut a cold play's window opened on while this lane waited (5.5A review): no seek for it; it stays a demand, taken up
-        // again by a later pick (the loop below gives way the same way once a read is under way).
+        // Far cut caught by a cold-play window that opened while this lane waited: no seek; it stays a demand for a later pick (the
+        // loop below yields the same way once a read is under way).
         lock (_gate)
         {
             if (HeldForColdPlay(demand))
@@ -618,8 +609,8 @@ internal sealed partial class DecoderPool
         decoder.Prepare(StartOf(demand, decoder, target));
         var frames = 0;
 
-        // Seeks made again for this target because the last one landed after it, because the reader had passed its frame, or (an
-        // export) because the decoder gave the frame after it and not it (reset when the demand moves).
+        // Re-seeks for this target: last seek landed after it, the reader passed its frame, or (export) the decoder returned the next
+        // frame instead (reset when the demand moves).
         var (lateTries, refetches, dropTries) = (0, 0, 0);
         while (true)
         {
@@ -632,8 +623,8 @@ internal sealed partial class DecoderPool
                 if (demand.Cancelled || source.Retired || _stopping.WaitOne(0))
                     return;
 
-                // A scrub moved the demand: forward within reach goes on, anything else starts again from its key frame
-                // (the seek itself made outside the lock: the renderer never waits on a file).
+                // Scrub moved the demand: continue if forward within reach, else restart from its key frame (seek outside the
+                // lock: the renderer never waits on file I/O).
                 if (Math.Abs(demand.Target - target) > 1e-6)
                 {
                     target = demand.Target;
@@ -644,18 +635,18 @@ internal sealed partial class DecoderPool
 
                 keepFrom = demand.KeepFrom;
 
-                // Idle work (5.4.4) gives way before every frame once the player moved or plays, and after each frame it decoded to anything
-                // else waiting (its first frame always: a pick that decoded nothing would only be picked again).
+                // Idle work yields before every frame once the player moves or plays, and after each decoded frame to anything else waiting
+                // (always after its first frame: a pick that decoded nothing would just be re-picked).
                 if (demand.Kind == DemandKind.Idle && (!IdleMayRunNow(countLanes: false) || frames > 0 && MoreUrgentWaiting(demand, decoder)))
                     return;
 
-                // A far cut's read gives way at once to a cold play's own frames (5.5A): it stays a demand, not done, and is taken up
-                // again where it stopped once the window closes or the cut comes within CutSoon.
+                // A far cut's read yields immediately to cold-play frames: it stays pending and resumes where it stopped once the window
+                // closes or the cut comes within CutSoon.
                 if (HeldForColdPlay(demand))
                     return;
 
-                // Something more urgent that no lane serves (and that this read does not pass on its way): give way, after
-                // at least a few frames, so nothing starves.
+                // Something more urgent that no lane serves (and this read will not pass): yield after at least a few frames so
+                // nothing starves.
                 if (frames >= 4 && demand.Rank > 0 && MoreUrgentWaiting(demand, decoder))
                     return;
             }
@@ -666,8 +657,8 @@ internal sealed partial class DecoderPool
             if (!demand.Stretch && _cache.Has(source.Serial, target))
                 break;
 
-            // The frame wanted is the one the reader stands on (read before, then let go of by the cache): reading on can
-            // never give it back, only a seek can (never the frame after it stretched over it).
+            // Wanted frame is the one the reader is on (read earlier, since evicted): reading on cannot return it, only a seek can
+            // (never stretch the next frame over it).
             if (!demand.Stretch && PassedOver(decoder, target, source) && refetches++ < 2)
             {
                 decoder.SeekTo(target);
@@ -678,13 +669,13 @@ internal sealed partial class DecoderPool
             if (demand.Stretch && !double.IsNaN(decoder.ReadTime) && decoder.ReadTime >= target - decoder.FrameDuration * 0.5)
                 break;
 
-            // A stretch keeps its frames from a hair before its first moment: the frame that shows that moment may end, as
-            // first read, a hair short of it (a container's millisecond clock: the frame of 86.2667 s is stamped 86.233 s
-            // and lasts 33.3 ms until the next one read says it reaches 86.267 s, FrameCache.CloseGap).
+            // Ranges keep frames from slightly before their start: the frame covering the start may initially end just short of it
+            // (millisecond container clock: the frame for 86.2667 s is stamped 86.233 s, lasting 33.3 ms until the next read extends
+            // it to 86.267 s, FrameCache.CloseGap).
             if (!decoder.Step(demand.Stretch ? keepFrom - StampHair : keepFrom, out var time, out var until))
             {
-                // The end of the stream: the last frame stands for every moment past it, and the source ends there (a
-                // container longer than its video: a moment past the last frame is asked for as the last frame).
+                // End of stream: the last frame covers every later time and the source ends there (container longer than its video:
+                // times past the last frame resolve to it).
                 if (decoder.AtEnd && !double.IsNaN(decoder.ReadTime))
                 {
                     lock (_gate)
@@ -703,13 +694,12 @@ internal sealed partial class DecoderPool
                 _arrived.Set();
             Pace(demand, decoder);
 
-            // Past the target without a frame that covers it (FrameCache.CloseGap already joined frames read in a row):
-            // - a seek that landed after it (a container's coarse index, an open GOP whose first pictures the decoder
-            //   drops): sought again from further back, 1, 2 then 4 s before its key frame;
-            // - else a frame or two the decoder dropped: the frame after stands for the moment;
-            // - else a hole in the stream: the moment is missing (shown with the nearest frame; an export fails on it and
-            //   is made by FFmpeg) and is not decoded for again for a while. Never a key frame stretched over frames
-            // nothing decoded (an export held each key frame).
+            // Past the target with no covering frame (FrameCache.CloseGap already joined consecutive frames):
+            // - seek landed after it (coarse container index, open GOP leading pictures dropped): re-seek 1, 2, then 4 s before its
+            //   key frame;
+            // - else the decoder dropped a frame or two: the next frame covers the time;
+            // - else a stream hole: the time is marked missing (nearest frame shown; export fails over to FFmpeg) and not retried
+            //   for a while. Never stretch a key frame over undecoded frames (an export would hold each key frame).
             if (!double.IsNaN(time) && time > target + 1e-6 && !demand.Stretch && !_cache.Has(source.Serial, target))
             {
                 if (decoder.LastWasLanding && lateTries < 3)
@@ -721,8 +711,8 @@ internal sealed partial class DecoderPool
                     continue;
                 }
 
-                // The frame before this one was the one wanted and the cache no longer has it (it was read but not kept, or
-                // let go of since): sought again. One still there would have been joined to this one (CloseGap): a hole.
+                // The previous frame was the wanted one and is no longer cached (read but not kept, or evicted): re-seek. Had it
+                // still been cached it would have been joined to this one (CloseGap), so this is a hole.
                 var passedIt = !double.IsNaN(before) && before <= target + 1e-6 && !_cache.Has(source.Serial, before);
                 if (passedIt && refetches++ < (_exactOnly ? 5 : 2))
                 {
@@ -730,14 +720,11 @@ internal sealed partial class DecoderPool
                     continue;
                 }
 
-                // An export never takes the next frame for one it passed: that frame exists, and the picture would be a frame
-                // out. It stays missing, the export fails on it, and FFmpeg makes it (the once-in-many-runs "held over" of
-                // gpu-export-every-frame, 5.1-TrackEqualityAndVram).
-                // Nor, at first, for one the decoder did not give (5.2C, the user's Q1: Media Foundation's HEVC on the Snapdragon gave
-                // the frame after a moment for it, twice in one game-style export, and that frame stood for it: two held frames, counted
-                // as stretches, no late landing): decoded again from a key frame 1, then 2 s further back (counted with the late landings: seeks
-                // made again from further back), so the moment is read in a run of frames rather than just after a seek; only then does
-                // the frame after stand for it (a frame the file lacks).
+                // Export never substitutes the next frame for one it passed: that frame exists and the picture would be one frame
+                // off. It stays missing and the export falls back to FFmpeg (rare "held over" in gpu-export-every-frame).
+                // Nor, initially, for a frame the decoder skipped (MF HEVC on ARM64 returned the following frame twice in one export,
+                // producing held frames): re-decode from a key frame 1, then 2 s further back (counted as re-seeks) so the time is read
+                // within a run of frames rather than right after a seek; only then does the next frame stand in (the file lacks it).
                 if (_exactOnly && !passedIt && dropTries < 2)
                 {
                     var key = decoder.KeyAtOrBefore(target);
@@ -767,7 +754,7 @@ internal sealed partial class DecoderPool
 
         lock (_gate)
         {
-            // The frame length as the frames space it (MfVideoDecoder.LearnSpacing), once known: what "the same frame" means from now on.
+            // Frame duration from observed spacing (MfVideoDecoder.LearnSpacing), once known: defines "the same frame" from now on.
             if (decoder.FrameDurationKnown)
                 (source.FrameDuration, source.FrameDurationKnown) = (decoder.FrameDuration, true);
             demand.Done = true;
@@ -783,17 +770,16 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Whether the reader stands on (has just read) the frame that shows <paramref name="target"/>, and that frame is no
-    /// longer in the cache: the next frame read comes after it. A frame still there says itself where it ends (and the next
-    /// frame read joins it, FrameCache.CloseGap).
+    /// True when the reader is on (just read) the frame covering <paramref name="target"/> and it is no longer cached, so further reads
+    /// come after it. A still-cached frame knows its own end (the next read joins it, FrameCache.CloseGap).
     /// </summary>
     private bool PassedOver(MfVideoDecoder decoder, double target, SourceState source) =>
         !double.IsNaN(decoder.ReadTime) && !decoder.AtEnd && decoder.ReadTime <= target + 1e-6 && target < decoder.ReadTime + decoder.FrameDuration * 0.98
         && !_cache.Has(source.Serial, decoder.ReadTime);
 
     /// <summary>
-    /// Whether a frame just decoded is one a visible demand waits for that this lane does not serve (one it reads through
-    /// on its way to its own target, ReadByAnotherLane): the renderer is woken for it as for its own.
+    /// True when a just-decoded frame satisfies a visible demand served by another lane (read through on the way to this lane's target,
+    /// ReadByAnotherLane): the renderer is woken for it as for its own.
     /// </summary>
     private bool ShownSoon(SourceState source, double time, double until)
     {
@@ -823,10 +809,9 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Whether a more urgent demand waits that no lane serves (under the lock): not one of this file that this lane's
-    /// read reaches on its way (the frame shown while it reads ahead is one it passes), nor one no decoder can come for
-    /// (its source at its most, each decoder kept where it is wanted: Pick passes it over) that could not take this
-    /// lane's either: giving way would only start this read again.
+    /// True when a more urgent unserved demand waits (under the lock), excluding ones this read will reach in this file (e.g. the visible
+    /// frame it passes while reading ahead) and ones no decoder can serve (source at its limit, decoders parked where wanted: Pick skips
+    /// them) that could not take this lane's decoder either: yielding would only restart this read.
     /// </summary>
     private bool MoreUrgentWaiting(Demand demand, MfVideoDecoder decoder)
     {
@@ -835,7 +820,7 @@ internal sealed partial class DecoderPool
             if (d.Lane >= 0 || d.Done || d.Cancelled || d.Rank >= demand.Rank || d.Source.Failed)
                 continue;
 
-            // A cut a cold play holds back (5.5A) is not waiting: no pick would take it, so nothing gives way to it.
+            // A cut held back by cold play is not waiting: no pick would take it, so nothing yields to it.
             if (HeldForColdPlay(d))
                 continue;
             if (d.Source == demand.Source && Delivers(demand, decoder, d.Target))
@@ -849,8 +834,8 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Where a lane starts decoding for a demand: the pre-roll from the first moment of its stretch not decoded yet
-    /// (forward from the decoder when the cache already holds the stretch up to it), the others from their target.
+    /// Decode start for a demand: pre-roll from the first undecoded time in its range (forward from the decoder when the range is cached up
+    /// to it); others from their target.
     /// </summary>
     private double StartOf(Demand demand, MfVideoDecoder decoder, double target)
     {
@@ -863,9 +848,8 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Makes room for one more decoder in the pool: the free ones used longest ago are closed, those parked where they are
-    /// wanted (at a visible layer's moment, at a cut's first frames waiting for the playhead) last of all (5.0-Release
-    /// review: the decoders of the soonest cuts, assigned first, were the first to go, and Space stuttered at them).
+    /// Makes room for one more decoder: closes least recently used free decoders, those parked where wanted (visible layer, cut first frames
+    /// awaiting the playhead) last (otherwise the soonest cuts' decoders, assigned first, were closed first and playback stuttered there).
     /// </summary>
     private void TrimToCapacity()
     {
@@ -886,10 +870,10 @@ internal sealed partial class DecoderPool
         DisposeBuried();
     }
 
-    /// <summary>Whether a decoder is parked where it is wanted: at a visible layer's moment, or at a cut's first frames waiting for the playhead (under the lock).</summary>
+    /// <summary>True when a decoder is parked where wanted: at a visible layer's time, or at a cut's first frames awaiting the playhead (under the lock).</summary>
     private bool ParkedWhereWanted(SourceState source, MfVideoDecoder decoder) => IsParkedAtVisible(decoder) || ParkedAtAnyCut(source, decoder);
 
-    /// <summary>Whether a decoder waits at the end of the first frames of any cut ahead of its source (under the lock; see ParkedAtCut).</summary>
+    /// <summary>True when a decoder waits at the end of the first frames of any upcoming cut of its source (under the lock; see ParkedAtCut).</summary>
     private bool ParkedAtAnyCut(SourceState source, MfVideoDecoder decoder)
     {
         var read = decoder.ReadTime;
@@ -905,10 +889,10 @@ internal sealed partial class DecoderPool
         return false;
     }
 
-    // Decoders let go of under the lock and disposed after it (a reader's teardown is the media pipeline's: never under _gate).
+    // Decoders released under the lock and disposed after it (reader teardown enters the media pipeline: never under _gate).
     private readonly List<MfVideoDecoder> _graveyard = [];
 
-    /// <summary>A source's idle decoders out of its list, to be disposed after the lock (under the lock).</summary>
+    /// <summary>Moves a source's idle decoders to the burial list for disposal after the lock (under the lock).</summary>
     private void BuryIdle(SourceState source)
     {
         for (var i = source.Decoders.Count - 1; i >= 0; i--)
@@ -921,7 +905,7 @@ internal sealed partial class DecoderPool
         }
     }
 
-    /// <summary>Disposes the decoders let go of (outside the lock).</summary>
+    /// <summary>Disposes buried decoders (outside the lock).</summary>
     private void DisposeBuried()
     {
         MfVideoDecoder[] buried;

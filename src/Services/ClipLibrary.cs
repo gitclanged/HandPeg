@@ -7,15 +7,13 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Services;
 
-// ----- The Personal Clip Library (Pass 5.2C) -----
+// ----- Personal Clip Library -----
 //
-// The user's own clips kept across projects (reactions, sound effects, highlights): Documents\HandPeg\Clips\, each clip a file of its own
-// and a line of clip-ledger.json beside them (its title, tags, length, where in the file it really starts and ends, and the focal point a
-// Ping-to-Mark highlight gave it). "Save Clip to Personal Clip Library..." on a clip's menu puts its span there as a lossless stream copy
-// (VodTrim's cut: from the key frame at or before its start, every stream; a sound file's from the packet at or before it; a picture is
-// copied whole): nothing is encoded again. The media browser's Clip Library lists them, searched by title and tags, scrubbed by
-// hovering, dragged into any project; a clip dropped from there starts and ends where it was saved (In / Out), not on the key frame
-// the copy had to begin with. The ledger is written whole through a ".part" file; one it cannot read is kept aside, never written over.
+// Cross-project reusable clips (reactions, SFX, highlights) in Documents\HandPeg\Clips\: one file per clip plus an entry in
+// clip-ledger.json (title, tags, duration, true In/Out within the file, Ping-to-Mark focal point). "Save Clip to Personal Clip
+// Library..." stores the span as a lossless stream copy (VodTrim cut from the preceding key frame, all streams; audio from the
+// preceding packet; images copied whole). The Media Browser lists, searches (title, tags), hover-scrubs and drags them; dropped clips
+// honour the saved In/Out, not the key-frame start. The ledger is written atomically via ".part"; unreadable ledgers are preserved.
 public static class ClipLibrary
 {
     public const string LedgerName = "clip-ledger.json", FormatName = "handpeg-clip-ledger";
@@ -48,17 +46,17 @@ public static class ClipLibrary
         /// <summary>How long the clip is (seconds: Out - In).</summary>
         public double Duration { get; set; }
 
-        /// <summary>Where the clip starts and ends in its file (seconds; the copy begins on a key frame at or before In).</summary>
+        /// <summary>In/Out within the file (s); the copy begins on a key frame at or before In.</summary>
         public double In { get; set; }
 
         public double Out { get; set; }
 
-        /// <summary>Where on the picture a Ping-to-Mark highlight in its span was pinged (fractions of the frame), when one was.</summary>
+        /// <summary>Optional Ping-to-Mark focal point (frame fractions).</summary>
         public double? FocalX { get; set; }
 
         public double? FocalY { get; set; }
 
-        /// <summary>The file it was cut from (its name only) and where in it (seconds), for the user's own reference.</summary>
+        /// <summary>Source file name (no path) and offset (s), informational only.</summary>
         public string? From { get; set; }
 
         public double FromSeconds { get; set; }
@@ -68,7 +66,7 @@ public static class ClipLibrary
         [JsonIgnore]
         public string Path => System.IO.Path.Combine(Folder, File);
 
-        /// <summary>Whether the entry answers a search: every word of it in the title or a tag (case aside); everything for none.</summary>
+        /// <summary>True when every query word appears in the title or a tag (case-insensitive); empty query matches all.</summary>
         public bool Matches(string search)
         {
             foreach (var word in search.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -88,7 +86,7 @@ public static class ClipLibrary
         public List<Entry> Clips { get; set; } = [];
     }
 
-    /// <summary>The library's clips whose files are there, newest first; none when there is no ledger (or one this version cannot read).</summary>
+    /// <summary>Clips with existing files, newest first; empty when the ledger is missing or unreadable.</summary>
     public static IReadOnlyList<Entry> Load()
     {
         lock (Gate)
@@ -152,9 +150,8 @@ public static class ClipLibrary
     }
 
     /// <summary>
-    /// Puts a clip's span into the library (see the top of this file): a stream copy of its file from <paramref name="mediaFrom"/> to
-    /// <paramref name="mediaTo"/> (its media seconds), its title, tags and focal point in the ledger. Null when it could not be cut
-    /// (no FFmpeg, a file that is not there, a cut that does not land on a key frame).
+    /// Saves a span (<paramref name="mediaFrom"/> to <paramref name="mediaTo"/>, media seconds) as a stream copy plus ledger metadata.
+    /// Null on failure (no FFmpeg, missing file, cut not on a key frame).
     /// </summary>
     public static Entry? Save(string source, bool hasPicture, bool isStill, double mediaFrom, double mediaTo, string title, IEnumerable<string> tags,
         double? focalX, double? focalY, CancellationToken cancel = default)
@@ -243,7 +240,7 @@ public static class ClipLibrary
         return name;
     }
 
-    // A sound file's stretch as a stream copy from the packet at or before its start: where that packet is (media seconds), or null.
+    // Audio stream copy from the packet at or before start; returns that packet's media time, or null.
     private static double? CutSound(string source, double from, double to, string target, CancellationToken cancel)
     {
         if (!System.IO.File.Exists(DependencyUpdater.FfmpegPath))

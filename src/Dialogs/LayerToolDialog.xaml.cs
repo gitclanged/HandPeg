@@ -6,19 +6,19 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-/// <summary>What of a clip the dialog sets.</summary>
+/// <summary>Clip aspect the dialog edits.</summary>
 public enum LayerTool
 {
-    /// <summary>Filters applied to this clip alone.</summary>
+    /// <summary>Per-clip filters.</summary>
     Filters,
 
-    /// <summary>The shape it is cut to.</summary>
+    /// <summary>Clip mask shape.</summary>
     Mask,
 }
 
 /// <summary>
-/// A clip's filters or its mask, opened from its right-click menu (where it sits on the frame is the Timeline's inspector strip, the Canvas and
-/// the menu's Transform, Sizing & Position). Bound straight to the clip, so every change is seen at once; what is changed is this clip's alone.
+/// Clip filters or mask editor from the context menu (placement lives in the Timeline inspector, Canvas and Transform, Sizing &amp;
+/// Position). Bound directly to the clip for live preview; changes affect only this clip.
 /// </summary>
 public partial class LayerToolDialog : Window
 {
@@ -26,7 +26,7 @@ public partial class LayerToolDialog : Window
     private readonly MainViewModel _viewModel;
     private readonly LayerTool _tool;
 
-    /// <summary>Set when the dialog was closed in order to mark the clip's area on the video again.</summary>
+    /// <summary>Set when closed to re-mark the clip's area on the video.</summary>
     public bool RedrawRequested { get; private set; }
 
     public LayerToolDialog(Layer layer, MainViewModel viewModel, LayerTool tool)
@@ -52,14 +52,13 @@ public partial class LayerToolDialog : Window
                 MaskPanel.Visibility = Visibility.Visible;
                 RedrawButton.Visibility = layer.IsVideo || viewModel.IsCutout(layer) ? Visibility.Visible : Visibility.Collapsed;
 
-                // A mask of the whole frame belongs to a Cutout of the video: other clips have no place in the frame to take it from.
+                // Full-frame masks apply only to video Cutouts; other clips have no source-frame mapping.
                 MaskFrameBox.Visibility = FrameMaskButtons.Visibility = MaskLayersButton.Visibility = layer.IsVideo ? Visibility.Visible : Visibility.Collapsed;
                 break;
         }
 
-        // The dialog's own Undo (4.3E): each press of the pointer or a key that changes what the shown controls are bound to
-        // (and the drawn mask's shapes, which buttons set) is a step. The whole visit is one step of the main window's Undo,
-        // taken as the dialog opens (MainWindow.OpenLayerTool).
+        // Dialog-local undo: each pointer/key press that changes bound values (or drawn mask shapes set by buttons) is a step. The
+        // whole visit is one main-window undo step, taken on open (MainWindow.OpenLayerTool).
         _undo = new BoundUndo(this, () => _tool == LayerTool.Mask ? [(_layer, nameof(Layer.MaskShapes))] : []);
         _undo.Changed += () => (UndoButton.IsEnabled, RedoButton.IsEnabled) = (_undo.CanUndo, _undo.CanRedo);
     }
@@ -86,13 +85,13 @@ public partial class LayerToolDialog : Window
         {
             (_layer.MaskPath, _layer.CustomMask, _layer.MaskShapes) = (dialog.FileName, true, "");
 
-            // A picture in the shape of the video is taken for a mask of the whole frame; anything else is stretched over the clip.
+            // A video-aspect image is treated as a full-frame mask; any other is stretched over the clip.
             if (_layer.IsVideo)
                 _layer.MaskFrame = IsFrameShaped(dialog.FileName);
         }
     }
 
-    // Whether a picture has the video's shape, to within a few percent: a mask made from a screenshot of it.
+    // Whether an image matches the video aspect within a few percent (e.g. a mask drawn on a screenshot).
     private bool IsFrameShaped(string path)
     {
         if (ImageInfo.GetSize(path) is not ({ } width, { } height) || width <= 0 || height <= 0)
@@ -102,7 +101,7 @@ public partial class LayerToolDialog : Window
         return Math.Abs((double)width / height / ((double)sourceWidth / sourceHeight) - 1) < 0.03;
     }
 
-    // Draw Custom Shape: the outlines become a mask of the whole frame, kept as the outlines alone (no picture file: 5.1-Release).
+    // Draw Custom Shape: outlines become a full-frame mask stored as vector outlines only (no image file).
     private void DrawShape_Click(object sender, RoutedEventArgs e)
     {
         var window = new MaskDrawWindow(_viewModel, _layer) { Owner = this };
@@ -156,7 +155,7 @@ public partial class LayerToolDialog : Window
         if (sender is not FrameworkElement { Tag: string name } || !Enum.TryParse<HudShape>(name, out var shape))
             return;
 
-        // Outlines only (5.2-Audit): nothing is written to the Masks folder. The shape is soft-edged, as its picture was.
+        // Outlines only; nothing is written to the Masks folder. Soft-edged as the former bitmap was.
         if (HudLibrary.Outline(shape) is not { } outline)
             return;
         (_layer.MaskPath, _layer.CustomMask, _layer.MaskFrame, _layer.MaskShapes) = ("", true, false, outline);

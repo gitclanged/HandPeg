@@ -16,25 +16,24 @@ using HandPegApp.ViewModels;
 namespace HandPegApp.Shell;
 
 /// <summary>
-/// The Live Encoded Preview on the player: the player bar's toggle and its flyout, the split wipe's handle, divider and pills, the
-/// Magnifier's pointer hook, and the engine told the export's settings (<see cref="MainViewModel.CurrentLoopbackSettings"/> to
-/// <see cref="GpuPreviewEngine.SetLoopback"/>), so the worker shows the frame as the export's encoder leaves it (D-02).
+/// Live Encoded Preview controller: player bar toggle and flyout, split-wipe handle/divider/pills, Magnifier pointer hook, and
+/// pushing export settings (<see cref="MainViewModel.CurrentLoopbackSettings"/> to <see cref="GpuPreviewEngine.SetLoopback"/>) so the
+/// worker shows frames as the export encoder produces them (D-02).
 /// </summary>
 /// <remarks>
-/// The window's thread only. The toggle is made with the bar's first layout (two buttons and an empty popup, the flyout on first
-/// opening: Law 1); the wipe and the status timer exist only while the preview is on, the Magnifier's hook only while the preview and
-/// the Magnifier are both on. The preview turns off when the 3D view opens, when the player goes away and when the window closes, and
-/// is never saved on.
+/// UI thread only. The toggle is built with the bar's first layout (popup empty, flyout built on first open: Law 1); the wipe and
+/// status timer exist only while on, the Magnifier hook only while both are on. Turns off on 3D view, player unload and window
+/// close; never persisted as on.
 /// </remarks>
 internal sealed class LoopbackPreviewController
 {
-    /// <summary>The preview's name wherever it is shown, and its glyph (Segoe MDL2's View).</summary>
+    /// <summary>Display name and glyph (Segoe MDL2 View).</summary>
     internal const string LoopbackName = "Live Encoded Preview", LoopbackGlyph = Glyphs.View;
 
-    // The pills' gap from the line, their top below the picture's, the room kept at the picture's right edge, and a pill's padding and border.
+    // Pill gap from the line, top offset, right-edge margin, and pill padding/border.
     internal const double WipePillGap = 10, WipePillTop = 14, WipePillEdge = 4, WipePillChrome = 16;
 
-    // A run of setting changes is gathered this long, then sent once (GpuPreviewEngine.SetLoopback encodes the paused frame again).
+    // Debounce for setting changes before one SetLoopback (which re-encodes the paused frame).
     private const int LoopbackSettingsGatherMs = 25;
 
     private readonly MainViewModel _viewModel;
@@ -53,25 +52,23 @@ internal sealed class LoopbackPreviewController
     private RadioButton[]? _loopbackModes;
     private Canvas? _loopbackWipeLayer;
 
-    // The player's zoom and pan undone for the wipe's layer (5.4.1A): PlayerOverlay carries the player's view matrix (ApplyPlayerView)
-    // for the boxes drawn in the picture's own coordinates, while the wipe is placed in the player's (PictureSpan already has the zoom
-    // and pan in it); without this the zoom moved the handle twice, and scaled it.
+    // Inverse of the player view transform for the wipe layer: PlayerOverlay applies the view matrix (ApplyPlayerView) for picture-space
+    // boxes, but the wipe is positioned in player space (PictureSpan already includes zoom/pan); without it zoom applied twice.
     private readonly MatrixTransform _loopbackWipeUnzoom = new();
 
-    // The two sides named on the picture (5.4.1-M1): RAW left of the line, ENCODED right of it, never taking the pointer.
+    // Side labels: RAW left of the line, ENCODED right; not hit-testable.
     private Border? _loopbackRawPill, _loopbackEncodedPill;
 
-    // The wipe's divider, drawn here too (5.4.4): the worker draws it only once an encoded picture is back, so with an encoder that
-    // failed or never answered the handle and pills stood over a picture with no line. Over the worker's own line, pixel for pixel.
+    // Divider drawn here as well, exactly over the worker's line: the worker only draws it once an encoded frame returns, so a failed
+    // encoder would otherwise leave handle and pills with no line.
     private Border? _loopbackDivider;
 
-    // 5.5A: the pills never vanish. They sit in a layer of their own (a 0x0 Canvas, the handle and divider outside it), clipped to the
-    // picture as the player shows it, so each slides off the picture's edge with the line; the ENCODED pill keeps its whole words
-    // while they fit right of the line and its first word ("ENCODED") when they do not.
+    // Pills are never hidden: they live in their own 0x0 Canvas (handle and divider outside it) clipped to the visible picture, so they
+    // slide off its edge with the line; ENCODED shows full text when it fits right of the line, else its first word.
     private Canvas? _loopbackPillLayer;
 
-    // The ENCODED pill's whole words (SetEncodedPill), and their pill's width at the display scale it was measured at (never the
-    // label's current text: once it can show the short words, that would flip between the two forms).
+    // Full ENCODED text (SetEncodedPill) and its measured width at a display scale; never derived from the label's current text, which
+    // would oscillate between full and short forms.
     private string _loopbackEncodedText = "ENCODED";
     private double _loopbackEncodedWidth = double.NaN, _loopbackEncodedWidthScale;
     private Border? _loopbackWipeHandle;
@@ -82,16 +79,16 @@ internal sealed class LoopbackPreviewController
     private int _loopbackTicks;
     private bool _loopbackPointerHooked;
 
-    /// <param name="viewModel">The window's view model (the preview's switches, modes and the export's settings).</param>
-    /// <param name="window">The window: its resources, its closing and its dispatcher.</param>
-    /// <param name="barSlot">The player bar's slot the toggle is made into the first time it shows.</param>
-    /// <param name="transportRow">The player bar's row (its BarToggle style).</param>
-    /// <param name="transportCenter">The bar's overflow strip (the toggle's entry in its More menu).</param>
-    /// <param name="explodedToggle">The 3D view's toggle: turning it on turns the preview off.</param>
-    /// <param name="overlay">The layer over the video (PlayerOverlay): the wipe's parent and the player's size in DIPs.</param>
-    /// <param name="video">The video surface (the Magnifier's pointer moves; unloaded for good turns the preview off).</param>
-    /// <param name="engine">The GPU engine now (null without one; a new one after a failure or a reload).</param>
-    /// <param name="exploded">Whether the window shows the 3D Exploded View.</param>
+    /// <param name="viewModel">Window VM (preview switches, modes, export settings).</param>
+    /// <param name="window">Owner window (resources, Closing, dispatcher).</param>
+    /// <param name="barSlot">Player bar slot the toggle is built into on first show.</param>
+    /// <param name="transportRow">Player bar row (BarToggle style source).</param>
+    /// <param name="transportCenter">Bar overflow strip (More menu entry).</param>
+    /// <param name="explodedToggle">3D view toggle; enabling it disables the preview.</param>
+    /// <param name="overlay">PlayerOverlay: wipe parent and player size in DIPs.</param>
+    /// <param name="video">Video surface (Magnifier pointer source; permanent unload disables the preview).</param>
+    /// <param name="engine">Current GPU engine accessor (null when absent; replaced after failure or reload).</param>
+    /// <param name="exploded">Whether the 3D Exploded View is shown.</param>
     public LoopbackPreviewController(MainViewModel viewModel, Window window, ContentControl barSlot, FrameworkElement transportRow, OverflowStrip transportCenter,
         ToggleButton explodedToggle, Grid overlay, VideoSurface video, Func<GpuPreviewEngine?> engine, Func<bool> exploded)
     {
@@ -99,7 +96,7 @@ internal sealed class LoopbackPreviewController
             (viewModel, window, barSlot, transportRow, transportCenter, overlay, video, engine, exploded);
         _settingsGather = new Debounce(TimeSpan.FromMilliseconds(LoopbackSettingsGatherMs), PushLoopbackSettings, DispatcherPriority.Input, _timers);
 
-        // Shown as the bar's settings say (PlaybackControlSet: a default since 5.4D); its content is made the first time it shows.
+        // Visibility per PlaybackControlSet (on by default); content built on first show.
         barSlot.SetBinding(UIElement.VisibilityProperty, new Binding("PlaybackControls[ExportQualityPreview]") { Converter = (IValueConverter)window.FindResource("BoolToVisibility") });
         barSlot.IsVisibleChanged += (_, e) =>
         {
@@ -117,7 +114,7 @@ internal sealed class LoopbackPreviewController
         };
         video.Unloaded += (_, _) => window.Dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
         {
-            // A dock laid out again moves the player (it is loaded again at once): only a player that stays gone turns the preview off.
+            // Dock relayouts unload/reload the player immediately; only a player that stays unloaded disables the preview.
             if (!_video.IsLoaded && _viewModel.IsExportQualityPreview)
                 _viewModel.IsExportQualityPreview = false;
         });
@@ -145,8 +142,8 @@ internal sealed class LoopbackPreviewController
                 SyncLoopbackLoupe();
                 break;
             case nameof(MainViewModel.IsPlaying):
-                // 5.5A: the ENCODED pill's words follow play and pause at once (a paused-only encoder's RAW WHILE PLAYING, its encoder
-                // again when paused), not up to a second later on the status tick. Only the pill: the flyout's status keeps its tick.
+                // Update the ENCODED pill immediately on play/pause (e.g. RAW WHILE PLAYING for paused-only encoders) rather than on
+                // the 1 s status tick; the flyout status keeps the tick.
                 if (_viewModel.IsExportQualityPreview && _loopbackSettings is { } playSettings && _engine() is { } playEngine)
                     SetEncodedPill(EncodedPillText(playSettings, playEngine.LoopbackStatus, _viewModel.IsPlaying));
                 break;
@@ -157,12 +154,12 @@ internal sealed class LoopbackPreviewController
         }
     }
 
-    // A setting changed: sent 25 ms after the last of a run of changes (5.4.4-Final), never more than once a gather.
+    // Setting change: send 25 ms after the last change in a burst, once per burst.
     private void GatherLoopbackSettings() => _settingsGather.Poke();
 
     /// <summary>
-    /// The Export tab's settings as they are now, to the engine (5.4.4-Final): the worker encodes the paused frame again from the scene it drew
-    /// (no layer drawn again), and the status and ENCODED pill say the new encoder and rate at once.
+    /// Pushes current Export settings to the engine; the worker re-encodes the paused frame from its cached scene (no re-render) and
+    /// the status and ENCODED pill update immediately.
     /// </summary>
     private void PushLoopbackSettings()
     {
@@ -173,7 +170,7 @@ internal sealed class LoopbackPreviewController
         UpdateLoopbackStatus();
     }
 
-    /// <summary>The preview's state to the engine: its settings (or off), what it shows, the wipe's handle and the status timer.</summary>
+    /// <summary>Applies preview state: engine settings (or off), display mode, wipe handle and status timer.</summary>
     private void ApplyLoopback()
     {
         var gpu = _engine();
@@ -210,8 +207,7 @@ internal sealed class LoopbackPreviewController
         SyncLoopbackLoupe();
     }
 
-    // A quarter second: the handle follows the player's zoom and pan; once a second the status is read again. An engine started again
-    // (a failure, Reload Player) is told the settings anew.
+    // 250 ms tick: handle tracks zoom/pan; status re-read each second; a restarted engine (failure, Reload Player) gets settings again.
     private void LoopbackTick()
     {
         if (!_viewModel.IsExportQualityPreview)
@@ -226,7 +222,7 @@ internal sealed class LoopbackPreviewController
             _loopbackEngine = gpu;
             gpu?.SetLoopback(_loopbackSettings);
             gpu?.SetLoopbackView(_viewModel.ExportQualityPreviewMode, _viewModel.ExportQualityPreviewWipe);
-            gpu?.SetLoopbackLoupe(null, null); // the next move over the player places it again
+            gpu?.SetLoopbackLoupe(null, null); // re-placed on the next pointer move over the player
         }
 
         PlaceLoopbackWipe();
@@ -274,8 +270,8 @@ internal sealed class LoopbackPreviewController
     }
 
     /// <summary>
-    /// The ENCODED pill's words (5.4.4-Final, the user's: the encoder and its rate, "ENCODED \u00B7 HEVC QSV \u00B7 12 Mbps", "ENCODED \u00B7 x264 veryslow \u00B7 CRF 22");
-    /// a stand-in on another card says so; a software encoder while playing says the picture is the plain one; else the state. Pure, for the golden test.
+    /// ENCODED pill text: encoder and rate, e.g. "ENCODED \u00B7 HEVC QSV \u00B7 12 Mbps", "ENCODED \u00B7 x264 veryslow \u00B7 CRF 22");
+    /// a cross-GPU stand-in is labelled; software encoders while playing show the raw picture; else the state. Pure (golden-tested).
     /// </summary>
     internal static string EncodedPillText(ExportLoopbackSettings settings, ExportLoopbackStatus status, bool playing) => status switch
     {
@@ -290,9 +286,8 @@ internal sealed class LoopbackPreviewController
         _ => "ENCODED",
     };
 
-    // The ENCODED pill names a failure too (5.4.4): what the flyout's status says, where the encoded picture should be. 5.5A: compared
-    // with the whole words kept (the label may show the short ones), and placed again at once, so new words never run past the picture
-    // for the 250 ms until the next placing. With no wipe yet, EnsureLoopbackWipe makes the pill with these words.
+    // ENCODED also reports failures (mirroring the flyout status). Compare against the stored full text (the label may be short) and
+    // re-place immediately so new text never overflows for a 250 ms tick. Without a wipe, EnsureLoopbackWipe creates it with this text.
     private void SetEncodedPill(string text)
     {
         if (text == _loopbackEncodedText)
@@ -308,8 +303,7 @@ internal sealed class LoopbackPreviewController
         if (_loopbackToggle is not null)
             return;
 
-        // 5.4D: the eye (View), the preview's own glyph (5.4.1A: the one canonical encode preview; Render Preview is retired). 5.4.4: the
-        // row's own toggle look (TransportRow's BarToggle: Segoe MDL2 13, as tall as the Timeline's tools), it and its arrow one pair.
+        // Eye glyph (View) in the row's BarToggle style (Segoe MDL2 13, Timeline-tool height), paired with its dropdown arrow.
         var barToggle = (Style)_transportRow.Resources["BarToggle"];
         _loopbackToggle = new ToggleButton
         {
@@ -322,7 +316,7 @@ internal sealed class LoopbackPreviewController
         AutomationProperties.SetName(_loopbackToggle, LoopbackName);
         _loopbackToggle.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(MainViewModel.IsExportQualityPreview)) { Mode = BindingMode.TwoWay });
 
-        // An Audio Only file (5.4C) has no picture to preview: greyed out, as the Export tab's toggle is.
+        // Disabled for Audio Only output, matching the Export tab toggle.
         _loopbackToggle.SetBinding(UIElement.IsEnabledProperty, new Binding(nameof(MainViewModel.IsVideoExport)));
         ToolTipService.SetShowOnDisabled(_loopbackToggle, true);
 
@@ -338,7 +332,7 @@ internal sealed class LoopbackPreviewController
         };
         AutomationProperties.SetName(more, LoopbackName + " Options");
 
-        // Law 1 (5.4D): the popup is made empty; its flyout is made the first time it opens.
+        // Law 1: create the popup empty; build its flyout on first open.
         var flyout = new Popup { StaysOpen = false, AllowsTransparency = true };
         flyout.SetBinding(Popup.IsOpenProperty, new Binding(nameof(ToggleButton.IsChecked)) { Source = more, Mode = BindingMode.TwoWay });
         more.Checked += (_, _) =>
@@ -355,7 +349,7 @@ internal sealed class LoopbackPreviewController
         _barSlot.Content = row;
         AutomationProperties.SetName(_barSlot, LoopbackName);
 
-        // In the bar's More menu when the row has no room for it.
+        // Overflow entry in the bar's More menu.
         var before = _transportCenter.MenuEntryFor;
         _transportCenter.MenuEntryFor = child => ReferenceEquals(child, _barSlot)
             ? (_viewModel.IsExportQualityPreview ? LoopbackName + " (On)" : LoopbackName, () => _viewModel.IsExportQualityPreview = !_viewModel.IsExportQualityPreview)
@@ -379,7 +373,7 @@ internal sealed class LoopbackPreviewController
             panel.Children.Add(choice);
         }
 
-        // 5.4D (Q10 b): the loupe follows the pointer over the picture, as it does while an edge slider is held.
+        // The loupe follows the pointer over the picture (as during edge-slider drags).
         var magnifier = new CheckBox
         {
             Content = "Magnifier (Loupe)",
@@ -425,17 +419,17 @@ internal sealed class LoopbackPreviewController
         if (_loopbackWipeLayer is not null)
             return;
 
-        // A grip in the middle of the line the worker draws; the line itself is in the picture. The layer takes nothing but the handle.
+        // Grip centred on the worker-drawn line; only the handle is hit-testable on this layer.
         var handle = _loopbackWipeHandle = UiBrushes.WipeHandle("Drag: the source on the left, the encoded picture on the right.", LoopbackName + " Wipe");
         handle.MouseLeftButtonDown += (_, e) =>
         {
             handle.CaptureMouse();
-            _engine()?.SetLoopbackLoupe(null, null); // no Magnifier while the wipe is dragged
+            _engine()?.SetLoopbackLoupe(null, null); // hide the Magnifier during wipe drags
             e.Handled = true;
         };
         handle.MouseMove += (_, e) =>
         {
-            // The same span and formula as the handle's place and the worker's line (5.4.1A, GpuPreviewEngine.WipeAt / WipeLineX).
+            // Same span and formula as the handle and the worker line (GpuPreviewEngine.WipeAt / WipeLineX).
             var (viewWidth, viewHeight) = LoopbackViewSize();
             if (!handle.IsMouseCaptured || _engine() is not { } engine || viewWidth < 1)
                 return;
@@ -453,8 +447,8 @@ internal sealed class LoopbackPreviewController
         _loopbackRawPill = WipePill("RAW");
         _loopbackEncodedPill = WipePill(_loopbackEncodedText);
 
-        // 5.5A: the pills' own layer, a 0x0 Canvas at the layer's origin: never ClipToBounds (that would clip everything), only the
-        // picture's Clip (ApplyWipePills), so the handle and the divider are not clipped with them. Z-order: divider, pills, handle.
+        // Pill layer: 0x0 Canvas at the origin, clipped by the picture Clip (ApplyWipePills), not ClipToBounds (which would clip all),
+        // so handle and divider stay unclipped. Z-order: divider, pills, handle.
         _loopbackPillLayer = new Canvas { IsHitTestVisible = false };
         _loopbackPillLayer.Children.Add(_loopbackRawPill);
         _loopbackPillLayer.Children.Add(_loopbackEncodedPill);
@@ -467,10 +461,8 @@ internal sealed class LoopbackPreviewController
     }
 
     /// <summary>
-    /// The handle over the line: where the wipe stands across the picture as the player shows it; only in the wipe's mode. The line's
-    /// place is the worker's own formula (WipeLineX over PictureSpan, which is SceneRenderer.Letterbox), and the handle's edge is rounded
-    /// to a device pixel, not a DIP (1.5 pixels at 150 %), so its middle stays on the 2-pixel line. The window calls it when the player's
-    /// zoom, pan or size changes.
+    /// Positions the wipe handle (wipe mode only) using the worker's formula (WipeLineX over PictureSpan = SceneRenderer.Letterbox),
+    /// rounding edges to device pixels (not DIPs; 1.5 px at 150 %) so it stays centred on the 2 px line. Called on player zoom, pan or resize.
     /// </summary>
     public void PlaceLoopbackWipe()
     {
@@ -498,11 +490,11 @@ internal sealed class LoopbackPreviewController
         Canvas.SetLeft(_loopbackWipeHandle, Math.Round((x - _loopbackWipeHandle.Width / 2) * scale) / scale);
         Canvas.SetTop(_loopbackWipeHandle, 0);
 
-        // The pills: 10 DIPs either side of the line, 14 below the picture's top (or the player's, the picture zoomed past it).
+        // Pills: 10 DIPs either side of the line, 14 below the visible picture top.
         var picture = gpu.PictureRect(viewWidth, viewHeight);
         var (_, top, _, height) = picture;
 
-        // The divider (5.4.4): always with the handle, 2 device pixels wide on the worker's line, the picture's height within the player.
+        // Divider: shown with the handle, 2 device px on the worker line, spanning the visible picture height.
         if (_loopbackDivider is { } divider)
         {
             var (from, to) = (Math.Max(top, 0), Math.Min(top + height, viewHeight));
@@ -511,9 +503,8 @@ internal sealed class LoopbackPreviewController
             Canvas.SetLeft(divider, (Math.Round(x * scale) - 1) / scale);
             Canvas.SetTop(divider, from);
         }
-        // 5.5A: both pills always shown with the layer, slid off the picture's edge by its clip (the picture within the player); the
-        // ENCODED pill's whole words measured from the words kept (5.4.4-Final: the encoder and its rate), shortened where they would
-        // pass the picture's visible right edge.
+        // Both pills always visible with the layer, clipped at the picture edge; ENCODED width measured from its full text, shortened
+        // when it would pass the visible right edge.
         if (_loopbackRawPill is { } raw && _loopbackEncodedPill is { Child: TextBlock words } encoded && _loopbackPillLayer is { } pills)
         {
             raw.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
@@ -525,7 +516,7 @@ internal sealed class LoopbackPreviewController
 
     private static readonly SolidColorBrush PillFill = UiBrushes.Frozen(0xCC, 0x18, 0x18, 0x1C), PillEdge = UiBrushes.Frozen(0x38, 0x38, 0x42);
 
-    // A small dark pill naming one side of the wipe (5.4.1-M1): semi-bold caps, no hit testing. Internal for the golden (5.5A).
+    // Dark side-label pill: semi-bold caps, not hit-testable. Internal for goldens.
     internal static Border WipePill(string text) => new()
     {
         IsHitTestVisible = false,
@@ -537,16 +528,15 @@ internal sealed class LoopbackPreviewController
         Child = new TextBlock { Text = text, FontSize = 10, FontWeight = FontWeights.SemiBold, Foreground = UiBrushes.PictureInk },
     };
 
-    /// <summary>Where the wipe's pills go (5.5A): RAW's and ENCODED's left edges, their top, whether ENCODED shows its short words, and
-    /// the pills' clip (the picture within the player). Every value is on a device pixel.</summary>
+    /// <summary>Pill placement: RAW and ENCODED left edges, top, whether ENCODED is shortened, and the clip rect (visible picture);
+    /// all device-pixel aligned.</summary>
     internal readonly record struct WipePillPlan(double RawLeft, double EncodedLeft, double Top, bool EncodedShort, Rect Clip);
 
     /// <summary>
-    /// The pills placed for a wipe line at <paramref name="lineX"/> (5.5A). Pure, for the golden. <paramref name="picture"/> is
-    /// GpuPreviewEngine.PictureRect (the overlay's un-zoomed DIPs, the zoom and pan in it); RAW ends <see cref="WipePillGap"/> left of the
-    /// line and ENCODED starts as far right of it, both always placed (never hidden): the clip, the picture within the player, slides
-    /// them off its edges. ENCODED keeps its whole words while they fit between the line and the picture's visible right edge (the
-    /// player's, the picture zoomed past it), less <see cref="WipePillEdge"/>; else the short ones.
+    /// Pure pill layout for a line at <paramref name="lineX"/> (golden-tested). <paramref name="picture"/> is GpuPreviewEngine.PictureRect
+    /// (overlay DIPs with zoom/pan applied). RAW ends <see cref="WipePillGap"/> left of the line, ENCODED starts that far right; both are
+    /// always placed and clipped by the visible picture. ENCODED uses full text if it fits before the visible right edge minus
+    /// <see cref="WipePillEdge"/>, else short text.
     /// </summary>
     internal static WipePillPlan PlanWipePills(double lineX, (double Left, double Top, double Width, double Height) picture,
         double viewWidth, double viewHeight, double rawWidth, double encodedFullWidth, double scale)
@@ -556,17 +546,17 @@ internal sealed class LoopbackPreviewController
         var (left, top) = (Math.Max(picture.Left, 0), Math.Max(picture.Top, 0));
         var (right, bottom) = (Math.Min(picture.Left + picture.Width, viewWidth), Math.Min(picture.Top + picture.Height, viewHeight));
 
-        // The Point/Point form: a picture wholly off the player would give a negative size, which Rect refuses.
+        // Point/Point constructor: a picture fully off-player would yield a negative size, which Rect(x, y, w, h) rejects.
         var clip = right > left && bottom > top ? new Rect(new Point(Snap(left), Snap(top)), new Point(Snap(right), Snap(bottom))) : new Rect(0, 0, 0, 0);
         var room = right - WipePillEdge - (lineX + WipePillGap);
         return new(Snap(lineX - WipePillGap - rawWidth), Snap(lineX + WipePillGap), Snap(top + WipePillTop), !(encodedFullWidth <= room), clip);
     }
 
     /// <summary>
-    /// The ENCODED pill's words where the whole ones do not fit (5.5A): the words before the first " \u00B7 " ("ENCODED \u00B7 HEVC QSV \u00B7
+    /// Short ENCODED pill text when the full text does not fit: the part before the first " \u00B7 " ("ENCODED \u00B7 HEVC QSV \u00B7
     /// 12 Mbps" -> "ENCODED", "RAW WHILE PLAYING \u00B7 x264 veryslow" -> "RAW WHILE PLAYING"), "ENCODER FAILED" without its code, the others
-    /// ("NO ENCODER", "NO DECODER", "NO LOOPBACK", "ENCODED") unchanged. 5.5A review: an encoder still starting shortens to "STARTING", not
-    /// "ENCODED" (nothing is encoded yet: the right side is the plain picture). The flyout and the Export tab's status keep the whole story. Pure.
+    /// ("NO ENCODER", "NO DECODER", "NO LOOPBACK", "ENCODED") unchanged; a starting encoder shortens to "STARTING" (nothing encoded yet).
+    /// The flyout and Export tab status keep the full text. Pure.
     /// </summary>
     internal static string ShortEncodedPillText(string text)
     {
@@ -576,16 +566,15 @@ internal sealed class LoopbackPreviewController
         return cut > 0 ? text[..cut] : text.StartsWith("ENCODER FAILED", StringComparison.Ordinal) ? "ENCODER FAILED" : text;
     }
 
-    /// <summary>A pill's width for these words (5.5A): its TextBlock's own font at a display scale, plus the pill's padding and border.</summary>
+    /// <summary>Pill width for a text: TextBlock font metrics at a display scale plus padding and border.</summary>
     internal static double PillWidth(TextBlock words, string text, double pixelsPerDip) =>
         new FormattedText(text, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
             new Typeface(words.FontFamily, words.FontStyle, words.FontWeight, words.FontStretch), words.FontSize, Brushes.White, null,
             TextOptions.GetTextFormattingMode(words), pixelsPerDip > 0 && double.IsFinite(pixelsPerDip) ? pixelsPerDip : 1).WidthIncludingTrailingWhitespace + WipePillChrome;
 
     /// <summary>
-    /// The plan applied to the pills (5.5A; static, for a golden on real elements): their places, ENCODED's whole or short words, and
-    /// the pills' layer clipped to the plan's rectangle (a frozen geometry, made again only when the rectangle moves: a zoom, a resize).
-    /// Never touches Visibility: the pills show whenever the wipe's layer does.
+    /// Applies a pill plan to real elements (static for goldens): positions, ENCODED full/short text, and the layer clip (frozen
+    /// geometry rebuilt only when the rect changes). Never changes Visibility.
     /// </summary>
     internal static void ApplyWipePills(Canvas pills, Border raw, Border encoded, WipePillPlan plan, string encodedText)
     {
@@ -605,18 +594,17 @@ internal sealed class LoopbackPreviewController
     }
 
     /// <summary>
-    /// The player's size for the wipe and the Magnifier alike (5.4.1A: one element for both): the layer over the video (PlayerOverlay),
-    /// whose window is the native window's pixels exactly, so its DIPs are the worker's output pixels over the display's scale, as the
-    /// pointer's are (VideoSurface.PointerMoved); the surface's own layout size is those pixels before rounding (1601 DIPs at 125 % are
-    /// 2001 pixels, not 2001.25), which a zoomed picture would carry to well over a pixel. The Color Studio's split wipe uses it too.
+    /// Player size for wipe, Magnifier and Color Studio split: PlayerOverlay, whose DIPs map exactly to the native window's pixels (as
+    /// VideoSurface.PointerMoved does). The surface's layout size is pre-rounding (1601 DIPs at 125 % = 2001 px, not 2001.25), an error
+    /// that zoom would amplify past a pixel.
     /// </summary>
     public (double Width, double Height) LoopbackViewSize() => (_overlay.ActualWidth, _overlay.ActualHeight);
 
-    // ----- The Magnifier (5.4D, Q10 b): the loupe round the point under the pointer -----
+    // ----- Magnifier (pointer loupe) -----
 
     /// <summary>
-    /// The pointer hook on while the preview and its Magnifier are both on (nothing is listened to otherwise, and nothing before Frame 1:
-    /// both start off but for the saved Magnifier, and the preview is never on at a start); off, the engine's loupe put away.
+    /// Attaches the pointer hook only while both preview and Magnifier are on (never before Frame 1; the preview always starts off);
+    /// otherwise detaches and hides the engine loupe.
     /// </summary>
     private void SyncLoopbackLoupe()
     {
@@ -634,8 +622,8 @@ internal sealed class LoopbackPreviewController
             _engine()?.SetLoopbackLoupe(null, null);
     }
 
-    // The pointer over the player (VideoView's DIPs, null: it left) to the engine as fractions of the output, through the picture's
-    // rectangle as the player shows it (its zoom and pan): none off the picture, in the 3D view, or while the wipe is dragged.
+    // Forwards the pointer (VideoView DIPs; null on leave) as output fractions via the zoomed picture rect; none when off-picture, in
+    // 3D view, or during a wipe drag.
     private void LoopbackPointerMoved(Point? at)
     {
         if (_engine() is not { } engine)

@@ -7,18 +7,18 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Export Presets (Pass 5.4B: the Encoding Presets and the Easy Social Export cards of 4.2B-2, one system) -----
-// One list (Presets: ExportPresetCatalog's built-ins, then the user's own), one selector grouped "Platform & Social", "Studio & Archive",
-// "My Presets" (PresetsView), and one way of applying a pick: its export settings only (ApplyExportPreset). Game Presets own the
-// layout, the looks and the captions; a project's settings and a Smart Rule's preset are still applied whole (ApplyPreset).
-// Also here: the automatic bitrate VBR starts with (EffectiveBitrateKbps) and the loudness Normalize aims at.
+// ----- Export Presets -----
+// One list (Presets: ExportPresetCatalog built-ins, then custom), one selector grouped "Platform & Social", "Studio & Archive",
+// "My Presets" (PresetsView), and one apply path touching export settings only (ApplyExportPreset). Game Presets own layout, looks
+// and captions; project settings and Smart Rule presets still apply whole (ApplyPreset). Also: VBR auto bitrate
+// (EffectiveBitrateKbps) and the Normalize loudness target.
 public partial class MainViewModel
 {
     private ListCollectionView? _presetsView;
 
     /// <summary>
-    /// The Export Presets selector's list: <see cref="Presets"/> grouped by <see cref="EncodingPreset.Group"/> (the built-ins' two groups
-    /// first, as they come first, then "My Presets"). Made when first asked for (the Export tab is made at idle, Law 1).
+    /// Export Presets selector view: <see cref="Presets"/> grouped by <see cref="EncodingPreset.Group"/> (built-in groups, then "My
+    /// Presets"). Created lazily (the Export tab is built at idle, Law 1).
     /// </summary>
     public ICollectionView PresetsView
     {
@@ -35,9 +35,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Sets the export as an Export Preset says, and nothing else (D-Q2): the picture's size (a "p" size on the short side of the
-    /// Sequence's frame, a user's own preset as it was saved, a chat's short side capped, never above the Sequence's), the frame rate,
-    /// the encoder (a codec it prefers on this PC's hardware first), its step, the quality or bitrate, the sound, the container and Web Optimized. No clip, look, crop or caption is touched.
+    /// Applies an Export Preset to export settings only: size ("p" = Sequence short side; custom presets as saved; chat short-side cap,
+    /// never above the Sequence), frame rate, encoder (preferred hardware codec first), speed preset, quality/bitrate, audio, container
+    /// and Web Optimized. Clips, looks, crops and captions are untouched.
     /// </summary>
     public void ApplyExportPreset(EncodingPreset preset)
     {
@@ -47,7 +47,7 @@ public partial class MainViewModel
         CustomPixelAspectRatio = preset.CustomPixelAspectRatio;
         var found = ApplyEncodingPart(preset);
 
-        // A target size is the preset's alone: one that names none leaves the bitrate to be typed, or the automatic one.
+        // Target size comes only from the preset; none leaves a typed or automatic bitrate.
         if (string.IsNullOrWhiteSpace(preset.TargetFileSize) && preset.IsBuiltIn)
             TargetFileSize = "";
         var sizeMb = double.TryParse(preset.TargetFileSize, NumberStyles.Float, CultureInfo.InvariantCulture, out var mb) ? mb : 0;
@@ -57,8 +57,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The encoder a preset asks for on this PC: a hardware encoder of the first codec it prefers that this PC has
-    /// (<see cref="EncodingPreset.PreferredCodec"/>, "hevc,h264"), else the encoder it names, else the one selected (Found false then).
+    /// Resolves a preset's encoder: first available hardware encoder for <see cref="EncodingPreset.PreferredCodec"/> ("hevc,h264"),
+    /// else its named encoder, else the current one (Found = false).
     /// </summary>
     private (EncoderOption Encoder, bool Found) ResolveEncoder(EncodingPreset preset)
     {
@@ -72,10 +72,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// An Export Preset's picture: both sides named, exactly that size (turned so its shape is the frame's: a 9:16 preset on a 16:9
-    /// Sequence is Use Vertical Resolution, on a 9:16 one it is not); one side named, a "p" size on the short side of the Sequence's
-    /// frame (turned only by the preset's own Use Vertical Resolution); none, the Sequence's own size. Then a chat's short-side cap. A user's own preset is applied as it was saved (5.4A's rule):
-    /// its Keep Aspect Ratio and Use Vertical Resolution, its sides as stored, a blank one completed from the shape.
+    /// Preset output size: both sides = exact (orientation via Use Vertical Resolution relative to the Sequence); one side = "p" size on
+    /// the Sequence short side (rotated only by the preset's flag); none = Sequence size; then the chat short-side cap. Custom presets
+    /// apply as saved (Keep Aspect Ratio, Use Vertical Resolution, stored sides; a blank side derived from the aspect).
     /// </summary>
     private void ApplyPresetPicture(EncodingPreset preset)
     {
@@ -121,14 +120,12 @@ public partial class MainViewModel
         }
         else
         {
-            // The preset's own shape first, and the boxes cleared, so the frame read below is the Sequence's as this preset stands it,
-            // never one an earlier pick left turned or sized.
+            // Apply this preset's orientation and clear the size boxes first so the frame read below never inherits an earlier pick.
             _syncingDimensions = true;
             try
             {
-                // 5.4D: a preset that names no shape (Match Project — Master Quality, the "p" sizes) keeps the Sequence's: the turn an
-                // earlier preset made is undone, the project's own (a vertical project) never (it used to fall to false and lay a
-                // vertical project on its side).
+                // Orientation-neutral presets (Match Project, "p" sizes) undo an earlier preset's rotation but never the project's own
+                // (defaulting to false used to turn vertical projects sideways).
                 if (preset.UseVerticalResolution is { } shape)
                     TurnForPreset(shape);
                 else if (_turnBeforePreset is { } own)
@@ -142,7 +139,7 @@ public partial class MainViewModel
             SetOutputSize("", "");
             if (width.Length > 0 || height.Length > 0)
             {
-                // "1080p" is the short side, whichever way the frame stands.
+                // "1080p" is the short side in either orientation.
                 var side = width.Length > 0 ? width : height;
                 if (FrameHeight > FrameWidth)
                     SetOutputSize(side, "");
@@ -157,11 +154,11 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(FrameHeight));
     }
 
-    // The Sequence's turn as it was before an Export Preset turned it (5.4D): what a preset that names no shape goes back to. Forgotten
-    // when the user turns it by hand, and whenever a Sequence is put in place (another tab, an open, a New Project).
+    // Sequence orientation before a preset rotated it, restored by orientation-neutral presets. Cleared on manual rotation and on any
+    // Sequence swap (tab switch, open, New Project).
     private bool? _turnBeforePreset;
 
-    /// <summary>Turns the frame as a preset asks, remembering the Sequence's own turn the first time a preset changes it.</summary>
+    /// <summary>Applies a preset's orientation, saving the Sequence's own on the first preset change.</summary>
     private void TurnForPreset(bool vertical)
     {
         if (vertical != UseVerticalResolution)
@@ -171,7 +168,7 @@ public partial class MainViewModel
             _turnBeforePreset = null;
     }
 
-    /// <summary>The short side of the frame held at <paramref name="cap"/> pixels (never above the Sequence's own short side); 0 for no cap.</summary>
+    /// <summary>Caps the short side at <paramref name="cap"/> px (never above the Sequence's); 0 = no cap.</summary>
     private void CapShortSide(int cap)
     {
         if (cap <= 0)
@@ -190,8 +187,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A size this long a timeline cannot meet (the video held at its lowest bitrate is still too much), said with the preset that asked
-    /// for it. Empty when the size is met, or none was asked for.
+    /// Warning when the preset's target size is unreachable for this duration even at the minimum bitrate; empty when achievable or
+    /// unset.
     /// </summary>
     private string TooLongForSize(double sizeMb)
     {
@@ -205,16 +202,16 @@ public partial class MainViewModel
             $" This timeline is too long for under {sizeMb:0.#} MB: the file will be about {megabytes:0} MB. Cut it shorter, or pick a larger size.");
     }
 
-    // ----- The automatic bitrate (5.4B, D-Q1) -----
+    // ----- Automatic bitrate -----
 
     /// <summary>
-    /// The video bitrate in force, in kbps: the one typed (or worked out from a typed target size), else the automatic one from the output's
-    /// size and frame rate (<see cref="AutoBitrateKbps"/>). What the encoder is given in VBR and CBR, and what the Export Quality Preview reads.
+    /// Effective video kbps: typed (or derived from a typed target size), else <see cref="AutoBitrateKbps"/> from output size and fps.
+    /// Used for VBR/CBR encodes and the Export Quality Preview.
     /// </summary>
     public int EffectiveBitrateKbps =>
         int.TryParse(TargetBitrate, NumberStyles.Integer, CultureInfo.InvariantCulture, out var typed) && typed > 0 ? typed : AutoBitrate();
 
-    /// <summary>Under the Target Bitrate box while it is empty and a bitrate mode is chosen: the automatic bitrate and what it is worked out from.</summary>
+    /// <summary>Hint under an empty Target Bitrate box in bitrate modes: the auto bitrate and its inputs.</summary>
     public string AutoBitrateText =>
         IsBitrateMode && TargetBitrate.Trim().Length == 0
             ? string.Create(CultureInfo.InvariantCulture, $"Automatic: {AutoBitrate():N0} kbps for {FrameWidth} x {FrameHeight} at {FormatNumber(AutoBitrateRate())} fps. Type a bitrate or a size to set your own.")
@@ -225,9 +222,8 @@ public partial class MainViewModel
     private double AutoBitrateRate() => GetOutputFrameRate() is > 0 and var fps ? fps : Document.FrameRate.IsValid ? Document.FrameRate.Fps : 30;
 
     /// <summary>
-    /// A VBR target that keeps a picture of this size and rate clean (the platforms' upload advice): 5 Mbps at 720p30, 8 at 1080p30, 16 at
-    /// 1440p30, 35 at 2160p30, in between by the number of pixels; half as much again above 30 fps (12 Mbps at 1080p60, 53 at 2160p60),
-    /// twice as much above 60; a quarter more for HDR. Rounded to 500 kbps.
+    /// VBR target from platform upload guidance: 5/8/16/35 Mbps at 720p/1080p/1440p/2160p30, interpolated by pixel count; x1.5 above
+    /// 30 fps (12 Mbps 1080p60, 53 Mbps 2160p60), x2 above 60 fps, x1.25 for HDR. Rounded to 500 kbps.
     /// </summary>
     internal static int AutoBitrateKbps(int width, int height, double fps, bool hdr)
     {
@@ -253,15 +249,15 @@ public partial class MainViewModel
         return (int)Math.Clamp(Math.Round(kbps / 500) * 500, 500, 400_000);
     }
 
-    // ----- Normalize's target (5.4B, D9) -----
+    // ----- Normalize loudness target -----
 
-    /// <summary>The loudness Normalize aims at, in LUFS: -16 (the default, EBU R128 for the web) or -14 (the streaming platforms').</summary>
+    /// <summary>Normalize target in LUFS: -16 (default, EBU R128 web) or -14 (streaming platforms).</summary>
     [ObservableProperty] private int _loudnessTarget = (int)Services.Audio.ExportSoundPlan.TargetLufs;
 
-    /// <summary>The two targets offered: their LUFS value and their words.</summary>
+    /// <summary>Offered targets: LUFS value and label.</summary>
     public IReadOnlyList<LabeledChoice<int>> LoudnessTargets { get; } =
         [new(-16, "-16 LUFS (default)"), new(-14, "-14 LUFS (streaming platforms)")];
 
-    /// <summary>A target as a preset or project stores it (0 for the default) made one of the two offered.</summary>
+    /// <summary>Normalizes a stored target (0 = default) to one of the offered values.</summary>
     private static int NormalizeLoudness(int value) => value == -14 ? -14 : -16;
 }

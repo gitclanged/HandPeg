@@ -4,39 +4,39 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Compositor;
 
-// ----- The Export Quality Preview's encoder and decoder (Pass 5.4B): Media Foundation transforms driven by hand -----
+// ----- Live Encoded Preview codecs: manually driven Media Foundation transforms -----
 //
-// The export's codec, as a hardware encoder transform of this PC has it, at the export's rate control and bitrate, and the decoder
-// that reads its bitstream back (ExportLoopbackPreview). No FFmpeg in the worker (Law 4: FFmpeg only encodes and muxes an export).
-// The encoder takes NV12 in the computer's memory, as FFmpeg's h264_mf does, so any card's encoder works; the decoder writes into
-// a texture of the worker's own device where it can (D3D11-aware), else into memory that is uploaded.
+// The export codec as a hardware encoder MFT at the export's rate control and bitrate, plus the decoder that reads the bitstream back
+// (ExportLoopbackPreview); software encoders go through FfmpegLoopbackEncoder. The encoder takes system-memory NV12 (like FFmpeg's
+// h264_mf), so any adapter's encoder works; the decoder writes into a texture on the worker's device when D3D11-aware, else into memory
+// that is uploaded.
 
 /// <summary>
-/// What the loopback is made for: the codec's subtype, the encoded size, the clock and the rate control; 5.4.4-Final: the preset's quality
-/// against speed, 10-bit, the encoder's family (ExportLoopbackSettings.Family: whose card's encoder) and a software encoder's FFmpeg arguments.
+/// Loopback configuration: codec subtype, encoded size, frame rate and rate control, plus preset quality vs. speed, 10-bit, encoder family
+/// (ExportLoopbackSettings.Family: which vendor's encoder) and software encoder FFmpeg arguments.
 /// </summary>
 internal readonly record struct LoopbackConfig(Guid Codec, int Width, int Height, double Fps, int RateControl, int BitrateKbps, int Quality,
     int QualityVsSpeed = 50, bool TenBit = false, int Family = 0, string SoftwareArguments = "");
 
 /// <summary>
-/// An encoder of the loopback (5.4.4-Final): a hardware transform (<see cref="MfEncoderMft"/>) or a software encoder run through FFmpeg one
-/// frame at a time (<see cref="FfmpegLoopbackEncoder"/>). Frames go in as NV12 (or P010) samples in memory, bitstream samples come out.
+/// A loopback encoder: a hardware MFT (<see cref="MfEncoderMft"/>) or a software encoder run through FFmpeg one frame at a time
+/// (<see cref="FfmpegLoopbackEncoder"/>). Input is system-memory NV12 (or P010) samples; output is bitstream samples.
 /// </summary>
 internal interface ILoopbackEncoder : IDisposable
 {
-    /// <summary>What the preview is an approximation by (the transform's friendly name, or "libx264 (FFmpeg)").</summary>
+    /// <summary>Encoder name shown on the preview (MFT friendly name, or "libx264 (FFmpeg)").</summary>
     string Name { get; }
 
-    /// <summary>The encoder is on the card its family names (QuickSync on the Intel card...), or is the software encoder asked for.</summary>
+    /// <summary>True when on the adapter its family names (e.g. QuickSync on the Intel adapter), or when it is the requested software encoder.</summary>
     bool OnAskedCard { get; }
 
-    /// <summary>It encodes paused frames only (a software encoder: one frame takes it tens to thousands of milliseconds).</summary>
+    /// <summary>True when it encodes paused frames only (software encoders: tens to thousands of ms per frame).</summary>
     bool PausedOnly { get; }
 
-    /// <summary>It takes 10-bit frames (P010 in): the samples handed to it are P010.</summary>
+    /// <summary>True when it accepts 10-bit input: submitted samples are P010.</summary>
     bool TakesP010 { get; }
 
-    /// <summary>How long a paused frame may be in it before it is given up on.</summary>
+    /// <summary>Maximum time a paused frame may stay in the encoder before it is given up.</summary>
     int GiveUpMs { get; }
 
     void SetQualityVsSpeed(int value);
@@ -51,8 +51,8 @@ internal interface ILoopbackEncoder : IDisposable
 }
 
 /// <summary>
-/// A hardware encoder transform (asynchronous, as every hardware one is): its events read without waiting on the worker's thread
-/// (no callback object), one input per METransformNeedInput, one output per METransformHaveOutput.
+/// Hardware encoder MFT (asynchronous, as all hardware MFTs are): events polled without waiting on the worker thread (no callback object),
+/// one input per METransformNeedInput, one output per METransformHaveOutput.
 /// </summary>
 internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
 {
@@ -65,15 +65,15 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
     private uint _qualityVsSpeed;
     private readonly bool _qualityVsSpeedModifiable;
 
-    /// <summary>The transform's friendly name (what the preview is an approximation by).</summary>
+    /// <summary>MFT friendly name shown on the preview.</summary>
     public string Name { get; }
 
-    /// <summary>Whether it is on the card the export's encoder family names (its LUID's), or a stand-in found on another card.</summary>
+    /// <summary>True when on the adapter (LUID) named by the export's encoder family; false for a stand-in on another adapter.</summary>
     public bool OnAskedCard { get; private init; }
 
     public bool PausedOnly => false;
 
-    /// <summary>Whether its input is P010 (10-bit export, and the transform took it); else NV12.</summary>
+    /// <summary>True when input is P010 (10-bit export accepted by the MFT); else NV12.</summary>
     public bool TakesP010 { get; private init; }
 
     public int GiveUpMs => 2000;
@@ -88,10 +88,9 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
     }
 
     /// <summary>
-    /// The places an encoder of the family is looked for, in order (5.4.4-Final, the user's: the exact encoder the Export tab chose): QuickSync,
-    /// AMF and NVENC on their vendor's card (MFTEnum2 narrowed to its LUID), then the compositor's card, then any card; Media Foundation and
-    /// Auto on the compositor's card, then any card. Each with the LUID to narrow to (0: any card) and whether it is the card asked for.
-    /// Pure, for the golden test.
+    /// Encoder search order for a family (matching the Export tab's selected encoder): QuickSync, AMF and NVENC on their vendor's adapter
+    /// (MFTEnum2 filtered by LUID), then the compositor adapter, then any; Media Foundation and Auto on the compositor adapter, then any. Each
+    /// entry has the LUID filter (0 = any) and whether it is the requested adapter. Pure; used by goldens.
     /// </summary>
     internal static List<(long Luid, bool Asked, string Where)> SearchOrder(int family, long compositorLuid, string compositorName, IReadOnlyList<HandPegApp.Services.GpuAdapter> cards)
     {
@@ -106,9 +105,9 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
     }
 
     /// <summary>
-    /// The first hardware encoder of the codec that takes the settings, looked for where <see cref="SearchOrder"/> says (5.4.4-Final: the
-    /// family's own card first). Null with <see cref="ExportLoopbackState.NoEncoder"/> when there is none, or <see cref="ExportLoopbackState.Failed"/>
-    /// and the HRESULT when none started.
+    /// First hardware encoder for the codec that accepts the settings, searched per <see cref="SearchOrder"/> (family's adapter first). Null
+    /// with <see cref="ExportLoopbackState.NoEncoder"/> when none exists, or <see cref="ExportLoopbackState.Failed"/> and the HRESULT when
+    /// none started.
     /// </summary>
     public static MfEncoderMft? Create(GpuDevice gpu, in LoopbackConfig config, int qualityVsSpeed, IReadOnlySet<string> refused, out ExportLoopbackState state, out int hresult)
     {
@@ -161,7 +160,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
                     var encoder = TryStart(activate, config, qualityVsSpeed, asked, out var failed);
                     if (encoder is not null)
                     {
-                        activates[i] = 0; // kept by the encoder (shut down and let go with it)
+                        activates[i] = 0; // owned by the encoder (shut down and released with it)
                         state = ExportLoopbackState.Starting;
                         AppLog.Write($"Live Encoded Preview: {candidate} started {where}{(encoder.TakesP010 ? ", 10-bit (P010 in)" : config.TenBit ? ", 8-bit (it would not take 10-bit)" : "")}{(asked ? "" : " (a stand-in: not the card the export's encoder is on)")}.");
                         return encoder;
@@ -173,7 +172,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
             }
             finally
             {
-                // The array was null and the count 0 before the call; only an array the call gave is let go (HardwareBenchmark.CountMfts, 5.2E).
+                // Pointer and count were reset before the call; free only an array the call returned (see HardwareBenchmark.CountMfts).
                 if (activates is not null)
                 {
                     for (var i = 0; i < count; i++)
@@ -192,8 +191,8 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
         return null;
     }
 
-    // One transform activated and set up: rate control first (some drivers take it only before the types), the output type, then the
-    // input's, then streaming. Null and why when any step fails; a lost device is thrown (the worker starts again).
+    // Activates and configures one MFT: rate control first (some drivers accept it only before types), output type, input type, then
+    // streaming. Returns null with the HRESULT on failure; device loss throws (the worker restarts).
     private static MfEncoderMft? TryStart(nint activate, in LoopbackConfig config, int qualityVsSpeed, bool asked, out int failed)
     {
         failed = 0;
@@ -205,7 +204,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
             MfVideoDecoder.Beat?.Invoke();
             Check(hr, "IMFActivate::ActivateObject (encoder)");
 
-            // An asynchronous transform answers nothing until it is unlocked.
+            // Async MFTs ignore calls until unlocked.
             var attributes = Mf.TransformAttributes(transform);
             if (attributes != 0)
             {
@@ -237,8 +236,8 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
                 _ = Mf.SetCodecValue(codecApi, CodecApi.GopSize, (uint)Math.Clamp(Math.Round(config.Fps * 2), 1, 1000));
             }
 
-            // 10-bit (5.4.4-Final): Main10 out (HEVC; AV1's Main profile holds 10-bit as it is) and P010 in, where the transform takes them;
-            // else 8-bit, as before (H.264's High 10 is never asked of a hardware encoder: none of them has it).
+            // 10-bit: Main10 output (HEVC; AV1 Main already covers 10-bit) with P010 input where accepted; else 8-bit (H.264 High 10
+            // is never requested: no hardware encoder supports it).
             var (rateNumerator, rateDenominator) = Rate(config.Fps);
             var p010 = config.TenBit && config.Codec != MfGuids.H264
                        && SetOutputResult(transform, config, bits, rateNumerator, rateDenominator, withProfile: true, tenBit: true) >= 0
@@ -280,7 +279,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
     private static bool SetOutput(nint transform, in LoopbackConfig config, uint bits, uint numerator, uint denominator, bool withProfile) =>
         SetOutputResult(transform, config, bits, numerator, denominator, withProfile) >= 0;
 
-    // eAVEncH265VProfile_Main_420_10: HEVC's Main10, the 10-bit export's profile.
+    // eAVEncH265VProfile_Main_420_10: HEVC Main10 for 10-bit exports.
     private const uint HevcMain10 = 2;
 
     private static int SetOutputResult(nint transform, in LoopbackConfig config, uint bits, uint numerator, uint denominator, bool withProfile, bool tenBit = false)
@@ -308,7 +307,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
         }
     }
 
-    // NV12 (or P010) at the size and rate: the transform's own type of it where it lists one (it may carry what its driver wants), else one made here.
+    // NV12 (or P010) input at size and rate: prefer the MFT's own listed type (may carry driver-specific attributes), else build one.
     private static int SetInput(nint transform, in LoopbackConfig config, uint numerator, uint denominator, Guid wanted)
     {
         for (uint i = 0; i < 64; i++)
@@ -348,7 +347,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
         }
     }
 
-    /// <summary>A frame rate as Media Foundation's ratio: whole rates as n/1, the NTSC ones as n*1000/1001, others in thousandths.</summary>
+    /// <summary>Frame rate as an MF ratio: integer rates n/1, NTSC rates n*1000/1001, others in thousandths.</summary>
     internal static (uint Numerator, uint Denominator) Rate(double fps)
     {
         if (!(fps > 0) || !double.IsFinite(fps))
@@ -361,7 +360,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
         return ((uint)Math.Round(fps * 1000), 1000);
     }
 
-    /// <summary>The bitstream's sequence header (SPS/PPS and the like) as the encoder's output type has it once streaming; null if none.</summary>
+    /// <summary>Sequence header (SPS/PPS etc.) from the encoder's current output type once streaming; null when absent.</summary>
     public byte[]? SequenceHeader()
     {
         if (Mf.GetOutputCurrentType(_transform, 0, out var type) < 0)
@@ -377,8 +376,8 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
     }
 
     /// <summary>
-    /// Quality against speed while streaming, where the driver lets it change (a playing frame is encoded faster than a paused one,
-    /// as the export's preset would not be).
+    /// Updates quality vs. speed while streaming when the driver allows it (playing frames encode faster than paused ones, unlike the
+    /// export preset).
     /// </summary>
     public void SetQualityVsSpeed(int value)
     {
@@ -390,8 +389,8 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
     }
 
     /// <summary>
-    /// Hands a frame over (the sample is taken: let go here). It goes in at once when the encoder asked for input; else it waits, in
-    /// place of any frame that was waiting (the newest picture only, as the worker draws). <paramref name="forceKey"/>: a key frame.
+    /// Submits a frame (takes ownership of the sample). Fed immediately if the encoder requested input; otherwise it replaces any waiting
+    /// frame (newest picture only, matching the worker). <paramref name="forceKey"/> requests a key frame.
     /// </summary>
     public void Submit(nint sample, bool forceKey)
     {
@@ -402,7 +401,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
         Pump();
     }
 
-    /// <summary>A finished bitstream sample when the encoder has one (the caller lets it go); 0 when none is ready yet.</summary>
+    /// <summary>Returns a finished bitstream sample (caller releases it), or 0 when none is ready.</summary>
     public nint TryTakeOutput()
     {
         Pump();
@@ -430,7 +429,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
 
         if (hr == Mf.StreamChange)
         {
-            // The encoder's output type changed (rare): its own first listed type is taken, and the next output tried.
+            // Output type changed (rare): adopt the first listed type and retry on the next call.
             Com.Release(ref own);
             if (Mf.GetOutputAvailableType(_transform, 0, 0, out var type) >= 0)
             {
@@ -451,14 +450,13 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
     }
 
     /// <summary>
-    /// The encoder told to give out what it holds (a paused frame a driver keeps back for its look-ahead); new input waits until it
-    /// says it is done (METransformDrainComplete), and the stream then starts again. True once what went in last is drained or draining;
-    /// false while it has not gone in yet (asked again on the next look).
+    /// Drains the encoder (releases a paused frame held for look-ahead); new input waits for METransformDrainComplete, then the stream
+    /// restarts. True once the last input is drained or draining; false while it has not been fed yet (retried on the next poll).
     /// </summary>
     public bool Drain()
     {
-        // Not yet while the frame waits to go in (an earlier drain not done: it goes in after it, and is drained then); nothing to do
-        // when nothing went in since the last drain.
+        // Not while a frame waits to be fed (an earlier drain is pending; it is fed and drained afterwards); nothing to do when nothing
+        // was fed since the last drain.
         if (_waiting != 0)
             return false;
         if (_events == 0 || _inputsSinceDrain == 0)
@@ -470,12 +468,12 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
         return true;
     }
 
-    // The events queued (never waited for), then the waiting frame in when it may go.
+    // Processes queued events (never waits), then feeds the waiting frame when allowed.
     private void Pump()
     {
         if (_events == 0)
         {
-            // A synchronous transform (not expected of a hardware one): the frame goes in when it takes it.
+            // Synchronous MFT (unexpected for hardware): feed the frame when accepted.
             if (_waiting != 0)
             {
                 var hr = Mf.ProcessInput(_transform, 0, _waiting);
@@ -501,7 +499,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
                 switch (Mf.EventType(mediaEvent))
                 {
                     case Mf.EventNeedInput:
-                        // (Asked for while it drains: answered once the drain is done and the stream has started again.)
+                        // Requests during a drain are answered after the drain completes and the stream restarts.
                         if (!_draining)
                             _needInput++;
                         break;
@@ -509,7 +507,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
                         _haveOutput++;
                         break;
                     case Mf.EventDrainComplete:
-                        // Drained, the encoder is at the end of a stream: a new one starts, and it asks for input again.
+                        // Drained to end of stream: start a new stream; the encoder requests input again.
                         _ = Mf.ProcessMessage(_transform, Mf.MessageStartOfStream, 0);
                         (_draining, _needInput) = (false, 1);
                         break;
@@ -526,7 +524,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
             var hr = Mf.ProcessInput(_transform, 0, _waiting);
             if (hr == Mf.NotAccepting)
             {
-                // Not now after all: the frame waits for the next request.
+                // Rejected: keep the frame for the next request.
                 _needInput = 0;
                 return;
             }
@@ -538,7 +536,7 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
         }
     }
 
-    /// <summary>An empty sample with one buffer of <paramref name="bytes"/> in the computer's memory.</summary>
+    /// <summary>Creates an empty sample with one system-memory buffer of <paramref name="bytes"/>.</summary>
     internal static nint Sample(uint bytes)
     {
         nint sample, buffer;
@@ -557,10 +555,10 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
         return sample;
     }
 
-    /// <summary>An HRESULT failure as a GpuException (a lost device among them, which the worker answers by starting again).</summary>
+    /// <summary>Throws GpuException on HRESULT failure (including device loss, which restarts the worker).</summary>
     internal static void Check(int hresult, string what) => Com.Check(hresult, what);
 
-    // An attribute set where the transform takes it; one it refuses is no failure.
+    // Sets an attribute if supported; refusal is not a failure.
     internal static void TrySet(nint attributes, in Guid key, uint value)
     {
         try
@@ -595,9 +593,9 @@ internal sealed unsafe class MfEncoderMft : ILoopbackEncoder
 }
 
 /// <summary>
-/// The decoder of the loopback: a synchronous decoder transform (Windows' own H.264 one, the HEVC and AV1 Store extensions'), low
-/// latency so a frame comes out as soon as it went in, writing into the worker's device where it can. Its last picture is in
-/// <see cref="LumaSrv"/> / <see cref="ChromaSrv"/>, the encoded size (a decoder's padding, 1088 for 1080, left out).
+/// Loopback decoder: a synchronous decoder MFT (Windows' H.264, HEVC/AV1 Store extensions) in low-latency mode so each frame comes out as
+/// soon as it goes in, writing into the worker's device when possible. The last picture is in <see cref="LumaSrv"/> /
+/// <see cref="ChromaSrv"/> at the encoded size (decoder padding, e.g. 1088 for 1080, excluded).
 /// </summary>
 internal sealed unsafe class MfDecoderMft : IDisposable
 {
@@ -607,27 +605,27 @@ internal sealed unsafe class MfDecoderMft : IDisposable
     private bool _providesSamples;
     private uint _outputSize;
 
-    // Its output is P010 (a 10-bit stream, 5.4.4-Final): read through memory, each sample's top 8 bits (rounded) uploaded as the 8-bit planes.
+    // P010 output (10-bit stream): read through memory, each sample's top 8 bits (rounded) uploaded as 8-bit planes.
     private bool _p010;
     private byte[]? _eightBit;
 
-    // The decoded picture: one NV12 texture and its two views (from the card), or two plain textures (from memory).
+    // Decoded picture: one NV12 texture with two views (GPU output), or two plain textures (memory output).
     private GpuTexture? _nv12, _luma, _chroma;
     private nint _lumaSrv, _chromaSrv;
 
     public nint LumaSrv => _luma?.Srv ?? _lumaSrv;
     public nint ChromaSrv => _chroma?.Srv ?? _chromaSrv;
 
-    /// <summary>The sample time of the picture decoded last (100 ns units); -1 before the first.</summary>
+    /// <summary>Sample time of the last decoded picture (100 ns); -1 before the first.</summary>
     public long LastTime { get; private set; } = -1;
 
-    /// <summary>Whether the decoder writes into the worker's device (D3D11-aware), not into memory.</summary>
+    /// <summary>True when the decoder writes into the worker's device (D3D11-aware) rather than system memory.</summary>
     public bool OnCard { get; private set; }
 
     private MfDecoderMft(GpuDevice gpu, nint activate, nint transform, int width, int height) =>
         (_gpu, _activate, _transform, _width, _height) = (gpu, activate, transform, width, height);
 
-    /// <summary>The first decoder of the codec that opens; null with <see cref="ExportLoopbackState.NoDecoder"/> (none) or Failed and the HRESULT.</summary>
+    /// <summary>First decoder for the codec that opens; null with <see cref="ExportLoopbackState.NoDecoder"/> (none) or Failed and the HRESULT.</summary>
     public static MfDecoderMft? Create(GpuDevice gpu, Guid codec, int width, int height, double fps, byte[]? sequenceHeader, out ExportLoopbackState state, out int hresult)
     {
         (state, hresult) = (ExportLoopbackState.NoDecoder, 0);
@@ -705,7 +703,7 @@ internal sealed unsafe class MfDecoderMft : IDisposable
                 Com.Release(ref attributes);
             }
 
-            // On the worker's own device where the decoder can be (its pictures copied card to card), else in memory.
+            // Decode on the worker's device when supported (GPU-to-GPU copies), else into system memory.
             if (aware && MediaFoundation.DeviceManagerFor(gpu) is var manager and not 0)
                 decoder.OnCard = Mf.ProcessMessage(transform, Mf.MessageSetD3DManager, manager) >= 0;
 
@@ -752,8 +750,8 @@ internal sealed unsafe class MfDecoderMft : IDisposable
         }
     }
 
-    // NV12 out of the types the decoder lists (again after a stream change), and how its samples come. 5.4.4-Final: a 10-bit stream's decoder
-    // may list P010 alone (HEVC Main10): taken then, its pictures read through memory and brought to 8 bits (Upload), as the compare's planes are.
+    // Selects NV12 output from the decoder's listed types (again after a stream change) and records sample allocation. A 10-bit decoder may
+    // list only P010 (HEVC Main10): then pictures are read through memory and reduced to 8 bits (Upload) to match the compare planes.
     private int PickOutput()
     {
         var result = Mf.TypeNotSet;
@@ -794,8 +792,8 @@ internal sealed unsafe class MfDecoderMft : IDisposable
     }
 
     /// <summary>
-    /// One bitstream sample in (not let go here), and every picture it gives out read into the planes: true when at least one came
-    /// (its time in <see cref="LastTime"/>).
+    /// Feeds one bitstream sample (not released here) and reads every resulting picture into the planes; true when at least one arrived
+    /// (time in <see cref="LastTime"/>).
     /// </summary>
     public bool Decode(nint bitstream)
     {
@@ -812,9 +810,9 @@ internal sealed unsafe class MfDecoderMft : IDisposable
     }
 
     /// <summary>
-    /// A paused frame held back in the decoder (5.4.4-Final, the user's: its reorder buffer of one picture, the HEVC and AV1 extensions'):
-    /// MFT_MESSAGE_COMMAND_DRAIN, and every picture it then gives out read. True when one came. The decoder takes input again afterwards
-    /// (the next frame the loopback hands it is a key frame: ExportLoopbackPreview forces one after a drain).
+    /// Releases a paused frame held in the decoder's one-picture reorder buffer (HEVC and AV1 extensions) via MFT_MESSAGE_COMMAND_DRAIN and
+    /// reads every picture it outputs; true when one arrived. The decoder accepts input afterwards (ExportLoopbackPreview forces a key frame
+    /// after a drain).
     /// </summary>
     public bool DrainHeld()
     {
@@ -824,7 +822,7 @@ internal sealed unsafe class MfDecoderMft : IDisposable
         return Drain();
     }
 
-    // Every picture the decoder has ready.
+    // Reads every picture the decoder has ready.
     private bool Drain()
     {
         var got = false;
@@ -880,14 +878,14 @@ internal sealed unsafe class MfDecoderMft : IDisposable
         return got;
     }
 
-    // A decoded sample into the planes: its texture copied on the card, or its memory uploaded.
+    // Copies a decoded sample into the planes: GPU texture copy, or system-memory upload.
     private bool Read(nint sample)
     {
         if (Mf.GetBufferByIndex(sample, 0, out var buffer) < 0 || buffer == 0)
             return false;
         try
         {
-            // A P010 picture on the card is read through memory too (IMFMediaBuffer::Lock copies it out): the planes are 8-bit.
+            // P010 GPU pictures are also read through memory (IMFMediaBuffer::Lock copies out) since the planes are 8-bit.
             var dxgi = _p010 ? 0 : Com.Query(buffer, Iid.MfDxgiBuffer);
             if (dxgi != 0)
             {
@@ -933,7 +931,7 @@ internal sealed unsafe class MfDecoderMft : IDisposable
         _chromaSrv = _gpu.Device.CreateShaderResourceView(_nv12.Texture, &chroma);
     }
 
-    // A picture in memory: NV12 rows at the buffer's pitch, the chroma after the padded luma (the output type's frame size).
+    // Uploads a system-memory picture: NV12 rows at the buffer pitch, chroma after the padded luma (output type frame size).
     private bool Upload(nint buffer)
     {
         var paddedHeight = _height;
@@ -972,8 +970,8 @@ internal sealed unsafe class MfDecoderMft : IDisposable
 
             if (_p010)
             {
-                // 16-bit samples, the 10 bits at the top: each one's top 8 bits, rounded, into an NV12 frame of the encoded size (a pitch of
-                // a 2D buffer is in bytes; a plain one is twice the width).
+                // 16-bit samples with 10 bits at the top: take each top byte, rounded, into an encoded-size NV12 frame (2D buffer pitch is
+                // in bytes; a plain buffer's is twice the width).
                 var rowBytes = locked2D ? pitch : _width * 2;
                 _eightBit ??= new byte[_width * _height * 3 / 2];
                 fixed (byte* eight = _eightBit)
@@ -1004,7 +1002,7 @@ internal sealed unsafe class MfDecoderMft : IDisposable
         }
     }
 
-    /// <summary>A row of P010 samples (10 bits at the top of 16) as 8-bit ones: the top byte, rounded. Pure, for the golden test.</summary>
+    /// <summary>Converts a row of P010 samples (10 bits in the top of 16) to 8-bit by rounding the top byte. Pure; used by goldens.</summary>
     internal static void TopBytes(ushort* from, byte* to, int count)
     {
         for (var i = 0; i < count; i++)

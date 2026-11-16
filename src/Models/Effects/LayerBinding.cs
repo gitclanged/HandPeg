@@ -1,11 +1,9 @@
 namespace HandPegApp.Models.Effects;
 
 /// <summary>
-/// A property of the layer that an effect's parameter keeps its value in (<see cref="EffectParam.Bind"/>), read and
-/// written without reflection (Pass 4.3-0B): a number (a switch as 0 or 1, a whole number as itself) or a text. A
-/// parameter finds its binding once, when it is made, so the compositor's per-frame packets
-/// (<see cref="EffectInstance.EvaluateGpuPacket"/>) only call a delegate. A plugin's parameter can be bound only to a
-/// property listed here; one bound to another name is not bound and keeps its value on the card.
+/// Reflection-free accessor for a layer property backing an effect parameter (<see cref="EffectParam.Bind"/>): numeric (bool as 0/1,
+/// ints as-is) or text. Resolved once at parameter creation so per-frame packets (<see cref="EffectInstance.EvaluateGpuPacket"/>) just
+/// invoke a delegate. Plugin parameters may bind only to listed properties; unknown names stay unbound (value kept on the card).
 /// </summary>
 public sealed class LayerBinding
 {
@@ -55,7 +53,7 @@ public sealed class LayerBinding
 
     private static LayerBinding Words(string name, Func<Layer, string?> get, Action<Layer, string> set) => new(name, null, null, get, set);
 
-    // The key, the mask (with the three values a captured Mask card carries besides its parameters), the edges, the opacity and the shadow.
+    // Key, mask (plus the three extra values a captured Mask card carries), edges, opacity and shadow.
     private static readonly LayerBinding
         ChromaColor = Words(nameof(Layer.ChromaColor), static l => l.ChromaColor, static (l, v) => l.ChromaColor = v),
         ChromaSimilarity = Numeric(nameof(Layer.ChromaSimilarity), static l => l.ChromaSimilarity, static (l, v) => l.ChromaSimilarity = v),

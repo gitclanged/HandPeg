@@ -5,44 +5,39 @@ using System.Text.RegularExpressions;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Makes a piece of text fit for a crash report: nothing in it may tell who made it or what they were working on.
-/// Paths keep only their file's extension ("&lt;file&gt;.mkv"), addresses become "&lt;url&gt;", e-mail addresses
-/// "&lt;email&gt;", the Windows user name and the computer's name "&lt;user&gt;" and "&lt;machine&gt;" wherever they
-/// appear (inside other words too), environment expansions "&lt;env&gt;", and quoted strings (a title, a subtitle line,
-/// the words of a text layer, a path in quotes) "&lt;text&gt;". What is left is the code's own words and numbers.
+/// Scrubs PII from crash report text: paths keep only the extension ("&lt;file&gt;.mkv"), URLs become "&lt;url&gt;", e-mails
+/// "&lt;email&gt;", Windows user and machine names "&lt;user&gt;"/"&lt;machine&gt;" (also inside words), environment expansions
+/// "&lt;env&gt;", and quoted strings (titles, subtitle lines, text layers, quoted paths) "&lt;text&gt;". Only code identifiers and numbers remain.
 ///
-/// One static function, with no state but the names it strips (the user's, the computer's, and those of the files in
-/// use: <see cref="KeepOutFileName"/>), so that it can be tested on its own with names of the test's own (the table in
-/// the golden tests). It errs on the side of taking too much: a sentence cut short is a small loss, a name kept is not.
+/// Stateless apart from the stripped names (user, machine, open files via <see cref="KeepOutFileName"/>), so goldens can test it with
+/// their own names. Errs toward over-redaction.
 /// </summary>
 public static partial class CrashSanitizer
 {
-    /// <summary>The most a sanitized text keeps, in characters: a message, a breadcrumb or a context value is never an essay.</summary>
+    /// <summary>Maximum sanitized length in characters.</summary>
     public const int DefaultMaxLength = 2000;
 
-    // The placeholders are kept as private-use characters while the text is worked on, so that a later rule (the user
-    // name, say, when it is "file" or "text") can never match inside one; they become "<file>" and so on at the end.
+    // Placeholders are private-use markers during processing so later rules (e.g. a user named "file") cannot match inside them;
+    // expanded to "<file>" etc. at the end.
     private const char Open = '\uE000';
     private const char Close = '\uE001';
     private const char Numbers = '\uE010';
 
     private static readonly string[] Placeholders = ["file", "path", "url", "email", "env", "text", "user", "machine", "removed"];
 
-    /// <summary>Sanitizes <paramref name="text"/> with the names of this computer and its user, and of the files in use.</summary>
+    /// <summary>Sanitizes <paramref name="text"/> using this machine's user, machine and open-file names.</summary>
     public static string Sanitize(string? text, int maxLength = DefaultMaxLength) => Sanitize(text, CurrentNames(), maxLength);
 
     /// <summary>
-    /// Sanitizes <paramref name="text"/>, stripping <paramref name="names"/> wherever they appear, each with the
-    /// placeholder it becomes: "user" and "machine" for the user's and the computer's names, "file" for the name of a
-    /// file in use (without its folder or extension). Longest first. For tests, which pass names of their own.
+    /// Sanitizes <paramref name="text"/>, replacing each of <paramref name="names"/> with its placeholder ("user", "machine", or "file" for
+    /// an open file's base name), longest first. Test entry point.
     /// </summary>
     public static string Sanitize(string? text, IReadOnlyList<(string Name, string Placeholder)> names, int maxLength = DefaultMaxLength)
     {
         if (string.IsNullOrEmpty(text))
             return "";
 
-        // Control characters (a NUL from a fixed-size field, an escape sequence from a tool's output) go first; line
-        // breaks and tabs stay, as the rules below read lines.
+        // Strip control characters first (NULs, escape sequences), keeping line breaks and tabs for the line-based rules.
         var work = ControlCharacters().Replace(text, " ");
 
         // The two .NET wordings that name a parameter: the name is the code's, and worth keeping.
@@ -66,8 +61,7 @@ public static partial class CrashSanitizer
         // %USERPROFILE%, %APPDATA%, $env:TEMP: what they stand for is a path on this computer.
         work = EnvironmentExpansion().Replace(work, _ => Mark("env"));
 
-        // An ASS subtitle event: everything after its name is the line's words and timing. An SRT or WebVTT cue: the
-        // lines after its timing, to the blank line that ends it, are its words.
+        // ASS events: redact everything after the event name. SRT/WebVTT cues: redact lines after the timing up to the blank line.
         work = AssDialogue().Replace(work, m => m.Groups["head"].Value + " " + Mark("text"));
         work = CueTiming().Replace(work, m => m.Groups["timing"].Value + " " + Mark("text"));
 
@@ -78,8 +72,7 @@ public static partial class CrashSanitizer
         // the value, so that the words after it are not left outside the quotes.
         work = work.Replace(@"'\''", "", StringComparison.Ordinal);
 
-        // Quoted strings: a title, a subtitle line, a text layer's words, a path in quotes. An opening quote with no
-        // closing one (a field cut short) runs to the end of the line.
+        // Quoted strings (titles, subtitle lines, text layers, quoted paths); an unterminated quote runs to end of line.
         work = DoubleQuoted().Replace(work, m => Quoted(m.Value[1..].TrimEnd('"')));
         work = TypographicQuoted().Replace(work, m => Quoted(m.Value[1..].TrimEnd('”', '»', '’')));
         work = SingleQuoted().Replace(work, m => m.Groups["before"].Value + Quoted(m.Groups["inside"].Value));
@@ -92,28 +85,25 @@ public static partial class CrashSanitizer
         // A name with forward slashes that ends in an extension ("Videos/clip.mp4"; not "and/or" or "1920/1080").
         work = SlashedFileToken().Replace(work, m => FileToken(m.Value));
 
-        // The names of the files in use (see KeepOutFileName), wherever they are left: a message that names a file
-        // without its folder ("writing: Holiday 2024.mp4") keeps no word of it.
+        // Open-file base names (KeepOutFileName) anywhere, covering folder-less mentions ("writing: Holiday 2024.mp4").
         foreach (var (name, placeholder) in names)
         {
             if (placeholder == "file")
                 work = StripName(work, name, placeholder);
         }
 
-        // A file name after a colon, spaces and all ("did not finish writing: Holiday 2024.mp4"), then a bare one of
-        // the kinds people keep (a video, a picture, subtitles, a project).
+        // File names after a colon (spaces included), then bare media/project file names.
         work = ColonFileName().Replace(work, m => Mark("file") + "." + m.Groups["ext"].Value.ToLowerInvariant());
         work = BareFileName().Replace(work, m => Mark("file") + "." + m.Groups["ext"].Value.ToLowerInvariant());
 
-        // Last, the user's and the computer's names: wherever they are left, also inside other words.
+        // Finally, user and machine names anywhere, including inside other words.
         foreach (var (name, placeholder) in names)
         {
             if (placeholder != "file")
                 work = StripName(work, name, placeholder);
         }
 
-        // The placeholders are written out (and an FFmpeg quote that was not inside a quoted string is a quote again),
-        // and whitespace runs are folded so a cut leaves no ragged gaps.
+        // Expand placeholders, restore stray FFmpeg quote markers, and collapse whitespace runs.
         var result = Unmark(work).Replace("", @"'\''", StringComparison.Ordinal);
         result = SpaceRuns().Replace(result, " ").Trim();
         return result.Length <= maxLength ? result : result[..maxLength] + "...";
@@ -121,8 +111,7 @@ public static partial class CrashSanitizer
 
     // ----- The names of this computer and its user -----
 
-    // Read once: the user name, the name of the profile folder (which can differ from it), the computer's name and the
-    // domain the user signed in to (the computer's own name, or a work domain).
+    // Read once: user name, profile folder name (may differ), machine name, and logon domain (machine name or work domain).
     private static readonly Lazy<IReadOnlyList<(string Name, string Placeholder)>> LocalNames = new(() =>
     {
         var names = new List<(string, string)>();
@@ -139,9 +128,8 @@ public static partial class CrashSanitizer
             Add(System.IO.Path.GetFileName(System.IO.Path.TrimEndingDirectorySeparator(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))), "user");
             Add(Environment.MachineName, "machine");
 
-            // The full host name: the one above is cut to 15 characters, which would leave the rest of a longer one. And
-            // with its domain, for a computer in one ("studio-pc.corp.example.com"); the domain alone is not taken, as a
-            // short one ("lan", "home") would be taken out of every word that holds it.
+            // Full DNS host name (NetBIOS name is truncated to 15 chars) and FQDN; the bare domain is not stripped since short domains
+            // ("lan", "home") would corrupt unrelated words.
             Add(DnsName(ComputerNameDnsHostname), "machine");
             Add(DnsName(ComputerNameDnsFullyQualified), "machine");
             Add(Environment.UserDomainName, "machine");
@@ -156,27 +144,24 @@ public static partial class CrashSanitizer
         return names;
     });
 
-    // ----- The names of the files in use -----
+    // ----- Open file names -----
     //
-    // A path is taken out wherever it is written whole; a file's name written on its own ("writing: Holiday 2024.mp4")
-    // cannot be told from other words, except by knowing it. So HandPeg tells this class the names of the files it has
-    // open (CrashReporter.KeepOut: the main video, the layers', the project's, the output's), without their folders or
-    // extensions, and they are taken out like the user's name. A ring of the newest few, in memory only (the sentinel
-    // has the same names from the shared memory): never written anywhere.
+    // Full paths are detectable, but bare file names are not; callers register open files (CrashReporter.KeepOut: sources, project,
+    // output) by base name and they are stripped like the user name. In-memory ring of recent names (the sentinel mirrors them via
+    // shared memory); never persisted.
 
     /// <summary>How many file names are kept: the newest this many.</summary>
     public const int KeptFileNames = CrashSharedMemory.FileNameCount;
 
-    /// <summary>A name shorter than this identifies nothing ("01", "a") and would only blur the report: it is not kept.</summary>
+    /// <summary>Minimum registered name length; shorter names ("01", "a") are ignored.</summary>
     public const int ShortestFileName = 3;
 
     private static readonly string?[] FileNames = new string?[KeptFileNames];
     private static int _fileNamesKept;
 
     /// <summary>
-    /// Keeps a file's name (without its folder or extension) out of every text from now on. Returns the slot it went
-    /// into (so the caller can copy it into the shared memory), or -1 when it was kept already or is too short.
-    /// Lock-free; allocates nothing.
+    /// Registers a file base name for redaction. Returns its ring slot (for mirroring to shared memory) or -1 if duplicate or too short.
+    /// Lock-free and allocation-free.
     /// </summary>
     public static int KeepOutFileName(string name)
     {
@@ -228,10 +213,8 @@ public static partial class CrashSanitizer
     private static unsafe partial bool GetComputerNameExW(int nameType, char* buffer, ref uint size);
 
     /// <summary>
-    /// Takes a name out wherever it is: inside other words too when it is long enough not to be an everyday syllable
-    /// (three letters or more); a shorter one only where it stands as a word of its own. The one place it stays is
-    /// inside a name of the code's own (Microsoft.Win32.SafeHandles, System.IO, HandPegApp.Services...): a user called
-    /// "Sys" did not put "System" into a message, and taking it out would only blur the report.
+    /// Redacts a name: as a substring when 3+ letters, else whole-word only. Occurrences inside known code namespaces
+    /// (Microsoft.Win32, System.IO, HandPegApp.Services, ...) are kept.
     /// </summary>
     private static string StripName(string text, string name, string placeholder)
     {
@@ -243,7 +226,7 @@ public static partial class CrashSanitizer
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     }
 
-    /// <summary>Whether the text at <paramref name="index"/> is part of a dotted name from one of the code's own namespaces.</summary>
+    /// <summary>True when <paramref name="index"/> lies inside a dotted identifier from a known code namespace.</summary>
     private static bool IsInCodeName(string text, int index, int length)
     {
         static bool InName(char c) => char.IsLetterOrDigit(c) || c is '_' or '.' or '`';
@@ -261,11 +244,9 @@ public static partial class CrashSanitizer
     // ----- Paths -----
 
     /// <summary>
-    /// Every path that begins where <paramref name="starts"/> matches (a drive letter, a UNC start, the long-path
-    /// prefix, an environment expansion and a separator, a relative path's first word, a file:// address): it runs over
-    /// spaces to the end of its file name, which is the first "name.ext" after its last separator that is followed by
-    /// the end, a space or punctuation. With no such name, the whole run goes. <paramref name="replace"/> is given the
-    /// extension (null when there is none) and says what the path becomes.
+    /// Replaces every path starting at a <paramref name="starts"/> match (drive, UNC, long-path prefix, env expansion, relative word,
+    /// file:// URL), extending across spaces to the first "name.ext" after the last separator followed by end, space or punctuation (else
+    /// the whole run). <paramref name="replace"/> maps the extension (null if none) to the replacement.
     /// </summary>
     private static string StripRuns(string text, Regex starts, Func<string?, string> replace)
     {
@@ -293,15 +274,15 @@ public static partial class CrashSanitizer
         return builder is null ? text : builder.Append(text, at, text.Length - at).ToString();
     }
 
-    /// <summary>What a path becomes: "&lt;file&gt;.ext" when it ends in a file name with an extension, "&lt;path&gt;" otherwise.</summary>
+    /// <summary>Path replacement: "&lt;file&gt;.ext" with an extension, else "&lt;path&gt;".</summary>
     private static string PathPlaceholder(string? extension) => extension is null ? Mark("path") : Mark("file") + "." + extension;
 
     private static bool EndsPathRun(char c) => c is '"' or '\'' or ':' or '\r' or '\n' or '\t' or '<' or '>' or '|' or '*' or '?'
         or '\u201C' or '\u201D' or '\u2018' or '\u2019' or Open or Close or '\uE002';
 
     /// <summary>
-    /// Where the file name in a run ends (the run's length when it has none), and its extension (null when none). The
-    /// name is looked for after the last separator, so a folder with a dot in its name does not end the path early.
+    /// End index of the file name in a run (run length if none) and its extension (null if none), searched after the last separator so
+    /// dotted folder names do not end the path early.
     /// </summary>
     private static (int Length, string? Extension) FileNameEnd(string run)
     {
@@ -312,7 +293,7 @@ public static partial class CrashSanitizer
             : (run.Length, null);
     }
 
-    /// <summary>A token that is a path without a drive: "&lt;file&gt;.ext" when it ends in an extension, "&lt;path&gt;" otherwise.</summary>
+    /// <summary>Drive-less path token replacement: "&lt;file&gt;.ext" or "&lt;path&gt;".</summary>
     private static string FileToken(string token)
     {
         // Placeholders already in the token (a name taken out of it) stay out of the extension test.
@@ -321,9 +302,8 @@ public static partial class CrashSanitizer
     }
 
     /// <summary>
-    /// What a quoted string becomes: a path in quotes keeps its extension ("&lt;file&gt;.mkv"), a token of the code's
-    /// (lower case, with a digit or an underscore: 'libx265', 'h264_nvenc') stays as it is, and anything else, which could
-    /// be words from the media, is "&lt;text&gt;".
+    /// Quoted-string replacement: quoted paths become "&lt;file&gt;.ext"; code tokens (lower case with a digit or underscore: 'libx265',
+    /// 'h264_nvenc') are kept; anything else becomes "&lt;text&gt;".
     /// </summary>
     private static string Quoted(string inside)
     {
@@ -341,7 +321,7 @@ public static partial class CrashSanitizer
 
     private static string Mark(string placeholder)
     {
-        // A kept parameter name travels as "§name" between the markers: it is put back as it was.
+        // Kept parameter names are carried between markers and restored verbatim.
         if (placeholder.StartsWith('§'))
             return Open + placeholder + Close;
 
@@ -369,9 +349,8 @@ public static partial class CrashSanitizer
     [GeneratedRegex(@"\(Parameter '(?<name>[A-Za-z_][A-Za-z0-9_]{0,60})'\)")]
     private static partial Regex ParameterName();
 
-    // The wordings that are followed by a path or a name: what comes after them, to the end of the line, goes.
-    // ("Unable to find an entry point named 'x' in DLL '...'" is not one of them: the entry point is the code's, and the
-    // DLL's path is taken out as any quoted path is.)
+    // Prefixes followed by a path or name; the rest of the line is redacted. (Entry-point-not-found messages are excluded: the entry
+    // point is code, and the DLL path is handled as a quoted path.)
     [GeneratedRegex(@"(?<prefix>Could not find (?:file|a part of the path)|File not found:|Source not found:|Not an https address:|Could not load file or assembly|Unable to find(?! an entry point)|No such file or directory:?)[^\r\n]*", RegexOptions.IgnoreCase)]
     private static partial Regex NotFoundPrefix();
 
@@ -406,8 +385,7 @@ public static partial class CrashSanitizer
     [GeneratedRegex(@"(?<head>Dialogue:)[^\r\n]*", RegexOptions.IgnoreCase)]
     private static partial Regex AssDialogue();
 
-    // drawtext's text= and textfile=, metadata fields, a file named in an option: the value runs to the option's end
-    // (an unquoted value may hold spaces: "text=Happy Birthday:x=10").
+    // Option values (drawtext text=/textfile=, metadata, file options) run to the option end; unquoted values may contain spaces.
     [GeneratedRegex(@"(?<![A-Za-z0-9_])(?<key>text|textfile|title|comment|artist|album|album_artist|author|composer|description|lyrics|show|episode_id|filename|file|fontfile|language)=(?![\uE000'""\u201C\u2018])(?:\\.|[^:,;\]\r\n\\'""])+", RegexOptions.IgnoreCase)]
     private static partial Regex TextOption();
 
@@ -417,8 +395,8 @@ public static partial class CrashSanitizer
     [GeneratedRegex(@"[\u201C\u00AB\u2018][^\u201D\u00BB\u2019\r\n]*(?:[\u201D\u00BB\u2019]|$)", RegexOptions.Multiline)]
     private static partial Regex TypographicQuoted();
 
-    // A single quote opens a quoted string only where a word does not run into it (so "can't" and "the user's" are
-    // left alone), and closes one only where no word follows it.
+    // A single quote opens only when not preceded by a word character (so "can't" and "it's" are untouched) and closes only when not
+    // followed by one.
     [GeneratedRegex(@"(?<before>^|[\s=(\[{:,;])'(?<inside>[^\r\n]*?)(?:'(?![\p{L}\p{N}])|$)", RegexOptions.Multiline)]
     private static partial Regex SingleQuoted();
 
@@ -427,8 +405,8 @@ public static partial class CrashSanitizer
     [GeneratedRegex(@"(?<![\p{L}\p{N}])(?:\\\\[?.]\\(?:[A-Za-z]:\\|UNC\\)?|[A-Za-z]:[\\/]|\\\\[^\s\\/]|//[A-Za-z0-9][^\s/]*/)|" + EnvMark + @"[\\/]")]
     private static partial Regex PathStart();
 
-    // "<env>" as it is marked while the text is worked on (Mark("env"): the open marker, Numbers + its index in
-    // Placeholders, the close marker), for PathStart. Keep it in step with Placeholders.
+    // Marked form of "<env>" (Mark("env"): open marker, Numbers + index in Placeholders, close marker) used by PathStart; keep in sync
+    // with Placeholders.
     private const string EnvMark = "";
 
     // Where a relative path starts: the beginning of a word that has a backslash in it before any character a path
@@ -440,8 +418,7 @@ public static partial class CrashSanitizer
     [GeneratedRegex(@"\bfile:(?:/{1,3}|\\\\)(?:[A-Za-z]:)?", RegexOptions.IgnoreCase)]
     private static partial Regex FileUrlStart();
 
-    // A file name's extension where it ends: one to six letters or digits, then the end, a space, closing punctuation,
-    // or a full stop or comma at the end of a sentence.
+    // Extension: 1-6 alphanumerics followed by end, space, closing punctuation, or sentence-ending period/comma.
     [GeneratedRegex(@"\.(?<ext>[A-Za-z0-9]{1,6})(?=$|[\s)\]},;!]|[.,](?:\s|$))")]
     private static partial Regex ExtensionAtEnd();
 

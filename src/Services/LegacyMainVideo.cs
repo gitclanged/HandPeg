@@ -4,30 +4,24 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Services;
 
-// ----- The main video, converted once as a project of 5.1 is opened (5.2-AuditB; back in the app since 5.2E) -----
-// 5.2-AuditB wrote this for the app; 5.2-Arm64AndNpu made it the golden tests' alone and refused a 5.1 project instead, which left
-// every 5.1.0 user's projects unopenable. Since 5.2E (the user's answer) the app converts such a project again as
-// it is opened (MainViewModel.ConvertLegacy), and the window writes the converted project over its own file, under the same name
-// (MainViewModel.WriteBackConverted); the golden tests' 4.2.0-shaped fixtures (LegacyFixtures) still reach the current model through
-// it, so every export golden stays what it was, to the byte. What follows is 5.2-AuditB's account of it, unchanged.
+// ----- One-time conversion of legacy main-video projects -----
+// Run on open (MainViewModel.ConvertLegacy); the window then overwrites the file (MainViewModel.WriteBackConverted). Golden
+// fixtures (LegacyFixtures) also pass through it, keeping export goldens byte-identical.
 //
-// Until 5.2-AuditB one file was "the main video": its clips (kind MainVideo) were read as one chain on the lowest track that
-// held one (TimelineLowering's CanRide: visible, video stream 0, its own sound or none, speed 1, the opened file), placed by the
-// Center controls' box (CenterRect), cut by the first clip's crop, sized the Sequence by that crop, drew the blurred background
-// under everything, and were heard through the opened file's streams as the Audio tab mixed them (AudioTracks: a gain, filters,
-// ducking, a voice, a slip and silenced pieces each, on the file's container clock). Cut-outs of it (kind Video) showed that
-// chain's picture at each moment. None of that is privileged now: every video clip reads its own file at its own offset, with
-// its own look, blur fill, Cutouts and Sub-Lanes. This turns a document of the old kinds into one of the new, once, in place
-// (no undo step), so that nothing after it ever meets the old kinds, and so that what it plays is what it played: the same
-// boxes, crops, moments of the file and Cutout pictures (the lowering's arithmetic, done once here), the same sound on Sub-Lanes.
+// Legacy model: MainVideo clips formed one chain on the lowest eligible track (TimelineLowering.CanRide: visible, video stream 0,
+// own or no audio, speed 1, the opened file), placed by the Center box (CenterRect), cropped by the first clip's crop (which also
+// sized the Sequence), drew the full-frame blur background, and played audio through the opened file's mixed streams (AudioTracks:
+// gain, filters, ducking, voice, slip, muted ranges, on the container clock). Video-kind cut-outs showed the chain's picture.
+// Conversion rewrites the document in place (no undo step) into VideoFile clips with their own looks, blur fill, Cutouts and
+// Sub-Lanes, reproducing the same boxes, crops, source times, Cutout pixels and audio (the lowering arithmetic, evaluated once).
 
 /// <summary>
-/// What <see cref="LegacyMainVideo.Migrate"/> needs to know besides the document: the file the project opened (the old main
-/// video) as it was probed, the switches and the frame the old main video was laid out with, and its streams as they were mixed.
+/// Inputs for <see cref="LegacyMainVideo.Migrate"/> beyond the document: probed main file, legacy layout switches and frame, and
+/// its audio streams with their legacy mixing.
 /// </summary>
 public sealed record LegacyMainVideoContext
 {
-    /// <summary>The project's opened file as it is read now (ProjectState.LocalMediaPath, the download behind a web address, after any move); "" for none.</summary>
+    /// <summary>Current local path of the project's opened file (ProjectState.LocalMediaPath, including downloads); "" for none.</summary>
     public required string PrimaryPath { get; init; }
 
     /// <summary>Its probed picture size (0 while unknown).</summary>
@@ -44,32 +38,29 @@ public sealed record LegacyMainVideoContext
     /// <summary>The project's old Background switch: off, the clips that left their blur fill to it had none.</summary>
     public bool BackgroundHidden { get; init; }
 
-    /// <summary>The Sequence frame the old Center box was laid in (the view model's FrameWidth and FrameHeight); 0 while unknown.</summary>
+    /// <summary>Frame size the legacy Center box was laid out in (view model FrameWidth/FrameHeight); 0 while unknown.</summary>
     public int FrameWidth { get; init; }
 
     public int FrameHeight { get; init; }
 
     /// <summary>
-    /// The old Center box in frame pixels (the view model's GetCenterRect: where the chain's first clip was drawn); null
-    /// while unknown, and then worked out from that clip's place as the view model worked it out (MainPlaceOf, CenterRectOf).
+    /// Legacy Center box in frame pixels (GetCenterRect); null derives it from the first chain clip (MainPlaceOf, CenterRectOf).
     /// </summary>
     public (int X, int Y, int Width, int Height)? CenterRect { get; init; }
 
     /// <summary>
-    /// The opened file's audio streams with their old mixing (gain, filters, ducking, voice, slip, silenced pieces), in stream
-    /// order: the place of each in this list is its ordinal. Their mixing is set back to neutral by a migration that converts
-    /// the document (pass copies for an undo step's document; the live ones for the project being opened).
+    /// Main file audio streams with legacy mixing, in ordinal order. Migration resets their mixing to neutral (pass copies for undo
+    /// documents, live instances for the opening project).
     /// </summary>
     public IReadOnlyList<AudioTrack>? Streams { get; init; }
 
     /// <summary>
-    /// The recycle bin that goes with the document (its clips are put back onto it): converted with it, its clips in place.
-    /// Null for none. (An addition to the contract's shape: a clip of the old kinds put back from the bin would bring them back.)
+    /// Recycle bin converted alongside the document so restoring a clip never reintroduces legacy kinds; null for none.
     /// </summary>
     public IReadOnlyList<DeletedClip>? Bin { get; init; }
 }
 
-/// <summary>The one-time conversion of a project's main video, and of the cut-outs of it, into clips of files (5.2-AuditB).</summary>
+/// <summary>One-time conversion of legacy main-video and cut-out clips into VideoFile clips.</summary>
 public static class LegacyMainVideo
 {
     // Two edges this close are one (LinkToMainVideo's slack, as a piece's parent was found).
@@ -81,7 +72,7 @@ public static class LegacyMainVideo
     // A part of a sound shorter than this is not made: it goes to its neighbour.
     private const double Sliver = 0.001;
 
-    /// <summary>Whether a document still holds clips of the legacy kinds (MainVideo, or a Video cut-out of it), on its tracks or in its folds.</summary>
+    /// <summary>True when tracks or folds still hold legacy MainVideo or Video clips.</summary>
     public static bool Needs(TimelineDocument document)
     {
         foreach (var track in document.Tracks)
@@ -97,8 +88,8 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// Converts them in place (no undo step). Idempotent: a document that does not Need it is left alone (its bin, given in the
-    /// context, is still looked at). See the file's header and the steps below; the document's tracks stay in order and apart.
+    /// Converts in place (no undo step). Idempotent: documents that do not need it are untouched (the context's bin is still checked).
+    /// Track ordering and non-overlap invariants are preserved.
     /// </summary>
     public static void Migrate(TimelineDocument document, LegacyMainVideoContext context)
     {
@@ -121,7 +112,7 @@ public static class LegacyMainVideo
                     CutOut(track, piece, plan);
             }
 
-            // 3. The main video's clips: each a video-file clip of its file, in the box it was drawn in, on its picture's clock.
+            // 3. MainVideo clips become VideoFile clips in their drawn box, rebased to the video stream clock.
             foreach (var track in document.Tracks)
             {
                 foreach (var clip in track.Clips)
@@ -134,7 +125,7 @@ public static class LegacyMainVideo
             // 4. Their sound: the opened file's streams on Sub-Lanes under each clip that was heard through them.
             Sound(document, plan);
 
-            // (What was folded out of it: the same, kept for the fold to put back.)
+            // Folded clips are converted the same way.
             if (document.Folds is { Count: > 0 } folds)
                 document.Folds = folds.ConvertAll(f => f.Clips.Any(c => IsLegacy(c.Clip)) ? f with { Clips = Folded(f, document, plan) } : f);
 
@@ -155,14 +146,14 @@ public static class LegacyMainVideo
         }
     }
 
-    /// <summary>A caption source of the legacy kind (the main video's file) as the kind every file's is now: the same file and stream, a clip's.</summary>
-    /// <param name="openedPath">The file the project opened now (the download may lie elsewhere than when it was saved); null keeps the source's own path.</param>
+    /// <summary>Converts a legacy main-file caption source to a per-clip source with the same file and stream.</summary>
+    /// <param name="openedPath">Current opened file path (downloads may have moved); null keeps the stored path.</param>
     public static CaptionSource? MigrateCaption(CaptionSource? source, string? openedPath = null) =>
         source is { Kind: CaptionSourceKind.MainFile }
             ? source with { Kind = CaptionSourceKind.Clip, Path = string.IsNullOrWhiteSpace(openedPath) ? source.Path : openedPath }
             : source;
 
-    /// <summary>A subtitle track's caption source converted in place (<see cref="MigrateCaption"/>); whether there was one to convert.</summary>
+    /// <summary>Converts a subtitle track's caption source in place (<see cref="MigrateCaption"/>); true when one was converted.</summary>
     public static bool MigrateCaptions(SubtitleTrackData? subtitles, string? openedPath = null)
     {
         if (subtitles?.Source is not { Kind: CaptionSourceKind.MainFile } source)
@@ -181,21 +172,21 @@ public static class LegacyMainVideo
 
     private static string Clean(string? path) => (path ?? "").Trim().Trim('"');
 
-    /// <summary>A track whose clips are pictures laid on the canvas (a switch track holds what a video track holds).</summary>
+    /// <summary>True for picture tracks (video or switch).</summary>
     private static bool ShowsPictures(TimelineTrackModel track) => track.Kind is TimelineTrackKind.Video or TimelineTrackKind.Switch;
 
-    // The view model's evening (MainViewModel.Even, TimelineLowering.Even) and the layer's (Layer.Even, under its own Math.Max).
+    // Even-rounding as in MainViewModel.Even/TimelineLowering.Even and Layer.Even (with its Math.Max floor).
     private static int Even(double value) => Math.Max((int)Math.Round(value / 2) * 2, 2);
 
     private static int LayerEven(double value) => (int)Math.Round(value / 2) * 2;
 
-    /// <summary>What a crop leaves of a picture, in its pixels, even, as the crop filter cuts it (MainViewModel.CroppedSize).</summary>
+    /// <summary>Cropped size in pixels, even-rounded like the crop filter (MainViewModel.CroppedSize).</summary>
     private static (int Width, int Height) CroppedSize((double Left, double Top, double Right, double Bottom) crop, int width, int height) =>
         (Math.Max((int)(width * (1 - crop.Left - crop.Right) / 2) * 2, 2), Math.Max((int)(height * (1 - crop.Top - crop.Bottom) / 2) * 2, 2));
 
     /// <summary>
-    /// The old engine's reading of a document: the primary chain (TimelineLowering.CanRide), the clip the Sequence was placed,
-    /// cropped and sized by, the Center box, the clips heard through the opened file's streams and their clock, read once.
+    /// Legacy interpretation of a document, computed once: primary chain (TimelineLowering.CanRide), anchor clip, Center box, and
+    /// clips played through the main file's streams with their clock.
     /// </summary>
     private sealed class Plan
     {
@@ -208,16 +199,14 @@ public static class LegacyMainVideo
             Frame = context.FrameWidth > 0 && context.FrameHeight > 0 ? (context.FrameWidth, context.FrameHeight) : null;
             Source = context.SourceWidth > 0 && context.SourceHeight > 0 ? (context.SourceWidth, context.SourceHeight) : null;
 
-            // What the main video's offsets were counted from (the container's clock) against what a file's are (its first
-            // picture's): GpuScenePlan.ChainShiftOf. Nothing when either is not known.
+            // Offset between container clock (legacy main video) and first-picture clock (files): GpuScenePlan.ChainShiftOf; 0 if unknown.
             if (Primary.Length > 0 && MediaProbe.KnownVideoStart(Primary) is { } video && MediaProbe.KnownContainerStart(Primary) is { } container
                 && double.IsFinite(video - container))
             {
                 Shift = video - container;
             }
 
-            // The chain (TimelineLowering.LowerAfresh): the lowest picture track with a visible clip that can ride it, and every
-            // visible clip of that track that can.
+            // Chain (TimelineLowering.LowerAfresh): lowest picture track with a visible eligible clip, and all its visible eligible clips.
             foreach (var track in document.Tracks)
             {
                 if (ShowsPictures(track) && track.Clips.FirstOrDefault(c => !c.IsHidden && Rides(c)) is { } rider)
@@ -233,9 +222,8 @@ public static class LegacyMainVideo
                     Chain.Add(clip);
             }
 
-            // The track the opened file's streams were heard on: the chain's, or with none (each of its clips switched off) the
-            // lowest that holds one that would ride it. Its clips that could ride it, switched off or not, were on the chain's
-            // clock; for a file with no picture, every clip of it was its sound.
+            // Audio track: the chain's, else the lowest with an eligible (possibly disabled) clip. Its eligible clips were on the chain
+            // clock; for audio-only files every clip was audio.
             SoundTrack = ChainTrack ?? document.Tracks.FirstOrDefault(t => ShowsPictures(t) && t.Clips.Exists(Rides));
             TimelineClip? first = null;
             foreach (var track in document.Tracks)
@@ -252,8 +240,7 @@ public static class LegacyMainVideo
                 }
             }
 
-            // The clip the Sequence was placed, cropped and sized by (MainViewModel.AnchorMainView): the chain's first, else
-            // the main video's first.
+            // Anchor clip (MainViewModel.AnchorMainView): first chain clip, else first MainVideo clip.
             AnchorClip = Anchor ?? first;
             AnchorLook = AnchorClip?.State;
             Center = context.CenterRect is { Width: > 0, Height: > 0 } given ? given : CenterOf(AnchorLook);
@@ -282,7 +269,7 @@ public static class LegacyMainVideo
         /// <summary>The chain's clips: drawn in the Center box (or a box of their own), heard through the streams.</summary>
         public HashSet<TimelineClip> Chain { get; } = new(ReferenceEqualityComparer.Instance);
 
-        /// <summary>The clips on the chain's clock (the chain's, and those of its track switched off): heard through the streams.</summary>
+        /// <summary>Clips on the chain clock (chain plus disabled clips on its track), played through the streams.</summary>
         public HashSet<TimelineClip> Clocked { get; } = new(ReferenceEqualityComparer.Instance);
 
         /// <summary>Each main video clip's offset on its picture's clock, as it is converted.</summary>
@@ -297,22 +284,21 @@ public static class LegacyMainVideo
         // The lanes made, by the video track they lie under and the stream place they hold.
         public Dictionary<(Guid Track, int Ordinal), List<TimelineTrackModel>> Lanes { get; } = new();
 
-        /// <summary>The opened file's picture as the anchor clip's crop leaves it, even; null while its size is not known.</summary>
+        /// <summary>Main file size after the anchor crop, even-rounded; null while unknown.</summary>
         public (int Width, int Height)? NaturalSize =>
             Source is { } source ? CroppedSize(AnchorLook is { } look ? Layer.HeldCrop(look) : default, source.Width, source.Height) : null;
 
         /// <summary>Whether a clip is of the opened file.</summary>
         public bool IsOf(TimelineClip clip) => Primary.Length > 0 && string.Equals(Clean(clip.SourcePath), Primary, StringComparison.OrdinalIgnoreCase);
 
-        /// <summary>Whether a clip of the main video could ride the chain, its switch aside (TimelineLowering.CanRide).</summary>
+        /// <summary>Chain eligibility ignoring the enabled flag (TimelineLowering.CanRide).</summary>
         public bool Rides(TimelineClip clip) =>
             clip.ContentKind == LayerKind.MainVideo && clip.VideoStreamIndex == 0 && clip.AudioStreamIndex <= 0 && Math.Abs(clip.Speed - 1) < 0.0005 && IsOf(clip);
 
         public bool IsClocked(TimelineClip clip) => Clocked.Contains(clip);
 
         /// <summary>
-        /// A main video clip's offset on its picture's clock: the chain's offsets were on the container's (shifted to the
-        /// picture's by GpuScenePlan and the sound engine); any other clip of it was read as a file, at its offset as it is.
+        /// MainVideo clip offset on the video clock: chain offsets are rebased from the container clock; others are already file offsets.
         /// </summary>
         public double OffsetOf(TimelineClip clip, bool clocked) => clocked ? Math.Max(clip.MediaOffset - Shift, 0) : clip.MediaOffset;
 
@@ -323,9 +309,8 @@ public static class LegacyMainVideo
         public double LengthOf(TimelineClip clip) => clip.SourceDuration > 0 ? clip.SourceDuration : IsOf(clip) ? Math.Max(Context.MediaSeconds, 0) : 0;
 
         /// <summary>
-        /// The Center box as the view model worked it out from the clip it stood for (MainPlaceOf, then CenterRectOf): its zoom
-        /// and offsets read back from its corner and width at its cropped shape, laid about the frame's middle. Null without a
-        /// frame or a clip.
+        /// Center box derived from a clip (MainPlaceOf, CenterRectOf): zoom and offsets from its corner/width at cropped aspect, centred
+        /// in the frame. Null without frame or clip.
         /// </summary>
         private (int X, int Y, int Width, int Height)? CenterOf(LayerState? look)
         {
@@ -346,10 +331,9 @@ public static class LegacyMainVideo
         }
 
         /// <summary>
-        /// The box a clip of the main video was drawn in, in frame pixels, as the old lowering laid it: a clip of the chain in the
-        /// Center box (the one piece, MakeRider), any other in the Center box at its source's own shape (MakeLayer); one placed
-        /// or cropped otherwise than the anchor in a box of its own (MainRectOf). Then as its layer came out of it
-        /// (Layer.GetOutputRect: corner rounded, sides evened). Null without a frame or a Center box: its look stays as it is.
+        /// Legacy drawn box in frame pixels: chain clips in the Center box (MakeRider), others in the Center box at source aspect
+        /// (MakeLayer), independently placed/cropped clips in their own box (MainRectOf); then rounded like Layer.GetOutputRect.
+        /// Null without frame or Center box (look unchanged).
         /// </summary>
         public (int X, int Y, int Width, int Height)? BoxOf(TimelineClip clip, LayerState look, bool chained)
         {
@@ -377,7 +361,7 @@ public static class LegacyMainVideo
 
         private static bool IsCropped((double Left, double Top, double Right, double Bottom) crop) => crop.Left + crop.Top + crop.Right + crop.Bottom > 1e-9;
 
-        /// <summary>Whether a main video clip was placed (its corner, its width) and cropped otherwise than the anchor (TimelineLowering.OwnOf).</summary>
+        /// <summary>True when placement or crop differs from the anchor (TimelineLowering.OwnOf).</summary>
         private (bool Place, bool Crop) OwnOf(TimelineClip clip, LayerState look)
         {
             if (AnchorLook is not { } anchor || ReferenceEquals(clip, AnchorClip) || ReferenceEquals(look, anchor))
@@ -389,7 +373,7 @@ public static class LegacyMainVideo
             return (place, Differ(crop.Left, anchorCrop.Left) || Differ(crop.Top, anchorCrop.Top) || Differ(crop.Right, anchorCrop.Right) || Differ(crop.Bottom, anchorCrop.Bottom));
         }
 
-        /// <summary>The box of a main video clip placed by its own look: its corner and width, its height at its cropped shape (TimelineLowering.MainRectOf).</summary>
+        /// <summary>Own-look box: corner and width, height at cropped aspect (TimelineLowering.MainRectOf).</summary>
         private (int X, int Y, int Width, int Height) RectOf(LayerState look, int frameWidth, int frameHeight)
         {
             var (sourceWidth, sourceHeight) = Source ?? (1920, 1080);
@@ -403,17 +387,14 @@ public static class LegacyMainVideo
     // ----- 1. The Sequence's size -----
 
     /// <summary>
-    /// The natural size a document of the legacy kinds had (MainViewModel.GetCroppedSourceSize): the opened file's picture as
-    /// the clip the Sequence was sized by (the chain's first, else the main video's first) leaves it with its crop, even,
-    /// before Use Vertical Resolution turns it. Null while the file's size is not known (the frame was then 1920 x 1080). For
-    /// the view model to work out the frame the old Center box was laid in (<see cref="LegacyMainVideoContext.FrameWidth"/>)
-    /// before it converts; read from the document as it is (only <see cref="LegacyMainVideoContext.PrimaryPath"/> and the
-    /// source's size of the context are read).
+    /// Legacy natural size (MainViewModel.GetCroppedSourceSize): main file size after the anchor crop, even, before vertical rotation.
+    /// Null when unknown (legacy default 1920 x 1080). Used to derive <see cref="LegacyMainVideoContext.FrameWidth"/> before conversion;
+    /// reads only <see cref="LegacyMainVideoContext.PrimaryPath"/> and source size from the context.
     /// </summary>
     public static (int Width, int Height)? NaturalSizeOf(TimelineDocument document, LegacyMainVideoContext context) =>
         new Plan(document, context).NaturalSize;
 
-    /// <summary>The size the Sequence had (<see cref="NaturalSizeOf"/>), never over one already set; left unset while it is not known.</summary>
+    /// <summary>Applies <see cref="NaturalSizeOf"/> unless a size is already set or it is unknown.</summary>
     private static void TakeNaturalSize(TimelineDocument document, Plan plan)
     {
         if (document.NaturalWidth <= 0 && plan.NaturalSize is { } natural)
@@ -423,10 +404,9 @@ public static class LegacyMainVideo
     // ----- 2. The cut-outs -----
 
     /// <summary>
-    /// A cut-out of the main video (it showed the chain's picture at each moment, nothing where the chain had no clip) as video
-    /// file clips: one for each clip of the chain it lies over (split at their edges), each that clip's child on its clock, cut
-    /// from its picture as the cut-out was (FileCutoutOf); a part over no clip of the chain is switched off (it showed nothing).
-    /// The first part keeps the cut-out's id, fade in and crossfade, the last its fade out; every part's keys are where they were.
+    /// Converts a legacy cut-out into VideoFile parts split at chain clip edges, each a child of the underlying chain clip on its clock
+    /// and cropped like the cut-out (FileCutoutOf); parts over no chain clip are disabled. First part keeps id, fade-in and crossfade,
+    /// last keeps fade-out; keyframes stay in place.
     /// </summary>
     private static void CutOut(TimelineTrackModel track, TimelineClip piece, Plan plan)
     {
@@ -457,9 +437,8 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// The stretches of a cut-out between the edges of the chain's clips, each with the clip whose picture it showed there (a
-    /// clip of the chain that covers it, its parent first), shown; or, over none, the clip of the main video it lies over (its
-    /// parent first) to keep its clock, switched off; or none.
+    /// Cut-out segments between chain clip edges, each with its source clip: a covering chain clip (parent preferred, enabled), else
+    /// an underlying MainVideo clip for its clock (disabled), else none.
     /// </summary>
     private static List<(double From, double To, TimelineClip? Over, bool Shown)> PartsOf(TimelineClip piece, Plan plan)
     {
@@ -467,8 +446,7 @@ public static class LegacyMainVideo
         var parent = piece.ParentClipId is { } id ? plan.Document.FindClip(id) : null;
         static bool Covers(TimelineClip clip, double from, double to) => clip.Start <= from + Edge && clip.End >= to - Edge;
 
-        // Where the chain's clips start or end inside it (none when its parent of the chain covers it whole), two edges
-        // closer than a slack one: each stretch between two of them is longer than that.
+        // Chain clip edges inside the cut-out (none when its parent covers it), deduplicated within the slack so every segment exceeds it.
         var edges = new List<double>();
         if (!(parent is not null && plan.Chain.Contains(parent) && Covers(parent, start, end)))
         {
@@ -510,10 +488,9 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// A cut-out's look as a piece of a clip of a file (MainViewModel.FileCutoutOf): that file's picture, cut by its crop to the
-    /// same part of it (the cut-out's source rectangle less its crop) and laid in the box the cut-out had, its mask, cut the
-    /// same, still shaping it. A crop leaves at least <see cref="Layer.LargestCropTotal"/>'s remainder of a picture: a piece
-    /// narrower than that is cut wider about its middle and its box made as much larger. Its blur fill off.
+    /// Cut-out look as a file Cutout (MainViewModel.FileCutoutOf): crop to the same source region (source rect minus crop) in the
+    /// same box, mask cropped identically. Regions narrower than the <see cref="Layer.LargestCropTotal"/> limit are widened about
+    /// their centre with a proportionally larger box. Blur fill off.
     /// </summary>
     private static LayerState PieceLook(LayerState piece, Plan plan)
     {
@@ -551,9 +528,8 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// A part of a cut-out on the clock of the clip whose picture it shows (<paramref name="over"/>; none: the opened file from
-    /// its start, switched off): that clip's file, stream and speed, at the moment of it under the part's start, silent, its
-    /// look <paramref name="look"/> with its keys moved back by <paramref name="shift"/> (the part's start after the cut-out's).
+    /// Cut-out part on the clock of <paramref name="over"/> (null: main file from 0, disabled): its file, stream and speed at the
+    /// part's start, muted, with <paramref name="look"/> keys shifted back by <paramref name="shift"/>.
     /// </summary>
     private static void OnClock(TimelineClip part, TimelineClip? over, Plan plan, LayerState look, double shift)
     {
@@ -581,14 +557,12 @@ public static class LegacyMainVideo
     // ----- 3. The main video's clips -----
 
     /// <summary>
-    /// A clip of the main video as a clip of its file: kind VideoFile (the look's too), its file named in its look with the
-    /// opened file's size and length where it has none, its blur fill what it was (a clip of the chain's clock had the blurred
-    /// background where it left it to the Background switch; any other had none), "Main Video" named after its file; the box
-    /// it was drawn in written into its look (<see cref="Plan.BoxOf"/>); its offset on its picture's clock. A look is never
-    /// changed in place: it gets a copy.
+    /// Converts a MainVideo clip to VideoFile (clip and look): sets the file with main-file size/duration fallbacks, blur fill from the
+    /// legacy Background switch for chain-clock clips, renames "Main Video" after the file, writes its drawn box (<see cref="Plan.BoxOf"/>)
+    /// and rebases its offset to the video clock. Copy-on-write look.
     /// </summary>
-    /// <param name="clocked">On the chain's clock: its offset was the container's, its blur fill followed the switch.</param>
-    /// <param name="chained">Drawn as the chain's (the Center box), not as a layer of its own.</param>
+    /// <param name="clocked">On the chain clock: offset was container-based and blur followed the switch.</param>
+    /// <param name="chained">Drawn as the chain (Center box) rather than as its own layer.</param>
     private static void ToFileClip(TimelineClip clip, bool clocked, bool chained, Plan plan)
     {
         var look = clip.State.ShallowCopy();
@@ -626,10 +600,8 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// Whether a look's box, held to its picture's shape (LockAspectRatio), is <paramref name="height"/> tall at
-    /// <paramref name="width"/>, whichever way the layer rounds a cropped picture (its shape's, Layer.GetProportionalHeight, or
-    /// the crop filter's evened sides): then it keeps that shape as it is resized or cropped; otherwise its height is its own
-    /// (SizeHeight), the box exactly as it was drawn.
+    /// True when an aspect-locked box at <paramref name="width"/> yields <paramref name="height"/> under either rounding
+    /// (Layer.GetProportionalHeight or even-rounded crop), so it can stay locked; otherwise an explicit SizeHeight preserves the drawn box.
     /// </summary>
     private static bool KeepsShape(LayerState look, int width, int height)
     {
@@ -646,11 +618,9 @@ public static class LegacyMainVideo
     // ----- 4. The sound -----
 
     /// <summary>
-    /// The opened file's streams on Sub-Lanes, as MainViewModel.UnpackStreams lays a video file's (one lane under the clip's
-    /// track for each stream place, a sound clip of each stream the clip's child, the clip itself silent), for every clip that
-    /// was heard through them, even with one stream: each lane takes its stream's old mixing, each sound clip its clip's place
-    /// in time as the old engine heard it (SoundOfChain, AddMainVoices). Then the crossfades a lane cannot carry dip, as they
-    /// did; then a file with no picture keeps only its sound.
+    /// Unpacks main-file streams onto Sub-Lanes like MainViewModel.UnpackStreams (one lane per stream ordinal, child audio clips, the
+    /// video clip muted) for every clip that played through them. Lanes inherit legacy stream mixing; audio clips get legacy timing
+    /// (SoundOfChain, AddMainVoices). Crossfades lanes cannot carry become dips; audio-only files keep only audio.
     /// </summary>
     private static void Sound(TimelineDocument document, Plan plan)
     {
@@ -693,8 +663,7 @@ public static class LegacyMainVideo
             }
         }
 
-        // A crossfade the lanes do not carry dips, sound in and out, through what is under it (as LowerAfresh dipped a crossfade
-        // between a clip of the chain and another, and as LayOutCrossfades dipped one with nothing beyond the cut).
+        // Crossfades lanes cannot carry become audio dips (matching legacy LowerAfresh/LayOutCrossfades behaviour).
         foreach (var track in document.Tracks)
         {
             for (var i = 0; i < track.Clips.Count; i++)
@@ -728,8 +697,8 @@ public static class LegacyMainVideo
             Reconcile(lane);
         }
 
-        // A file with no picture: its clips are their sound alone. Each goes, its first stream's first sound clip taking its id
-        // (and so its children, the other streams' sound clips among them); one that has none is made a sound clip of its own.
+        // Audio-only file: replace each clip with its first stream's first audio clip (inheriting id and children); clips without
+        // one become standalone audio clips.
         if (plan.Context.SourceHasNoVideo)
         {
             foreach (var track in document.Tracks.ToList())
@@ -756,11 +725,9 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// The sound clips of one stream of a clip, as the old engine heard that stream there (SoundOfChain, AddMainVoices): from
-    /// the clip's start less its J-cut to its end and L-cut (<paramref name="widen"/>), moved by its unlinked slip, the stream's
-    /// own slip taking it that much earlier in the file; cut to what the file and the Sequence have; then split where the
-    /// stream was silenced (its muted pieces, in its own time), those parts muted. Each a child of the clip, at its gain and
-    /// its track's, switched off and muted with it, a voice when the stream was. Not placed. Empty when nothing is left.
+    /// Audio clips for one stream of a clip with legacy timing (SoundOfChain, AddMainVoices): span widened by J/L cuts
+    /// (<paramref name="widen"/>), shifted by clip and stream slip, clamped to file and Sequence, split at muted ranges (muted parts).
+    /// Children of the clip with its and its track's gain, disabled/muted state and voice flag. Unplaced; empty if nothing remains.
     /// </summary>
     private static List<TimelineClip> LaneClips(TimelineClip clip, TimelineTrackModel? track, int ordinal, AudioTrack stream, Plan plan, bool widen)
     {
@@ -856,11 +823,10 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// The lane under a video track for a stream place: one this conversion made for it, with room; else one already there
-    /// for that place that mixes as the stream did (no gain, filters, ducking or mute of its own to change another file's
-    /// sound) and has room; else a new one at the top, as UnpackStreams inserts it, with the stream's old mixing.
+    /// Sub-Lane for a stream ordinal: one created by this conversion with room; else an existing neutral lane (no own gain, filters,
+    /// ducking or mute) with room; else a new top lane (as UnpackStreams) with the stream's legacy mixing.
     /// </summary>
-    /// <param name="stream">The stream whose mixing a new lane takes; null for a lane of no stream's (neutral).</param>
+    /// <param name="stream">Stream whose mixing a new lane inherits; null for neutral.</param>
     private static TimelineTrackModel LaneFor(TimelineDocument document, TimelineTrackModel track, int ordinal, AudioTrack? stream, double from, double to,
         Plan plan, bool needsRoom)
     {
@@ -906,8 +872,8 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// The clip on a track whose end meets the start of the one at <paramref name="index"/> (as 4.2.0 counted meeting: within 11
-    /// ms), or null (TimelineLowering.Before).
+    /// Clip whose end abuts the start of the clip at <paramref name="index"/> within the legacy 11 ms tolerance, or null
+    /// (TimelineLowering.Before).
     /// </summary>
     private static TimelineClip? Before(TimelineTrackModel track, int index)
     {
@@ -928,10 +894,9 @@ public static class LegacyMainVideo
     // ----- What was folded out, and the recycle bin -----
 
     /// <summary>
-    /// A fold's clips, converted as the document's are (its times stay counted from the fold's start): the main video's clips
-    /// as clips of their file, with their streams' sound clips kept in the fold too, on the lanes of their track (made when the
-    /// document has none), to come back with them; its cut-outs on the clock of the clip of the fold they were cut from (any
-    /// other switched off). J and L cuts and slips are not widened here: what comes back fits where it was folded from.
+    /// Converts a fold's clips like the document's (times stay seam-relative): MainVideo clips to VideoFile with their stream audio
+    /// clips stored in the fold on their track's lanes (created if needed); cut-outs on the clock of their fold source (others
+    /// disabled). J/L cuts and slips are not widened, so unfolded content fits its original range.
     /// </summary>
     private static List<FoldedClip> Folded(FoldedSegment fold, TimelineDocument document, Plan plan)
     {
@@ -976,7 +941,7 @@ public static class LegacyMainVideo
                     over.SourceDuration = plan.LengthOf(parent.Clip);
                 }
 
-                // It showed the chain's picture: shown over a clip of the chain (on its clock, switched on), switched off otherwise.
+                // Enabled over a chain clip (on its clock), disabled elsewhere.
                 var shown = over is not null && originals[over.Id] is { Clocked: true, Clip.IsHidden: false };
                 OnClock(copy, over, plan, PieceLook(copy.State, plan), 0);
                 copy.IsHidden |= !shown;
@@ -993,12 +958,10 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// A clip in the recycle bin, and what went with it, converted as the document's are: a clip of the main video as a clip
-    /// of its file (its own sound still on it: the bin has no lanes; a project opened again unpacks it), on the chain's clock
-    /// when it could ride it; a cut-out on the clock of the clip it was cut from (the one it went to the bin with, else the
-    /// document's), switched off over none.
+    /// Converts a recycle-bin clip and its family: MainVideo to VideoFile keeping embedded audio (the bin has no lanes; reopening
+    /// unpacks it), on the chain clock when eligible; cut-outs on their source clip's clock (binned partner, else document), disabled over none.
     /// </summary>
-    /// <param name="binnedWith">The clip of the main video it went to the bin with (converted), and whether its picture was the chain's.</param>
+    /// <param name="binnedWith">Converted MainVideo clip binned with it, and whether it was a chain clip.</param>
     private static void Deleted(DeletedClip deleted, (TimelineClip Clip, bool Shown)? binnedWith, TimelineDocument document, Plan plan)
     {
         static bool Covers(TimelineClip clip, TimelineClip piece) => clip.Start <= piece.Start + Edge && clip.End >= piece.End - Edge;
@@ -1029,7 +992,7 @@ public static class LegacyMainVideo
 
     // ----- Keeping the document whole -----
 
-    /// <summary>A look with every keyframe, effect keyframe and effect range moved by <paramref name="seconds"/> (TimelineTransaction.Shifted): a copy, or the look itself when nothing moves.</summary>
+    /// <summary>Look with all keyframes and effect ranges shifted by <paramref name="seconds"/> (TimelineTransaction.Shifted); same instance when zero.</summary>
     private static LayerState Shifted(LayerState look, double seconds)
     {
         static bool Timed(LayerState state) =>
@@ -1057,7 +1020,7 @@ public static class LegacyMainVideo
         return shifted;
     }
 
-    /// <summary>A clip's fades held to its length, the fade in first (as TimelineTransaction.Respeed holds them), and to the longest fade.</summary>
+    /// <summary>Clamps fades to clip length (fade-in priority) and the maximum fade, as TimelineTransaction.Respeed.</summary>
     private static void HoldFades(TimelineClip clip)
     {
         var length = Math.Max(clip.Duration, 0);
@@ -1065,7 +1028,7 @@ public static class LegacyMainVideo
         clip.FadeOutSeconds = Math.Clamp(clip.FadeOutSeconds, 0, Math.Min(length - clip.FadeInSeconds, TimelineDocument.LongestFade));
     }
 
-    /// <summary>Puts a clip on a track among its clips by its start (TimelineTransaction.Insert): a clip that starts with another goes after it.</summary>
+    /// <summary>Sorted insert by start (TimelineTransaction.Insert); ties go after existing clips.</summary>
     private static void Insert(TimelineTrackModel track, TimelineClip clip)
     {
         int low = 0, high = track.Clips.Count;
@@ -1081,7 +1044,7 @@ public static class LegacyMainVideo
         track.Clips.Insert(low, clip);
     }
 
-    /// <summary>A crossfade stays only where its clip meets the one before it, never longer than either (TimelineTransaction.Reconcile).</summary>
+    /// <summary>Drops crossfades without abutment and caps the rest (TimelineTransaction.Reconcile).</summary>
     private static void Reconcile(TimelineTrackModel track)
     {
         for (var i = 0; i < track.Clips.Count; i++)
@@ -1111,9 +1074,8 @@ public static class LegacyMainVideo
     }
 
     /// <summary>
-    /// An id made from another (a cut-out's part from the cut-out's, a sound clip from its clip's, a lane from its track's) and
-    /// what it is of it: the same every time the same document is converted, so that an undo step converted when it is stepped
-    /// to names the same parts as the document did (the selection and anything that names a clip by its id follow it).
+    /// Deterministic derived id (cut-out part, audio clip, lane) from a source id and role, so converting an undo step later yields
+    /// the same ids as the document (selection and id references stay valid).
     /// </summary>
     private static Guid Derived(Guid from, int what, int a, int b)
     {

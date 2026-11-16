@@ -14,39 +14,37 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// The Cutout Studio (5.1-CleanupStudioAndFfmpegPurge; Draw Custom Shape before it): a still of the video to trace a game's HUD on by
-/// hand, corner by corner with the polygon pen, zoomed in to 64 screen pixels a source pixel and panned at any moment, a shape half drawn or
-/// not. The shapes belong to named Cutouts; the Cutouts become clips, or are saved as a Game Preset (.hpstyle) for the drop overlay and
-/// the Game Presets list, laid out on a tall frame beside the drawing. Opened from a clip it can also be that clip's mask. Built in code.
+/// Cutout Studio: trace HUD regions on a video still with a polygon pen, zoomable to 64 screen px per source px and pannable at any
+/// time (even mid-shape). Shapes belong to named Cutouts, which become clips or a Game Preset (.hpstyle) laid out on a vertical frame
+/// beside the drawing; opened from a clip it can edit that clip's mask. Built in code.
 /// </summary>
 public sealed partial class MaskDrawWindow : Window
 {
-    /// <summary>The most a view magnifies: 64 screen pixels to a source pixel.</summary>
+    /// <summary>Maximum zoom: 64 screen px per source px.</summary>
     public const double MostZoom = 64;
 
-    /// <summary>From here up the still's pixels are drawn as hard squares.</summary>
+    /// <summary>Zoom at which nearest-neighbour sampling starts.</summary>
     public const double PixelEdgesFrom = 4;
 
-    /// <summary>From here up each source pixel gets a cell of a thin grid, and points land on its corners.</summary>
+    /// <summary>Zoom at which a pixel grid is drawn and points snap to pixel corners.</summary>
     public const double PixelGridFrom = 16;
 
-    // The wheel's zoom for one notch (120), and how fast the view catches up with it (the time constant, seconds).
+    // Zoom factor per wheel notch (120) and easing time constant (s).
     private const double ZoomPerNotch = 1.25, ZoomEase = 0.045;
 
-    // WASD's pan, in screen pixels a second; Shift three times that.
+    // WASD pan speed (screen px/s); Shift triples it.
     private const double KeyPanSpeed = 900;
 
-    // A notch of Shift + the wheel or of the horizontal wheel (a touchpad's sideways scroll), in screen pixels; how far a right press
-    // moves before it is a pan rather than a click (5.3.1).
+    // Horizontal pan per Shift+wheel or horizontal-wheel notch (screen px); right-press movement threshold before it becomes a pan.
     private const double WheelPan = 96, RightDragFrom = 4;
 
     private const int WmMouseWheel = 0x020A, WmMouseHWheel = 0x020E, MkShift = 0x0004, MkControl = 0x0008;
 
-    // How long after a touchpad's scroll a wheel message is still taken for the same gesture (Pass 5.5.1): a precision touchpad's scroll
-    // now and then sends a whole notch (120), which must not zoom in the middle of a pan.
+    // Window after a touchpad scroll during which wheel messages count as the same gesture: precision touchpads occasionally emit
+    // a full 120 notch, which must not zoom mid-pan.
     internal const long TouchpadStreamMs = 250;
 
-    // When the wheel last came from a touchpad (Environment.TickCount64); long ago at first.
+    // TickCount64 of the last touchpad wheel message (initially far in the past).
     private long _touchpadWheelAt = long.MinValue / 2;
 
     private static readonly string[] PieceNames = ["Hero Portrait & HP", "Abilities & Weapon", "Killfeed", "Minimap", "Objective"];
@@ -55,12 +53,12 @@ public sealed partial class MaskDrawWindow : Window
     private readonly Layer _layer;
     private readonly bool _forLayer;
 
-    // The file the still is taken from (5.2-Audit, the user's Q4): the clip's own, for a clip of any file (5.2-AuditB: on the video
-    // alone, the video's at the playhead); the file last opened's otherwise. And whether it is the clip's, read on its clock.
+    // Still source: the clip's own file (or the playhead video when opened standalone), else the last opened file; plus whether it
+    // is the clip's, sampled on its clock.
     private readonly string _stillSource;
     private readonly bool _stillOnClip;
 
-    // The still and the shapes are laid out in the source's own pixels; the view scales and moves them.
+    // Still and shapes use source pixel coordinates; the view transform scales and translates them.
     private readonly double _width, _height;
     private readonly Image _still = new() { Stretch = Stretch.Fill };
     private readonly ShapeSurface _surface;
@@ -76,20 +74,20 @@ public sealed partial class MaskDrawWindow : Window
     private readonly CutoutStage _stage;
     private readonly SourceNavigator _navigator;
 
-    // The drawing view's scroll bars (5.3.1): over its right and bottom edges, shown while the picture is larger than the view that way.
+    // Overlay scroll bars on the right and bottom edges, visible while the picture exceeds the view on that axis.
     private readonly ScrollBar _horizontalBar = new() { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Bottom, Visibility = Visibility.Collapsed };
     private readonly ScrollBar _verticalBar = new() { Orientation = Orientation.Vertical, HorizontalAlignment = HorizontalAlignment.Right, Visibility = Visibility.Collapsed };
     private readonly Slider _zoomSlider = new() { Minimum = 1, Maximum = 2.5, Value = MainViewModel.CutoutDefaultZoom, VerticalAlignment = VerticalAlignment.Center };
     private readonly TextBox _presetName = new() { Margin = new Thickness(0, 4, 0, 0) };
 
-    // The named pieces, by the id their shapes carry; the ids of those that were moved by hand on the tall frame.
+    // Named pieces by shape id, and ids of pieces manually positioned on the vertical frame.
     private readonly Dictionary<int, string> _names = [];
     private readonly Dictionary<int, CutoutStage.Placed> _placed = [];
     private readonly HashSet<int> _movedByHand = [];
     private int _nextPiece;
 
-    // The view: screen pixels to a source pixel, and where the picture's corner lies in the viewport. A wheel moves the goal and the
-    // view eases to it about the point under the pointer.
+    // View state: zoom (screen px per source px) and picture origin in the viewport; the wheel sets a target the view eases to about
+    // the pointer.
     private double _zoom = 1, _panX, _panY, _zoomGoal = 1;
     private Point _zoomPoint;
     private bool _fitted = true, _ticking;
@@ -98,40 +96,47 @@ public sealed partial class MaskDrawWindow : Window
     private bool _spaceHeld;
     private (Point From, double PanX, double PanY)? _panDrag;
 
-    // A right press in the view, until it is a click (the button up where it went down) or a pan (5.3.1).
+    // Pending right press, resolved as a click (released in place) or a pan.
     private (Point From, double PanX, double PanY)? _rightPress;
 
 
     // Segoe MDL2 Assets: Undo (E7A7), Redo (E7A6), Delete (E74D).
     private static readonly string UndoGlyph = char.ConvertFromUtf32(0xE7A7), RedoGlyph = char.ConvertFromUtf32(0xE7A6), DeleteGlyph = char.ConvertFromUtf32(0xE74D);
 
-    /// <summary>The finished shapes as a mask's text (see <see cref="MaskStore"/>), once the window was confirmed for a clip.</summary>
+    /// <summary>Resulting mask text (<see cref="MaskStore"/>) after confirming for a clip.</summary>
     public string Shapes { get; private set; } = "";
 
-    /// <summary>Whether the shapes are for every layer cut from the video, not only the one the window was opened from.</summary>
+    /// <summary>Whether the shapes apply to every Cutout of the video, not just the originating one.</summary>
     public bool ForAllLayers { get; private set; }
 
     /// <summary>
-    /// A picture of the still's file near its moment, decoded ahead (5.4.3, MainWindow.HeatLamp.cs): shown on the window's first frame while
-    /// the exact still is taken, when it is of the same file and moment (<see cref="StillTarget"/>).
+    /// Pre-decoded frame near the still (<see cref="Shell.HeatLampController"/>), shown while the exact still loads, if it matches
+    /// the same file and time (<see cref="StillTarget"/>).
     /// </summary>
     public sealed record WarmStill(string Source, double Seconds, BitmapSource Picture);
 
-    private readonly WarmStill? _warm;
+    /// <summary>How the Timeline opened the Studio.</summary>
+    /// <param name="Picked">Selected clip (standalone): its base clip's Cutouts and still (<see cref="MainViewModel.CutoutStudioBase"/>).</param>
+    /// <param name="Warm">The heat lamp's still, decoded or still decoding; used only if it matches.</param>
+    /// <param name="Backdrop">A cached picture of a file at a time, shown on frame 0 until a still arrives (never a black view).</param>
+    public sealed record Opening(Layer? Picked, Task<WarmStill?>? Warm, Func<string, double, ImageSource?>? Backdrop);
 
-    /// <param name="layer">The clip it is asked to mask; null opens it on the video alone, for Cutouts and Game Presets.</param>
-    /// <param name="warm">A picture decoded ahead (the heat lamp), used only when it is of this still's file and moment.</param>
-    public MaskDrawWindow(MainViewModel viewModel, Layer? layer, WarmStill? warm = null)
+    private readonly Task<WarmStill?>? _warming;
+
+    /// <param name="layer">Clip to mask; null opens standalone for Cutouts and Game Presets.</param>
+    public MaskDrawWindow(MainViewModel viewModel, Layer? layer, Opening? opening = null)
     {
-        (_viewModel, _layer, _forLayer) = (viewModel, layer ?? viewModel.PlayheadVideo, layer is not null);
+        (_viewModel, _layer, _forLayer) = (viewModel, layer ?? viewModel.CutoutStudioBase(opening?.Picked), layer is not null);
 
-        // The still and its natural size are the clip's being edited (on the video alone, the video at the playhead): a clip is
-        // drawn on over its own file's picture.
-        var target = layer ?? _layer;
+        // Still and natural size come from the edited clip's file (standalone: the base clip's).
+        var target = _layer;
         var ownFile = OwnFileOf(target);
         (_stillSource, _stillOnClip) = (ownFile ?? viewModel.LocalMediaPath, ownFile is not null);
-        if (warm is not null && string.Equals(warm.Source, _stillSource, StringComparison.OrdinalIgnoreCase) && Math.Abs(warm.Seconds - StillSeconds()) < 0.001)
-            _warm = warm;
+        _warming = opening?.Warm;
+        if (_warming is { IsCompletedSuccessfully: true, Result: { } warm } && Matches(warm))
+            _still.Source = warm.Picture;
+        else if (opening?.Backdrop?.Invoke(_stillSource, StillSeconds()) is { } backdrop)
+            _still.Source = backdrop;
         (_width, _height) = ownFile is not null
             ? MediaProbe.KnownInfo(ownFile)?.Video is { Width: > 0, Height: > 0 } video ? (video.Width, video.Height)
             : target.ImageWidth > 0 && target.ImageHeight > 0 ? (target.ImageWidth, target.ImageHeight) : (1920.0, 1080.0)
@@ -152,12 +157,15 @@ public sealed partial class MaskDrawWindow : Window
             HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(WheelMessage);
         };
 
-        // The old regions of the opened file (LayerKind.Video, a legacy kind) are shown over its still alone.
+        // Legacy LayerKind.Video regions are shown only over the opened file's still.
         var regions = viewModel.Layers.Where(l => ownFile is null && l.IsVideo && !l.IsDeleted && !(l.UsesFrameMask && l.MaskShapes.Length > 0))
             .Select(l => (new Rect(l.SourceX * _width, l.SourceY * _height, l.SourceWidth * _width, l.SourceHeight * _height), l.Name, ReferenceEquals(l, layer)))
             .ToList();
         _surface = new ShapeSurface(_width, _height, regions, StartingShapes());
-        _surface.CurrentPiece = _names.Count > 0 ? _names.Keys.First() : NewPiece();
+
+        // On a clip, new shapes go to its own piece (a fresh one beside its family's); standalone, to the first Cutout.
+        var beside = _forLayer && _familyOthers.Count > 0;
+        _surface.CurrentPiece = _ownPiece ?? (_names.Count == 0 || beside ? NewPiece(beside ? _layer.Name : null) : _names.Keys.First());
         _surface.Changed += ShowHelp;
         _surface.Changed += RefreshPieces;
 
@@ -183,7 +191,7 @@ public sealed partial class MaskDrawWindow : Window
         _navigator = new SourceNavigator(_width, _height, _surface) { Margin = new Thickness(0, 2, 0, 0) };
         _navigator.Navigate += CenterOn;
 
-        // Undo and redo, over the shapes (ShapeSurface keeps the steps): enabled while there is something to undo or redo.
+        // Shape undo/redo (ShapeSurface history), enabled when available.
         _undoButton = GlyphButton(UndoGlyph, "Undo (Ctrl+Z)", "Undo");
         _undoButton.Click += (_, _) => _surface.Undo();
         _redoButton = GlyphButton(RedoGlyph, "Redo (Ctrl+Y)", "Redo");
@@ -219,7 +227,7 @@ public sealed partial class MaskDrawWindow : Window
         view.Children.Add(fit);
         view.Children.Add(actualSize);
 
-        // Pass 5.5.1 (the user's): the shortcuts are a card behind a '?' beside Fit and 100%, no longer four lines of words over the view.
+        // Shortcuts live in a '?' hover card beside Fit and 100%, not as text over the view.
         view.Children.Add(_shortcutsButton = ShortcutsButton());
         view.Children.Add(_shortcutsCard);
         view.Children.Add(_zoomText);
@@ -334,38 +342,46 @@ public sealed partial class MaskDrawWindow : Window
 
     // ----- The pieces -----
 
-    // What it starts from. From a layer: its own drawn shapes, or failing that those of another piece of the same video (one mask of the
-    // frame). Opened on the video alone: the pieces the Studio made earlier, each with its name.
+    // The piece holding the clip's own shapes (opened on a clip), and the pieces of its family's other Cutouts, which Apply to This
+    // Clip leaves out.
+    private int? _ownPiece;
+    private readonly HashSet<int> _familyOthers = [];
+
+    // Initial shapes: the base clip's Cutout family (each piece once, with its Output Stage placement; standalone, another clip's
+    // when the base has none), the Game Preset name they share; on a clip that is not one of them, its own shapes or a shared frame
+    // mask of its video.
     private List<(int Owner, List<Point> Points)> StartingShapes()
     {
         var start = new List<(int, List<Point>)>();
         void Take(int piece, string text) =>
             start.AddRange(MaskStore.ParseShapes(text).Select(s => (piece, s.Select(p => new Point(p.X * _width, p.Y * _height)).ToList())));
 
-        if (_forLayer)
+        var family = _forLayer && !_layer.IsVideoFile ? new List<(Layer Clip, CutoutPiece Piece)>()
+            : _viewModel.CutoutFamily(_viewModel.CutoutStudioBase(_layer), orAnyClip: !_forLayer);
+        foreach (var group in family.GroupBy(f => f.Piece.Shapes))
         {
-            var piece = _viewModel.IsCutout(_layer);
-            var text = (_layer.UsesFrameMask || (piece && _layer.CustomMask)) && _layer.MaskShapes.Length > 0 ? _layer.MaskShapes
-                : piece ? _viewModel.CutoutLayers.FirstOrDefault()?.MaskShapes ?? "" : "";
-            if (text.Length > 0)
-                Take(NewPiece(_layer.Name), text);
-            return start;
+            var (_, first) = group.First();
+            var piece = NewPiece(first.Name);
+            Take(piece, group.Key);
+            _placed[piece] = new CutoutStage.Placed { Id = piece, Source = default, Outlines = [], X = first.X, Y = first.Y, Width = first.Width };
+            _movedByHand.Add(piece);
+            if (_forLayer && group.Any(f => ReferenceEquals(f.Clip, _layer)))
+                _ownPiece = piece;
+            else
+                _familyOthers.Add(piece);
         }
 
-        foreach (var group in _viewModel.CutoutLayers.GroupBy(l => l.MaskShapes))
+        _presetName.Text = MainViewModel.PresetNameOf(family.Select(f => f.Piece.Name).ToList()) ?? _viewModel.SelectedStylePreset ?? "";
+        if (!_forLayer || _ownPiece is not null)
+            return start;
+
+        var cutout = _viewModel.IsCutout(_layer);
+        var text = (_layer.UsesFrameMask || (cutout && _layer.CustomMask)) && _layer.MaskShapes.Length > 0 ? _layer.MaskShapes
+            : cutout ? _viewModel.CutoutLayers.FirstOrDefault()?.MaskShapes ?? "" : "";
+        if (text.Length > 0)
         {
-            var piece = NewPiece(group.First().Name);
-            Take(piece, group.Key);
-            _placed[piece] = new CutoutStage.Placed
-            {
-                Id = piece,
-                Source = default,
-                Outlines = [],
-                X = group.First().PositionX,
-                Y = group.First().PositionY,
-                Width = group.First().SizeWidth,
-            };
-            _movedByHand.Add(piece);
+            _ownPiece = NewPiece(_layer.Name);
+            Take(_ownPiece.Value, text);
         }
 
         return start;
@@ -378,8 +394,7 @@ public sealed partial class MaskDrawWindow : Window
         return piece;
     }
 
-    // The column at the right: the Cutouts, the Video Zoom, the Source Navigator, the Output Stage (taking the height left) and the
-    // Game Preset's name and Save at its foot.
+    // Right column: Cutouts, Video Zoom, Source Navigator, Output Stage (fills remaining height), Game Preset name and Save.
     private DockPanel PiecesPane()
     {
         var pane = new DockPanel { Width = 270, Margin = new Thickness(10, 0, 0, 0) };
@@ -416,7 +431,7 @@ public sealed partial class MaskDrawWindow : Window
         zoomRow.Children.Add(_zoomSlider);
         top.Children.Add(zoomRow);
 
-        // The whole frame being cut from, with the view's box (5.3.1); under it the Output Stage, labelled for what a drag there does.
+        // Source Navigator (full frame with view box), then the labelled Output Stage.
         top.Children.Add(new TextBlock { Text = "Source Navigator", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, 0) });
         top.Children.Add(_navigator);
         top.Children.Add(new TextBlock { Text = "Output Stage \u2014 drag a finished Cutout to position it", FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0) });
@@ -436,8 +451,8 @@ public sealed partial class MaskDrawWindow : Window
         return pane;
     }
 
-    // A piece moved on the tall frame: the stage holds the very object it moves, so nothing is made again under the drag. A double-click
-    // (no X left) gives it back to the automatic layout.
+    // Piece dragged on the vertical frame (the stage mutates the same object, so nothing rebuilds mid-drag); double-click (X cleared)
+    // returns it to automatic layout.
     private void PieceMoved(int piece)
     {
         if (_placed.TryGetValue(piece, out var placed) && double.IsNaN(placed.X))
@@ -451,8 +466,7 @@ public sealed partial class MaskDrawWindow : Window
         }
     }
 
-    // The pieces with shapes, in the order they were made, as the layout and the view model want them. Their place on the tall frame:
-    // laid out above and below the video by HudLibrary, but for those moved by hand.
+    // Pieces with shapes in creation order; placed above/below the video by HudLibrary except manually positioned ones.
     private List<CutoutPiece> Pieces()
     {
         var pieces = new List<(int Id, Rect Source, List<List<Point>> Outlines)>();
@@ -498,10 +512,10 @@ public sealed partial class MaskDrawWindow : Window
         return result;
     }
 
-    // The rows of the piece list and the tall frame. Rows come and go with the pieces; a name being typed keeps its box.
+    // Piece list and vertical frame rows, added/removed with pieces; a name being edited keeps its TextBox.
     private void RefreshPieces()
     {
-        // An undo can bring back the shapes of a piece that was removed.
+        // Undo may restore shapes of a removed piece.
         foreach (var id in _surface.Owners)
             _names.TryAdd(id, $"Cutout {id}");
         Pieces();
@@ -574,7 +588,7 @@ public sealed partial class MaskDrawWindow : Window
 
     private double Fitted => Math.Min(_viewport.ActualWidth / _width, _viewport.ActualHeight / _height);
 
-    // The least a view magnifies: the whole picture, or a screen pixel to a source pixel for a video smaller than the window.
+    // Minimum zoom: fit the whole picture, or 1:1 for pictures smaller than the view.
     private double LeastZoom => Math.Min(Fitted > 0 ? Fitted : 1, 1);
 
     private void Fit()
@@ -604,7 +618,7 @@ public sealed partial class MaskDrawWindow : Window
         }
     }
 
-    // The zoom set, with the point of the picture under the zoom's point staying under it.
+    // Sets the zoom keeping the picture point under the anchor fixed.
     private void SetZoom(double zoom)
     {
         var (sourceX, sourceY) = ((_zoomPoint.X - _panX) / _zoom, (_zoomPoint.Y - _panY) / _zoom);
@@ -614,7 +628,7 @@ public sealed partial class MaskDrawWindow : Window
 
     private void ApplyView()
     {
-        // The picture is never lost: smaller than the viewport it sits in the middle, larger it always covers it.
+        // Clamp: centre a smaller picture; a larger one always covers the viewport.
         var (wide, tall) = (_width * _zoom, _height * _zoom);
         var (viewWidth, viewHeight) = (_viewport.ActualWidth, _viewport.ActualHeight);
         _panX = wide <= viewWidth ? (viewWidth - wide) / 2 : Math.Clamp(_panX, viewWidth - wide, 0);
@@ -630,8 +644,8 @@ public sealed partial class MaskDrawWindow : Window
         ShowBar(_verticalBar, tall, viewHeight, _panY);
     }
 
-    // A scroll bar over the view: shown while the picture is larger than the view that way, its thumb the part seen. Setting its value
-    // here raises no Scroll, so only the user's own moves of it pan.
+    // Syncs a scroll bar (visible when the picture exceeds the view; thumb = visible part). Setting Value raises no Scroll, so only
+    // user drags pan.
     private static void ShowBar(ScrollBar bar, double picture, double view, double pan)
     {
         var shown = picture > view + 0.5;
@@ -643,7 +657,7 @@ public sealed partial class MaskDrawWindow : Window
         (bar.SmallChange, bar.LargeChange, bar.Value) = (WheelPan, view * 0.9, -pan);
     }
 
-    // The picture's corner put here (ApplyView keeps it covering the view). A view showing the whole picture stays fitted.
+    // Sets the picture origin (ApplyView clamps); a fitted view stays fitted.
     private void PanTo(double panX, double panY)
     {
         if (_width * _zoom > _viewport.ActualWidth + 0.5 || _height * _zoom > _viewport.ActualHeight + 0.5)
@@ -652,7 +666,7 @@ public sealed partial class MaskDrawWindow : Window
         ApplyView();
     }
 
-    // The Source Navigator's press: the view centred on that point of the source, at the zoom it has.
+    // Source Navigator press: centre the view on that source point at the current zoom.
     internal void CenterOn(Point source) =>
         PanTo(_viewport.ActualWidth / 2 - source.X * _zoom, _viewport.ActualHeight / 2 - source.Y * _zoom);
 
@@ -675,7 +689,7 @@ public sealed partial class MaskDrawWindow : Window
         CompositionTarget.Rendering -= Tick;
     }
 
-    // Each refresh while the view is moving: the wheel's zoom eased in, WASD's pan.
+    // Per-frame update while animating: eased wheel zoom and WASD pan.
     private void Tick(object? sender, EventArgs e)
     {
         var now = Stopwatch.GetTimestamp();
@@ -709,9 +723,8 @@ public sealed partial class MaskDrawWindow : Window
             StopTicking();
     }
 
-    // The view's pointer, from WPF's events (and the window's own messages) into the point-based steps below, which the golden tests
-    // drive with the points and keys they choose.
-    // A wheel WPF raises (the window's own messages answer the real ones first, WheelMessage): one sent by a test, or one the hook let by.
+    // Adapters from WPF events (and window messages) to the point-based handlers below, which goldens drive directly.
+    // WPF MouseWheel only arrives for test-injected or hook-passed wheels; real ones are handled first in WheelMessage.
     private void Viewport_MouseWheel(object sender, MouseWheelEventArgs e)
     {
         Wheel(e.Delta, e.GetPosition(_viewport), Keyboard.Modifiers, TouchpadNow(e.Delta));
@@ -721,18 +734,17 @@ public sealed partial class MaskDrawWindow : Window
     private void Viewport_MouseDown(object sender, MouseButtonEventArgs e) =>
         e.Handled = Press(e.ChangedButton, e.GetPosition(_viewport), Keyboard.Modifiers);
 
-    // A right press waits for the right button's own moves: the move WPF raises as the press takes the pointer is not one of them.
+    // Ignore the synthetic move WPF raises on mouse capture; only real moves can turn a right press into a pan.
     private void Viewport_MouseMove(object sender, MouseEventArgs e) =>
         e.Handled = (_rightPress is null || _panDrag is not null || e.RightButton == MouseButtonState.Pressed) && MoveTo(e.GetPosition(_viewport));
 
     private void Viewport_MouseUp(object sender, MouseButtonEventArgs e) => e.Handled = Release(e.ChangedButton);
 
     /// <summary>
-    /// The wheels over the view, from the window's own messages, before WPF sees them (Pass 5.5.1, the user's: a touchpad's two-finger
-    /// scroll up and down zoomed). The horizontal wheel (a touchpad's sideways scroll, a tilted wheel), which WPF raises nothing for, pans
-    /// sideways, answered TRUE or Windows sends it on as an old tilt wheel's clicks. The vertical wheel is told apart here, while its
-    /// message is the one being handled (<see cref="TouchpadNow"/>), with its keys as the message carries them (a precision touchpad's
-    /// pinch is Ctrl + the wheel), and done here (<see cref="Wheel"/>): handled, so WPF raises no MouseWheel for it and nothing is done twice.
+    /// WndProc hook for wheel messages before WPF (otherwise touchpad two-finger scroll zoomed). WM_MOUSEHWHEEL (no WPF event) pans
+    /// and returns TRUE, else Windows re-sends it as legacy tilt clicks. WM_MOUSEWHEEL is classified while current
+    /// (<see cref="TouchpadNow"/>) with its key state (precision pinch = Ctrl+wheel) and handled via <see cref="Wheel"/>, marked handled
+    /// so WPF raises no duplicate MouseWheel.
     /// </summary>
     private IntPtr WheelMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
@@ -754,15 +766,15 @@ public sealed partial class MaskDrawWindow : Window
         if ((word & MkControl) != 0)
             keys |= ModifierKeys.Control;
 
-        // The pointer as the message has it (screen pixels), in the view's DIPs: the point a zoom keeps under it.
+        // Message screen point converted to view DIPs (the zoom anchor).
         var (x, y) = ((short)(lParam.ToInt64() & 0xFFFF), (short)((lParam.ToInt64() >> 16) & 0xFFFF));
         Wheel(delta, _viewport.PointFromScreen(new Point(x, y)), keys, TouchpadNow(delta));
         return IntPtr.Zero;
     }
 
     /// <summary>
-    /// Whether the wheel being handled now is a touchpad's (<see cref="IsTouchpadWheel"/>, with what Windows says of the message and of the
-    /// wheel just before it); a touchpad's is remembered, so the rest of its gesture is one too.
+    /// Classifies the current wheel message as touchpad (<see cref="IsTouchpadWheel"/> with message source and recent history),
+    /// recording touchpad hits so the rest of the gesture matches.
     /// </summary>
     private bool TouchpadNow(int delta)
     {
@@ -774,19 +786,18 @@ public sealed partial class MaskDrawWindow : Window
     }
 
     /// <summary>
-    /// Whether a vertical wheel is a touchpad's two-finger scroll (pure, for cutout-studio-wheel): Windows says its message came from a
-    /// touchpad (GetCurrentInputMessageSource, IMDT_TOUCHPAD), or it is no whole number of notches (a mouse's notched wheel turns 120 at a
-    /// time; a precision touchpad's scroll sends what the fingers moved), or a touchpad's scroll came just before it (the same gesture).
+    /// Pure touchpad detection (golden cutout-studio-wheel): GetCurrentInputMessageSource reports IMDT_TOUCHPAD, or the delta is not a
+    /// multiple of 120 (precision touchpads send finger distance), or a touchpad wheel arrived just before (same gesture).
     /// </summary>
     internal static bool IsTouchpadWheel(int delta, bool sourceIsTouchpad, bool touchpadJustBefore) =>
         sourceIsTouchpad || touchpadJustBefore || delta % 120 != 0;
 
-    /// <summary>What a turn of the vertical wheel does in the view.</summary>
+    /// <summary>Vertical wheel action in the view.</summary>
     internal enum WheelAction { Zoom, PanSideways, PanUpDown }
 
     /// <summary>
-    /// What the vertical wheel does in the view (pure, for cutout-studio-wheel): Shift pans sideways; a touchpad's two-finger scroll with no
-    /// key pans up and down; anything else zooms about the pointer: a mouse's wheel, Ctrl + either, and a touchpad's pinch (Ctrl + the wheel).
+    /// Pure vertical-wheel mapping (golden cutout-studio-wheel): Shift pans horizontally; unmodified touchpad scroll pans vertically;
+    /// everything else (mouse wheel, Ctrl+either, touchpad pinch) zooms about the pointer.
     /// </summary>
     internal static WheelAction WheelDoes(ModifierKeys keys, bool touchpad) =>
         keys == ModifierKeys.Shift ? WheelAction.PanSideways
@@ -794,9 +805,8 @@ public sealed partial class MaskDrawWindow : Window
         : WheelAction.Zoom;
 
     /// <summary>
-    /// The wheel at a point of the view (<see cref="WheelDoes"/>): a zoom about it; with Shift a pan sideways (a notch down moves the view
-    /// right); a touchpad's two-finger scroll with no key (<paramref name="touchpad"/>) a pan up and down, the picture moving with the fingers
-    /// as a page scrolls; its pinch (Ctrl) still zooms.
+    /// Applies a wheel at a view point per <see cref="WheelDoes"/>: zoom about it; Shift pans horizontally (notch down = right); unmodified
+    /// <paramref name="touchpad"/> scroll pans vertically with natural direction; Ctrl pinch zooms.
     /// </summary>
     internal void Wheel(int delta, Point at, ModifierKeys keys, bool touchpad = false)
     {
@@ -814,13 +824,12 @@ public sealed partial class MaskDrawWindow : Window
         }
     }
 
-    /// <summary>The horizontal wheel: a notch to the right moves the view right.</summary>
+    /// <summary>Horizontal wheel: a notch right pans right.</summary>
     internal void SidewaysWheel(int delta) => PanTo(_panX - delta / 120.0 * WheelPan, _panY);
 
     /// <summary>
-    /// A press at a point of the view. A pan takes it (true: it never reaches the shapes, so a shape being drawn is left as it is) for
-    /// the middle button, Space + the left, Alt + the left away from an edge (on one it puts a point in), and the right button, which
-    /// becomes a pan once it moves and a right-click on the shapes if it comes up where it went down (5.3.1).
+    /// Press handler; returns true when a pan consumes it (shapes untouched, in-progress shape kept): middle button, Space+left,
+    /// Alt+left off an edge (on an edge it inserts a point), and right button (pan once moved, else right-click on release in place).
     /// </summary>
     internal bool Press(MouseButton button, Point at, ModifierKeys keys)
     {
@@ -849,7 +858,7 @@ public sealed partial class MaskDrawWindow : Window
         Cursor = Cursors.SizeAll;
     }
 
-    /// <summary>The pointer moved to a point of the view: a pan follows it; a right press becomes one once it is a few pixels away.</summary>
+    /// <summary>Move handler: an active pan follows; a right press becomes a pan past the threshold.</summary>
     internal bool MoveTo(Point at)
     {
         if (_rightPress is { } press && _panDrag is null)
@@ -867,7 +876,7 @@ public sealed partial class MaskDrawWindow : Window
         return true;
     }
 
-    /// <summary>A button came up: a pan ends; a right press that never moved is a right-click on the shapes, where it went down.</summary>
+    /// <summary>Release handler: ends a pan; an unmoved right press becomes a right-click at its press point.</summary>
     internal bool Release(MouseButton button)
     {
         if (button == MouseButton.Right && _rightPress is { } press && _panDrag is null)
@@ -888,14 +897,14 @@ public sealed partial class MaskDrawWindow : Window
         return true;
     }
 
-    /// <summary>The view now: screen pixels to a source pixel, and where the picture's corner lies in the view.</summary>
+    /// <summary>Current view: zoom (screen px per source px) and picture origin.</summary>
     internal (double Zoom, double PanX, double PanY) View => (_zoom, _panX, _panY);
 
     // ----- Keys -----
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        // A name being typed keeps its letters, its Space and its own Ctrl+Z; Enter or Escape goes back to drawing.
+        // While renaming, the TextBox keeps letters, Space and Ctrl+Z; Enter or Escape returns to drawing.
         if (Keyboard.FocusedElement is TextBox)
         {
             if (e.Key is Key.Enter or Key.Escape)
@@ -966,8 +975,8 @@ public sealed partial class MaskDrawWindow : Window
         : $"{_surface.ShapeCount} shape{(_surface.ShapeCount == 1 ? "" : "s")}.";
 
     /// <summary>
-    /// The frame at the playhead, as it is in the file (the areas layers cut out are measured on it): of the clip's own file
-    /// where it is one of another file (its moment there: the playhead held to the clip), else of the file opened last.
+    /// Source frame at the playhead (Cutout areas are measured on it): from the clip's own file at the clamped clip time, else the
+    /// last opened file.
     /// </summary>
     private async Task LoadStillAsync()
     {
@@ -979,22 +988,21 @@ public sealed partial class MaskDrawWindow : Window
         }
 
         _status.Text = "Taking a still of the video at the playhead...";
-        if (_warm is not null)
-        {
-            _still.Source = _warm.Picture;
-            _navigator.Show(_warm.Picture);
-        }
+        _navigator.Show(_still.Source as BitmapSource);
+        var exact = SourceStill.TakeAsync(source, StillSeconds(), _stillPath, _closing.Token);
+        if (_warming is { IsCompleted: false } warming)
+            Faults.Forget(ShowWarmAsync(warming, exact), nameof(ShowWarmAsync));
 
         try
         {
-            _still.Source = await SourceStill.TakeAsync(source, StillSeconds(), _stillPath, _closing.Token);
+            _still.Source = await exact;
             _navigator.Show(_still.Source as BitmapSource);
             ShowHelp();
             RefreshPieces();
         }
         catch (OperationCanceledException)
         {
-            // Closed before the still came.
+            // Window closed before the still arrived.
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or NotSupportedException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
@@ -1003,8 +1011,20 @@ public sealed partial class MaskDrawWindow : Window
         }
     }
 
-    // Where the still is taken in its file: the playhead's moment in the clip (held to the clip's span), or (the file last opened)
-    // where a video at the playhead shows it.
+    // A prewarm still decoding when the window opened: shown when it lands before the exact still, if it is of this file and time.
+    private async Task ShowWarmAsync(Task<WarmStill?> warming, Task exact)
+    {
+        if (await warming is { } warm && !exact.IsCompleted && !_closing.IsCancellationRequested && Matches(warm))
+        {
+            _still.Source = warm.Picture;
+            _navigator.Show(warm.Picture);
+        }
+    }
+
+    private bool Matches(WarmStill warm) =>
+        string.Equals(warm.Source, _stillSource, StringComparison.OrdinalIgnoreCase) && Math.Abs(warm.Seconds - StillSeconds()) < 0.001;
+
+    // Still time in file: playhead mapped into the clip (clamped), or for the last opened file, the playhead video's time.
     private double StillSeconds() => StillSecondsOf(_viewModel, _layer, _stillOnClip);
 
     private static double StillSecondsOf(MainViewModel viewModel, Layer? layer, bool onClip)
@@ -1020,32 +1040,46 @@ public sealed partial class MaskDrawWindow : Window
         return viewModel.FileMomentAt(at)?.Seconds ?? at;
     }
 
-    // A video clip's own file (its picture is drawn on over that file's); null for anything else.
+    // A video clip's source file; null for other kinds.
     private static string? OwnFileOf(Layer? target) =>
         target is { IsVideoFile: true } && target.ImagePath.Trim().Trim('"') is { Length: > 0 } path ? path : null;
 
     /// <summary>
-    /// The file and moment the window would take its still of, opened for <paramref name="layer"/> (null: the video at the playhead) now:
-    /// what the heat lamp decodes ahead (5.4.3). Null when there is no file.
+    /// File and time the window would use for its still if opened standalone now with <paramref name="picked"/> selected (its base
+    /// clip, <see cref="MainViewModel.CutoutStudioBase"/>); the heat lamp pre-decodes this. Null without a file.
     /// </summary>
-    internal static (string Source, double Seconds)? StillTarget(MainViewModel viewModel, Layer? layer)
+    internal static (string Source, double Seconds)? StillTarget(MainViewModel viewModel, Layer? picked)
     {
-        var target = layer ?? viewModel.PlayheadVideo;
+        var target = viewModel.CutoutStudioBase(picked);
         var ownFile = OwnFileOf(target);
         var source = ownFile ?? viewModel.LocalMediaPath;
         return string.IsNullOrWhiteSpace(source) ? null : (source, StillSecondsOf(viewModel, target, ownFile is not null));
     }
 
+    /// <summary>
+    /// The mask text Apply would store: for this clip alone its own and newly drawn shapes, not its family's other Cutouts; for all
+    /// Cutouts every shape. "" when there are none.
+    /// </summary>
+    internal string ShapesFor(bool forAll)
+    {
+        var shapes = _surface.Finished.Where((_, s) => forAll || !_familyOthers.Contains(_surface.Owners[s])).ToList();
+        return shapes.Count == 0 ? ""
+            : MaskStore.FormatShapes(shapes.Select(s => (IReadOnlyList<Point>)s.Select(p => new Point(p.X / _width, p.Y / _height)).ToList()));
+    }
+
+    /// <summary>The picture under the shapes now: a backdrop, the prewarmed still or the exact still.</summary>
+    internal ImageSource? StillShown => _still.Source;
+
     private void Finish(bool forAll)
     {
         _surface.CloseShape();
-        if (_surface.ShapeCount == 0)
+        if (ShapesFor(forAll) is not { Length: > 0 } shapes)
         {
             _status.Text = "Draw at least one shape first, or press Cancel.";
             return;
         }
 
-        Shapes = MaskStore.FormatShapes(_surface.Finished.Select(s => (IReadOnlyList<Point>)s.Select(p => new Point(p.X / _width, p.Y / _height)).ToList()));
+        Shapes = shapes;
         ForAllLayers = forAll;
         DialogResult = true;
     }

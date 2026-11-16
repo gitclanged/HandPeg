@@ -1,17 +1,14 @@
 namespace HandPegApp.Services;
 
-/// <summary>The scopes the Video Scopes pane draws (5.4.0; the Vectorscope 5.6.0, appended so the others keep their numbers).</summary>
+/// <summary>Video Scopes pane scope kinds (append-only so existing values keep their numbers).</summary>
 public enum VideoScopeKind { Histogram, LumaWaveform, RgbParade, Vectorscope }
 
 /// <summary>
-/// The Video Scopes' maths (5.4.0): pure, over a frame of BGRA8 bytes (its alpha never read), as the player composes it
-/// (GpuPreviewEngine.CaptureThumbnailAsync, a small frame while paused). It counts the levels (the Histogram: red, green, blue
-/// and the luma; the Luma Waveform: the luma of each column; the RGB Parade: each channel's levels per column, side by side)
-/// and draws the counts into a picture of Bgr32 pixels, one row per level (level 255 at the top), on a dark ground with a
-/// graticule every quarter. The luma is BT.709's (0.2126 R + 0.7152 G + 0.0722 B), in whole numbers that keep white 255.
-/// 5.6.0, the Vectorscope: each pixel's BT.709 colour difference (Cb across, Cr up) counted into a square, over a graticule of the
-/// reach of the colour difference, the 75 % circle, a crosshair, the primaries' targets at 75 % and 100 %, and the skin-tone line.
-/// Nothing here touches WPF: the pane writes the pixels into its one bitmap, reused.
+/// Pure Video Scopes math over BGRA8 frames (alpha ignored) from GpuPreviewEngine.CaptureThumbnailAsync (small paused frame). Builds
+/// Histogram (R, G, B, luma), Luma Waveform (per-column luma) and RGB Parade (per-channel columns) as Bgr32 images, one row per level
+/// (255 at top) on a dark ground with quarter graticules. Luma is integer BT.709 (0.2126 R + 0.7152 G + 0.0722 B, white = 255).
+/// Vectorscope: BT.709 Cb (x) / Cr (y) density with range graticule, 75 % circle, crosshair, 75/100 % primary targets and skin-tone line.
+/// WPF-free; the pane copies pixels into one reused bitmap.
 /// </summary>
 public static class VideoScopes
 {
@@ -24,19 +21,19 @@ public static class VideoScopes
     /// <summary>The rows of a scope's picture: one per level.</summary>
     public const int Levels = 256;
 
-    /// <summary>The Luma Waveform's columns, and each channel's in the RGB Parade (with <see cref="ParadeGap"/> between them).</summary>
+    /// <summary>Column counts for the Luma Waveform and each RGB Parade channel (separated by <see cref="ParadeGap"/>).</summary>
     public const int WaveformColumns = 384, ParadeColumns = 128, ParadeGap = 8;
 
     // The ground, and the graticule's lines at 0, 25, 50, 75 and 100 per cent.
     private const uint Ground = 0x00101014, Graticule = 0x00343440;
 
-    /// <summary>The Vectorscope's picture: a square of this side, the colour difference's reach (0.5) <see cref="VectorscopeMargin"/> in from its edges.</summary>
+    /// <summary>Vectorscope side length; chroma range 0.5 maps to <see cref="VectorscopeMargin"/> inside the edges.</summary>
     public const int VectorscopeSize = 256, VectorscopeMargin = 8;
 
-    /// <summary>BT.709's colour-difference scales: Cb = (B - Y) / 1.8556, Cr = (R - Y) / 1.5748, each -0.5 to 0.5 (as PSHueSaturation's).</summary>
+    /// <summary>BT.709 chroma scales: Cb = (B - Y) / 1.8556, Cr = (R - Y) / 1.5748, each -0.5..0.5 (matches PSHueSaturation).</summary>
     public const double CbScale = 1.8556, CrScale = 1.5748;
 
-    /// <summary>The skin-tone line's angle, degrees counter-clockwise from +Cb (between red's 103 and yellow's 175): most skin falls near it.</summary>
+    /// <summary>Skin-tone line angle, degrees CCW from +Cb (between red 103 and yellow 175).</summary>
     public const double SkinToneDegrees = 123;
 
     // The skin-tone line's colour, and the targets' (brighter than the graticule).
@@ -63,8 +60,7 @@ public static class VideoScopes
     }
 
     /// <summary>
-    /// The columns of the scope a column of the frame goes into: one when the scope has no more columns than the frame (several of the
-    /// frame's share it), else the run of them it spans, so a narrow frame (a 9:16 one) leaves no empty columns.
+    /// Scope column range for a frame column: one when downsampling, else the spanned run so narrow (9:16) frames leave no gaps.
     /// </summary>
     public static (int First, int End) ColumnsOf(int x, int width, int columns)
     {
@@ -75,7 +71,7 @@ public static class VideoScopes
     /// <summary>How many of the frame's pixels a column of the scope holds: what makes a column's dot full.</summary>
     public static int PixelsPerColumn(int width, int height, int columns) => Math.Max(width * height / Math.Max(columns, 1), height);
 
-    /// <summary>The luma of each column of the frame counted: [column, level], the frame's columns shared out over <paramref name="columns"/>.</summary>
+    /// <summary>Per-column luma counts [column, level], frame columns distributed over <paramref name="columns"/>.</summary>
     public static int[,] LumaWaveform(ReadOnlySpan<byte> bgra, int width, int height, int columns)
     {
         var counts = new int[columns, Levels];
@@ -124,7 +120,7 @@ public static class VideoScopes
         return counts;
     }
 
-    /// <summary>The picture of a scope of the frame: its Bgr32 pixels (0x00RRGGBB), row by row from the top, and its size.</summary>
+    /// <summary>Renders a scope: Bgr32 pixels (0x00RRGGBB), top-down rows, plus size.</summary>
     public static (uint[] Pixels, int Width, int Height) Render(VideoScopeKind kind, ReadOnlySpan<byte> bgra, int width, int height)
     {
         switch (kind)
@@ -182,7 +178,7 @@ public static class VideoScopes
         return ((blue / 255.0 - y) / CbScale, (red / 255.0 - y) / CrScale);
     }
 
-    /// <summary>The Vectorscope's cell of a colour difference: +Cb to the right, +Cr up, grey at the centre; kept inside the square.</summary>
+    /// <summary>Vectorscope cell for (Cb, Cr): +Cb right, +Cr up, neutral at centre, clamped to the square.</summary>
     public static (int X, int Y) VectorscopeCell(double cb, double cr, int size = VectorscopeSize)
     {
         var (centre, reach) = (size / 2.0, size / 2.0 - VectorscopeMargin);
@@ -191,7 +187,7 @@ public static class VideoScopes
         return (Math.Max(0, Math.Min(x, size - 1)), Math.Max(0, Math.Min(y, size - 1)));
     }
 
-    /// <summary>The colour difference of a frame counted: [x, y] cells of the Vectorscope's square (<see cref="VectorscopeCell"/>).</summary>
+    /// <summary>Chroma density counts [x, y] over Vectorscope cells (<see cref="VectorscopeCell"/>).</summary>
     public static int[,] Vectorscope(ReadOnlySpan<byte> bgra, int width, int height, int size = VectorscopeSize)
     {
         var counts = new int[size, size];
@@ -206,7 +202,7 @@ public static class VideoScopes
         return counts;
     }
 
-    /// <summary>The primaries' targets (red, magenta, blue, cyan, green, yellow) at a level (1 for 100 %, 0.75 for 75 %): their colour differences.</summary>
+    /// <summary>Chroma targets for R, Mg, B, Cy, G, Yl at a level (1 = 100 %, 0.75 = 75 %).</summary>
     public static (string Name, double Cb, double Cr)[] Targets(double level)
     {
         var full = (int)Math.Round(255 * level);
@@ -219,7 +215,7 @@ public static class VideoScopes
         return [Of("R", full, 0, 0), Of("Mg", full, 0, full), Of("B", 0, 0, full), Of("Cy", 0, full, full), Of("G", 0, full, 0), Of("Yl", full, full, 0)];
     }
 
-    /// <summary>A colour difference's angle, degrees counter-clockwise from +Cb, 0 to 360 (the skin-tone line is at <see cref="SkinToneDegrees"/>).</summary>
+    /// <summary>Chroma angle in degrees CCW from +Cb, 0-360 (skin-tone line at <see cref="SkinToneDegrees"/>).</summary>
     public static double HueDegrees(double cb, double cr)
     {
         var degrees = Math.Atan2(cr, cb) * 180 / Math.PI;
@@ -276,7 +272,7 @@ public static class VideoScopes
             }
         }
 
-        // The dots: a cell's brightness grows with its share of the frame (a 64th of it is bright), never darker than the graticule.
+        // Dot brightness scales with frame share (1/64 is bright), never darker than the graticule.
         var counts = Vectorscope(bgra, width, height, size);
         var perCell = Math.Max(Math.Min(width * height, bgra.Length / 4) / 64, 1);
         for (var x = 0; x < size; x++)
@@ -303,13 +299,13 @@ public static class VideoScopes
         pixels[y * size + x] = (uint)((Mix(16) << 16) | (Mix(8) << 8) | Mix(0));
     }
 
-    /// <summary>The RGB Parade's picture width: three channels of <see cref="ParadeColumns"/> with a gap between each.</summary>
+    /// <summary>RGB Parade width: three <see cref="ParadeColumns"/> channels plus gaps.</summary>
     public const int ParadeWidth = 3 * ParadeColumns + 2 * ParadeGap;
 
     /// <summary>The row of the picture a level is drawn on: 255 at the top, 0 at the bottom.</summary>
     public static int RowOf(int level) => Levels - 1 - Math.Clamp(level, 0, Levels - 1);
 
-    /// <summary>How bright a waveform's dot is for a count, 0 to 255: the share of the column's pixels at that level, brought up steeply so a few pixels still show.</summary>
+    /// <summary>Waveform dot brightness 0-255 from the column share at a level, with a steep curve so sparse pixels remain visible.</summary>
     public static int Brightness(int count, int perColumn) =>
         count <= 0 ? 0 : (int)Math.Round(255 * (1 - Math.Exp(-48.0 * count / Math.Max(perColumn, 1))));
 
@@ -327,7 +323,7 @@ public static class VideoScopes
     private static void Plot(uint[] pixels, int width, int x, int level, int count, int perColumn, (double R, double G, double B) tint) =>
         PlotAt(pixels, width, x, RowOf(level), count, perColumn, tint);
 
-    // A dot at a row and column of the picture (the Vectorscope's cells as the waveforms' levels): never darker than what is under it.
+    // Plots a dot (waveform level or Vectorscope cell) using max blending with the existing pixel.
     private static void PlotAt(uint[] pixels, int width, int x, int row, int count, int perColumn, (double R, double G, double B) tint)
     {
         if (count <= 0)
@@ -343,9 +339,8 @@ public static class VideoScopes
     }
 
     /// <summary>
-    /// The Histogram drawn: a column per level, the luma a grey fill behind and the three channels over it, each lit where its bar
-    /// reaches, so where they overlap is white. Scaled to the tallest level but black and white, which a letterbox or a white sky
-    /// would leave everything else flat under.
+    /// Draws the Histogram: one column per level, grey luma fill behind additive R/G/B bars (overlap = white). Scaled to the tallest
+    /// level excluding pure black and white, so letterboxes or blown skies do not flatten the rest.
     /// </summary>
     private static void DrawHistogram(int[,] counts, uint[] pixels)
     {

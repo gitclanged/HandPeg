@@ -17,15 +17,15 @@ using Microsoft.Win32;
 
 namespace HandPegApp;
 
-// ----- MainWindow, continued: the keyframe buttons and lanes, where the panes are, the Add Layer kinds, the mixer,
-// presets and layout files, the bottom bar, the hover sprite sheet and the master filmstrip -----
+// ----- Keyframe controls and lanes, pane layout, Add Layer kinds, mixer, preset and layout files, bottom bar,
+// hover sprite sheet and master filmstrip -----
 public partial class MainWindow
 {
-    // (Pass 5.6A: the old Filters tab's LUT box went with the tab; a LUT is the Color Grade card's now, chosen in the Color tab.)
+    // LUT selection lives on the Color Grade card (Color tab), not in this partial.
 
-    // ----- Keyframes: the pane, and the buttons of the bottom bar -----
+    // ----- Keyframes pane and bottom-bar keyframe buttons -----
 
-    /// <summary>The clip the keyframe controls work on: the one selected on a time bar, or failing that the one the view model has.</summary>
+    /// <summary>Keyframe target: the selected visual clip if still on the timeline, else the view model's ActiveKeyLayer.</summary>
     private Layer KeyClip => _selectedClip switch
     {
         Layer { IsPicture: true } layer when _viewModel.Layers.Contains(layer) => layer,
@@ -56,14 +56,14 @@ public partial class MainWindow
 
     private void KeyLanes_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        // A change of height is the rows' own (the graph shown or hidden); only a new width lays them out again.
+        // Height changes come from the rows themselves (graph toggled); only width changes require a redraw.
         if (e.WidthChanged)
             DrawKeyTimeline();
     }
 
     private void KeyGraph_Click(object sender, RoutedEventArgs e) => DrawKeyTimeline();
 
-    /// <summary>Zoom to Clip: the time bars, and the Keyframes pane's rows with them, show the selected clip's stretch.</summary>
+    /// <summary>Zoom to Clip: sets the timeline view (and Keyframes rows) to the active clip's span plus a 4% margin.</summary>
     private void ZoomToKeyClip_Click(object sender, RoutedEventArgs e)
     {
         var seconds = _viewModel.DurationMs / 1000;
@@ -77,10 +77,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Draws the Keyframes pane's rows: the time bars' stretch of the sequence (their zoom and scroll), the selected
-    /// clip's stretch of it shaded, a row for All and for each of its motion properties (and each animated effect value)
-    /// with a diamond at each keyframe, the selected row's graph, and the playhead. The rows draw themselves from these;
-    /// as the video plays only the playhead is moved.
+    /// Feeds the Keyframes rows: timeline view range (zoom/scroll), shaded clip span, rows for All, each motion property and each animated
+    /// effect value with diamonds, the selected row's graph, and the playhead. During playback only the playhead updates.
     /// </summary>
     private void DrawKeyTimeline()
     {
@@ -100,7 +98,7 @@ public partial class MainWindow
         _viewModel.SelectedKeyLane = KeyLanes.Selected?.Target;
     }
 
-    /// <summary>The rows of a clip: All, its motion properties, and every effect value of its stack that has keyframes.</summary>
+    /// <summary>Keyframe lanes for a clip: All, motion properties, and every keyframed effect value in its (non-bypassed) stack.</summary>
     private static List<KeyLane> BuildKeyLanes(Layer clip)
     {
         var start = clip.StartTime;
@@ -126,7 +124,7 @@ public partial class MainWindow
         if (clip.IsPicture)
             Add(KeyProperty.Opacity, "Opacity", value => value.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%");
 
-        // True 3D (5.2A): a tilted clip's Pitch and Yaw, as Rotation is its Roll.
+        // 3D tilt lanes (Pitch, Yaw) for tilted clips; Rotation already covers Roll.
         if (clip.HasFilters && clip.IsTilted)
         {
             Add(KeyProperty.TiltX, "Tilt X (Pitch)", value => value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "\u00B0");
@@ -155,43 +153,38 @@ public partial class MainWindow
         return lanes;
     }
 
-    // ----- The panes: where each is, and how large -----
-    // The player area is two grids. The outer one has the player in one column and the side panes in another,
-    // over the Sequence Overview Scrubber; the inner one has the video in one column and the layout pane in another.
-    // Moving a pane is giving it the other row or column of its grid (and that row or column its size);
-    // nothing is taken out of the window or put back. The arrangement belongs to the mode in use.
+    // ----- Pane layout -----
+    // Pane placement, sizing and drag-to-dock are owned by DockManager (MainWindow.Docking.cs); these entry points only schedule a
+    // rebuild for the active layout.
 
     private static readonly GridLength Star = new(1, GridUnitType.Star);
 
-    /// <summary>Lays the panes out again, as this mode's arrangement has them (see MainWindow.Docking.cs).</summary>
+    /// <summary>Schedules a dock rebuild for the current layout and repositions the Views popup.</summary>
     private void ApplyPaneLayout()
     {
         _dock?.ScheduleRebuild();
         PlaceViewsPopup();
     }
 
-    /// <summary>A side pane was shown or hidden: the panes are laid out again.</summary>
+    /// <summary>Side pane visibility changed: schedules a dock rebuild and a Keyframes redraw.</summary>
     private void UpdateSidePanes()
     {
         _dock?.ScheduleRebuild();
         Dispatcher.BeginInvoke(DrawKeyTimeline, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
-    // The border between the player and the Sequence Overview Scrubber. What it drags is the bar's height setting,
-    // the one the slider beside the volume sets: the bar is as tall as that says, not as tall as a grid
-    // row happens to be, so the row is put back to "as tall as its content" each time the splitter has sized it.
+    // Pane borders are DockManager thumbs; no GridSplitter handlers live in MainWindow.
 
-    // Dragging a pane by its title: let go on the other side of what it is beside, and it moves there.
+    // Pane title drags are DockManager drag-to-dock operations.
 
-    // ----- The Audio tab's checkboxes, folded into a button when the row is too narrow -----
+    // ----- Audio tab options: inline checkboxes collapse into a button when the row is too narrow -----
 
     private double _audioOptionsWidth;
 
-    // ----- Tabs that are built when they are first wanted -----
+    // ----- Lazily built tabs -----
 
-    // The named parts of the Audio tab that this file uses: the tab is made from a template, so these are found in
-    // it when it is made. The one asked about from outside the tab (is a file being dropped on it) may not be there
-    // yet; the rest are only reached from the tab's own events.
+    // Audio tab named parts, resolved from its template on first build. AudioPanel is queried externally (drop target) and may be null;
+    // the rest are only touched from the tab's own events.
     private DockPanel? AudioPanel;
     private Grid AudioOptionsHost = null!;
     private StackPanel AudioOptionsInline = null!;
@@ -216,9 +209,8 @@ public partial class MainWindow
             AudioOptionsButton.IsChecked = false;
     }
 
-    // A button that opened a menu would, clicked again to close it, open it straight back up (see
-    // TimelineOptionsPopup_Opened). The views menu, the bins and the keyframe menu share the cure: each popup
-    // knows its button (its placement target), which is deaf while the popup is open.
+    // Clicking a popup's button to close it would immediately reopen it (StaysOpen=false closes on the press, then Click reopens). The
+    // Views, bins and keyframe popups disable hit-testing on their PlacementTarget while open.
     private void BinPopup_Opened(object? sender, EventArgs e)
     {
         if (sender is Popup { PlacementTarget: UIElement button })
@@ -266,7 +258,7 @@ public partial class MainWindow
             await _viewModel.AddAudioLayerAsync(dialog.FileName, _viewModel.PositionMs / 1000);
     }
 
-    /// <summary>Opens the Windows colour picker for one of the selected text layer's colours: its letters' or its outline's.</summary>
+    /// <summary>Opens the Windows colour picker for the selected text layer's fill or outline colour (by button Tag).</summary>
     private void TextColor_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: string which } || _viewModel.SelectedTextLayer is not { } layer)
@@ -280,7 +272,7 @@ public partial class MainWindow
             FullOpen = true,
         };
 
-        // Owned by this window, so that it opens over it and blocks it like any other dialog.
+        // Owner HWND wrapper so the WinForms dialog is modal over this window.
         var owner = new System.Windows.Forms.NativeWindow();
         owner.AssignHandle(new System.Windows.Interop.WindowInteropHelper(this).Handle);
         try
@@ -297,7 +289,7 @@ public partial class MainWindow
         if (string.Equals(outline ? layer.OutlineColor : layer.FontColor, color, StringComparison.OrdinalIgnoreCase))
             return;
 
-        // The Windows colour picker's clicks are not seen by the window (NoteUserInput), so its step is taken here (4.4).
+        // The native picker's input bypasses NoteUserInput, so record the undo step explicitly.
         _viewModel.Checkpoint($"change the {(outline ? "outline" : "text")} color of {layer.Name}");
         if (outline)
             layer.OutlineColor = color;
@@ -305,9 +297,9 @@ public partial class MainWindow
             layer.FontColor = color;
     }
 
-    // ----- Add Layer's kinds: what each entry of the timeline's Add Layer flyout adds, by its Tag -----
-    // The flyout itself (its button, its timing, its keys) is the timeline pane's own since 4.4 (Views/UnifiedTimelinePane);
-    // it closes itself and hands the entry chosen on here (MainWindow.UnifiedTimeline.cs).
+    // ----- Add Layer dispatch by flyout entry Tag -----
+    // The flyout UI (button, timing, keys) belongs to Views/UnifiedTimelinePane; it closes itself and forwards the chosen entry here
+    // (MainWindow.UnifiedTimeline.cs).
 
     private void AddLayerMenu_Click(object sender, RoutedEventArgs e)
     {
@@ -331,10 +323,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Layers from a Mask: a mask of the whole frame (chosen here when none is given) taken apart into one
-    /// layer per HUD element it shows, after the pieces have been looked at and joined as wanted.
+    /// Layers from a Mask: splits a full-frame mask (prompted when <paramref name="maskPath"/> is null) into one Cutout per HUD element,
+    /// after review and merging in MaskLayersWindow.
     /// </summary>
-    /// <param name="owner">The window it opens over: this one, or a dialog open over it.</param>
+    /// <param name="owner">Owner window: this one, or a dialog over it.</param>
     public void AddLayersFromMask(string? maskPath = null, Window? owner = null)
     {
         owner ??= this;
@@ -352,8 +344,7 @@ public partial class MainWindow
             maskPath = dialog.FileName;
         }
 
-        // The areas already cut out of the videos (5.2-AuditB: pieces of their files, cut by their crops): pieces of the mask that one
-        // of them covers start left out.
+        // Existing Cutout crop rects; mask pieces they already cover start deselected.
         var existing = _viewModel.Layers.Where(_viewModel.IsCutout)
             .Select(l =>
             {
@@ -382,8 +373,8 @@ public partial class MainWindow
     // ----- Audio mixer -----
 
     /// <summary>
-    /// A sound clip's origin and format for its filters dialog: a voiceover recorded into the Voiceovers folder, a video clip's
-    /// first stream or a sound file's, then the codec and channels when known.
+    /// Filters dialog subtitle: origin (Voiceovers-folder recording, video clip stream #1, or audio file stream #1) plus codec and
+    /// channels when known.
     /// </summary>
     private static string SoundDescription(Layer layer)
     {
@@ -396,16 +387,16 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The filters of one sound, from its row on the timeline or its menu. One step of Undo. An output track has none (5.2A, the user's
-    /// Q6: since 5.2-AuditB each Sub-Lane mixes itself, and an output track keeps only its action, codec, bitrate and title).
+    /// Audio filters dialog for one clip (timeline row or menu), one Undo step. Output tracks have no filters: each Sub-Lane mixes itself,
+    /// and an output track keeps only action, codec, bitrate and title.
     /// </summary>
     private void TrackFilters_Click(object sender, RoutedEventArgs e)
     {
         switch ((sender as FrameworkElement)?.DataContext)
         {
-            // A sound from a file, or the sound of a video layer: the same filters, kept with the clip.
+            // Audio file or video layer audio: same filter set, stored on the clip.
             case Layer layer:
-                // Studio Voice's mix keys are timed from the clip's start (5.2B): the playhead is where Add Mix Key puts one.
+                // Studio Voice mix keys are clip-relative; pass the playhead offset for Add Mix Key.
                 var forClip = new TrackAudioFiltersDialog($"{layer.SourceFileName}   {SoundDescription(layer)}", layer.AudioFilters, _viewModel.PositionMs / 1000 - layer.StartTime) { Owner = this };
                 if (forClip.ShowDialog() == true)
                 {
@@ -418,10 +409,10 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The Voiceover Studio: recording, trimming and placing the voiceover that the encode mixes in.</summary>
+    /// <summary>Opens Voiceover Studio (record, trim and place voiceovers mixed into the export).</summary>
     private void OpenVoiceoverStudio_Click(object sender, RoutedEventArgs e) => OpenVoiceoverStudio();
 
-    /// <summary>The caption box's look (it is no clip, so it has no cards in the Effects pane): what is changed in it is one step of Undo.</summary>
+    /// <summary>Caption box appearance dialog (not a clip, so no Effects cards); changes form one Undo step, dropped if unchanged.</summary>
     private void ShowLayerProperties(Layer layer)
     {
         _viewModel.Checkpoint($"change the look of {layer.Name}");
@@ -435,7 +426,7 @@ public partial class MainWindow
     private const string LayoutFileFilter = "HandPeg Game Preset (*.hpstyle)|*.hpstyle|All files|*.*";
 
 
-    /// <summary>Where layout files are kept unless the user picks somewhere else. Made on first use, so the dialog can open in it.</summary>
+    /// <summary>Default layout file folder (AppPaths.Styles), created on first use so the file dialog can open there.</summary>
     private static string LayoutsFolder()
     {
         try
@@ -444,13 +435,13 @@ public partial class MainWindow
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // The dialog then opens wherever Windows last had it.
+            // Fall back to the dialog's last-used folder.
         }
 
         return AppPaths.Styles;
     }
 
-    // ----- Export Presets and Game Presets: saved, and moved to and from files (5.4B: the Export Presets selector, the Timeline's "...") -----
+    // ----- Export Presets and Game Presets: save, import and export -----
 
     private const string PresetFileFilter = "HandPeg export preset|*.hppreset;*.json|All files|*.*";
 
@@ -470,13 +461,11 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The one button of a preset block: a small dialog with what can be done with that kind of preset, each
-    /// as a button that does it: saving to the list under a name typed there (<paramref name="save"/>), and moving one to or from a
-    /// file (<paramref name="files"/>). The Export Presets have a button for each (5.4B: + Save Current as Preset..., Import / Export
-    /// Preset...); Game Presets one for both.
+    /// Small preset action dialog: optional save-to-list row with a name box (<paramref name="save"/>) and optional import/export buttons
+    /// (<paramref name="files"/>). Export Presets use separate entries for each; Game Presets use one dialog for both.
     /// </summary>
-    /// <param name="nameProperty">The view model's property that holds the name a preset of this kind is saved to the list under.</param>
-    /// <returns>"save", "import", "export", or null when the dialog was closed.</returns>
+    /// <param name="nameProperty">View model property bound to the save name box.</param>
+    /// <returns>"save", "import", "export", or null when closed.</returns>
     private string? AskPresetAction(string title, string about, string nameProperty, bool save = true, bool files = true)
     {
         string? chosen = null;
@@ -508,7 +497,7 @@ public partial class MainWindow
 
         if (save)
         {
-            // Saving to the list: the name, and the button that saves under it.
+            // Save-to-list row: name box and default Save button.
             panel.Children.Add(new TextBlock { Text = "Save the current settings to the list as:", Margin = new Thickness(0, 0, 0, 4) });
             var row = new DockPanel { Margin = new Thickness(0, 0, 0, 14) };
             var saveButton = Choice("Save", "save", "Saves the current settings to the list under this name. An existing name is replaced.");
@@ -536,7 +525,7 @@ public partial class MainWindow
         return chosen;
     }
 
-    /// <summary>The Export Presets selector's "+ Save Current as Preset...": the name asked for, then the settings saved to My Presets under it.</summary>
+    /// <summary>Export Presets "+ Save Current as Preset...": prompts for a name, then saves to My Presets.</summary>
     private void SaveCurrentPreset_Click(object sender, RoutedEventArgs e)
     {
         if (AskPresetAction("Save Current as Preset", "Saves the export settings as they are now (the size, frame rate, encoder, quality or bitrate, sound and format) to My Presets. A built-in preset's name is kept for it: the copy is saved as its name with (Custom).",
@@ -546,7 +535,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The Export Presets selector's "Import / Export Preset...": a preset brought in from a .hppreset file, or the settings saved to one.</summary>
+    /// <summary>Export Presets "Import / Export Preset...": imports a .hppreset file or exports current settings to one.</summary>
     private void ManagePresets_Click(object sender, RoutedEventArgs e)
     {
         switch (AskPresetAction("Import / Export Preset", "An Export Preset is the export's size, frame rate, encoder, quality or bitrate, sound and format. Bring one in from a .hppreset file (it joins My Presets and is applied), or save the settings as they are now to one.",
@@ -577,11 +566,10 @@ public partial class MainWindow
         }
     }
 
-    // ----- The bottom of the window -----
+    // ----- Bottom bar -----
 
     /// <summary>
-    /// The output row across the bottom of the window (its whole width since the status bar beside it was retired, 5.4.1-M5: the status
-    /// and the progress are the title bar's and the transport row's).
+    /// Spans the output (destination) row across the full window width; status and progress live in the title bar and transport row.
     /// </summary>
     private void UpdateBottomBar()
     {
@@ -591,7 +579,7 @@ public partial class MainWindow
 
     private void ExportLayout_Click(object sender, RoutedEventArgs e)
     {
-        // First which parts, then where to.
+        // Choose the parts to include, then the destination file.
         var choice = new StyleImportDialog(_viewModel.CaptureStyleWithMasks(), fileName: null) { Owner = this };
         if (choice.ShowDialog() != true)
             return;
@@ -611,7 +599,7 @@ public partial class MainWindow
         if (dialog.ShowDialog(this) != true || _viewModel.ReadStyle(dialog.FileName) is not { } layout)
             return;
 
-        // Which parts of the file to take.
+        // Choose which parts of the file to apply.
         var choice = new StyleImportDialog(layout, Path.GetFileName(dialog.FileName)) { Owner = this };
         if (choice.ShowDialog() == true)
             _viewModel.ApplyStyle(layout, choice.ImportLayout, choice.ImportColor, choice.ImportBlur, choice.ImportSubtitles);
@@ -621,17 +609,16 @@ public partial class MainWindow
 
     // ----- Timeline hover previews -----
 
-    // The opened file's key frames (FFmpeg's hover sheet): what the Sequence Overview Scrubber shows where the GPU cannot draw the
-    // sequence's own pictures (OverviewSheet, MainWindow.ProgramStrip.cs).
+    // Source file's FFmpeg keyframe sprite sheet: Overview Scrubber fallback when the GPU program strip is unavailable
+    // (OverviewSheet, MainWindow.ProgramStrip.cs).
     private ThumbnailSheet? _sourceSheet;
 
-    // Which load of the thumbnail sheet is the latest: a sheet decoded after a newer one was asked for is not wanted.
+    // Load generation counter; a decode that completes after a newer request is discarded.
     private int _spriteSheetLoads;
 
     /// <summary>
-    /// Loads the thumbnail sheet into memory (so the file itself is not kept open), decoded away from the interface's
-    /// thread, and redraws the Sequence Overview Scrubber's strip with it. With no sheet (a file closed, or one without a sheet yet)
-    /// the strip is cleared at once (4.4: it kept the last file's pictures until the next change of length).
+    /// Decodes the sprite sheet off the UI thread into memory (no open file handle) and rebuilds the Overview strip. With no sheet (file
+    /// closed or not yet generated) the strip clears immediately.
     /// </summary>
     private void LoadSpriteSheet() => Faults.Forget(LoadSpriteSheetAsync(), nameof(LoadSpriteSheet));
 
@@ -652,9 +639,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The thumbnail sheet, read from a stream (never by its address: WPF's image cache would hand back the sheet that
-    /// was at that path before it was made again) and frozen, on a worker; null when it cannot be read, which just means
-    /// no previews.
+    /// Decodes the sheet on a worker from a stream (not a URI, which WPF's image cache would serve stale after regeneration) and freezes
+    /// it; null when unreadable (no previews).
     /// </summary>
     private static async Task<BitmapSource?> DecodeSpriteSheetAsync(string path)
     {
@@ -694,9 +680,8 @@ public partial class MainWindow
     private void FilmstripList_SizeChanged(object sender, SizeChangedEventArgs e) => RebuildFilmstrip();
 
     /// <summary>
-    /// Fills the strip behind the timeline's waveform with pictures cut from the thumbnail sheet (the sequence's own, drawn
-    /// by the GPU engine, else the opened file's key frames): as many as fit at their own shape, each showing the moment at
-    /// the middle of the stretch of timeline it lies over.
+    /// Fills the filmstrip behind the timeline waveform from OverviewSheet (GPU program strip, else source keyframes): as many cells as
+    /// fit at native aspect, each showing the midpoint time of its span.
     /// </summary>
     private void RebuildFilmstrip()
     {
@@ -721,7 +706,7 @@ public partial class MainWindow
         FilmstripList.ItemsSource = pictures;
     }
 
-    // The last picture of a sheet that lies within the sequence (the opened file's sheet is a whole grid, longer or shorter than it).
+    // Last sheet cell within the sequence duration (a source sheet is a full grid that may over- or under-run it).
     private static int LastPicture(ThumbnailSheet sheet, double duration) =>
         Math.Max(Math.Min(sheet.Count, (int)Math.Ceiling(duration / sheet.IntervalSeconds)) - 1, 0);
 
@@ -733,7 +718,7 @@ public partial class MainWindow
             return;
         }
 
-        // The track is shorter than the slider by half a thumb at each end.
+        // Slider track is inset by half a thumb at each end.
         const double inset = 5.5;
         var x = e.GetPosition(TimelineSlider).X;
         var fraction = Math.Clamp((x - inset) / (TimelineSlider.ActualWidth - 2 * inset), 0, 1);
@@ -742,13 +727,13 @@ public partial class MainWindow
         var (thumbnailWidth, thumbnailHeight) = (sheet.CellWidth, sheet.CellHeight);
 
         PreviewImage.Source = sheet.Cell(Math.Min(sheet.IndexAt(seconds), LastPicture(sheet, duration)));
-        // Shown larger or smaller than generated, as set in Settings.
+        // Scale by the HoverPreviewZoom setting.
         var zoom = AppSettings.Current.HoverPreviewZoom;
         PreviewImage.Width = thumbnailWidth * zoom;
         PreviewImage.Height = thumbnailHeight * zoom;
         PreviewTime.Text = TimeDisplay.Format(seconds);
 
-        // Centred on the pointer, sitting just above the timeline.
+        // Centre horizontally on the pointer, just above the timeline.
         PreviewPopup.HorizontalOffset = x - thumbnailWidth * zoom / 2.0;
         PreviewPopup.VerticalOffset = -(thumbnailHeight * zoom + 40);
         PreviewPopup.IsOpen = true;

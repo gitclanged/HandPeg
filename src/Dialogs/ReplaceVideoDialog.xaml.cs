@@ -5,7 +5,7 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-/// <summary>What to do with the video that is open when another one is about to be loaded over it.</summary>
+/// <summary>Action for the open video when another is about to replace it.</summary>
 public enum ReplaceVideoChoice
 {
     Cancel,
@@ -14,13 +14,13 @@ public enum ReplaceVideoChoice
 }
 
 /// <summary>
-/// Asked when a video arrives (dropped on the window, or sent from the media browser) while another is
-/// open: save the open one as a project first, load without saving, or leave things as they are.
+/// Prompt when a video arrives (window drop or media browser) while another is open: save as project first, load without saving, or
+/// cancel.
 /// </summary>
 public partial class ReplaceVideoDialog : Window
 {
-    /// <param name="currentSource">The video that is open, which gives the project its suggested name.</param>
-    /// <param name="newVideo">The video about to be loaded.</param>
+    /// <param name="currentSource">Open video (source of the suggested project name).</param>
+    /// <param name="newVideo">Incoming video.</param>
     public ReplaceVideoDialog(string currentSource, string newVideo)
     {
         InitializeComponent();
@@ -35,14 +35,14 @@ public partial class ReplaceVideoDialog : Window
 
     public ReplaceVideoChoice Choice { get; private set; } = ReplaceVideoChoice.Cancel;
 
-    /// <summary>The name to save the project under, when that was chosen.</summary>
+    /// <summary>Project name when saving was chosen.</summary>
     public string ProjectName => NameBox.Text.Trim();
 
     private static string SuggestName(string source)
     {
         try
         {
-            // A web address has no file name worth using.
+            // URLs yield no usable file name.
             var name = Uri.TryCreate(source, UriKind.Absolute, out var uri) && !uri.IsFile ? "" : Path.GetFileNameWithoutExtension(source);
             return name.Length > 0 ? name : $"Project {DateTime.Now:yyyy-MM-dd HH.mm}";
         }
@@ -52,7 +52,7 @@ public partial class ReplaceVideoDialog : Window
         }
     }
 
-    // A project saved under a name that is taken replaces the one that has it; better said before than found out after.
+    // Warn up front when the name is taken, since saving would overwrite that project.
     private void NameBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (NoteText is null)

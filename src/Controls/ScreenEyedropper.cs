@@ -13,20 +13,18 @@ using static HandPegApp.Native.Gdi32;
 namespace HandPegApp;
 
 /// <summary>
-/// Color Match's Reference eyedropper (Pass 5.6A): press it and drag anywhere, on any monitor (the mouse captured, so the drag reaches
-/// past HandPeg's windows), and the colour under the pointer is read from the screen about 60 times a second; let go and that colour is
-/// the reference (<see cref="Picked"/>); Esc, or losing the capture, or (5.6A review) letting go on the button itself, cancels. Physical
-/// pixels only: the pointer's place is GetCursorPos's
-/// and the 15 x 15 patch about it is copied from the screen with GDI (BitBlt into one DIB made for the drag), never through WPF's DIPs
-/// (HandPeg sets its own root DPI) and whatever each monitor's scale. The colour is the patch's bilateral mean (ColorMatch.BilateralMean).
-/// A loupe beside the pointer (a small window of its own, ScreenEyedropper.Loupe.cs) magnifies the patch; it is left out of every screen
-/// capture (WDA_EXCLUDEFROMCAPTURE), so it never reads itself, and it sits off the pointer anyway. Nothing is allocated per pointer move
-/// beyond the patch read into its buffer; the DIB, its DC and the screen's DC are let go when the drag ends. On an HDR desktop GDI reads
-/// the SDR-mapped picture (highlights clipped); a protected window reads black.
+/// Color Match Reference eyedropper: press and drag anywhere on any monitor (mouse capture extends the drag beyond HandPeg's windows);
+/// the colour under the pointer is sampled from the screen at ~60 Hz, and release sets the reference (<see cref="Picked"/>). Esc,
+/// capture loss, or release over the button itself cancels. Physical pixels throughout: the position comes from GetCursorPos and the
+/// 15 x 15 patch is copied via GDI (BitBlt into one per-drag DIB), bypassing WPF DIPs (HandPeg sets its own root DPI) and per-monitor
+/// scaling. The colour is the patch's bilateral mean (ColorMatch.BilateralMean). A loupe window beside the pointer
+/// (ScreenEyedropper.Loupe.cs) magnifies the patch and is excluded from screen capture (WDA_EXCLUDEFROMCAPTURE) so it never samples
+/// itself. No per-move allocations beyond the patch buffer copy; DIB, memory DC and screen DC are released when the drag ends. On HDR
+/// desktops GDI returns the SDR-mapped image (highlights clipped); protected windows read black.
 /// </summary>
 public sealed partial class ScreenEyedropper : Button
 {
-    /// <summary>The patch's side (2 x ColorMatch.PatchRadius + 1) and the least time between two reads, ms (about 60 Hz).</summary>
+    /// <summary>Patch side length (2 x ColorMatch.PatchRadius + 1) and minimum interval between reads in ms (~60 Hz).</summary>
     public const int PatchSide = 2 * ColorMatch.PatchRadius + 1, ReadEveryMs = 15;
 
     private readonly byte[] _patch = new byte[PatchSide * PatchSide * 4];
@@ -37,24 +35,24 @@ public sealed partial class ScreenEyedropper : Button
 
     public ScreenEyedropper()
     {
-        // A button's look (HandPeg's Button style), its press and drag its own (no Click).
+        // Standard Button style; press and drag are handled here (Click is a no-op).
         SetResourceReference(StyleProperty, typeof(Button));
         Cursor = Cursors.Cross;
     }
 
-    /// <summary>The colour read as the drag goes (the swatch follows it).</summary>
+    /// <summary>Raised per sample during the drag (drives the live swatch).</summary>
     public event Action<(double R, double G, double B)>? Sampling;
 
-    /// <summary>The colour under the pointer when the drag ended: the reference.</summary>
+    /// <summary>Raised with the colour under the pointer at release: the reference.</summary>
     public event Action<(double R, double G, double B)>? Picked;
 
-    /// <summary>The drag began (true) or ended, picked or cancelled (false).</summary>
+    /// <summary>Raised when a drag starts (true) or ends, picked or cancelled (false).</summary>
     public event Action<bool>? DraggingChanged;
 
-    /// <summary>Whether a drag is reading the screen.</summary>
+    /// <summary>True while a drag is sampling the screen.</summary>
     public bool IsDragging => _dragging;
 
-    /// <summary>The last colour read (null before the first read of a drag).</summary>
+    /// <summary>Most recent sample (null before the first sample of a drag).</summary>
     public (double R, double G, double B)? Last { get; private set; }
 
     protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -87,7 +85,7 @@ public sealed partial class ScreenEyedropper : Button
         if (!_dragging)
             return;
 
-        // 5.6A review: a plain click, or a release back on the button, would read the button's own face: cancelled, no reference.
+        // A plain click or release over the button would sample its own face: cancel without a reference.
         if (ReleasedOnItself(RenderSize, e.GetPosition(this)))
         {
             End(picked: false);
@@ -98,17 +96,17 @@ public sealed partial class ScreenEyedropper : Button
         End(picked: true);
     }
 
-    /// <summary>Whether a release at <paramref name="at"/> (in the button's own DIPs) is on the button itself (5.6A review; pure: the goldens check it).</summary>
+    /// <summary>True when a release at <paramref name="at"/> (button-local DIPs) is over the button. Pure; golden-tested.</summary>
     internal static bool ReleasedOnItself(Size size, Point at) => new Rect(size).Contains(at);
 
-    /// <summary>Cancels a drag under way (5.6A review: the window's Esc, which takes the key before the 3D view or Interactive Crop do).</summary>
+    /// <summary>Cancels an active drag (called by the window's Esc handler before the 3D view or Interactive Crop consume the key).</summary>
     public void Cancel() => End(picked: false);
 
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
 
-        // Taken away (another window, Alt+Tab) before the release: cancelled.
+        // Capture lost before release (another window, Alt+Tab): cancel.
         if (_dragging)
             End(picked: false);
     }
@@ -125,12 +123,12 @@ public sealed partial class ScreenEyedropper : Button
         base.OnKeyDown(e);
     }
 
-    // The keyboard's Enter or Space on it reads nothing (the eyedropper is a drag).
+    // Keyboard Enter or Space does nothing: sampling requires a drag.
     protected override void OnClick()
     {
     }
 
-    // The screen's DC, a DC with the patch's DIB selected into it, for the drag.
+    // Acquires the screen DC and a memory DC with the patch DIB selected, for the duration of the drag.
     private bool Begin()
     {
         _screenDc = GetDC(0);
@@ -152,7 +150,7 @@ public sealed partial class ScreenEyedropper : Button
         return true;
     }
 
-    // One read of the patch under the pointer (at most every ReadEveryMs unless forced), its colour, the loupe beside it.
+    // Samples the patch under the pointer (throttled to ReadEveryMs unless forced), computes its colour and updates the loupe.
     private void Read(bool force)
     {
         var now = Stopwatch.GetTimestamp();
@@ -189,7 +187,7 @@ public sealed partial class ScreenEyedropper : Button
             Picked?.Invoke(colour);
     }
 
-    // The DIB, its DC and the screen's DC let go (Law 2: nothing of the drag is kept).
+    // Releases the DIB, memory DC and screen DC (Law 2: no drag resources retained).
     private void Release()
     {
         if (_memoryDc != 0 && _oldBitmap != 0)

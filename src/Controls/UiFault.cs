@@ -4,8 +4,8 @@ using HandPegApp.Services;
 namespace HandPegApp.Controls;
 
 /// <summary>
-/// A failure shown in a dialog's or pane's text line and written to HandPeg.log with its exception in one call: the line is
-/// replaced seconds later, the log keeps the time, the operation, the path and the exception type for triage.
+/// Reports a failure in one call: sets a dialog or pane status line and writes the exception to HandPeg.log (timestamp, operation
+/// context and exception type for triage). The status line is transient by convention (callers overwrite it).
 /// The view model's status bar uses <c>MainViewModel.Fail</c> for the same purpose.
 /// </summary>
 public static class UiFault
@@ -20,8 +20,8 @@ public static class UiFault
     }
 
     /// <summary>
-    /// <see cref="Show"/> for a failure that recurs on every refresh (a folder on an unplugged drive): shown each time, logged once per
-    /// <paramref name="key"/> for the life of the process.
+    /// <see cref="Show"/> variant for failures that recur on every refresh (e.g. a folder on an unplugged drive): displayed every time,
+    /// logged once per <paramref name="key"/> per process lifetime.
     /// </summary>
     public static string ShowOnce(TextBlock target, string key, string userText, string logContext, Exception ex)
     {

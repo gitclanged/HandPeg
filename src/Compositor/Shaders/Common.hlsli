@@ -1,19 +1,19 @@
-// HandPeg compositor: what every shader shares (Pass 5.0-Core). Mirrored in C# by Compositor/PassConstants.cs: change
-// both together. Compiled at build time (HandPegApp.csproj, CompileShaders) for shader model 5.0.
+// Shared shader declarations. Mirrored in C# by Compositor/PassConstants.cs (change both together). Compiled at build time
+// (HandPegApp.csproj, CompileShaders) for shader model 5.0.
 //
 // Conventions
-// - Every layer texture is RGBA16F with PREMULTIPLIED alpha, in the source's own gamma-encoded RGB (BT.709 / sRGB
-//   values, as FFmpeg's filters see them): no linearisation, so the looks match the FFmpeg graph.
-// - A colour effect unpremultiplies (Unpremul), works on straight RGB, and premultiplies again (Premul).
-// - Pixel distances: a lane "in px of a 1080-wide frame" is multiplied by PxScale1080 (Params.x); a lane "in output
-//   pixels" by PixelScale (Params.w). Both already give texels of the layer's working texture.
+// - Layer textures are RGBA16F with PREMULTIPLIED alpha in the source's gamma-encoded RGB (BT.709/sRGB values, as FFmpeg
+//   filters see them): no linearisation, so looks match the FFmpeg graph.
+// - Colour effects unpremultiply (Unpremul), work on straight RGB, then premultiply (Premul).
+// - Pixel distances: lanes "in px of a 1080-wide frame" scale by PxScale1080 (Params.x), lanes "in output pixels" by
+//   PixelScale (Params.w); both yield texels of the layer's working texture.
 
 #ifndef HANDPEG_COMMON_HLSLI
 #define HANDPEG_COMMON_HLSLI
 
 cbuffer PassConstants : register(b0)
 {
-    // The effect's packet (GpuEffectPacket: the slot and eight lanes; 36 bytes, c0..c2.x).
+    // Effect packet (GpuEffectPacket: slot + eight lanes; 36 bytes, c0..c2.x).
     uint  Slot;
     float P0;
     float P1;
@@ -25,7 +25,7 @@ cbuffer PassConstants : register(b0)
     float P7;
     float3 Pad0;
 
-    // A second packet in a row with the same slot (Color Balance's #1), at c3..c5.x.
+    // Second consecutive packet of the same slot (e.g. Color Balance #1), c3..c5.x.
     uint  Slot1;
     float Q0;
     float Q1;
@@ -37,24 +37,24 @@ cbuffer PassConstants : register(b0)
     float Q7;
     float3 Pad1;
 
-    // c6: the input texture's texel size (1/width, 1/height) and the target's size in pixels.
+    // c6: input texel size (1/width, 1/height) and target size in pixels.
     float2 SrcTexel;
     float2 DstSize;
 
-    // c7: the part of the input sampled, in uv (u0, v0, u1, v1).
+    // c7: sampled input sub-rect in uv (u0, v0, u1, v1).
     float4 UvRect;
 
-    // c8..c11: where the quad lands (VSQuad): corner (0..1, 0..1, 0, 1) times this, row vector.
+    // c8..c11: quad placement (VSQuad): corner (0..1, 0..1, 0, 1) times this, row vector.
     row_major float4x4 Transform;
 
-    // c12: a colour (straight RGBA): solid layers, shadows, pattern tints.
+    // c12: straight RGBA colour (solid layers, shadows, pattern tints).
     float4 Color;
 
-    // c13: x PxScale1080 (texels per px of a 1080-wide frame), y the pass's direction (0 across, 1 down),
-    //      z a radius in texels set by the host for separable passes, w PixelScale (texels per output pixel).
+    // c13: x PxScale1080 (texels per px of a 1080-wide frame), y pass direction (0 horizontal, 1 vertical),
+    //      z host-set radius in texels for separable passes, w PixelScale (texels per output pixel).
     float4 Params;
 
-    // c14..c15: extras, by shader (documented where used).
+    // c14..c15: per-shader extras (documented at each use).
     float4 Params2;
     float4 Params3;
 
@@ -63,12 +63,12 @@ cbuffer PassConstants : register(b0)
     float4 YuvRow1;
     float4 YuvRow2;
 
-    // c19: x the layer's opacity, y the transition alpha, z 1 when the layer is the composite's input, w the time (s).
+    // c19: x layer opacity, y transition alpha, z 1 when the layer is the composite's input, w time (s).
     float4 Params4;
 };
 
-// t0 the pass's input (premultiplied RGBA). t1 an auxiliary 2D texture: the mask, the curve (256 x 1), the canvas under
-// a blended layer. t2 the 3D LUT. t3, t4 a YUV source's luma and chroma planes.
+// t0 pass input (premultiplied RGBA); t1 auxiliary 2D (mask, 256x1 curve, canvas beneath a blended layer); t2 3D LUT;
+// t3/t4 YUV luma and chroma planes.
 Texture2D<float4> Input : register(t0);
 Texture2D<float4> Aux : register(t1);
 Texture3D<float4> Lut : register(t2);
@@ -77,16 +77,16 @@ Texture2D<float2> ChromaPlane : register(t4);
 
 SamplerState LinearClamp : register(s0);
 SamplerState PointClamp : register(s1);
-// Outside the texture: transparent black.
+// Transparent black outside the texture.
 SamplerState LinearBorder : register(s2);
-// Tiled: the baked 3D noise (5.1-GpuFx).
+// Wrapping sampler for the baked 3D noise.
 SamplerState LinearWrap : register(s3);
 
 struct VsOut
 {
     float4 Position : SV_Position;
     float2 Uv : TEXCOORD0;
-    // The quad's own coordinates, 0..1 across and down (the layer-local position used by wipes and edges).
+    // Quad-local coordinates 0..1 (layer-local position for wipes and edges).
     float2 Local : TEXCOORD1;
 };
 
@@ -114,10 +114,10 @@ float3 HsvToRgb(float3 c)
     return c.z * lerp(float3(1, 1, 1), saturate(p - 1.0), c.y);
 }
 
-// The input at uv (the pass's own pixel, bilinear for in-between).
+// Bilinear input sample at uv.
 float4 Sample(float2 uv) { return Input.SampleLevel(LinearClamp, uv, 0); }
 
-// The input one texel away (offset in texels).
+// Point sample offset by whole texels.
 float4 SampleAt(float2 uv, float2 texels) { return Input.SampleLevel(PointClamp, uv + texels * SrcTexel, 0); }
 
 #endif

@@ -1,9 +1,8 @@
 namespace HandPegApp.Docking;
 
 /// <summary>
-/// One part of a window's arrangement of panes: a group of panes shown one at a time (with tabs to choose between
-/// them), or a split of parts side by side (or over each other), each with its share of the room. Saved as JSON with
-/// each mode's settings, so the two kinds are one class.
+/// Dock tree node: a tabbed group (one visible pane) or a split of parts with star shares. One class for both kinds so it
+/// serializes simply as JSON in per-mode settings.
 /// </summary>
 public sealed class DockNode
 {
@@ -11,19 +10,19 @@ public sealed class DockNode
 
     public string Kind { get; set; } = GroupKind;
 
-    /// <summary>A split's parts lie over each other (true) or side by side.</summary>
+    /// <summary>Vertical split (true) or horizontal.</summary>
     public bool Vertical { get; set; }
 
-    /// <summary>A split's parts, in order: left to right, or top to bottom.</summary>
+    /// <summary>Split children, left-to-right or top-to-bottom.</summary>
     public List<DockNode> Children { get; set; } = [];
 
-    /// <summary>A split's parts' shares of the room, as star sizes, one for each part.</summary>
+    /// <summary>Star-size shares, one per child.</summary>
     public List<double> Sizes { get; set; } = [];
 
-    /// <summary>A group's panes, by name, in the order of their tabs.</summary>
+    /// <summary>Group pane ids in tab order.</summary>
     public List<string> Panes { get; set; } = [];
 
-    /// <summary>The pane of a group that is shown.</summary>
+    /// <summary>Active pane of a group.</summary>
     public string? Active { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
@@ -61,7 +60,7 @@ public sealed class DockNode
     }
 }
 
-/// <summary>Where a pane is let go of, relative to the part it is over: in it (as a tab), or beside it on one side.</summary>
+/// <summary>Drop zone relative to the target part: centre (as a tab) or one side.</summary>
 public enum DockZone
 {
     Center,
@@ -72,48 +71,44 @@ public enum DockZone
 }
 
 /// <summary>
-/// The main window's arrangement of panes, for one mode. The <c>Side*</c> members are the single side window of HandPeg before 5.4C:
-/// read once, to become the first Pane Docker (<see cref="SideWindowStates.Migrate"/>), and never written again (each side window is
-/// a <see cref="SideWindowState"/> in AppSettings.SideWindows now).
+/// Main-window dock layout for one mode. Legacy <c>Side*</c> members (single side window) are read once to migrate into the first Pane
+/// Docker (<see cref="SideWindowStates.Migrate"/>) and never written; side windows now live in AppSettings.SideWindows.
 /// </summary>
 public sealed class DockLayoutState
 {
     /// <summary>
-    /// The version of the arrangements this HandPeg makes. 2 (4.4): the Timeline pane ("UnifiedTimeline") took the Layers
-    /// and Subtitles tabs' place. 3 (4.4-BugHunt): the Timeline is the first tab of the group it shares with the settings
-    /// tabs, and Standard Editing has it so. 4 (5.3-Stage2): Standard Editing's Canvas is a tab beside the effects and keyframes.
-    /// 5 (5.4.4): Standard Editing's settings tabs are beside the Media tab, the timeline alone at the bottom.
-    /// An older arrangement is brought up to it, step by step, as it is taken up (DockManager.Upgrade), in memory: it is saved as
-    /// it is the next time the user changes it.
+    /// Current layout format version. 2: UnifiedTimeline replaced the Layers and Subtitles tabs. 3: Timeline is the first tab of its
+    /// group with the settings tabs. 4: Standard Editing's Canvas tab sits beside Effects/Keyframes. 5: Standard Editing's settings tabs
+    /// sit beside Media, Timeline alone at the bottom. Older layouts upgrade stepwise in memory on load (DockManager.Upgrade).
     /// </summary>
     public const int CurrentVersion = 5;
 
-    /// <summary>The version of HandPeg's arrangements this one was made as (read back from what was saved; 1 before 4.4).</summary>
+    /// <summary>Format version this layout was saved with (1 when absent).</summary>
     public int Version { get; set; } = CurrentVersion;
 
     public DockNode Main { get; set; } = DockNode.Group();
 
-    /// <summary>The side window's panes; null for none.</summary>
+    /// <summary>Legacy side window panes; null for none.</summary>
     public DockNode? Side { get; set; }
 
-    /// <summary>Whether the side window is open.</summary>
+    /// <summary>Legacy: whether the side window was open.</summary>
     public bool SideOpen { get; set; }
 
-    /// <summary>The side window's place on the screen: left, top, width, height; null for where it first opens.</summary>
+    /// <summary>Legacy side window bounds (left, top, width, height in DIPs); null for default.</summary>
     public double[]? SideBounds { get; set; }
 
     public bool SideMaximized { get; set; }
 
-    /// <summary>The side window's panes as they were when it was last closed, to come back when it is opened again.</summary>
+    /// <summary>Legacy side window panes at last close, restored on reopen.</summary>
     public DockNode? SideClosed { get; set; }
 
-    /// <summary>A copy sharing nothing with this one, to change or to keep as it is now.</summary>
+    /// <summary>Deep copy.</summary>
     public DockLayoutState Copy() => System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.JsonSerializer.Serialize(this, Json), Json)!;
 
-    // The generated metadata (Services.AppSettingsJsonContext): the arrangement is read on the window's thread before its first frame.
+    // Source-generated metadata (Services.AppSettingsJsonContext): layouts are read on the UI thread before Frame 1.
     private static System.Text.Json.Serialization.Metadata.JsonTypeInfo<DockLayoutState> Json => Services.AppSettingsJsonContext.Default.DockLayoutState;
 
-    /// <summary>An arrangement as saved (JSON), or null when there is none or it cannot be read.</summary>
+    /// <summary>Deserializes a saved layout; null when empty or invalid.</summary>
     public static DockLayoutState? Read(string? saved)
     {
         try
@@ -127,7 +122,7 @@ public sealed class DockLayoutState
     }
 }
 
-/// <summary>What a side window shows (5.4C): a mirror of the player's picture, or panes arranged as freely as in the main window.</summary>
+/// <summary>Side window mode: player mirror or free pane layout.</summary>
 public enum SideWindowMode
 {
     LiveVideoPreview,
@@ -135,14 +130,13 @@ public enum SideWindowMode
 }
 
 /// <summary>
-/// One side window (5.4C: as many as wanted, each its own monitor's): what it shows, the panes it holds (a Pane Docker's; a Live
-/// Video Preview holds none), and where it was. Saved as a list, JSON, in AppSettings.SideWindows.
+/// Persisted side window state: mode, panes (Pane Docker only) and placement; stored as a JSON list in AppSettings.SideWindows.
 /// </summary>
 public sealed class SideWindowState
 {
     public const string PanesMode = "panes", PreviewMode = "preview";
 
-    /// <summary>Its name among the side windows, kept while it is open (and saved with it).</summary>
+    /// <summary>Stable side window id (persisted).</summary>
     public string Id { get; set; } = "";
 
     /// <summary><see cref="PanesMode"/> (a Pane Docker) or <see cref="PreviewMode"/> (a Live Video Preview).</summary>
@@ -152,17 +146,16 @@ public sealed class SideWindowState
     public DockNode? Tree { get; set; }
 
     /// <summary>
-    /// Its restored place, as Windows keeps it (GetWindowPlacement's normal position: left, top, right, bottom in workspace pixels),
-    /// so it comes back on the monitor it was on whatever that one's scale; null for where it first opens.
+    /// Restored rect from GetWindowPlacement (left, top, right, bottom in workspace pixels), DPI-independent; null for default placement.
     /// </summary>
     public int[]? Placement { get; set; }
 
-    /// <summary>A place in DIPs (left, top, width, height) from the single side window before 5.4C: used once, when it has no Placement.</summary>
+    /// <summary>Legacy DIP bounds (left, top, width, height), used once when Placement is absent.</summary>
     public double[]? Bounds { get; set; }
 
     public bool Maximized { get; set; }
 
-    /// <summary>Whether it covers its whole monitor, title bar and taskbar included (F11, or a double-click on the picture).</summary>
+    /// <summary>Full screen over the whole monitor including taskbar (F11 or picture double-click).</summary>
     public bool FullScreen { get; set; }
 
     [System.Text.Json.Serialization.JsonIgnore]
@@ -174,12 +167,12 @@ public sealed class SideWindowState
     public static string ModeOf(SideWindowMode mode) => mode == SideWindowMode.LiveVideoPreview ? PreviewMode : PanesMode;
 }
 
-/// <summary>The side windows as saved (AppSettings.SideWindows), read and written through the generated metadata; window-free.</summary>
+/// <summary>AppSettings.SideWindows serialization via generated metadata; UI-free.</summary>
 public static class SideWindowStates
 {
     private static System.Text.Json.Serialization.Metadata.JsonTypeInfo<List<SideWindowState>> Json => Services.AppSettingsJsonContext.Default.ListSideWindowState;
 
-    /// <summary>The side windows saved (JSON); none when there are none or they cannot be read. Unknown modes read as Pane Dockers.</summary>
+    /// <summary>Deserializes side windows; empty when missing or invalid. Unknown modes become Pane Dockers.</summary>
     public static List<SideWindowState> Read(string? saved)
     {
         try
@@ -202,15 +195,14 @@ public static class SideWindowStates
 
     public static string Write(IEnumerable<SideWindowState> sides) => System.Text.Json.JsonSerializer.Serialize(sides.ToList(), Json);
 
-    /// <summary>A copy sharing nothing with the one given.</summary>
+    /// <summary>Deep copy of a side window state.</summary>
     public static SideWindowState Copy(SideWindowState side) =>
         System.Text.Json.JsonSerializer.Deserialize(System.Text.Json.JsonSerializer.Serialize(side, Services.AppSettingsJsonContext.Default.SideWindowState), Services.AppSettingsJsonContext.Default.SideWindowState)!;
 
     /// <summary>
-    /// The single side window of an arrangement saved before 5.4C, as the first Pane Docker: added to <paramref name="sides"/> when it
-    /// was open and held panes (its place and maximized state kept), unless one with its id is there already. The arrangement's legacy
-    /// members are cleared in any case (the closed side window's arrangement goes: its panes are in the main window already), so they
-    /// are never written again. True when a docker was added.
+    /// Migrates a legacy single side window into <paramref name="sides"/> as the first Pane Docker when it was open with panes (keeping
+    /// placement and maximized state) and its id is not already present. Legacy fields are always cleared (a closed one's panes are
+    /// already in the main window). Returns true when a docker was added.
     /// </summary>
     public static bool Migrate(DockLayoutState state, List<SideWindowState> sides)
     {
@@ -229,10 +221,10 @@ public static class SideWindowStates
         return added;
     }
 
-    /// <summary>The id the single side window of before 5.4C takes as a Pane Docker.</summary>
+    /// <summary>Id assigned to the migrated legacy side window.</summary>
     public const string LegacyId = "side-1";
 
-    /// <summary>A new id, unlike every one in <paramref name="sides"/>: "side-" and the lowest free number.</summary>
+    /// <summary>New unique id: "side-" plus the lowest free number in <paramref name="sides"/>.</summary>
     public static string NewId(IEnumerable<SideWindowState> sides)
     {
         var taken = sides.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
@@ -243,9 +235,8 @@ public static class SideWindowStates
     }
 
     /// <summary>
-    /// Every pane in at most one place, across the side windows and then the main window (a side window keeps what the user put
-    /// there; the main window loses a pane a side window holds): unknown panes out, a Live Video Preview emptied, each tree tidied
-    /// (a Pane Docker left with nothing holds null, and stays open). The main window's top part is never null.
+    /// Enforces each pane in at most one tree (side windows win over the main window), removes unknown panes, empties previews and
+    /// tidies trees (an empty Pane Docker holds null and stays open). The main window root is never null.
     /// </summary>
     public static void Clean(DockLayoutState state, IEnumerable<SideWindowState> sides, Func<string, bool> known)
     {
@@ -270,10 +261,10 @@ public static class SideWindowStates
     }
 }
 
-/// <summary>Changes to a tree of parts. Every change keeps the tree tidy: no empty groups, no split of one part.</summary>
+/// <summary>Dock tree mutations; each keeps the tree tidy (no empty groups, no single-child splits).</summary>
 public static class DockTree
 {
-    /// <summary>Takes a pane out of a tree; returns the tree's top part, which may be another one now (or null when nothing is left).</summary>
+    /// <summary>Removes a pane; returns the (possibly new) root, or null when empty.</summary>
     public static DockNode? Remove(DockNode root, string pane)
     {
         if (root.GroupOf(pane) is not { } group)
@@ -286,8 +277,8 @@ public static class DockTree
     }
 
     /// <summary>
-    /// Removes empty groups and splits of one part (the part takes the split's place), and splits within a split of
-    /// the same direction (their parts join it). Returns the top part, or null when nothing is left.
+    /// Normalises a tree: drops empty groups, collapses single-child splits, flattens same-direction nested splits. Returns the root,
+    /// or null when empty.
     /// </summary>
     public static DockNode? Tidy(DockNode node)
     {
@@ -304,7 +295,7 @@ public static class DockTree
 
             if (!child.IsGroup && child.Vertical == node.Vertical)
             {
-                // A split of the same direction inside: its parts are this one's, sharing its room.
+                // Same-direction nested split: hoist its children, scaling shares by its share.
                 var total = child.Sizes.Sum();
                 for (var j = 0; j < child.Children.Count; j++)
                 {
@@ -328,8 +319,8 @@ public static class DockTree
         return node;
     }
 
-    /// <summary>Puts a part beside another (or beside the whole tree, when that is the top part); returns the top part.</summary>
-    /// <param name="share">How much of the other part's room the new one takes.</param>
+    /// <summary>Docks a part beside another (or beside the whole tree at the root); returns the root.</summary>
+    /// <param name="share">Fraction of the target's space given to the new part.</param>
     public static DockNode InsertBeside(DockNode root, DockNode target, DockZone zone, DockNode part, double share = 0.5)
     {
         var vertical = zone is DockZone.Top or DockZone.Bottom;

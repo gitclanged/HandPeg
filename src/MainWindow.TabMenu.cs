@@ -12,22 +12,21 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- Project tabs: a tab's right-click menu and hover card (split from MainWindow.ProjectTabs.cs, 5.4.1-M5) -----
+// ----- Project tab context menu and hover card -----
 public partial class MainWindow
 {
-    // ----- A tab's right-click menu and hover card (Pass 5.4B) -----
+    // ----- Tab context menu and hover card -----
 
     /// <summary>
-    /// The height a cold tab's thumbnail is decoded at for its hover card, in pixels (5.4C): the thumbnail's own (its short side is
-    /// <see cref="ProjectThumbnail.ShortSide"/>), which is about what the card draws at 200 %: a wide frame's height is its short side; a
-    /// tall frame's (its frame known from its header) is longer by its shape, never past twice the card's tallest.
+    /// Decode height in pixels for a cold tab's hover-card thumbnail: the thumbnail's own (short side = <see cref="ProjectThumbnail.ShortSide"/>,
+    /// roughly the card at 200 %); portrait frames (aspect from the header) scale up by aspect, capped at twice the card's max height.
     /// </summary>
     private static int TabCardPictureHeight(int frameWidth, int frameHeight) =>
         frameWidth > 0 && frameHeight > frameWidth
             ? (int)Math.Min(Math.Round(ProjectThumbnail.ShortSide * (double)frameHeight / frameWidth), 2 * ProjectTabItem.CardMaxHeight)
             : ProjectThumbnail.ShortSide;
 
-    /// <summary>A line of a tab's right-click menu chosen (ProjectTabStrip.MenuFor; Rename Project... is <see cref="RenameProjectTab"/>).</summary>
+    /// <summary>Dispatches a tab context-menu command (ProjectTabStrip.MenuFor; Rename Project... goes to <see cref="RenameProjectTab"/>).</summary>
     private async Task DoTabCommandAsync(ProjectTabHeader tab, ProjectTabCommand command)
     {
         try
@@ -61,17 +60,17 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Save Project and Save Project As... on a tab: the tab in front saved as Ctrl+S and Ctrl+Alt+S save it; a tab behind with a project
-    /// file saved to it from its cache file, never brought back for it (as closing it saves it); any other tab behind brought to the front
-    /// first, then saved there (a first save asks for its name in the Project Manager).
+    /// Save Project / Save Project As... from a tab menu: the active tab saves like Ctrl+S / Ctrl+Alt+S; a background tab with a project
+    /// file saves in place from its cache file without activation (as on close); other background tabs are activated first, then saved
+    /// (a first save opens the Project Manager for a name).
     /// </summary>
     private async Task SaveProjectTabAsync(ProjectTabHeader tab, bool saveAs)
     {
         if (!_tabs.Tabs.Contains(tab))
             return;
 
-        // Refused mid-switch for the tab in front too: until the switch ends the view model holds part of one tab and part of the other,
-        // and its project path is still the tab put behind's (as Ctrl+S is refused then).
+        // Refuse during a switch even for the active tab: the view model holds mixed state and still the outgoing tab's project path
+        // (Ctrl+S is refused then too).
         if (_switchingTab)
         {
             _viewModel.StatusText = "Wait for the project tab to finish switching before saving one.";
@@ -105,8 +104,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// What a name typed for Rename Project... is refused for (pure: project-tabs-menu): nothing typed, a character no file name can hold,
-    /// or a name of dots alone; null for a name that will do.
+    /// Pure (golden: project-tabs-menu): refusal message for a Rename Project... name (empty, invalid file-name characters, or trailing
+    /// dot); null when acceptable.
     /// </summary>
     internal static string? RenameRefusal(string name)
     {
@@ -120,15 +119,14 @@ public partial class MainWindow
         return null;
     }
 
-    /// <summary>Where a saved project's file goes as it is renamed (pure: project-tabs-menu): beside where it is, under the new name, its extension kept.</summary>
+    /// <summary>Pure (golden: project-tabs-menu): renamed path in the same folder with the new name and original extension.</summary>
     internal static string RenamedPath(string projectPath, string name) =>
         Path.Combine(Path.GetDirectoryName(projectPath) ?? "", name.Trim() + Path.GetExtension(projectPath));
 
     /// <summary>
-    /// Rename Project... on a tab, taken once with Enter: a project never saved takes the name for its first save (the New Project
-    /// studio's name); a saved one has its file renamed beside where it is (its autosave with it), and Save writes there from then on.
-    /// Refused (the status line says why) for a fully portable project (its folder is named after it: Save Project As makes a copy under
-    /// another name), a file no longer there, or a name another file already has; never written over anything.
+    /// Rename Project... (committed on Enter): unsaved projects adopt the name for their first save (New Project studio name); saved ones
+    /// rename the file and its autosave in place, and later saves target it. Refused with a status message for fully portable projects
+    /// (folder named after the project; use Save Project As), missing files, or name collisions; never overwrites.
     /// </summary>
     private void RenameProjectTab(ProjectTabHeader tab, string name)
     {
@@ -185,7 +183,7 @@ public partial class MainWindow
                 return;
             }
 
-            // A change of case alone is the same file: moved as it is. Any other name already there is never written over.
+            // Case-only rename is the same file (allowed); any other existing target is never overwritten.
             if (!string.Equals(target, path, StringComparison.OrdinalIgnoreCase) && (File.Exists(target) || Directory.Exists(target)))
             {
                 _viewModel.StatusText = $"Not renamed: a project is already saved as {target}.";
@@ -204,7 +202,7 @@ public partial class MainWindow
         CrashReporter.KeepOut(target);
         if (front)
         {
-            // Pass 5.5A final review: the file moved as it was (its last write and length with it), so the stamp the tab carries goes with it.
+            // File.Move keeps write time and length, so carry the tab's file stamp across the rename.
             var stamp = (tab.ProjectFileTicks, tab.ProjectFileLength);
             _viewModel.RenameProjectFile(target);
             RefreshActiveTab();
@@ -221,7 +219,7 @@ public partial class MainWindow
         ProjectStore.NotifyChanged();
     }
 
-    /// <summary>A renamed project's autosave beside it renamed with it, when there is one and nothing has the new name (best effort: the log says why not).</summary>
+    /// <summary>Best-effort rename of the project's autosave alongside it (skipped if the target exists; failures logged).</summary>
     private static void MoveAutosave(string path, string target)
     {
         var (from, to) = (ProjectStore.AutosavePath(path, ""), ProjectStore.AutosavePath(target, ""));
@@ -237,8 +235,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A tab behind's header written again after it changed in memory (renamed, saved), away from this thread (only when it has a project
-    /// file), after the tab's other disk work (5.4D-TabPerf: a cache file still being written after a switch is written first).
+    /// Rewrites a background tab's header after an in-memory change (rename, save) on the tab's I/O queue, so pending cache writes from a
+    /// switch complete first.
     /// </summary>
     private void WriteTabHeader(ProjectTabHeader tab)
     {
@@ -257,10 +255,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Duplicate Project in New Tab: a copy of the tab's project, its undo history with it, in a new tab right after it, never saved (its
-    /// first save asks for its name, "<c>Name (Copy)</c>" offered, beside the original's file) and brought to the front. A tab behind is
-    /// copied from its cache file as it is (5.4D-TabPerf: from its frozen copy when it is kept live), after its own disk work; the tab in
-    /// front is captured here and written on the thread pool. A tab holding nothing duplicates as a new blank tab.
+    /// Duplicate Project in New Tab: copies the project with undo history into an unsaved tab right after it ("Name (Copy)" offered at
+    /// first save, beside the original) and activates it. Background tabs copy from their cache file (or frozen live copy) after pending
+    /// I/O; the active tab is captured here and written on the pool. Empty tabs duplicate as a new blank tab.
     /// </summary>
     private async Task DuplicateProjectTabAsync(ProjectTabHeader tab)
     {
@@ -316,7 +313,7 @@ public partial class MainWindow
             }
             else
             {
-                // Captured here (the view model is this thread's), written away from it.
+                // Capture on the UI thread (view model affinity), write off-thread.
                 var state = _viewModel.CaptureStateForTab(title);
                 await _tabs.Enqueue(copy.Id, () => _tabs.WriteTab(copy.Id, state, null, header));
             }
@@ -344,7 +341,7 @@ public partial class MainWindow
             _viewModel.StatusText = $"\"{tab.Title}\" duplicated into a new tab, \"{title}\": not saved yet.";
     }
 
-    /// <summary>Open Containing Folder: the tab's project file shown selected in Explorer (or its folder, should the file be gone).</summary>
+    /// <summary>Open Containing Folder: reveals the project file in Explorer (or opens its folder if the file is gone).</summary>
     private void OpenTabFolder(ProjectTabHeader tab)
     {
         var path = KeptInFile(tab) ? tab.ProjectPath : _viewModel.CurrentProjectPath;
@@ -379,10 +376,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Close Other Tabs: <paramref name="keep"/> brought to the front, then every other tab closed in turn as its × closes it (asked about
-    /// when it has unsaved changes). Stops at the first one the user keeps (Cancel), and looks again after every wait: a first save can
-    /// bring another tab to the front, and the Project Manager can open another project meanwhile. Pass 5.5A: with two or more of the
-    /// others unsaved, they are asked about in one dialog instead (<see cref="CloseOthersAskedOnceAsync"/>).
+    /// Close Other Tabs: activates <paramref name="keep"/>, then closes each other tab like its × (prompting if unsaved), stopping at the
+    /// first Cancel and re-checking after each await (a first save or the Project Manager may change the active tab). With two or more
+    /// unsaved others, a single dialog is used instead (<see cref="CloseOthersAskedOnceAsync"/>).
     /// </summary>
     private async Task CloseOtherProjectTabsAsync(ProjectTabHeader keep)
     {
@@ -395,7 +391,7 @@ public partial class MainWindow
                 return;
         }
 
-        // The others' dots made the exact ones their writes found (a tab put behind just now may not have told its own yet).
+        // Sync dirty dots from completed writes (a just-backgrounded tab may not have reported yet).
         TakeWrittenDots();
         if (_tabs.Tabs.Count(t => !ReferenceEquals(t, keep) && t.Dirty && !t.Empty) >= 2)
         {
@@ -414,17 +410,15 @@ public partial class MainWindow
                 break;
         }
 
-        // A first save brought another tab to the front on the way: the one kept comes back.
+        // A first save may have activated another tab: reactivate the kept one.
         if (_tabs.Tabs.Contains(keep) && !ReferenceEquals(keep, _tabs.Active) && !_switchingTab)
             await SwitchToTabAsync(keep);
     }
 
     /// <summary>
-    /// Close Other Tabs with two or more of the others unsaved (Pass 5.5A): one dialog for all of them (SaveTabsOnExitDialog, its Close Other
-    /// Tabs words). Save Checked &amp; Close Tabs saves the checked ones from their cache files (never brought to the front: a tab never saved
-    /// under the name typed for it) and closes every other tab but one whose save failed (unchecked ones unsaved); Keep Unsaved Tabs Open
-    /// closes only the others with nothing unsaved;
-    /// Discard &amp; Close Tabs closes them all. Cancel closes none. Each is then closed as its × closes it, with no second question.
+    /// Close Other Tabs with two or more unsaved: one SaveTabsOnExitDialog (CloseOthers wording). Save Checked &amp; Close Tabs saves checked
+    /// tabs from cache without activation (unsaved ones under the typed name) and closes all except failed saves; Keep Unsaved Tabs Open
+    /// closes only clean tabs; Discard &amp; Close Tabs closes all; Cancel closes none. Closing then proceeds without a second prompt.
     /// </summary>
     private async Task CloseOthersAskedOnceAsync(ProjectTabHeader keep)
     {
@@ -479,9 +473,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A tab behind's hover card opening: its frame and frame rate, and its picture: the paused still a hot tab keeps (shown as it is,
-    /// never copied), else the thumbnail its cache file or its project file carries, read and decoded small on the thread pool, and given
-    /// only if its card is still open. The card lets it go as it closes.
+    /// Fills a background tab's hover card: frame size/rate and picture (a hot tab's paused still by reference, else the cache or project
+    /// thumbnail decoded small on the pool, applied only if the card is still open). The card releases it on close.
     /// </summary>
     private void FillTabPreview(ProjectTabItem item) => Faults.Forget(FillTabPreviewAsync(item), nameof(FillTabPreview));
 
@@ -492,7 +485,7 @@ public partial class MainWindow
             if (_tabs.Find(item.Id) is not { } tab || !KeptInFile(tab))
                 return;
 
-            // The tab under the pointer is likely next (5.4.2A): its playhead's frames decoded ahead, with the next in Ctrl+Tab's order.
+            // Hovered tab is a likely next switch: prewarm its playhead frames (and the next in Ctrl+Tab order).
             PrewarmLikelyTabs(tab);
             item.Details = ProjectTabs.DescribeFrame(tab.FrameWidth, tab.FrameHeight, tab.FrameRate);
             if (StillOfTab(tab) is { } still)
@@ -501,7 +494,7 @@ public partial class MainWindow
                 return;
             }
 
-            // A tab kept live without a still has its thumbnail in memory (5.4D-TabPerf: its cache file may not be written yet).
+            // Live-kept tabs without a still use the in-memory thumbnail (the cache file may not be written yet).
             var kept = _hydrated.GetValueOrDefault(tab.Id)?.Project is { } held ? held.Frozen.ThumbnailJpeg ?? held.Thumbnail : null;
             var (stateFile, projectPath, decodeHeight) = (_tabs.StateFile(tab.Id), tab.ProjectPath, TabCardPictureHeight(tab.FrameWidth, tab.FrameHeight));
             var picture = await Task.Run(() =>
@@ -509,7 +502,7 @@ public partial class MainWindow
                 var jpeg = kept ?? ProjectThumbnail.ReadFromProject(stateFile) ?? (projectPath.Length > 0 ? ProjectThumbnail.ReadFromProject(projectPath) : null);
                 return jpeg is null ? null : ProjectThumbnail.Decode(jpeg, decodeHeight);
             });
-            // 5.4.4: never over a picture the pointer has scrubbed to meanwhile.
+            // Do not overwrite a frame the pointer scrubbed to meanwhile.
             if (ReferenceEquals(ProjectTabStrip.HoverItem, item) && !item.IsScrubbing)
                 item.Preview = picture;
         }

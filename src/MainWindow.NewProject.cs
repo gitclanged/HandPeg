@@ -4,17 +4,17 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- A New Project from the studio (5.4A) -----
-// The Project Manager's New Project mode hands back a NewProjectRequest and opens nothing itself. The window installs a fresh, empty
-// project first (a tab of its own: MainWindow.ProjectTabs.cs), then makes it here: the Project Settings and Game Preset taken on
-// (MainViewModel.TakeNewProject), then the files chosen put into Project Media (5.4C) and laid on the Sequence as a drop of them on an
-// empty project lays them.
+// ----- New Project from the Project Manager -----
+// The Project Manager's New Project mode returns a NewProjectRequest without opening anything. The window first installs a fresh empty
+// project in its own tab (MainWindow.ProjectTabs.cs), then builds it here: applies Project Settings and the Game Preset
+// (MainViewModel.TakeNewProject), adds the chosen files to Project Media, and lays them on the Sequence as a drop onto an empty
+// project would.
 public partial class MainWindow
 {
     /// <summary>
-    /// Makes a New Project on the fresh, empty project already in place: its settings, its Game Preset and its files (the first opened,
-    /// with the Game Preset when one was chosen; the other pictures after it on its track; the sounds at the start). With no file, a Game
-    /// Preset's layout waits for the first one opened. The name is kept for the first save.
+    /// Populates the already-installed empty project: settings, Game Preset and files (first visual opened with the preset if chosen,
+    /// other visuals appended on its track, audio at the start). With no files, the preset layout applies to the first file opened later.
+    /// The name is kept for the first save.
     /// </summary>
     internal async Task CreateProjectAsync(NewProjectRequest request)
     {
@@ -23,8 +23,8 @@ public partial class MainWindow
 
         var files = request.Files.Where(f => !string.IsNullOrWhiteSpace(f)).ToList();
 
-        // Every file picked goes into Project Media first (5.4C), with no step of Undo (a project made is not an edit): one that then fails
-        // to open, or is left off the Sequence, is still in the project's bin.
+        // Add every chosen file to Project Media first, without an Undo step (project creation is not an edit), so files that fail to
+        // open or are left off the Sequence remain in the bin.
         _viewModel.AddToProjectMedia(files, undoable: false);
         if (files.Count == 0)
         {
@@ -32,8 +32,8 @@ public partial class MainWindow
             return;
         }
 
-        // The first picture opens the project (a sound only when there is no picture); the other pictures follow it in line, and the
-        // sounds go on audio tracks at the start.
+        // First video/image opens the project (audio only when no visual exists); other visuals follow in sequence; audio files go on
+        // audio tracks at time 0.
         var first = files.FirstOrDefault(f => MediaFiles.KindOf(f) is MediaBrowserKind.Video or MediaBrowserKind.Image) ?? files[0];
         var rest = files.Where(f => f != first && MediaFiles.KindOf(f) != MediaBrowserKind.Audio).ToArray();
         var sounds = files.Where(f => f != first && MediaFiles.KindOf(f) == MediaBrowserKind.Audio).ToArray();

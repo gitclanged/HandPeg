@@ -7,15 +7,14 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// The Quick-Start Tour (4.4): a few cards, each beside the part of the window it is about (outlined while it shows),
-/// with Skip Tour on every card (the first one too, beside Next: it has no Back), Back, Next and a row of dots for how far
-/// along it is. Offered once by itself on any install that has not had it (4.4-BugHunt), and again from Settings. Every
-/// card is a Popup (the window's own content is drawn under the player's native window); they hide
-/// while HandPeg is not the active program and follow the window when it moves.
+/// Quick-Start Tour: a sequence of cards placed beside the UI region they describe (outlined while shown), with Skip Tour on every card
+/// (beside Next on the first, which has no Back), Back, Next and progress dots. Offered automatically once per install and again from
+/// Settings. Cards are Popups (window content renders beneath the player's native child window); they hide while HandPeg is inactive
+/// and follow the window as it moves.
 /// </summary>
 public sealed class QuickStartTour
 {
-    /// <summary>One card: its title and text, and what it points at (null, or something not shown, centres it on the window).</summary>
+    /// <summary>Tour card: title, text and anchor (a null or hidden anchor centres the card on the window).</summary>
     public sealed record Step(string Title, string Text, Func<FrameworkElement?> Anchor);
 
     private readonly Window _owner;
@@ -80,12 +79,12 @@ public sealed class QuickStartTour
         ring.SetResourceReference(Border.BorderBrushProperty, "AccentBrush");
         _ring = new Popup { AllowsTransparency = true, StaysOpen = true, IsHitTestVisible = false, Child = ring };
 
-        // Popups made here are windows of their own: drawn at the editor's own scale (5.2), not at the monitor's.
+        // Popups are separate windows: track the editor's UI scale rather than the monitor's.
         Services.UiScale.Track(_card);
         Services.UiScale.Track(_ring);
     }
 
-    /// <summary>Raised once when the tour ends, finished or skipped (<c>true</c>), or stopped from outside (<c>false</c>).</summary>
+    /// <summary>Raised once when the tour ends: <c>true</c> if finished or skipped, <c>false</c> if stopped externally.</summary>
     public event Action<bool>? Ended;
 
     public bool IsRunning => _index >= 0;
@@ -100,7 +99,7 @@ public sealed class QuickStartTour
         Show(0);
     }
 
-    /// <summary>Ends the tour: <paramref name="finished"/> when the user finished or skipped it.</summary>
+    /// <summary>Ends the tour; <paramref name="finished"/> is true when finished or skipped by the user.</summary>
     public void Stop(bool finished = false)
     {
         if (_index < 0)
@@ -125,17 +124,16 @@ public sealed class QuickStartTour
         var step = _steps[index];
         (_title.Text, _text.Text) = (step.Title, step.Text);
         _dots.Current = index;
-        // The first card has nothing to go back to: Skip Tour sits beside Next there.
+        // No Back on the first card; Skip Tour sits beside Next.
         _back.Visibility = index > 0 ? Visibility.Visible : Visibility.Collapsed;
         _next.Content = index == _steps.Count - 1 ? "Done" : "Next";
         Place();
     }
 
-    // Beside what the card is about (below it, above it, or over its middle: the first that fits on the screen), with the
-    // ring around it; on the window's middle when it is not shown. Both are placed in the target's own device pixels (5.2):
-    // the ring by UiScale.PlaceRelative (Relative placement is mirrored on a touch PC set right-handed, which put it beside
-    // its target), the card by PlaceCard. The ring is as large as the target is on the screen (PointToScreen, device pixels)
-    // in the editor's pixels per DIP (VisualTreeHelper.GetDpi), which the ring's popup is drawn at (UiScale.Track).
+    // Places the card below, above or over the anchor (first that fits on screen) with a highlight ring; centred on the window when
+    // the anchor is hidden. Both use the target's device pixels: the ring via UiScale.PlaceRelative (Relative placement mirrors under
+    // right-handed menu alignment), the card via PlaceCard. Ring size is the target's on-screen size (PointToScreen) converted with the
+    // editor's pixels per DIP (VisualTreeHelper.GetDpi), the scale its popup renders at (UiScale.Track).
     private void Place()
     {
         if (_index < 0 || _hidden)
@@ -166,9 +164,8 @@ public sealed class QuickStartTour
         _card.IsOpen = true;
     }
 
-    // Sizes and points in device pixels, as WPF hands them over: the card's 12 DIP gap from its target is 12 of the editor's DIPs
-    // (its pixels per DIP), the same distance at every scale. It is the card's own room beside its target, never the window's body
-    // margin (none at the sides and foot since 5.3-Stage2): nothing here counts on room round the panes.
+    // Sizes and points arrive in device pixels: the 12 DIP card gap is scaled by the editor's pixels per DIP so it is constant at every
+    // scale. The gap is the card's own spacing, independent of window margins (the panes are flush with the window edges).
     private CustomPopupPlacement[] PlaceCard(Size popup, Size target, Point offset)
     {
         var centredX = (target.Width - popup.Width) / 2;
@@ -193,7 +190,7 @@ public sealed class QuickStartTour
             _owner.Dispatcher.BeginInvoke(Place, System.Windows.Threading.DispatcherPriority.Background);
     }
 
-    // Popups stay above every program: while HandPeg is not the active one, the tour waits out of sight.
+    // Popups float above all programs, so hide the tour while HandPeg is inactive.
     private void App_Deactivated(object? sender, EventArgs e)
     {
         _hidden = true;
@@ -206,7 +203,7 @@ public sealed class QuickStartTour
         Place();
     }
 
-    /// <summary>The tour's progress: a dot per card, the current one filled with the accent.</summary>
+    /// <summary>Progress indicator: one dot per card, the current one accent-filled.</summary>
     private sealed class TourDots : FrameworkElement
     {
         private const double Size = 7, Spacing = 6;

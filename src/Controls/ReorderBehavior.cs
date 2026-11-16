@@ -7,10 +7,9 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// Lets the children of a vertical panel be put in another order by dragging them by a grip (an element inside a child
-/// marked <see cref="IsGripProperty"/>): while dragging, a line shows where the child would go, and letting go moves it
-/// there. The panel then raises <see cref="Reordered"/>, for whoever keeps the order. Built for the Summary tab's cards
-/// (retired in 5.4A), and meant for any list of the same kind (an effect stack, the ordered lists of Settings).
+/// Drag-to-reorder for a vertical panel's children via a grip (an element inside a child marked <see cref="IsGripProperty"/>): an
+/// insertion line shows the drop position during the drag, and release moves the child there and raises <see cref="Reordered"/>
+/// for the order's owner. Generic for any vertical list of the same kind (effect stacks, ordered Settings lists).
 /// </summary>
 public static class ReorderBehavior
 {
@@ -21,7 +20,7 @@ public static class ReorderBehavior
 
     public static void SetIsEnabled(Panel panel, bool value) => panel.SetValue(IsEnabledProperty, value);
 
-    /// <summary>Marks what a child is taken hold of by to drag it: its header, say. Elsewhere in the child the mouse is its own.</summary>
+    /// <summary>Marks a child's drag handle (e.g. its header); mouse input elsewhere in the child is unaffected.</summary>
     public static readonly DependencyProperty IsGripProperty = DependencyProperty.RegisterAttached(
         "IsGrip", typeof(bool), typeof(ReorderBehavior), new PropertyMetadata(false));
 
@@ -29,10 +28,10 @@ public static class ReorderBehavior
 
     public static void SetIsGrip(DependencyObject element, bool value) => element.SetValue(IsGripProperty, value);
 
-    /// <summary>A panel's children were put in another order by dragging.</summary>
+    /// <summary>Raised after a drag reorders a panel's children.</summary>
     public static event Action<Panel>? Reordered;
 
-    // The drag under way: the panel, the child, where the press was, whether it has moved far enough to be a drag.
+    // Active drag: panel, child, press point, whether the drag threshold was passed, and the insertion line.
     private static (Panel Panel, UIElement Child, Point Start, bool Moving, InsertionLine? Line)? _drag;
 
     private static void OnIsEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -58,7 +57,7 @@ public static class ReorderBehavior
         if (sender is not Panel panel || e.OriginalSource is not DependencyObject source)
             return;
 
-        // A grip, and the child of the panel it is in.
+        // Walk up from the press to find a grip and its owning panel child.
         var onGrip = false;
         for (var element = source; element is not null && !ReferenceEquals(element, panel); element = VisualTreeHelper.GetParent(element) ?? LogicalTreeHelper.GetParent(element))
         {
@@ -137,7 +136,7 @@ public static class ReorderBehavior
         Reordered?.Invoke(drag.Panel);
     }
 
-    /// <summary>Where among the panel's shown children a child let go at this height goes: before the first whose middle is below it.</summary>
+    /// <summary>Insertion index for a drop at <paramref name="y"/>: before the first visible child whose midpoint is below it.</summary>
     private static int InsertionIndex(Panel panel, double y)
     {
         for (var i = 0; i < panel.Children.Count; i++)
@@ -162,7 +161,7 @@ public static class ReorderBehavior
         return last is null ? 0 : last.TranslatePoint(new Point(0, last.ActualHeight), panel).Y;
     }
 
-    /// <summary>The line drawn where the child being dragged would go.</summary>
+    /// <summary>Adorner line marking the drop position.</summary>
     private sealed class InsertionLine(UIElement panel) : Adorner(panel)
     {
         private double _y = double.NaN;

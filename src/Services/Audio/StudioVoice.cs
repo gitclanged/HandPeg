@@ -4,29 +4,25 @@ using System.Runtime.Intrinsics;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- Studio Voice and the De-Esser (Pass 5.2B) -----
+// ----- Studio Voice and De-Esser -----
 //
-// Studio Voice is the one-click vocal chain, a strip's effect like the others (AudioChainBuilder: after the cleaning, before the dynamics),
-// heard while editing and exported alike, run on the mixer's thread with everything it holds made beforehand. Its wet sound, per side:
-// the voice's band (a high-pass at 80 Hz, a gentle low-pass at 13 kHz); the spectral stage, DenoiseEffect's short-time Fourier transform and
-// noise floor (minimum statistics, a decision-directed Wiener gain) with a second thing in the way, the room's late reverb (what the band
-// held 60 ms before, decayed as a small room decays it), so the steady hiss and the tail of the room go and the voice stays; a presence lift
-// (a gentle peak at 4 kHz, and the soft harmonics of the 3-5 kHz band); then, both sides together, a soft-knee broadcast leveller (a slow RMS
-// leveller toward a speech level, held in pauses, and a fast catch of the peaks). The dry sound is held back as long as the spectral stage
-// holds the wet one (Latency), and the two are blended by the mix (TrackAudioFilters.StudioVoiceMix, or its keyframes on the Sequence's
-// clock: the mixer hands every block its moments, AudioEffect.Moment), ramped across each block so a change never clicks. A mix of 0 with
-// keys is the input held back by Latency, to the bit; without keys the builder leaves the effect out.
+// Studio Voice: one-click vocal chain, a strip effect (AudioChainBuilder: after cleaning, before dynamics) heard in playback and export
+// alike, running on the mixer thread with all state preallocated. Wet path per channel: voice band (80 Hz high-pass, gentle 13 kHz low-pass);
+// spectral stage (DenoiseEffect's STFT and minimum-statistics noise floor with a decision-directed Wiener gain) that also treats the room's
+// late reverb (the band 60 ms earlier, decayed like a small room) as interference, removing hiss and room tail; presence (4 kHz peak plus
+// soft 3-5 kHz harmonics); then a stereo-linked soft-knee broadcast leveller (slow RMS toward speech level, held in pauses, plus a fast peak
+// catch). Dry is delayed by Latency to stay aligned and blended by mix (TrackAudioFilters.StudioVoiceMix, or its keyframes on the sequence
+// clock via AudioEffect.Moment), ramped per block so changes never click. Mix 0 with keys is the delayed input, bit-exact; without keys the
+// builder omits the effect.
 //
-// The spectral stage can be a voice model's instead (IVoiceModel: DeepFilterNet3 on an NPU, its file in deps\models). HandPeg ships no
-// runtime for one: VoiceModels looks once, off every thread that matters, the first time Studio Voice is used, says so in the log, and the
-// native chain runs.
+// A voice model can replace the spectral stage (IVoiceModel, e.g. DeepFilterNet3 on an NPU from deps\models). None ships: VoiceModels
+// checks once, off the hot threads, on first use, logs the result, and the native chain runs.
 //
-// The De-Esser is a split-band compressor on 5.5 to 9 kHz: the band (a constant-0-dB-peak band-pass of the sound at about 7 kHz, unity and in
-// phase at its centre) through the same band-pass again is the side chain, followed fast (1 ms) and let go of slowly (60 ms), and only the
-// band is taken down (the sound less the band times 1 - gain, so at the centre the cut is the reduction computed); its amount sets the
-// threshold and the ratio. No latency: below its knee it leaves the sound as it is, to the bit.
+// De-Esser: split-band compressor on 5.5-9 kHz. The band (constant-0-dB-peak band-pass at ~7 kHz, unity and in phase at its centre) passed
+// through the same band-pass again is the side chain (1 ms attack, 60 ms release); only the band is reduced (signal - band x (1 - gain), so
+// the cut at the centre equals the computed reduction). Amount sets threshold and ratio. Zero latency; bit-exact below the knee.
 
-/// <summary>One RBJ cookbook biquad in double precision with its own state (5.2B: the vocal effects' and the band follower's building block).</summary>
+/// <summary>RBJ cookbook biquad in double precision with its own state (building block of the vocal effects and the band follower).</summary>
 internal struct RbjSection
 {
     private double _b0, _b1, _b2, _a1, _a2, _x1, _x2, _y1, _y2;
@@ -34,7 +30,7 @@ internal struct RbjSection
     private static RbjSection Of(double b0, double b1, double b2, double a0, double a1, double a2) =>
         new() { _b0 = b0 / a0, _b1 = b1 / a0, _b2 = b2 / a0, _a1 = a1 / a0, _a2 = a2 / a0 };
 
-    // The cookbook's w0 and alpha, the frequency held under the rate's Nyquist.
+    // Cookbook w0 and alpha, with the frequency clamped below Nyquist.
     private static (double Cos, double Alpha) Shape(double hz, double q, int sampleRate)
     {
         var w0 = 2 * Math.PI * Math.Clamp(hz, 1, sampleRate * 0.49) / sampleRate;
@@ -54,7 +50,7 @@ internal struct RbjSection
         return Of((1 - cos) / 2, 1 - cos, (1 - cos) / 2, 1 + alpha, -2 * cos, 1 - alpha);
     }
 
-    /// <summary>A band-pass whose peak is 0 dB (the cookbook's constant 0 dB peak gain).</summary>
+    /// <summary>Band-pass with 0 dB peak gain (cookbook constant 0 dB peak).</summary>
     public static RbjSection BandPass(double hz, double q, int sampleRate)
     {
         var (cos, alpha) = Shape(hz, q, sampleRate);
@@ -75,7 +71,7 @@ internal struct RbjSection
         return y;
     }
 
-    /// <summary>Denormals let go of (the silence after a sound would slow the processor to a crawl).</summary>
+    /// <summary>Flushes denormals (the silence after a sound would otherwise slow the CPU drastically).</summary>
     public void Flush()
     {
         if (Math.Abs(_x1) < 1e-25)
@@ -88,17 +84,16 @@ internal struct RbjSection
             _y2 = 0;
     }
 
-    /// <summary>Its history cleared, its coefficients kept (a seek).</summary>
+    /// <summary>Clears history, keeping coefficients (seek).</summary>
     public void Clear() => (_x1, _x2, _y1, _y2) = (0, 0, 0, 0);
 
-    /// <summary>The section on both sides of a stereo sound at once (<see cref="BiquadPair"/>), its history cleared.</summary>
+    /// <summary>The same section on both stereo channels at once (<see cref="BiquadPair"/>), history cleared.</summary>
     public readonly BiquadPair Paired() => new(_b0, _b1, _b2, _a1, _a2);
 }
 
 /// <summary>
-/// Two direct-form biquads side by side, a lane of a vector each (5.3: both sides of a stereo sound at once, Studio Voice's and the loudness
-/// meters'): each lane is <see cref="RbjSection"/>'s and <see cref="KFilter"/>'s arithmetic in its order, never fused, so each side comes out
-/// the same to the bit as through a filter of its own.
+/// Two direct-form biquads in one SIMD vector (both stereo channels at once, for Studio Voice and the loudness meters): each lane follows
+/// <see cref="RbjSection"/>'s and <see cref="KFilter"/>'s arithmetic in order, never fused, so each channel is bit-identical to its own filter.
 /// </summary>
 internal struct BiquadPair(double b0, double b1, double b2, double a1, double a2)
 {
@@ -112,38 +107,38 @@ internal struct BiquadPair(double b0, double b1, double b2, double a1, double a2
         return y;
     }
 
-    /// <summary>Denormals let go of, lane by lane.</summary>
+    /// <summary>Flushes denormals per lane.</summary>
     public void Flush() => (_x1, _x2, _y1, _y2) = (Flushed(_x1), Flushed(_x2), Flushed(_y1), Flushed(_y2));
 
-    /// <summary>Its history cleared, its coefficients kept (a seek).</summary>
+    /// <summary>Clears history, keeping coefficients (seek).</summary>
     public void Clear() => (_x1, _x2, _y1, _y2) = (default, default, default, default);
 
     private static Vector128<double> Flushed(Vector128<double> value) =>
         Vector128.ConditionalSelect(Vector128.LessThan(Vector128.Abs(value), Vector128.Create(1e-25)), Vector128<double>.Zero, value);
 }
 
-/// <summary>Studio Voice (see the top of this file): the vocal chain blended with the dry sound, its latency constant.</summary>
+/// <summary>Studio Voice (see file header): the vocal chain blended with the delayed dry signal; constant latency.</summary>
 internal sealed class StudioVoiceEffect : AudioEffect
 {
-    /// <summary>How late the chain's sound comes out, in samples (the spectral stage's frame, DenoiseEffect's): the dry sound is held back as long.</summary>
+    /// <summary>Chain latency in samples (the spectral stage frame, DenoiseEffect.Size); the dry signal is delayed by the same amount.</summary>
     public const int Latency = DenoiseEffect.Size;
 
     private const int Size = DenoiseEffect.Size, Hop = DenoiseEffect.Hop, Bins = DenoiseEffect.Bins;
 
-    // The block the chain works in (any block the mixer gives is cut into these): what it holds is made once.
+    // Internal processing block (mixer blocks are split into these); all buffers preallocated.
     private const int Chunk = 256;
 
-    // The most the spectral stage takes away from a bin: 18 dB.
+    // Maximum spectral attenuation per bin: 18 dB.
     private const float Floor = 0.125f;
 
-    // The room's late reverb: what a bin held this long before, decayed as a room of this reverberation time decays it.
+    // Late-reverb model: a bin's value this long ago, decayed per this reverberation time.
     private const double ReverbDelaySeconds = 0.06, ReverbTimeSeconds = 0.3;
 
-    // The presence: a peak at 4 kHz, and how much of the 3-5 kHz band's soft harmonics is added.
+    // Presence: 4 kHz peak, plus the added share of soft 3-5 kHz harmonics.
     private const double PresenceHz = 4000, PresenceDb = 2.5, ExciterHz = 3500, ExciterAmount = 0.6, ExciterDrive = 3;
 
-    // The leveller: the speech level it brings the voice toward (dBFS RMS), how much of the way (and its knee), how far either way, and
-    // below what it holds (a pause is not made louder); the peak catch's threshold (dBFS), ratio and knee.
+    // Leveller: target speech level (dBFS RMS), correction share and knee, boost/cut limits, and the gate below which it holds (pauses are
+    // not raised); peak catch threshold (dBFS), ratio and knee.
     private const double TargetDb = -20, Levelling = 0.8, LevelKneeDb = 4, MostBoostDb = 9, MostCutDb = 12, GateDb = -45;
     private const double PeakThresholdDb = -4, PeakRatio = 6, PeakKneeDb = 4;
 
@@ -174,7 +169,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
         VoiceModels.LookOnce();
     }
 
-    /// <summary>Everything the chain holds from block to block: what a new effect of new settings takes over (TakeState).</summary>
+    /// <summary>All chain state carried between blocks; handed to a replacement effect with new settings (TakeState).</summary>
     private sealed class Chain
     {
         public Chain(int sampleRate, int reverbFrames)
@@ -187,17 +182,16 @@ internal sealed class StudioVoiceEffect : AudioEffect
 
         public readonly Channel[] Channels = new Channel[2];
 
-        // The filters of both sides, a lane each.
+        // Both channels' filters, one lane each.
         public BiquadPair HighPass, LowPass, Presence, Exciter;
 
-        // The dry sound held back (interleaved, Latency frames), and the block's dry and wet sound (interleaved), band and cleaned sound
-        // (each side's Chunk samples, the left's then the right's).
+        // Delayed dry signal (interleaved, Latency frames); the block's dry/wet (interleaved) and band/cleaned buffers (per channel: Chunk
+        // left samples, then Chunk right).
         public readonly float[] Dry = new float[2 * Latency];
         public readonly float[] Held = new float[2 * Chunk], Wet = new float[2 * Chunk], Band = new float[2 * Chunk], Cleaned = new float[2 * Chunk];
         public int DryAt;
 
-        // The leveller: its mean square, its gain in dB and the one it is heading for, the peak catch's envelope, and a count for how often
-        // the target is worked out.
+        // Leveller: mean square, current and target gain (dB), peak envelope, and a counter for target updates.
         public double Level, GainDb, Heading, Peak;
         public int Tick;
 
@@ -214,7 +208,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
         }
     }
 
-    /// <summary>One side's spectral stage (DenoiseEffect's frames), and what each bin held over the last reverb delay.</summary>
+    /// <summary>One channel's spectral stage (DenoiseEffect frames) plus each bin's history over the reverb delay.</summary>
     private sealed class Channel(int reverbFrames)
     {
         public readonly float[] Input = new float[Size], Output = new float[Size], Ready = new float[Hop];
@@ -234,7 +228,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
         }
     }
 
-    // The mix at a moment of the Sequence, 0 to 1: its keys' (percent), else the plain one.
+    // Mix at a sequence time, 0..1: keyframes (percent) when present, else the static value.
     private float MixAt(double sequenceSeconds) => _keys is { } keys ? (float)Math.Clamp(keys.ValueAt(sequenceSeconds) / 100, 0, 1) : _mix;
 
     public override void Moment(double fromSeconds, double toSeconds) => (_blockFrom, _blockTo) = (MixAt(fromSeconds), MixAt(toSeconds));
@@ -244,7 +238,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
         if (frames <= 0)
             return;
 
-        // The block's mix, from where the last block ended (a slider moved: this effect took over the last one's) to where this one ends.
+        // Ramp from where the last block ended (a replacement effect inherits it via TakeState) to this block's end.
         var from = float.IsNaN(_last) ? _blockFrom : _last;
         var to = _blockTo;
         _last = to;
@@ -260,7 +254,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
         var chain = _chain;
         var (held, wet, dry) = (chain.Held, chain.Wet, chain.Dry);
 
-        // The dry sound, held back as long as the chain holds its own.
+        // Delay the dry signal by the chain latency.
         var at = chain.DryAt;
         for (var i = 0; i < count; i++)
         {
@@ -273,8 +267,8 @@ internal sealed class StudioVoiceEffect : AudioEffect
 
         chain.DryAt = at;
 
-        // The voice's band, both sides at once (a lane each); then each side's spectral stage (a voice model's when one is there, of the
-        // same latency); then the presence, both sides at once again.
+        // Voice band on both channels at once (one lane each); then each channel's spectral stage (a voice model of equal latency when
+        // loaded); then presence, both channels at once.
         ref var highPass = ref chain.HighPass;
         ref var lowPass = ref chain.LowPass;
         var (band, cleaned) = (chain.Band, chain.Cleaned);
@@ -329,7 +323,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
 
         Level(chain, wet, count);
 
-        // The blend, ramped across the whole block: the dry sound alone at 0, to the bit; the chain's alone at 1.
+        // Blend ramped across the block: dry only at 0 (bit-exact), wet only at 1.
         if (from == 0 && to == 0)
         {
             held.AsSpan(0, count * 2).CopyTo(block);
@@ -351,9 +345,8 @@ internal sealed class StudioVoiceEffect : AudioEffect
         }
     }
 
-    // One frame of the spectral stage: DenoiseEffect's (a sound above the floor passes), with the room's late reverb as a second interference.
-    // Bins 0 to Size / 2 - 1 four at a time (each lane the scalar loop's operations in its order: the same gains to the bit), the last bin
-    // alone; the bins above Size / 2 then take their mirror bins' gains.
+    // One spectral-stage frame: DenoiseEffect's gain with the room's late reverb as a second interference term. Bins 0..Size/2-1 four at a
+    // time (per-lane arithmetic matches the scalar loop: bit-identical gains), the last bin scalar; bins above Size/2 take their mirror's gains.
     private void Frame(Channel channel)
     {
         var (re, im) = (channel.Re, channel.Im);
@@ -403,7 +396,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
             else
                 channel.Minimum[b] = Math.Min(channel.Minimum[b], smooth);
 
-            // What is in the way: the steady noise, and the room (what the bin held a reverb delay ago, decayed).
+            // Interference: steady noise plus room (the bin's value one reverb delay ago, decayed).
             var noise = Math.Clamp(Math.Min(channel.Minimum[b], channel.Previous[b]) * DenoiseEffect.Bias, 1e-12f, DenoiseEffect.MostNoise);
             var room = hasLate ? _roomDecay * late[lateAt + b] : 0;
             late[lateAt + b] = smooth;
@@ -420,7 +413,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
         channel.Frames++;
         DenoiseEffect.Transform(re, im, inverse: true);
 
-        // Overlap-added as DenoiseEffect's frames are.
+        // Overlap-add as in DenoiseEffect.
         DenoiseEffect.OverlapAdd(re, channel.Output);
         Array.Copy(channel.Output, channel.Ready, Hop);
         Array.Copy(channel.Output, Hop, channel.Output, 0, Size - Hop);
@@ -429,8 +422,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
     }
 
     /// <summary>
-    /// The broadcast leveller on both sides together: the slow RMS leveller (its target worked out every 32 samples, held while the voice
-    /// pauses) and the fast peak catch over it.
+    /// Stereo-linked broadcast leveller: slow RMS leveller (target updated every 32 samples, held during pauses) followed by a fast peak catch.
     /// </summary>
     private void Level(Chain chain, float[] wet, int count)
     {
@@ -446,7 +438,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
             var gain = Math.Exp(gainDb * ln10Over20);
             (l, r) = (l * gain, r * gain);
 
-            // The peaks: caught within a millisecond, let go of over 80; a soft knee round the threshold.
+            // Peak catch: 1 ms attack, 80 ms release, soft knee around the threshold.
             var height = Math.Max(Math.Abs(l), Math.Abs(r));
             peak = height > peak ? peak + (height - peak) * _peakAttack : peak * _peakRelease;
             if (peak > _peakKneeStart)
@@ -468,7 +460,7 @@ internal sealed class StudioVoiceEffect : AudioEffect
         (chain.Level, chain.GainDb, chain.Heading, chain.Peak, chain.Tick) = (level, gainDb, targetDb, peak, tick);
     }
 
-    // How far the leveller moves a voice that is off its target by so many dB: most of the way, gently near the target (a soft knee), within its reach.
+    // Leveller correction for an offset in dB: most of the way, soft near the target (knee), within the boost/cut limits.
     private static double Correction(double offDb)
     {
         var size = Math.Abs(offDb);
@@ -490,10 +482,10 @@ internal sealed class StudioVoiceEffect : AudioEffect
     }
 }
 
-/// <summary>The De-Esser (see the top of this file): a split-band compressor on 5.5 to 9 kHz, no latency.</summary>
+/// <summary>De-Esser (see file header): split-band compressor on 5.5-9 kHz with zero latency.</summary>
 internal sealed class DeEsserEffect : AudioEffect
 {
-    /// <summary>The band it works on, Hz: the band-pass's -3 dB edges.</summary>
+    /// <summary>Band edges in Hz (the band-pass -3 dB points).</summary>
     public const double LowHz = 5500, HighHz = 9000;
 
     private const double KneeDb = 6, MostReductionDb = 24;
@@ -502,7 +494,7 @@ internal sealed class DeEsserEffect : AudioEffect
     private RbjSection _bandLeft, _bandRight, _sideLeft, _sideRight;
     private double _envelope;
 
-    /// <summary>P1, the amount (0 to 1), sets the threshold (-18 to -40 dBFS) and the ratio (1 to 8): 0 takes nothing away.</summary>
+    /// <summary>P1 amount (0..1) sets threshold (-18 to -40 dBFS) and ratio (1 to 8); 0 is a no-op.</summary>
     public DeEsserEffect(in AudioEffectSpec spec, int sampleRate)
     {
         var amount = Math.Clamp(spec.P1, 0, 1);
@@ -512,10 +504,9 @@ internal sealed class DeEsserEffect : AudioEffect
         _attack = 1 - Math.Exp(-1 / (0.001 * sampleRate));
         _release = 1 - Math.Exp(-1 / (0.060 * sampleRate));
 
-        // The band: a constant-0-dB-peak band-pass at the edges' geometric centre (about 7 kHz), as wide as the band (Q the centre over
-        // 3500 Hz), so at its centre it is the sound itself, unity and in phase, and the cut taken there is the reduction computed. The side
-        // chain hears the band through the same band-pass again: unity at the centre too, with steeper skirts, so a voice's loud mids stay
-        // under the knee and leave the sound as it was.
+        // Band: constant-0-dB-peak band-pass at the edges' geometric centre (~7 kHz), Q = centre / band width, so at the centre it is unity and
+        // in phase and the cut there equals the computed reduction. The side chain applies the same band-pass again (unity at centre, steeper
+        // skirts) so loud vocal mids stay below the knee.
         var centre = Math.Sqrt(LowHz * HighHz);
         _bandLeft = _bandRight = _sideLeft = _sideRight = RbjSection.BandPass(centre, centre / (HighHz - LowHz), sampleRate);
     }
@@ -530,7 +521,7 @@ internal sealed class DeEsserEffect : AudioEffect
             var level = Math.Max(Math.Abs(_sideLeft.Next(bandLeft)), Math.Abs(_sideRight.Next(bandRight)));
             _envelope += (level - _envelope) * (level > _envelope ? _attack : _release);
 
-            // Below the knee the sound is left as it was, to the bit.
+            // Below the knee the signal passes bit-exact.
             if (_slope <= 0 || _envelope <= _kneeStart)
                 continue;
 
@@ -569,9 +560,9 @@ internal sealed class DeEsserEffect : AudioEffect
 }
 
 /// <summary>
-/// A voice model that can stand in for Studio Voice's spectral stage (an NPU's DeepFilterNet3): it cleans one side's band-limited sound
-/// as a stream, as late as <see cref="Latency"/> samples at 48 kHz (only one exactly as late as the native stage, StudioVoiceEffect.Latency,
-/// is used, so the dry sound stays in step). Called on the mixer's thread: it must never block, wait or allocate.
+/// Voice model that can replace Studio Voice's spectral stage (e.g. DeepFilterNet3 on an NPU): streams one channel's band-limited audio with
+/// <see cref="Latency"/> samples of delay at 48 kHz (used only when equal to StudioVoiceEffect.Latency, keeping the dry path aligned). Called
+/// on the mixer thread: must never block, wait or allocate.
 /// </summary>
 internal interface IVoiceModel
 {
@@ -579,31 +570,31 @@ internal interface IVoiceModel
 
     int Latency { get; }
 
-    /// <summary>One block of one side (<paramref name="channel"/> 0 left, 1 right), cleaned into <paramref name="output"/> (the same length).</summary>
+    /// <summary>Cleans one block of one channel (<paramref name="channel"/> 0 left, 1 right) into <paramref name="output"/> (same length).</summary>
     void Clean(ReadOnlySpan<float> input, Span<float> output, int channel);
 
-    /// <summary>A jump (a seek): its history let go of.</summary>
+    /// <summary>Discontinuity (seek): clears history.</summary>
     void Reset();
 }
 
 /// <summary>
-/// Where a voice model would come from (5.2B): a DeepFilterNet3 model in deps\models and an ONNX Runtime beside HandPeg. HandPeg ships no
-/// runtime: the first time Studio Voice is used it looks once, on the thread pool (nothing is read at start-up, nothing on the mixer's
-/// thread), says what it found in the log, and the native chain runs (<see cref="Current"/> stays null).
+/// Voice-model discovery: a DeepFilterNet3 model in deps\models plus an ONNX Runtime next to HandPeg. None ships: on first Studio Voice use it
+/// checks once on the thread pool (nothing at startup or on the mixer thread), logs the result, and the native chain runs
+/// (<see cref="Current"/> stays null).
 /// </summary>
 internal static class VoiceModels
 {
-    /// <summary>The model's file name, in deps\models.</summary>
+    /// <summary>Model file name pattern in deps\models.</summary>
     public const string ModelPattern = "DeepFilterNet3*.onnx";
 
     private static int _looked;
-    // Said null: the .NET 10 SDK's compiler does not count Volatile.Read's ref as a write (CS0649), and no model ever loads here.
+    // Explicit null: the .NET 10 compiler does not treat Volatile.Read's ref as a write (CS0649); no model ever loads in this build.
     private static IVoiceModel? _model = null;
 
-    /// <summary>The voice model in use; null (the native chain) while none is loaded, which, in this HandPeg, is always.</summary>
+    /// <summary>Active voice model; always null in this build (the native chain runs).</summary>
     public static IVoiceModel? Current => Volatile.Read(ref _model);
 
-    /// <summary>Looks for a model once, off the calling thread.</summary>
+    /// <summary>Checks for a model once, on the thread pool.</summary>
     public static void LookOnce()
     {
         if (Interlocked.Exchange(ref _looked, 1) == 0)
@@ -627,7 +618,7 @@ internal static class VoiceModels
         }
     }
 
-    /// <summary>The model's file (deps\models\DeepFilterNet3*.onnx) and an ONNX Runtime (onnxruntime.dll in deps, deps\onnxruntime or beside HandPeg), each null when not there.</summary>
+    /// <summary>Model file (deps\models\DeepFilterNet3*.onnx) and ONNX Runtime (onnxruntime.dll in deps, deps\onnxruntime or the app folder); each null when absent.</summary>
     internal static (string? Model, string? Runtime) Locate()
     {
         var models = Path.Combine(AppPaths.Deps, "models");

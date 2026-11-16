@@ -9,26 +9,25 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// One of the Color Studio's three wheels (Pass 5.6A: Lift, Gamma or Gain): a colour disc whose puck is the wheel's colour push (its red, green
-/// and blue less their mean, drawn towards the hue they push), and a master jog bar under it that moves all three alike. The puck follows
-/// a drag (Shift holds it to the axis it set off along; Ctrl finely); the bar takes a drag across; a double-click puts the wheel (on the disc)
-/// or its master (on the bar) back to 0. Mouse, pen and touch (the touch captured and handled here, so it is not a mouse too). The pointer
-/// logic is in point methods (<see cref="BeginDrag"/>, <see cref="DragTo"/>, <see cref="EndDrag"/>) the goldens drive directly. A gesture
-/// is <see cref="EditStarted"/> .. <see cref="EditEnded"/>, its values said by <see cref="ValueChanged"/>; the pane writes them (one step
-/// of Undo a gesture). One OnRender; the disc is one frozen bitmap shared by every wheel.
+/// Color Studio grading wheel (Lift, Gamma or Gain): a colour disc whose puck shows the chroma push (RGB minus their mean, plotted toward
+/// the pushed hue), plus a master jog bar below that shifts all three channels equally. Drag the puck (Shift locks to the initial axis;
+/// Ctrl = fine) or drag across the bar; double-click resets the wheel (disc) or master (bar) to 0. Handles mouse, pen and touch (touch is
+/// captured here so it is not promoted to mouse). Pointer logic lives in point methods (<see cref="BeginDrag"/>, <see cref="DragTo"/>,
+/// <see cref="EndDrag"/>) that goldens drive directly. A gesture spans <see cref="EditStarted"/> .. <see cref="EditEnded"/> with values via
+/// <see cref="ValueChanged"/>; the pane writes them as one Undo step. Single OnRender; the disc is one frozen bitmap shared by all wheels.
 /// </summary>
 public sealed class ColorWheelsControl : FrameworkElement
 {
-    /// <summary>The colour push at the disc's edge (each channel of a wheel is -1..1; the puck's push is the channels less their mean).</summary>
+    /// <summary>Push magnitude at the disc edge (channels range -1..1; the push is the channels minus their mean).</summary>
     public const double Reach = 0.5;
 
-    /// <summary>The master's change for a drag across the whole bar.</summary>
+    /// <summary>Master delta for a drag across the full bar width.</summary>
     public const double JogReach = 1;
 
     private const double TitleHeight = 18, JogHeight = 12, JogGap = 8, Pad = 2, PuckRadius = 5, FineScale = 0.2, AxisLockDip = 3;
 
-    // Where each primary's push points on the disc, degrees anticlockwise from the right (a vectorscope's order: red upper left, green lower
-    // left, blue right), 120 degrees apart: the puck's offset P gives channel i the push P . e_i, and a push c gives P = 2/3 sum c_i e_i.
+    // Primary push directions in degrees anticlockwise from +X (vectorscope order: red upper left, green lower left, blue right), 120 degrees
+    // apart: puck offset P gives channel i the push P . e_i; a push c maps to P = 2/3 sum c_i e_i.
     private static readonly double[] HueAngles = [105, 225, 345];
 
     private static readonly Typeface Face = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
@@ -42,7 +41,7 @@ public sealed class ColorWheelsControl : FrameworkElement
     private Pen _ring = Frozen(new Pen(Solid(255, 0x2A, 0x2A, 0x30), 1));
     private (double R, double G, double B) _value;
 
-    // The gesture: the part it began on, where and with what; the axis Shift holds it to (0 none yet, 1 across, 2 up and down).
+    // Gesture state: starting part, press point and value; Shift axis lock (0 = undecided, 1 = horizontal, 2 = vertical).
     private enum Part { None, Disc, Jog }
 
     private Part _part;
@@ -67,7 +66,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         };
     }
 
-    /// <summary>The wheel's name ("Lift", "Gamma", "Gain"), drawn over it.</summary>
+    /// <summary>Wheel title ("Lift", "Gamma", "Gain") drawn above it; also sets the automation name and tooltip.</summary>
     public string Title
     {
         get => _title;
@@ -81,7 +80,7 @@ public sealed class ColorWheelsControl : FrameworkElement
 
     private readonly string _title = "";
 
-    /// <summary>The wheel's red, green and blue (each -1..1). Set from the card: drawn, nothing raised.</summary>
+    /// <summary>Wheel RGB (each -1..1). Setting it (from the card) only redraws; no events are raised.</summary>
     public (double R, double G, double B) Value
     {
         get => _value;
@@ -94,21 +93,21 @@ public sealed class ColorWheelsControl : FrameworkElement
         }
     }
 
-    /// <summary>Whether a gesture is under way (the pane leaves the wheel's value alone meanwhile).</summary>
+    /// <summary>True during a gesture (the pane does not overwrite the value meanwhile).</summary>
     public bool IsDragging => _part != Part.None;
 
-    /// <summary>A gesture changed the value (<see cref="Value"/>).</summary>
+    /// <summary>Raised when a gesture changes <see cref="Value"/>.</summary>
     public event Action<ColorWheelsControl>? ValueChanged;
 
-    /// <summary>A gesture began (a drag, a double-click's reset): what it changes until it ends is one step.</summary>
+    /// <summary>Raised when a gesture begins (drag or double-click reset); changes until EditEnded form one step.</summary>
     public event Action<ColorWheelsControl>? EditStarted;
 
-    /// <summary>The gesture ended.</summary>
+    /// <summary>Raised when the gesture ends.</summary>
     public event Action<ColorWheelsControl>? EditEnded;
 
-    // ----- The maths: a value as its master and its push, and back (pure: the goldens) -----
+    // ----- Value decomposition: master + push and back (pure; golden-tested) -----
 
-    /// <summary>The master (the mean of the three) and the puck's offset (in units of push: <see cref="Reach"/> is the disc's edge, up positive).</summary>
+    /// <summary>Splits RGB into the master (channel mean) and the puck offset in push units (<see cref="Reach"/> = disc edge, +Y up).</summary>
     public static (double Master, double X, double Y) Split((double R, double G, double B) value)
     {
         var master = (value.R + value.G + value.B) / 3;
@@ -124,7 +123,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         return (master, x, y);
     }
 
-    /// <summary>The value of a master and a puck offset (<see cref="Split"/>'s inverse), each channel held to -1..1.</summary>
+    /// <summary>Inverse of <see cref="Split"/>: master + puck offset to RGB, each channel clamped to -1..1.</summary>
     public static (double R, double G, double B) Join(double master, double x, double y)
     {
         double Channel(int i)
@@ -136,7 +135,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         return (Channel(0), Channel(1), Channel(2));
     }
 
-    // ----- Where things are -----
+    // ----- Geometry -----
 
     private (Point Centre, double Radius) Disc()
     {
@@ -144,7 +143,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         return (new Point(ActualWidth / 2, TitleHeight + Pad + room / 2), room / 2);
     }
 
-    /// <summary>The disc's middle (DIPs): where the goldens press.</summary>
+    /// <summary>Disc centre in DIPs (golden press point).</summary>
     internal Point DiscCentre => Disc().Centre;
 
     private Rect Jog()
@@ -164,9 +163,9 @@ public sealed class ColorWheelsControl : FrameworkElement
         return jog.Contains(p) ? Part.Jog : Part.None;
     }
 
-    // ----- The gesture (point methods: the mouse, the pen and touch call them; the goldens too) -----
+    // ----- Gesture (point methods shared by mouse, pen, touch and goldens) -----
 
-    /// <summary>A press at <paramref name="p"/> (DIPs): a drag begins when it is on the disc or the bar. False elsewhere.</summary>
+    /// <summary>Press at <paramref name="p"/> (DIPs): starts a drag on the disc or bar; returns false elsewhere.</summary>
     public bool BeginDrag(Point p)
     {
         var part = PartAt(p);
@@ -179,7 +178,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         return true;
     }
 
-    /// <summary>The pointer at <paramref name="p"/>: the puck moved by as much as the pointer has (Shift: along one axis; Ctrl: finely), or the master.</summary>
+    /// <summary>Pointer at <paramref name="p"/>: moves the puck by the pointer delta (axis lock, fine scale) or adjusts the master on the bar.</summary>
     public void DragTo(Point p, bool lockAxis = false, bool fine = false)
     {
         if (_part == Part.None)
@@ -220,7 +219,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         ValueChanged?.Invoke(this);
     }
 
-    /// <summary>The gesture ends (the pointer let go, the capture lost, the control unloaded).</summary>
+    /// <summary>Ends the gesture (pointer release, capture loss or unload).</summary>
     public void EndDrag()
     {
         if (_part == Part.None)
@@ -229,7 +228,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         EditEnded?.Invoke(this);
     }
 
-    /// <summary>The whole wheel (<paramref name="masterOnly"/>: its master alone, the push kept) back to 0, as one gesture.</summary>
+    /// <summary>Resets the wheel to 0 as one gesture (<paramref name="masterOnly"/>: master only, keeping the push).</summary>
     public void Reset(bool masterOnly = false)
     {
         var (_, x, y) = Split(_value);
@@ -325,7 +324,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         EndDrag();
     }
 
-    // ----- Drawing -----
+    // ----- Rendering -----
 
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -339,13 +338,13 @@ public sealed class ColorWheelsControl : FrameworkElement
         var (centre, radius) = Disc();
         var (master, x, y) = Split(_value);
 
-        // The title, and the master's value at the right.
+        // Title at left, master value right-aligned.
         var title = new FormattedText(_title, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 11, _text, dpi);
         drawing.DrawText(title, new Point(centre.X - radius, 0));
         var number = new FormattedText(master.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10, _muted, dpi);
         drawing.DrawText(number, new Point(centre.X + radius - number.Width, 1));
 
-        // The disc, its edge and a faint cross; the puck on a line from the middle.
+        // Disc, rim and faint crosshair; puck with a stem from the centre.
         drawing.DrawImage(DiscPicture(), new Rect(centre.X - radius, centre.Y - radius, radius * 2, radius * 2));
         drawing.DrawEllipse(null, _ring, centre, radius, radius);
         drawing.DrawLine(CrossPen, new Point(centre.X - radius, centre.Y), new Point(centre.X + radius, centre.Y));
@@ -355,7 +354,7 @@ public sealed class ColorWheelsControl : FrameworkElement
             drawing.DrawLine(PuckEdge, centre, puck);
         drawing.DrawEllipse(PuckFill, PuckEdge, puck, PuckRadius, PuckRadius);
 
-        // The master's bar: its notch in the middle and where the master stands.
+        // Master bar: centre notch and the current master indicator.
         var jog = Jog();
         drawing.DrawRoundedRectangle(_inset, _ring, jog, 3, 3);
         drawing.DrawLine(_ring, new Point(jog.X + jog.Width / 2, jog.Y + 2), new Point(jog.X + jog.Width / 2, jog.Bottom - 2));
@@ -363,7 +362,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         drawing.DrawRoundedRectangle(_accent, null, new Rect(at - 3, jog.Y + 1, 6, jog.Height - 2), 2, 2);
     }
 
-    /// <summary>The disc, made once (256 x 256): each point the hue its direction pushes towards, greyer towards the middle, its edge smoothed.</summary>
+    /// <summary>Lazily built 256 x 256 disc: hue by direction, desaturating toward the centre, anti-aliased edge.</summary>
     private static BitmapSource DiscPicture()
     {
         if (_disc is { } made)

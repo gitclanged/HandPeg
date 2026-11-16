@@ -1,15 +1,14 @@
-// HandPeg compositor: procedural 3D effects (Pass 5.1-GpuFx): slot 26 the Explosion, 27 Sparks & Debris, 28 Anime Lines, 29 the Energy Shield and the Saber.
-// Each draws into a transparent picture of its own, and PSVfxComposite lays that over what the card works on, with the Light Spill: the picture itself, very
-// blurred, lights what is under it (a card on an adjustment clip works on everything under it, so a fireball lights the video it goes off on).
-// Nothing here depends on the clock but where the card is through its run (P0) and Params4.w, the moment of the sequence: one moment always draws one frame.
-// Where a point is given it is in % of the picture; sizes in % of its height or px of a 1080-wide frame (Params.x). Conventions: Common.hlsli.
+// Procedural VFX: slot 26 Explosion, 27 Sparks & Debris, 28 Anime Lines, 29 Energy Shield and Saber. Each renders into its own
+// transparent target; PSVfxComposite lays it over the input with Light Spill (a heavily blurred copy brightens what is beneath, so on an
+// adjustment clip a fireball lights the underlying video). Deterministic in progress (P0) and sequence time (Params4.w).
+// Points are % of the picture; sizes % of height or px of a 1080-wide frame (Params.x). Conventions: Common.hlsli.
 
 #include "Common.hlsli"
 
-// The light: the picture blurred (SceneRenderer.Fx.cs Lit): t5.
+// Light spill: the effect picture heavily blurred (SceneRenderer.Fx.cs Lit): t5.
 Texture2D<float4> Spill : register(t5);
 
-// The effect's picture (Aux) over the input, the spill (Params2.x) multiplying what is there.
+// Effect picture (Aux) over the input, with the spill (strength Params2.x) brightening the input.
 float4 PSVfxComposite(VsOut i) : SV_Target
 {
     float4 under = SampleAt(i.Uv, float2(0, 0));
@@ -27,13 +26,13 @@ float Hash(float n)
     return frac(n);
 }
 
-// The picture's own square units (a height of 1), from a point in % of it.
+// Aspect-corrected coordinates (height = 1) relative to a point given in % of the picture.
 float2 Aspected(float2 uv, float2 point_)
 {
     return (uv - point_ / 100) * float2(DstSize.x / max(DstSize.y, 1), 1);
 }
 
-// A way in the picture turned by an effect's Rotation (5.2): degrees, clockwise on the picture (y runs down). 0 leaves it as it is.
+// Rotates a vector by an effect's Rotation in degrees, clockwise on screen (y down); 0 leaves it unchanged.
 float2 Turn(float2 v, float degrees)
 {
     float s, c;
@@ -41,11 +40,11 @@ float2 Turn(float2 v, float degrees)
     return float2(v.x * c - v.y * s, v.x * s + v.y * c);
 }
 
-// ----- The Explosion (slot 26) -----
+// ----- Explosion (slot 26) -----
 //
-// A ball of fire raymarched through a baked 3D noise (t2, tiled): P0 how far through (0..1), P1, P2 where, P3 how large (% of the height), P4..P6 the fire's colour,
-// P7 the smoke; Q1 the seed, Q2 its Rotation. It bursts out fast, rolls, cools from the outside in and leaves smoke. The steps are started a little off from pixel to pixel,
-// which turns what would be bands into a fine grain the half-size picture and its bilinear enlargement smooth away.
+// Fireball raymarched through a tiled baked 3D noise (t2): P0 progress 0..1, P1/P2 position, P3 size (% of height), P4..P6 fire colour,
+// P7 smoke; Q1 seed, Q2 Rotation. Bursts fast, billows, cools from the outside in and leaves smoke. Per-pixel jittered ray starts turn
+// banding into fine grain that the half-resolution target's bilinear upscale smooths away.
 static const int ExplosionSteps = 26;
 
 float3 Fire(float heat, float3 tint)
@@ -77,7 +76,7 @@ float4 PSExplosion(VsOut i) : SV_Target
         if (r > 1.35)
             continue;
 
-        // Rolling out from the middle as it grows.
+        // Billow outward from the centre as it grows.
         float4 n = Lut.SampleLevel(LinearWrap, q * 0.3 + seed - q / max(r, 0.05) * age * 0.32, 0);
         float billow = n.r * 0.65 + n.g * 0.35;
         float density = saturate((1 - r + (billow - 0.5) * 1.15) * 4) * gone;
@@ -99,13 +98,13 @@ float4 PSExplosion(VsOut i) : SV_Target
 
 // ----- Sparks & Debris (slot 27) -----
 //
-// Particles with no buffer at all: every one is worked out from its index, six vertices each, in 3D (toward the viewer is larger). P0 how far through, P1, P2 where,
-// P3 how many, P4 speed, P5 gravity, P6 the spread (degrees), P7 size; Q0..Q2 the colour, Q3 the share that is debris, Q5 seed, Q6 the direction (degrees).
-// Params2.x: 0 the sparks (streaks of light, added), 1 the debris (tumbling dark shards, over).
+// Bufferless particles derived from their index, six vertices each, in 3D (nearer = larger). P0 progress, P1/P2 origin, P3 count,
+// P4 speed, P5 gravity, P6 spread (degrees), P7 size; Q0..Q2 colour, Q3 debris share, Q5 seed, Q6 direction (degrees), Q7 Rotation.
+// Params2.x: 0 = sparks (additive light streaks), 1 = debris (tumbling dark shards, alpha-over).
 
 static const float2 Corners[6] = { float2(-1, -1), float2(1, -1), float2(-1, 1), float2(-1, 1), float2(1, -1), float2(1, 1) };
 
-// Where a particle is (x, y in the picture's height, from where it started; z toward the viewer) after so long.
+// Particle offset after a time (x, y in picture heights from the origin; z toward the viewer): damped launch plus gravity.
 float3 Flown(float3 direction, float speed, float seconds)
 {
     return direction * speed * (1 - exp(-2.8 * seconds)) / 2.8 * 1.6 + float3(0, P5 * 1.1 * seconds * seconds, 0);
@@ -166,7 +165,7 @@ VsOut VSSparks(uint id : SV_VertexID)
     return o;
 }
 
-// A streak of light: white-hot, cooling through the colour to a dull red.
+// Light streak: white-hot, cooling through the colour to dull red.
 float4 PSSparks(VsOut i) : SV_Target
 {
     float across = 1 - abs(i.Uv.y);
@@ -178,7 +177,7 @@ float4 PSSparks(VsOut i) : SV_Target
     return float4(colour * core * fade, core * fade * 0.4);
 }
 
-// A shard: dark, lit a little along one edge, gone as it lands.
+// Shard: dark, lit along one edge, fading out as it lands.
 float4 PSDebris(VsOut i) : SV_Target
 {
     float age = i.Local.x;
@@ -189,15 +188,15 @@ float4 PSDebris(VsOut i) : SV_Target
 
 // ----- Anime Lines (slot 28) -----
 //
-// P0 the style (0 radial, 1 across, 2 down), P1, P2 the middle, P3 how many, P4 thickness, P5 the clear middle (% of the height), P6 new drawings a second,
-// P7 the opacity (%); Q0..Q2 the colour, Q4 the seed, Q5 their Rotation about the middle. Drawn anew so many times a second, on twos as a hand would, never smoothly animated.
+// P0 style (0 radial, 1 horizontal, 2 vertical), P1/P2 centre, P3 count, P4 thickness, P5 clear centre (% of height), P6 redraws per
+// second, P7 opacity (%); Q0..Q2 colour, Q4 seed, Q5 Rotation about the centre. Redrawn at a fixed rate like hand-drawn animation, never tweened.
 float4 PSAnimeLines(VsOut i) : SV_Target
 {
     float drawing = floor(Params4.w * max(P6, 1));
     float seed = Q4 * 3.17 + drawing * 7.31 + 1;
     float count = max(P3, 1);
     float shown = 0;
-    // The lines turned about their middle (Q5): the picture's point read where it was before the turn.
+    // Rotate the lines about their centre (Q5) by sampling the pre-rotation point.
     float2 turned = Turn(Aspected(i.Uv, float2(P1, P2)), -Q5);
     float2 uv = turned / float2(DstSize.x / max(DstSize.y, 1), 1) + float2(P1, P2) / 100;
     if (P0 < 0.5)
@@ -211,7 +210,7 @@ float4 PSAnimeLines(VsOut i) : SV_Target
         float wide = P4 * 0.16 * Hash(line_ * 2.37 + seed) * smoothstep(inner, inner + 0.3, r);
         float pixel = count / (6.28318531 * max(r, 1e-3) * DstSize.y);
 
-        // (Near the middle a pixel spans many lines: a line narrower than a pixel fades with its width, or the clear middle would fill with half-covered pixels.)
+        // Near the centre a pixel spans many lines: lines thinner than a pixel fade with their width so the clear centre does not fill in.
         shown = there * saturate(wide / pixel) * (1 - smoothstep(wide - pixel, wide + pixel, abs(frac(around) - 0.5)));
     }
     else
@@ -231,9 +230,9 @@ float4 PSAnimeLines(VsOut i) : SV_Target
     return Premul(float3(Q0, Q1, Q2), shown * saturate(P7 / 100));
 }
 
-// ----- The Energy Shield and the Saber (slot 29; the variant in the second packet's last lane) -----
+// ----- Energy Shield and Saber (slot 29; variant in the second packet's last lane) -----
 
-// How near a point is to the edges of a hexagon grid: 0 on an edge, about 0.5 at a cell's middle.
+// Distance to the nearest hexagon-grid edge: 0 on an edge, ~0.5 at a cell centre.
 float HexEdge(float2 p)
 {
     const float2 side = float2(1, 1.7320508);
@@ -244,8 +243,8 @@ float HexEdge(float2 p)
     return 0.5 - max(dot(cell, normalize(side)), cell.x);
 }
 
-// The shield: a dome of hexagons with a bright rim. P0 how far it has risen, P1, P2 its middle, P3 its radius (% of the height), P4..P6 its colour, P7 the hexagons;
-// Q1 how fast its pulse goes, Q2 the seed, Q3 its Rotation.
+// Shield: hexagon dome with a bright rim. P0 rise, P1/P2 centre, P3 radius (% of height), P4..P6 colour, P7 hexagon strength;
+// Q1 pulse rate, Q2 seed, Q3 Rotation.
 float4 PSEnergyShield(VsOut i) : SV_Target
 {
     float rise = saturate(P0);
@@ -271,8 +270,8 @@ float4 PSEnergyShield(VsOut i) : SV_Target
     return float4(lerp(tint, float3(1, 1, 1), fresnel * 0.5) * strength, strength * 0.45);
 }
 
-// The saber: a blade of light. P0 how far it has come out, P1, P2 its hilt, P3, P4 its tip (% of the picture), P5..P7 its colour; Q1 the core's width (px of a
-// 1080-wide frame), Q2 the glow, Q3 how much it flickers, Q4 its Rotation about the middle of hilt and tip.
+// Saber: a blade of light. P0 extension, P1/P2 hilt, P3/P4 tip (% of picture), P5..P7 colour; Q1 core width (px of a 1080-wide frame),
+// Q2 glow, Q3 flicker, Q4 Rotation about the hilt-tip midpoint.
 float4 PSSaber(VsOut i) : SV_Target
 {
     float2 hilt = float2(P1, P2) / 100 * DstSize;

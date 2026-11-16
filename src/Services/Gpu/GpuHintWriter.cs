@@ -1,52 +1,46 @@
 namespace HandPegApp.Services.Gpu;
 
 /// <summary>
-/// The compositor worker's seek hints, from a scene plan (Instant Seek; Pass 5.0-Release): what the GPU engine's frame
-/// pump leaves the worker while it plays and while it rests, and what the GPU export and the bench (tools\SeekBench
-/// --project) leave it the same way.
+/// Builds the compositor worker's Instant Seek hints from a scene plan; used by the GPU engine's frame pump (playing and paused),
+/// the GPU export and SeekBench --project.
 /// <list type="bullet">
-/// <item>Ahead of the playhead, playing or not (as if Space were pressed): every cut within <see cref="Horizon"/> seconds of
-/// playback (the plan's cut boundary index), earliest first, each with how far its clip goes. The worker decodes the first
-/// frames of each and keeps them until the hint goes (the playhead passed it, or it left the horizon); the decoder parked
-/// there reads on when the playhead comes.</item>
-/// <item>With Loop on, the horizon goes on past the loop's end into the stretch playback goes back to (the frames where it
-/// lands, then its cuts), each with a deadline as far past the end as it will be played (5.0-Release: the first second after
-/// a wrap of a quick-cut project played at a quarter of its rate).</item>
-/// <item>Paused: where a scrub is heading, and the pointer over a timeline: its frame while it moves, a short play-ahead
-/// from its moment once it rests (<see cref="HoverRest"/>), never while a scrub runs. The worker does the pointer's work
-/// last (after playback, a scrub and the playhead's own pre-roll).</item>
+/// <item>Ahead (playing or paused): every cut within <see cref="Horizon"/> playback seconds (plan cut index), earliest first, with
+/// its clip span. The worker pre-decodes each cut's first frames until the hint expires; the parked decoder continues when the
+/// playhead arrives.</item>
+/// <item>Loop on: the horizon continues past the loop end into the wrap target, deadlines offset by the wrap.</item>
+/// <item>Paused: the scrub target, and the timeline pointer (its frame while moving, a <see cref="HoverRoll"/> play-ahead once it
+/// rests <see cref="HoverRest"/>; never during a scrub). The worker serves pointer hints last.</item>
 /// </list>
-/// The hints are written only when what they say changed: a cut's hint stays the same from the moment it enters the
-/// horizon until it is passed, so the worker's lane on it reads on. Allocation-free; one writer per thread that writes hints.
+/// Emits only when the hint set changes, so a cut's hint stays stable from entering the horizon until passed and the worker's lane
+/// keeps reading. Allocation-free; one instance per writing thread.
 /// </summary>
 public sealed class GpuHintWriter
 {
-    /// <summary>How far ahead of the playhead the cuts are made ready, seconds of playback (the user's directive: 3 s).</summary>
+    /// <summary>Cut pre-decode horizon ahead of the playhead, playback seconds.</summary>
     public const double Horizon = 3.0;
 
-    /// <summary>How long the pointer rests on one moment before its play-ahead is asked for, seconds.</summary>
+    /// <summary>Pointer rest time before its play-ahead is requested, seconds.</summary>
     public const double HoverRest = 0.12;
 
-    /// <summary>The pointer's play-ahead from its moment, seconds of the sequence.</summary>
+    /// <summary>Pointer play-ahead length, sequence seconds.</summary>
     public const double HoverRoll = 0.5;
 
-    /// <summary>The longest stretch of a clip a cut's hint names (the worker keeps the first frames of it; a shorter clip whole).</summary>
+    /// <summary>Maximum clip span a cut hint names (the worker keeps its first frames; shorter clips whole).</summary>
     private const double CutReach = 60;
 
     private readonly GpuMediaHint[] _media = new GpuMediaHint[CompositorProtocol.MaxHints];
     private ulong _written;
 
-    /// <summary>Forgets what was written last (a new worker, a cleared cache): the next <see cref="Write"/> writes.</summary>
+    /// <summary>Clears the last-written hash (new worker, cleared cache) so the next <see cref="Write"/> always emits.</summary>
     public void Reset() => _written = 0;
 
     /// <summary>
-    /// The hints at a moment of the sequence. <paramref name="rate"/> is the playback speed (the horizon is seconds of
-    /// playback; reversed, no cut is ahead); <paramref name="scrubAhead"/> where a paused scrub is heading (NaN none);
-    /// <paramref name="pointer"/> the moment under the pointer over a timeline (NaN none: it left, or playback or a scrub
-    /// runs), <paramref name="pointerResting"/> whether it has rested there; <paramref name="extras"/> more hints of the
-    /// caller's (a file opened ahead of a drop, the project tabs' pre-roll; Kind 0 none), first; <paramref name="wrapTo"/> where Loop takes playback back
-    /// to (NaN: no Loop) from <paramref name="wrapFrom"/> (the sequence's end when not finite). True when they differ from those
-    /// written last: hand <paramref name="into"/>[..<paramref name="count"/>] to CompositorClient.SetHints then.
+    /// Builds hints for sequence time <paramref name="at"/>. <paramref name="rate"/> = playback speed (horizon in playback seconds;
+    /// nothing ahead when reversed); <paramref name="scrubAhead"/> = paused scrub target (NaN none); <paramref name="pointer"/> = timeline
+    /// pointer time (NaN when absent, playing or scrubbing), <paramref name="pointerResting"/> = it has rested; <paramref name="extras"/> =
+    /// caller hints placed first (drop pre-open, tab pre-roll; Kind 0 skipped); <paramref name="wrapTo"/> = Loop target (NaN no Loop) from
+    /// <paramref name="wrapFrom"/> (sequence end when not finite). Returns true when the set differs from the last written; then pass
+    /// <paramref name="into"/>[..<paramref name="count"/>] to CompositorClient.SetHints.
     /// </summary>
     public bool Write(GpuScenePlan plan, double at, double rate, Span<GpuSeekHint> into, out int count,
         double scrubAhead = double.NaN, double pointer = double.NaN, bool pointerResting = false, ReadOnlySpan<GpuSeekHint> extras = default,
@@ -65,7 +59,7 @@ public sealed class GpuHintWriter
         {
             count = CutsAhead(plan, at, Horizon * rate, GpuSeekHintKind.CutEntry, into, count);
 
-            // Looping: what the horizon reaches past the loop's end is played from where Loop goes back to.
+            // Loop: the part of the horizon past the loop end plays from the wrap target.
             if (double.IsFinite(wrapTo) && wrapTo >= 0 && wrapTo < end)
             {
                 var from = double.IsFinite(wrapFrom) ? Math.Min(wrapFrom, end) : end;
@@ -88,7 +82,7 @@ public sealed class GpuHintWriter
         return true;
     }
 
-    /// <summary>The frames the scene needs at a moment, one hint each (due at <paramref name="deadline"/> when given, reading <paramref name="span"/> on).</summary>
+    /// <summary>One hint per frame the scene needs at <paramref name="t"/> (due at <paramref name="deadline"/> when given, reading <paramref name="span"/> ahead).</summary>
     private int Frames(GpuScenePlan plan, double t, GpuSeekHintKind kind, Span<GpuSeekHint> into, int count, double deadline = double.NaN, double span = 0)
     {
         var found = plan.MediaAt(t, _media);
@@ -99,10 +93,10 @@ public sealed class GpuHintWriter
     }
 
     /// <summary>
-    /// Every cut after <paramref name="from"/> up to <paramref name="span"/> seconds of the sequence on, earliest first: its
-    /// file's moment, how far its clip reads (all of it for a cut; the rest of the stretch for the pointer's play-ahead).
+    /// Cuts after <paramref name="from"/> within <paramref name="span"/> sequence seconds, earliest first, each with its media time and
+    /// read span (the whole clip for a cut; the remaining stretch for a pointer play-ahead).
     /// </summary>
-    /// <param name="shift">Added to each cut's start for its deadline (a stretch played again after a loop's wrap: as far past the end as it comes).</param>
+    /// <param name="shift">Added to each cut's start for its deadline (a stretch replayed after a loop wrap).</param>
     private static int CutsAhead(GpuScenePlan plan, double from, double span, GpuSeekHintKind kind, Span<GpuSeekHint> into, int count, double shift = 0)
     {
         var cuts = plan.Cuts;
@@ -124,7 +118,7 @@ public sealed class GpuHintWriter
         return count;
     }
 
-    /// <summary>The pointer rested: what the sequence reads from its moment for <see cref="HoverRoll"/> seconds (its clips there, then the cuts in that stretch).</summary>
+    /// <summary>Resting pointer: the clips under it, then the cuts within <see cref="HoverRoll"/> seconds.</summary>
     private static int Roll(GpuScenePlan plan, double t, Span<GpuSeekHint> into, int count)
     {
         var cuts = plan.Cuts;
@@ -146,7 +140,7 @@ public sealed class GpuHintWriter
         return CutsAhead(plan, t, HoverRoll, GpuSeekHintKind.HoverRoll, into, count);
     }
 
-    /// <summary>Adds a hint unless one of its kind for the same source and moment is there already.</summary>
+    /// <summary>Adds a hint, or widens the span of an existing hint with the same kind, source and media time.</summary>
     private static int Add(Span<GpuSeekHint> into, int count, GpuSeekHint hint)
     {
         for (var k = 0; k < count; k++)
@@ -163,7 +157,7 @@ public sealed class GpuHintWriter
         return count;
     }
 
-    // FNV-1a over what the hints say (never 0: Reset's "nothing written").
+    // FNV-1a over the hint contents; never 0 (Reset's sentinel).
     private static ulong Hash(ReadOnlySpan<GpuSeekHint> hints)
     {
         var hash = 14695981039346656037UL;

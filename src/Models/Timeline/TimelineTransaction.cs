@@ -5,42 +5,30 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Models.Timeline;
 
-// ----- Editing the document: one transaction per change -----
-// Every edit works the same on every track, track 1 included. While the document quantizes, the times an edit is given
-// land on the nearest frame, and the bounds it is held to on the frames inside them, unless the edit is asked to be
-// free (freeUnquantized: a precision edit off the frames). The rules are 4.2.0's layer edits (MainViewModel.Edits.cs),
-// with file bounds on every edge, no overlap on a track, locked tracks and J/L cuts added:
-// - Each edit is a step of its own: one that is refused (TimelineEditException) has changed nothing, and the
-//   transaction can go on.
-// - Edges clamp: a trim, roll or slip stops at the file's ends, at the clip before or after, at the timeline's start
-//   and at the shortest clip, never moves the other way, and says how far it went (0: nothing changed).
-// - Placements refuse: a clip that would overlap another, or land on a locked track or a track of another kind, throws.
-// - A ripple moves every clip that starts at or after the edit point, on the clip's own track or on every unlocked one
-//   (the subtitle tracks never ripple), by one amount. A clip that would run into one that stays, or before 0, holds it
-//   back for all, and a ripple trim is held back with it, so nothing that should follow is left behind.
-// - An edit that changes a clip's look (its keyframes, when its start moves) puts a changed copy of its State in place,
-//   so the State a rollback puts back was never touched.
-// - Children (4.4): a clip may name another as its parent (TimelineClip.ParentClipId), and a track may lie under another
-//   (TimelineTrackModel.ParentTrackId). A parent's edit carries, inside its own step, the children that lie with it in
-//   time (overlap it), and theirs: a split cuts them too, a trim takes those on its edge along and leaves those it leaves
-//   wholly outside where they are, unlinked (Q3, 4.4-BugHunt: a clip of its own, its own children still its; on a track a
-//   ripple trim closes up, one left shorter than the shortest clip still goes), a roll is the two trims it is, a move moves
-//   them by as much on their own tracks (refused whole when one has no room), a delete and a fold take them too, and a
-//   ripple ripples the tracks under the rippled ones. A child on a locked track stays as it is. Pass 5.5A: a child's tether
-//   mark (TimelineClip.Tethered) goes with its link: kept by a split (both halves), a move, a link pointed at another clip
-//   (a split's second half, a join), cleared with the link.
-// - Folds (4.3D, 4.4-BugHunt): a fold keeps its id when it is put back (RestoredFold: the stretch stays marked, to be folded
-//   again as the same fold), when it is folded again, and when a clip's edge at its seam opens part of it or folds more
-//   into it (ResizeFold). Folds and the records of stretches put back are values nobody changes: a copy of the document
-//   (an undo step's) shares them, so an edit replaces them, never changes one.
+// ----- Transactional editing: one transaction per change -----
+// All tracks edit uniformly. While quantizing, requested times snap to frames and bounds to the frames inside them, unless the
+// edit is free (freeUnquantized). Rules (with file bounds, no same-track overlap, locked tracks and J/L cuts):
+// - Each edit is atomic: a refused edit (TimelineEditException) changes nothing and the transaction stays usable.
+// - Edges clamp: trim/roll/slip stop at file ends, neighbours, time 0 and the minimum clip length, never reverse, and return
+//   the distance moved (0 = no change).
+// - Placements refuse: overlap, a locked track or a wrong track kind throws.
+// - Ripple shifts every clip at/after the edit point (own track or all unlocked tracks; subtitle tracks never ripple) by one
+//   amount; any collision or move before 0 limits the shift for all, ripple trims included.
+// - Look changes (e.g. keyframes when a start moves) replace State with a modified copy, so rollback snapshots stay intact.
+// - Children (TimelineClip.ParentClipId, TimelineTrackModel.ParentTrackId): a parent edit carries overlapping children within
+//   the same step. Split cuts them; trim carries children on the edge and unlinks those left wholly outside (a ripple trim still
+//   closes up and removes children shorter than the minimum); roll = two trims; move shifts them on their own tracks (refused
+//   if any lacks room); delete and fold take them; ripple includes child tracks. Children on locked tracks stay. The tether mark
+//   follows the link: kept by split (both halves), move and re-parenting; cleared with the link.
+// - Folds keep their id when unfolded (RestoredFold), re-folded, or resized at the seam (ResizeFold). Folds and RestoredFolds
+//   are immutable values shared with document copies (undo steps); edits replace them.
 
-/// <summary>An edit the document cannot make: no room, a locked track, a clip of the wrong kind, a time outside the clip.</summary>
+/// <summary>Refused edit: no room, locked track, wrong clip kind, or time outside the clip.</summary>
 public sealed class TimelineEditException(string message) : InvalidOperationException(message);
 
 /// <summary>
-/// One change to a <see cref="TimelineDocument"/> (<see cref="TimelineDocument.BeginTransaction"/>): edit through it, then
-/// <see cref="Commit"/>. Disposed without a commit, it puts back everything it changed. Opened inside another, it folds
-/// into it on commit, and on rollback puts back only its own part.
+/// Transaction on a <see cref="TimelineDocument"/> (<see cref="TimelineDocument.BeginTransaction"/>): edit, then <see cref="Commit"/>.
+/// Dispose without commit rolls back. Nested transactions merge on commit and roll back only their own part.
 /// </summary>
 public interface ITimelineTransaction : IDisposable
 {
@@ -55,275 +43,235 @@ public interface ITimelineTransaction : IDisposable
     /// <summary>The tracks made, numbered again or whose clips changed so far.</summary>
     IReadOnlyList<Guid> TouchedTrackIds { get; }
 
-    /// <summary>Keeps the change. The outermost transaction then raises <see cref="TimelineDocument.Committed"/>, once, if anything changed.</summary>
+    /// <summary>Commits; the outermost commit raises <see cref="TimelineDocument.Committed"/> once if anything changed.</summary>
     void Commit();
 
-    /// <summary>A new, empty track at <paramref name="index"/> in the stacking order (0: the bottom); the tracks of its kind are numbered again.</summary>
+    /// <summary>Inserts an empty track at stacking <paramref name="index"/> (0 = bottom) and renumbers its kind.</summary>
     TimelineTrackModel InsertTrack(int index, TimelineTrackKind kind, string? name = null);
 
     /// <summary>
-    /// Puts a clip that is on no track yet onto <paramref name="track"/> at its own <see cref="TimelineClip.Start"/> (no
-    /// sooner than its sound's lead-in allows), for its own length, shortened to what its file has from its offset. It
-    /// must not overlap another clip, except that with <paramref name="allowCrossfadeOverlap"/> one dropped over a
-    /// neighbour by a frame or more, up to <see cref="TimelineDocument.LongestDragCrossfade"/> and half of either, is put
-    /// against it and crossfades with it. A refused clip is left as it was given.
+    /// Places an unplaced clip on <paramref name="track"/> at its <see cref="TimelineClip.Start"/> (not before its audio lead-in
+    /// allows), length clamped to the remaining source. No overlap, except with <paramref name="allowCrossfadeOverlap"/>: an overlap
+    /// of one frame up to <see cref="TimelineDocument.LongestDragCrossfade"/> (and half of either) abuts and crossfades. Refusal leaves the clip unchanged.
     /// </summary>
     TimelineClip PlaceClip(TimelineTrackModel track, TimelineClip clip, bool allowCrossfadeOverlap = true, bool freeUnquantized = false);
 
     /// <summary>
-    /// Moves a clip to <paramref name="newStart"/> on <paramref name="targetTrack"/> (its own or another that takes it,
-    /// track 1 included), or with <paramref name="insertTrackAtIndex"/> at or above 0, onto a new track of that track's
-    /// kind inserted there. Keyframes go with it, and its crossfade too when it lands against the clip it met before.
-    /// With <paramref name="ripple"/>: the clips after it on its old track close up behind it, then (in the times as
-    /// they are after that) the clips from <paramref name="newStart"/> on the target track make room.
+    /// Moves a clip to <paramref name="newStart"/> on <paramref name="targetTrack"/>, or (<paramref name="insertTrackAtIndex"/> >= 0) onto a
+    /// new track of that kind inserted there. Keyframes move with it; the crossfade survives if it lands against the same neighbour.
+    /// With <paramref name="ripple"/>: the old track closes up, then clips from <paramref name="newStart"/> on the target make room.
     /// </summary>
     void MoveClip(TimelineClip clip, TimelineTrackModel targetTrack, double newStart, bool ripple = false, int insertTrackAtIndex = -1,
                   bool allowCrossfadeOverlap = true, bool freeUnquantized = false);
 
     /// <summary>
-    /// Cuts a clip in two at <paramref name="sequenceTime"/> and returns the second part. The first keeps the fade in, the
-    /// crossfade in and the sound's lead-in; the second takes the fade out and the sound's tail, and its keyframes are
-    /// moved so that they stay on their frames. Throws unless both parts, and their sound, are at least the shortest clip.
+    /// Splits at <paramref name="sequenceTime"/> and returns the second part. The first keeps fade-in, crossfade and audio lead-in;
+    /// the second takes fade-out and audio tail, with keyframes rebased to stay on their frames. Throws if either part (or its audio)
+    /// would be shorter than the minimum clip.
     /// </summary>
     TimelineClip SplitClipAt(TimelineClip clip, double sequenceTime, bool freeUnquantized = false);
 
     /// <summary>
-    /// Moves the clip's start to <paramref name="newStart"/>, its end staying, its keyframes on their frames. With
-    /// <paramref name="ripple"/> the clip stays where it starts and the change comes off (or onto) its head instead: the
-    /// clips after it follow its end. Returns how far the start moved (later is positive).
+    /// Trims the start to <paramref name="newStart"/> keeping the end and keyframe frames. With <paramref name="ripple"/> the clip keeps
+    /// its position, trims its head, and later clips follow its end. Returns the start delta (positive = later).
     /// </summary>
     double TrimClipStart(TimelineClip clip, double newStart, bool ripple = false, bool rippleAllUnlockedTracks = true, bool freeUnquantized = false);
 
-    /// <summary>Moves the clip's end to <paramref name="newEnd"/>; with <paramref name="ripple"/> the clips after it follow. Returns how far it moved.</summary>
+    /// <summary>Trims the end to <paramref name="newEnd"/>; with <paramref name="ripple"/> later clips follow. Returns the delta.</summary>
     double TrimClipEnd(TimelineClip clip, double newEnd, bool ripple = false, bool rippleAllUnlockedTracks = true, bool freeUnquantized = false);
 
     /// <summary>
-    /// A J or L cut of a linked clip with picture and sound: its sound starts <paramref name="newAudioLeadIn"/> before
-    /// its picture and ends <paramref name="newAudioTailOut"/> after it (negative: inside it), within its file and the
-    /// timeline's start, and at least the shortest clip long. A value that is not a number leaves that side as it is.
-    /// Returns what was set.
+    /// Sets J/L cut on a linked A/V clip: audio starts <paramref name="newAudioLeadIn"/> before and ends <paramref name="newAudioTailOut"/>
+    /// after the video (negative = inside), clamped to the file, time 0 and the minimum length. NaN leaves a side unchanged. Returns the values set.
     /// </summary>
     (double LeadIn, double TailOut) TrimAudioSplit(TimelineClip clip, double newAudioLeadIn, double newAudioTailOut, bool freeUnquantized = false);
 
     /// <summary>
-    /// Moves the cut between two clips that meet on a track to <paramref name="newCutTime"/>: one gets longer as the other
-    /// gets shorter, and nothing else moves but their children (4.4-BugHunt), which follow the cut as the two trims' do.
-    /// Returns how far the cut moved.
+    /// Roll edit: moves the cut between two abutting clips to <paramref name="newCutTime"/>; only they and their children change.
+    /// Returns the cut delta.
     /// </summary>
     double RollCut(TimelineClip earlier, TimelineClip later, double newCutTime, bool freeUnquantized = false);
 
     /// <summary>
-    /// Shows another part of the clip's file in the same place: <paramref name="mediaDeltaSeconds"/> of the file later
-    /// (negative: earlier), within the file. Times on the timeline, keyframes and fades stay. Returns how far it went.
+    /// Slip edit: offsets the source by <paramref name="mediaDeltaSeconds"/> within the file; timeline position, keyframes and fades
+    /// stay. Returns the applied delta.
     /// </summary>
     double SlipClip(TimelineClip clip, double mediaDeltaSeconds);
 
     /// <summary>
-    /// Takes a clip off its track, leaving its time empty; with <paramref name="withChildren"/> (4.4), its children that lie
-    /// with it (and theirs) too. Without, they stay where they are, each a clip of its own while it names a parent that is
-    /// gone (a parent put back in its place takes them up again).
+    /// Removes a clip leaving a gap; <paramref name="withChildren"/> also removes overlapping descendants. Otherwise children stay as
+    /// orphans (re-adopted if the parent is restored).
     /// </summary>
     void DeleteClip(TimelineClip clip, bool withChildren = true);
 
     /// <summary>
-    /// Takes the stretch of <paramref name="clip"/> between <paramref name="from"/> and <paramref name="to"/> (sequence seconds) off
-    /// its track as one edit: a cut at each end that lies more than <see cref="TimelineDocument.MinimumClipSeconds"/> inside the clip
-    /// (an end nearer its edge takes the stretch to that edge), then the piece between lifted out with its children. Returns the
-    /// length removed. When either cut is refused (too near another cut, the shortest clip at this frame rate, its sound's lead-in),
-    /// it throws <see cref="TimelineEditException"/> and nothing is changed: never one cut without the other.
+    /// Lifts [<paramref name="from"/>, <paramref name="to"/>] (Sequence seconds) out of <paramref name="clip"/> atomically: splits at each
+    /// end more than <see cref="TimelineDocument.MinimumClipSeconds"/> inside (else extends to that edge), then removes the middle with
+    /// its children. Returns the length removed. Throws <see cref="TimelineEditException"/> with no change if either split is refused.
     /// </summary>
     double DeleteStretchOf(TimelineClip clip, double from, double to);
 
-    /// <summary>Takes a clip off its track and closes the gap it leaves. Returns how far the clips after it moved back.</summary>
+    /// <summary>Ripple delete; returns how far later clips moved back.</summary>
     double RippleDelete(TimelineClip clip, bool rippleAllUnlockedTracks);
 
     /// <summary>
-    /// Closes the empty stretch from <paramref name="gapStart"/> to <paramref name="gapEnd"/> on a track (the Close Gap
-    /// pill): the clips from its end move back by its length, or as far as they can. Returns how far they moved.
+    /// Close Gap: shifts clips from <paramref name="gapEnd"/> back by up to the gap length. Returns the distance moved.
     /// </summary>
     double CloseGap(TimelineTrackModel track, double gapStart, double gapEnd, bool rippleAllUnlockedTracks);
 
-    // ----- What a clip or a track is, beside where it is (4.3C): each a step, held to its limits, a locked track refused -----
+    // ----- Clip and track properties (atomic, clamped, refused on locked tracks) -----
 
     /// <summary>
-    /// The clip's fades: each from 0 to <see cref="TimelineDocument.LongestFade"/>, the two together no longer than the
-    /// clip (the fade in first); a style left null stays as it is. Returns the lengths set.
+    /// Sets fades, each 0..<see cref="TimelineDocument.LongestFade"/>, together at most the clip length (fade-in has priority); null
+    /// styles are unchanged. Returns the lengths set.
     /// </summary>
     (double In, double Out) SetClipFades(TimelineClip clip, double fadeInSeconds, double fadeOutSeconds, TransitionStyle? fadeInStyle = null, TransitionStyle? fadeOutStyle = null);
 
     /// <summary>
-    /// A crossfade from the clip before it on its track, which it must meet (0 takes it away), at most
-    /// <see cref="TimelineDocument.LongestCrossfade"/> and the length of either clip. Returns what was set.
+    /// Sets the crossfade from the abutting previous clip (0 removes), capped at <see cref="TimelineDocument.LongestCrossfade"/> and
+    /// either clip's length. Returns the value set.
     /// </summary>
     double SetCrossfade(TimelineClip clip, double seconds);
 
     /// <summary>The gain of its sound, in decibels, from -40 to +24 (a layer's range).</summary>
     void SetClipGain(TimelineClip clip, double gainDb);
 
-    /// <summary>Whether it is switched off (picture and sound), and whether its sound is silenced; null leaves either as it is.</summary>
+    /// <summary>Sets disabled (video and audio) and muted flags; null leaves a flag unchanged.</summary>
     void SetClipFlags(TimelineClip clip, bool? hidden = null, bool? muted = null);
 
     /// <summary>Which picture of its file the player shows: its proxy, the original, or as the setting says.</summary>
     void SetClipProxy(TimelineClip clip, ProxyChoice choice);
 
     /// <summary>
-    /// The beats found in a clip's sound (5.2B, <see cref="TimelineClip.BeatTimes"/>): seconds of its file, kept finite, at or after 0, in order
-    /// and apart; null takes them away (Clear Audio Beats). The same beats again change nothing.
+    /// Sets <see cref="TimelineClip.BeatTimes"/> (file seconds, finite, non-negative, strictly ascending); null clears. Identical beats are a no-op.
     /// </summary>
     void SetClipBeats(TimelineClip clip, double[]? beats);
 
     /// <summary>
-    /// The Sequence's master output fader (5.2B, <see cref="TimelineDocument.MasterGainDb"/>), in decibels from -40 to +12; a value that is not a
-    /// number is 0. Not a clip's or a track's: a change of it alone still raises <see cref="TimelineDocument.Committed"/> (with no clip or
-    /// track touched), so it is a step of Undo like any other.
+    /// Sets <see cref="TimelineDocument.MasterGainDb"/> (-40..+12 dB; NaN = 0). A change alone still raises
+    /// <see cref="TimelineDocument.Committed"/>, so it is an Undo step.
     /// </summary>
     void SetMasterGain(double decibels);
 
     /// <summary>
-    /// The project's colour space, pixel aspect and sample rate (5.4A, <see cref="TimelineDocument.ProjectSettings"/>); a sample rate
-    /// other than 44100, 48000 or 96000 is 48000. Like the master gain, a change of them alone still raises
-    /// <see cref="TimelineDocument.Committed"/>, so it is a step of Undo; the same values again change nothing.
+    /// Sets colour space, pixel aspect and sample rate (<see cref="TimelineDocument.ProjectSettings"/>; unsupported rates become 48000).
+    /// A change alone raises <see cref="TimelineDocument.Committed"/> (an Undo step); identical values are a no-op.
     /// </summary>
     void SetProjectSettings(ProjectColorSpace colorSpace, ProjectPixelAspect pixelAspect, int sampleRate);
 
-    /// <summary>The Sequence's markers, replaced by a copy of <paramref name="markers"/>. Committed on its own, like the master gain.</summary>
+    /// <summary>Replaces Sequence markers with a copy of <paramref name="markers"/>; commits on its own like the master gain.</summary>
     void SetMarkers(IReadOnlyList<TimelineMarker> markers);
 
-    /// <summary>The Sequence Output's effect stack (a copy of the list; the states shared) and whether it is bypassed.</summary>
+    /// <summary>Sets the Sequence Output effect stack (list copied, states shared) and its bypass flag.</summary>
     void SetSequenceEffects(IReadOnlyList<EffectState> effects, bool bypassed);
 
     /// <summary>
-    /// The Sequence's natural frame (its landscape width and height before any turn to tall) and whether it was chosen on purpose (kept by
-    /// the first file opened onto an empty Sequence, <see cref="TimelineDocument.ExplicitFrame"/>).
+    /// Sets the natural (landscape) frame size and whether it was explicitly chosen (<see cref="TimelineDocument.ExplicitFrame"/>).
     /// </summary>
     void SetFrame(int naturalWidth, int naturalHeight, bool explicitFrame);
 
     /// <summary>
-    /// The Sequence's frame rate and whether it was chosen on purpose (<see cref="TimelineDocument.ExplicitFrameRate"/>); refused
-    /// (<see cref="TimelineEditException"/>) when not positive. Clips are not requantized: whether any may stay on the old rate's frames
-    /// is the caller's rule (Project Settings refuses a rate change once the Sequence has clips; a file opened over the last file's clips
-    /// replaces them in the same open).
+    /// Sets the frame rate and explicit flag (<see cref="TimelineDocument.ExplicitFrameRate"/>); throws <see cref="TimelineEditException"/>
+    /// when not positive. Clips are not requantized: callers guarantee no clips remain on the old grid.
     /// </summary>
     void SetFrameRate(FrameRate rate, bool explicitRate);
 
     /// <summary>
-    /// Puts files into Project Media (5.4.0, <see cref="TimelineDocument.MediaPool"/>), each once (compared without case), at the end, in
-    /// the order given; an empty path or a web address is left out. Like the master gain, a change of it alone still raises
-    /// <see cref="TimelineDocument.Committed"/>. False when every one was there already.
+    /// Appends files to <see cref="TimelineDocument.MediaPool"/> once each (case-insensitive), skipping empty paths and URLs. A change alone
+    /// raises <see cref="TimelineDocument.Committed"/>. Returns false when all were present.
     /// </summary>
     bool AddToMediaPool(IEnumerable<string> paths);
 
-    /// <summary>Takes files out of Project Media (5.4C); false when none of them was there. Whether a clip still plays one is the caller's to ask.</summary>
+    /// <summary>Removes files from Project Media; false when none was present. Callers check clip references.</summary>
     bool RemoveFromMediaPool(IEnumerable<string> paths);
 
     /// <summary>
-    /// How fast a clip that plays its file runs (<see cref="Layer.SlowestSpeed"/> to <see cref="Layer.FastestSpeed"/>):
-    /// it plays the same stretch of its file, so its end moves; the clips after it on its track that it would run into
-    /// move on as far as it grew; its keyframes, its effects' keyframes and ranges and its J/L cut are scaled with it.
-    /// With <paramref name="ripple"/> (5.6.0), everything after its old end moves by as much as it grew or shrank, on every
-    /// unlocked track (<paramref name="rippleAll"/>) or on its own and the Sub-Lanes under it, as a ripple trim moves it.
-    /// Returns the speed set (the one it had, for a clip that does not play a file).
+    /// Sets playback speed (<see cref="Layer.SlowestSpeed"/>..<see cref="Layer.FastestSpeed"/>) over the same source range, so the end
+    /// moves; colliding same-track clips are pushed by the growth; keyframes, effect ranges and J/L cuts scale. With
+    /// <paramref name="ripple"/>, everything after the old end shifts by the delta on all unlocked tracks (<paramref name="rippleAll"/>)
+    /// or its own track and Sub-Lanes. Returns the speed set (unchanged for non-media clips).
     /// </summary>
     double SetClipSpeed(TimelineClip clip, double speed, bool freeUnquantized = false, bool ripple = false, bool rippleAll = true);
 
-    /// <summary>Whether its sound moves and trims with its picture, and how far it is slipped while it does not (seconds, later when positive; not on frames).</summary>
+    /// <summary>Sets A/V link and the unlinked audio offset (seconds, positive = later; not quantized).</summary>
     void SetAudioLink(TimelineClip clip, bool linked, double slipSeconds);
 
     /// <summary>
-    /// A track's switches, sound and name; null leaves each as it is. A locked track takes these too: locking keeps its
-    /// clips where they are, not its switches.
+    /// Sets track switches, audio and name (null = unchanged). Allowed on locked tracks: locking protects clips, not switches.
     /// </summary>
     void SetTrack(TimelineTrackModel track, bool? hidden = null, bool? muted = null, bool? soloed = null, bool? locked = null,
                   double? gainDb = null, string? name = null);
 
     /// <summary>
-    /// Takes a track off the timeline with its clips; the tracks of its kind are numbered again. The tracks under it stay
-    /// (4.4), under its own parent track now, or under none.
+    /// Removes a track and its clips and renumbers its kind. Child tracks are re-parented to its parent (or top level).
     /// </summary>
     void RemoveTrack(TimelineTrackModel track);
 
-    /// <summary>Moves a track to <paramref name="index"/> in the stacking order (0: the bottom); the tracks are numbered again.</summary>
+    /// <summary>Moves a track to stacking <paramref name="index"/> (0 = bottom) and renumbers.</summary>
     void MoveTrack(TimelineTrackModel track, int index);
 
-    // ----- Folds (4.3D): a stretch taken out of the timeline and kept at its seam, to be put back -----
+    // ----- Folds: ranges removed from the Sequence and stored at a seam for restoration -----
 
     /// <summary>
-    /// Folds a stretch out of the timeline (Remove Dead Air's Split &amp; Mark): on the tracks it is taken out of, every clip is
-    /// split at its two ends (on frames), what lies between is kept in a fold (<see cref="FoldedSegment"/>) and taken off,
-    /// and what follows closes up behind it. The tracks: <paramref name="seamTrack"/> alone, or every unlocked track
-    /// (<paramref name="rippleAllUnlockedTracks"/>, as the main video's dead air is taken out of all of them). The fold's
-    /// seam is the clip that follows on <paramref name="seamTrack"/> (or the one before, when none follows). A stretch put back
-    /// (<see cref="TimelineDocument.RestoredFolds"/>) that it covers is no longer marked. Returns the fold, or null when nothing
-    /// lay there to fold.
+    /// Folds a range out (Remove Dead Air): splits clips at both ends (on frames), stores the middle in a <see cref="FoldedSegment"/>,
+    /// and ripples the rest closed, on <paramref name="seamTrack"/> or all unlocked tracks (<paramref name="rippleAllUnlockedTracks"/>).
+    /// The seam is the following clip on <paramref name="seamTrack"/> (else the preceding). Covered <see cref="TimelineDocument.RestoredFolds"/>
+    /// are dropped. Returns the fold, or null when the range was empty.
     /// </summary>
     FoldedSegment? FoldStretch(TimelineTrackModel seamTrack, double from, double to, bool rippleAllUnlockedTracks);
 
     /// <summary>
-    /// Puts a fold back where it was folded out: what lies across its seam on its tracks is split there, everything from the
-    /// seam on moves later by its length, and its clips come back into the room made, as they were. The fold goes, and the
-    /// stretch stays marked (4.4-BugHunt: a <see cref="RestoredFold"/> with its id, to fold it again). The fold is found by
-    /// its id, so one taken from an older copy of the document (an undo step's, a view's) is still this one.
+    /// Restores a fold at its seam: splits clips crossing the seam, shifts everything after it by the fold length, and reinserts
+    /// the stored clips. Records a <see cref="RestoredFold"/> with the same id for re-folding. Resolved by id, so a fold from an
+    /// older document copy (undo step, view) still matches.
     /// </summary>
     void UnfoldSegment(FoldedSegment fold);
 
     /// <summary>
-    /// Folds a stretch that was put back (<see cref="RestoredFold"/>, 4.4-BugHunt: the Hide pill, "Hide / Fold Dead Air
-    /// Segment") out of the timeline again, as <see cref="FoldStretch"/> does: where it lies now, out of the tracks it was
-    /// folded out of before, as the fold it was (the same id). Its record goes. Refused when its stretch is no longer there.
+    /// Re-folds a <see cref="RestoredFold"/> (Hide pill) at its current span on its original tracks, reusing the id, as
+    /// <see cref="FoldStretch"/>. Removes the record. Refused when the range no longer exists.
     /// </summary>
     FoldedSegment FoldRestored(RestoredFold restored);
 
     /// <summary>
-    /// Opens a fold by part of its length at one side of its seam, or folds more into it (Q11, 4.4-BugHunt: a clip's edge at
-    /// the seam dragged away from the clip, or into it). <paramref name="seconds"/> above 0 shows that much of the fold at
-    /// <paramref name="side"/>, below 0 folds that much more of the clip at that side on its track (the clip before the seam
-    /// for the head, the one after it for the tail); on frames, at least the shortest clip, and no more than leaves that clip
-    /// the shortest clip. On every track the fold covers, children with their parents. What is shown joins the clip it
-    /// continues where the two are one clip cut in two (its keyframes joined back as a split cut them), and the clip at the
-    /// edge keeps its id (folding more at the tail leaves it in another object). Showing it all, or all but less than the
-    /// shortest clip, puts the fold back as <see cref="UnfoldSegment"/> does. Returns the fold as it is afterwards (its id
-    /// the same), or null when it was put back whole; less than half a frame changes nothing. Refused, changing nothing,
-    /// when a track it covers is locked or gone, when no clip meets the seam at that side to fold more of, and when a clip
-    /// would be cut shorter than the shortest clip at the new edge.
+    /// Resizes a fold at one side of its seam (dragging the seam clip's edge). <paramref name="seconds"/> > 0 reveals that much at
+    /// <paramref name="side"/>; &lt; 0 folds more of the adjacent clip (head: clip before, tail: clip after). Frame-aligned, at least
+    /// the minimum clip, never leaving the clip below the minimum; applies on every covered track with children. Revealed parts rejoin
+    /// their split partner (keyframes merged) and the edge clip keeps its id. Revealing all (or all but less than a minimum clip)
+    /// unfolds like <see cref="UnfoldSegment"/>. Returns the resized fold (same id) or null if fully restored; under half a frame is a
+    /// no-op. Refused when a covered track is locked/missing, no clip meets the seam, or a clip would drop below the minimum.
     /// </summary>
     FoldedSegment? ResizeFold(FoldedSegment fold, FoldSide side, double seconds);
 
-    // ----- Children (4.4): a clip or a track that goes with another -----
+    // ----- Parent/child clips and tracks -----
 
     /// <summary>
-    /// Makes a clip the child of another (<paramref name="parentClipId"/>; null: of none, "Unlink from Parent"): while it
-    /// lies with its parent in time, the parent's splits, trims, moves, deletes and folds carry it along. Refused for the
-    /// clip itself, a parent not on this timeline, one that goes with this clip already (its child, or theirs), and a clip
-    /// on a locked track. Pass 5.5A: <paramref name="tethered"/> sets its <see cref="TimelineClip.Tethered"/> mark (true only for the
-    /// Timeline's tether); null keeps the mark it has while it keeps a parent (a link pointed at another clip). No parent clears it.
+    /// Sets the parent clip (<paramref name="parentClipId"/>; null unlinks). Refused for self, parents not in this document, descendants
+    /// (cycles) and locked tracks. <paramref name="tethered"/> sets <see cref="TimelineClip.Tethered"/> (true only for user tethers); null
+    /// keeps the current mark while a parent remains. Unlinking clears it.
     /// </summary>
     void SetClipParent(TimelineClip clip, Guid? parentClipId, bool? tethered = null);
 
     /// <summary>
-    /// Puts a track under another (<paramref name="parentTrackId"/>; null: under none): it ripples and folds with it, and
-    /// is drawn under it. A locked track takes this too. Refused for the track itself, a track not on this timeline, and
-    /// one that lies under this track already.
+    /// Sets the parent track (<paramref name="parentTrackId"/>; null = top level) for rippling, folding and draw order. Allowed on
+    /// locked tracks. Refused for self, unknown tracks and descendants.
     /// </summary>
     void SetTrackParent(TimelineTrackModel track, Guid? parentTrackId);
 
     /// <summary>
-    /// Puts the captions right under a track's pictures in the stack (5.1-Polish, the user's Q2:
-    /// <see cref="TimelineTrackModel.CaptionsUnder"/>), or, with none, over everything. A locked track takes this too (it is
-    /// where the captions are drawn, not a change to its clips). Refused for a track not on this timeline.
+    /// Renders captions beneath a track (<see cref="TimelineTrackModel.CaptionsUnder"/>) or, with null, on top. Allowed on locked
+    /// tracks (draw order only). Refused for unknown tracks.
     /// </summary>
     void SetCaptionsUnder(TimelineTrackModel? track);
 
     /// <summary>
-    /// Gives a track's row a height of its own (<see cref="TimelineTrackModel.Height"/>), or, with null, the one Track Height
-    /// again. A locked track takes this too (it is how the track is looked at, not what it holds).
+    /// Sets a per-track row height (<see cref="TimelineTrackModel.Height"/>); null reverts to the global height. Allowed on locked tracks.
     /// </summary>
     void SetTrackHeight(TimelineTrackModel track, double? height);
 
     /// <summary>
-    /// Gives a picture track a Game Preset of its own (5.2A, a Track Preset Node: <see cref="TimelineTrackModel.PresetNodeName"/>), or
-    /// none with null. Only the node: the preset is put on the track's clips by the caller. A locked track takes this too (it is what the
-    /// track gives clips that come onto it, not a change to the ones it holds). Refused for a track not on this timeline, and for one
-    /// that holds no pictures.
+    /// Sets a picture track's Track Preset (<see cref="TimelineTrackModel.PresetNodeName"/>; null clears). The caller applies the preset
+    /// to existing clips. Allowed on locked tracks. Refused for unknown or non-picture tracks.
     /// </summary>
     void SetTrackPreset(TimelineTrackModel track, string? presetName);
 }
@@ -333,7 +281,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     /// <summary>How near two times count as the same: a microsecond, the grain of a quantized time.</summary>
     private const double Slack = 1e-6;
 
-    /// <summary>The farthest a time given to an edit is taken to be (some 30 years), so that no frame number overflows.</summary>
+    /// <summary>Clamp for edit times (~30 years) so frame indices never overflow.</summary>
     private const double Farthest = 1e9;
 
     private readonly TimelineDocument _doc;
@@ -344,13 +292,13 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     private List<RestoredFold>? _restoredBefore;
     private bool _foldsRemembered;
 
-    // The Sequence's own values (5.2B: its master gain), as they were before this transaction first changed them, and whether it changed any.
+    // Pre-change Sequence-level values (master gain) for rollback, and whether any changed.
     private double? _masterGainBefore;
     private (ProjectColorSpace ColorSpace, ProjectPixelAspect PixelAspect, int SampleRate)? _projectSettingsBefore;
     private List<string>? _mediaPoolBefore;
     private bool _documentTouched;
 
-    /// <summary>While set, every split made records its two halves (ResizeFold, folding more at a fold's tail, swaps their ids).</summary>
+    /// <summary>When set, splits record both halves (ResizeFold swaps their ids when folding more at the tail).</summary>
     private List<(TimelineClip First, TimelineClip Second)>? _splits;
     private readonly List<Guid> _touched = [], _touchedTracks = [];
     private readonly HashSet<Guid> _touchedSet = [], _touchedTrackSet = [];
@@ -371,9 +319,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     {
         EnsureInnermost();
 
-        // The outermost commit of a change lets go of the stretches put back that are no longer there (4.4-BugHunt): only
-        // after something else changed, so a commit of nothing still raises nothing, and an undo step's copy from before the
-        // change keeps them.
+        // Outermost commit prunes stale RestoredFolds, only when something else changed (empty commits stay silent; earlier undo
+        // copies keep theirs).
         if (_doc.OpenTransactions.Count == 1 && (_touched.Count > 0 || _touchedTracks.Count > 0))
             PruneRestored();
         Close();
@@ -431,7 +378,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         _closed = true;
         _doc.OpenTransactions.Remove(this);
         if (_doc.OpenTransactions.Count == 0)
-            _doc.InvalidateClipIndex(); // the outermost change is over (committed or rolled back): its clips moved, split or changed ids
+            _doc.InvalidateClipIndex(); // outermost commit/rollback: clips may have moved, split or changed ids
     }
 
     private void EnsureInnermost()
@@ -442,7 +389,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
             throw new InvalidOperationException($"A transaction opened inside \"{Label}\" is still open.");
     }
 
-    // ----- What a rollback puts back: each thing as it was when this transaction (and each one around it) first changed it -----
+    // ----- Rollback snapshots: first-touch state per transaction level -----
 
     private void Remember(TimelineClip clip)
     {
@@ -468,7 +415,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
             open._trackOrderBefore ??= [.. _doc.Tracks];
     }
 
-    /// <summary>Both lists of folds, as they are before this change writes either (their records are never changed in place).</summary>
+    /// <summary>Snapshots both fold lists before the first write (records are immutable).</summary>
     private void RememberFolds()
     {
         foreach (var open in _doc.OpenTransactions)
@@ -481,7 +428,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         }
     }
 
-    /// <summary>The Sequence's master gain as it is before this change writes it (5.2B); the change is the innermost transaction's to report.</summary>
+    /// <summary>Snapshots master gain before the first write; the innermost transaction reports the change.</summary>
     private void RememberMasterGain()
     {
         foreach (var open in _doc.OpenTransactions)
@@ -489,7 +436,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         _doc.OpenTransactions[^1]._documentTouched = true;
     }
 
-    /// <summary>The project's colour space, pixel aspect and sample rate as they are before this change writes them (5.4A).</summary>
+    /// <summary>Snapshots colour space, pixel aspect and sample rate before the first write.</summary>
     private void RememberProjectSettings()
     {
         foreach (var open in _doc.OpenTransactions)
@@ -497,7 +444,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         _doc.OpenTransactions[^1]._documentTouched = true;
     }
 
-    /// <summary>Project Media as it is before this change writes it (5.4C): a copy of the list, which is then changed in place.</summary>
+    /// <summary>Snapshots Project Media (list copy) before in-place mutation.</summary>
     private void RememberMediaPool()
     {
         foreach (var open in _doc.OpenTransactions)
@@ -505,7 +452,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         _doc.OpenTransactions[^1]._documentTouched = true;
     }
 
-    /// <summary>The files given that Project Media does not hold yet, each once, in order (empty paths and web addresses left out).</summary>
+    /// <summary>New distinct files not yet in Project Media, in order, excluding empty paths and URLs.</summary>
     private List<string> NewToPool(IEnumerable<string> paths)
     {
         var added = new List<string>();
@@ -522,7 +469,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         return added;
     }
 
-    /// <summary>A clip just placed (5.4C): its file goes into Project Media, when the document pools placed files and does not hold it yet.</summary>
+    /// <summary>Adds a newly placed clip's file to Project Media when pooling is enabled and the file is new.</summary>
     private void PoolPlaced(TimelineClip clip)
     {
         if (!_doc.PoolsPlacedFiles || TimelineDocument.PoolFileOf(clip) is not { } path || _doc.PoolHolds(path))
@@ -532,7 +479,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         _doc.MediaPool.Add(path);
     }
 
-    /// <summary>Lets go of the stretches put back whose stretch is no longer there (<see cref="RestoredFold.SpanIn"/> null).</summary>
+    /// <summary>Removes RestoredFolds whose range no longer exists (<see cref="RestoredFold.SpanIn"/> null).</summary>
     private void PruneRestored()
     {
         if (_doc.RestoredFolds is not { Count: > 0 } restored)
@@ -562,8 +509,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     }
 
     /// <summary>
-    /// Runs one edit as a step of its own inside this transaction: an edit that throws has changed nothing, so a caller
-    /// that catches the refusal can go on with the transaction.
+    /// Runs one edit atomically within the transaction: if it throws, its changes are rolled back and the transaction remains usable.
     /// </summary>
     private T Step<T>(Func<T> edit)
     {
@@ -591,9 +537,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
 
     private bool Quantizing(bool free) => _doc.QuantizeToFrames && !free;
 
-    // A time put on the nearest frame (Near), the frame at or before it (Down) or at or after it (Up); as it is when free.
-    // Signed, so that a J/L cut's negative lead lands on frames too. A time already on a frame stays on it: the slack is
-    // in seconds, the grain of a quantized time.
+    // Frame snapping: Near, Down (at/before) or Up (at/after); identity when free. Signed so negative J/L leads snap too.
+    // Times already on a frame stay put (tolerance in seconds matches quantization grain).
     private double Near(double seconds, bool free) => Snap(seconds, free, 0);
     private double Down(double seconds, bool free) => Snap(seconds, free, -1);
     private double Up(double seconds, bool free) => Snap(seconds, free, 1);
@@ -625,9 +570,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         _doc.QuantizeToFrames && Math.Abs(delta - FrameAt(Math.Round(delta * Rate.Fps, MidpointRounding.AwayFromZero))) <= 2 * Slack;
 
     /// <summary>
-    /// A time moved by <paramref name="delta"/> (a ripple, a held-back trim): moved by whole frames, one on a frame lands
-    /// on that frame's exact time again; otherwise it moves as it is, as every other edge moved with it does, so two
-    /// edges that were the same double stay the same double.
+    /// Shifts a time by <paramref name="delta"/> (ripple, held-back trim). For whole-frame deltas, on-frame times re-snap to the exact
+    /// frame time; otherwise raw addition, so edges that were equal doubles stay equal.
     /// </summary>
     private double Moved(double seconds, double delta, bool wholeFrames)
     {
@@ -640,8 +584,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     private double MinimumLength(bool free) => Up(TimelineDocument.MinimumClipSeconds, free);
 
     /// <summary>
-    /// Where an edge is asked to go, on a frame: the nearest, unless that is the other way from the request (an edge off
-    /// the frames asked to move by less than a frame), when it stays at <paramref name="current"/>.
+    /// Snaps a requested edge to the nearest frame, unless that reverses the request direction (sub-frame move from off-frame), then
+    /// returns <paramref name="current"/>.
     /// </summary>
     private double Wanted(double asked, double current, bool free)
     {
@@ -650,8 +594,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     }
 
     /// <summary>
-    /// Where an edge goes: <paramref name="wanted"/> held to <paramref name="earliest"/>..<paramref name="latest"/>, but
-    /// never past the request nor the other way from it (then it stays at <paramref name="current"/>).
+    /// Clamps <paramref name="wanted"/> to [<paramref name="earliest"/>, <paramref name="latest"/>] without overshooting or reversing the
+    /// request (else returns <paramref name="current"/>).
     /// </summary>
     private static double Toward(double current, double wanted, double earliest, double latest)
     {
@@ -667,21 +611,20 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
 
     private static bool Bounded(TimelineClip clip) => clip.PlaysFile && clip.SourceDuration > 0;
 
-    /// <summary>Seconds of the timeline its file has before what it shows (less what a J-cut's sound already takes).</summary>
+    /// <summary>Head handle in timeline seconds (minus J-cut audio lead).</summary>
     private static double MediaBefore(TimelineClip clip) =>
         clip.PlaysFile ? Math.Max(clip.MediaOffset / clip.Speed - LeadOf(clip), 0) : double.PositiveInfinity;
 
-    /// <summary>Seconds of the timeline its file has after what it shows (less what an L-cut's sound already takes).</summary>
+    /// <summary>Tail handle in timeline seconds (minus L-cut audio tail).</summary>
     private static double MediaAfter(TimelineClip clip) =>
         Bounded(clip) ? Math.Max((clip.SourceDuration - clip.MediaEnd) / clip.Speed - TailOf(clip), 0) : double.PositiveInfinity;
 
-    /// <summary>The latest a clip starting at <paramref name="start"/> may end, its file (and its L-cut's sound) permitting.</summary>
+    /// <summary>Latest end for a clip starting at <paramref name="start"/>, bounded by the source and L-cut audio.</summary>
     private double FitEnd(TimelineClip clip, double start, double end, bool free) =>
         Bounded(clip) ? Math.Min(end, Down(start + (clip.SourceDuration - clip.MediaOffset) / clip.Speed - TailOf(clip), free)) : end;
 
     /// <summary>
-    /// The shortest the clip's picture can be: the shortest clip, and long enough that its sound (from its lead-in to its
-    /// tail, either of them negative when cut inside the picture) lasts the shortest clip too.
+    /// Minimum video length: the minimum clip, extended so the audio span (lead-in to tail, either possibly negative) also meets it.
     /// </summary>
     private double ShortestFor(TimelineClip clip, bool free)
     {
@@ -704,7 +647,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         return track;
     }
 
-    /// <summary>Takes a clip out of a track's list: refused (4.4 BugHunt) rather than a fault when it is not there.</summary>
+    /// <summary>Removes a clip from a track list; throws a refusal (not a fault) when absent.</summary>
     private static void RemoveFrom(TimelineTrackModel track, TimelineClip clip)
     {
         var index = track.IndexOf(clip);
@@ -741,8 +684,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     }
 
     /// <summary>
-    /// A crossfade stays only where its clip still meets the one before it, and is never longer than either of the two
-    /// (4.3C: a trim or a speed could leave one longer than its clips).
+    /// Drops crossfades whose clip no longer abuts its predecessor and caps the rest at either clip's length (trims and speed
+    /// changes can leave them too long).
     /// </summary>
     private void Reconcile(TimelineTrackModel track)
     {
@@ -841,7 +784,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
 
     public void SetClipBeats(TimelineClip clip, double[]? beats) => Step(() =>
     {
-        // A new array of its own (the clip's is never changed in place): finite, from 0, in order, a microsecond apart at least.
+        // Fresh array (never mutate the clip's): finite, non-negative, ascending, at least 1 us apart.
         double[]? kept = null;
         if (beats is not null)
         {
@@ -911,8 +854,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     {
         (c.AudioLinked, c.AudioSlipSeconds) = (linked, double.IsFinite(slipSeconds) ? slipSeconds : 0);
 
-        // Linked again: a J or L cut kept while it was not (moves and trims left it alone) is held, on frames, to the
-        // timeline's start and to its file, as one made now would be.
+        // Relinking: re-clamp any J/L cut kept while unlinked to time 0 and the file, on frames, as a new cut would be.
         if (linked && c.HasSound)
         {
             if (c.AudioLeadInSeconds > 0)
@@ -920,7 +862,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
             if (c.AudioTailOutSeconds > 0 && Bounded(c))
                 c.AudioTailOutSeconds = Math.Max(Down(Math.Min(c.AudioTailOutSeconds, Math.Max((c.SourceDuration - c.MediaEnd) / c.Speed, 0)), false), 0);
 
-            // A cut inside a picture trimmed shorter meanwhile may leave its sound too short: then the sound is the picture's.
+            // An inside cut on a since-shortened clip may leave audio below the minimum: fall back to the video span.
             if (c.Duration + c.AudioLeadInSeconds + c.AudioTailOutSeconds < MinimumLength(false) - Slack)
                 (c.AudioLeadInSeconds, c.AudioTailOutSeconds) = (Math.Max(c.AudioLeadInSeconds, 0), Math.Max(c.AudioTailOutSeconds, 0));
         }
@@ -954,8 +896,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         var at = _doc.Tracks.IndexOf(track);
         _doc.Tracks.Remove(track);
 
-        // The captions under it keep their depth (5.1-AutoHud-Part1, the user's Q4): under the next picture track down; at the
-        // bottom of the stack, under the lowest that is left. With no picture track left they are over everything.
+        // Keep caption depth: move CaptionsUnder to the next picture track down (or the lowest remaining); none left renders on top.
         if (track.CaptionsUnder)
         {
             track.CaptionsUnder = false;
@@ -967,8 +908,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
             }
         }
 
-        // The tracks under it stay (4.4: a track whose last clip moved away is taken off, and theirs must not go with it):
-        // they lie under its own parent track now, or under none.
+        // Child tracks survive (auto-removing an emptied track must not cascade): re-parent them to its parent or top level.
         foreach (var child in _doc.Tracks)
         {
             if (child.ParentTrackId != track.Id)
@@ -1096,8 +1036,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     });
 
     /// <summary>
-    /// A change to a clip's own values on an unlocked track, remembered first. One that changes nothing is no change: the
-    /// clip is not touched, so a commit of nothing else raises no Committed (and Undo takes no step).
+    /// Applies a property change on an unlocked track after snapshotting. A no-op change leaves the clip untouched, so an otherwise
+    /// empty commit raises no Committed and records no Undo step.
     /// </summary>
     private bool Change(TimelineClip clip, Action<TimelineClip> change)
     {
@@ -1152,9 +1092,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         if (Math.Abs(stretch - 1) < 1e-6)
             return clip.Speed;
 
-        // The same stretch of the file, so the end moves; on a frame, and never past the file's end.
-        // A J/L cut's sound reads the same stretch of its file too: its lead and tail are scaled, then held (on frames) to
-        // the timeline's start and the file, as a J/L cut is. A refusal is a step's: the clip is put back.
+        // Same source range, so the end moves (frame-aligned, clamped to the file). J/L lead and tail scale, then re-clamp to time 0
+        // and the file on frames. A refusal rolls the step back.
         var media = clip.MediaEnd - clip.MediaOffset;
         var oldEnd = clip.End;
         var (lead, tail) = (clip.AudioLeadInSeconds * stretch, clip.AudioTailOutSeconds * stretch);
@@ -1169,8 +1108,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         if (!(end - clip.Start >= ShortestFor(clip, free) - Slack))
             throw new TimelineEditException("At that speed the clip would be shorter than the shortest clip.");
 
-        // Its new end first, so that what follows meets it again; then what it grows into on its track moves on with it,
-        // as far as it grew (a crossfade into the next clip stays: they still meet).
+        // Set the new end, then push colliding same-track clips by the growth (an outgoing crossfade survives: they still abut).
         var grows = end > oldEnd + Slack && track.IndexOf(clip) is var index && index + 1 < track.Clips.Count && track.Clips[index + 1].Start < end - Slack;
         SetSpan(clip, clip.Start, end);
         if (grows)
@@ -1205,8 +1143,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         var given = clip.Snapshot();
         try
         {
-            // Made usable first: a speed in range, an offset inside the file, fades and a crossfade within their
-            // limits, a J-cut's sound inside its file.
+            // Sanitize first: speed in range, offset inside the file, fades/crossfade within limits, J-cut audio inside the file.
             clip.Speed = double.IsFinite(clip.Speed) && clip.Speed > 0 ? Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
             if (clip.PlaysFile)
                 clip.MediaOffset = double.IsFinite(clip.MediaOffset) ? Math.Max(clip.MediaOffset, 0) : 0;
@@ -1227,7 +1164,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
 
             Land(track, clip, start, end, allowCrossfadeOverlap, free);
 
-            // Its file is in Project Media from now on (5.4C), until taken out of the bin: deleting the clip leaves it there.
+            // Pool the file in Project Media; it stays after the clip is deleted until removed from the bin.
             PoolPlaced(clip);
             return clip;
         }
@@ -1238,15 +1175,14 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         }
     }
 
-    /// <summary>Puts a clip that is on no track onto one, from <paramref name="start"/> to <paramref name="end"/>, or over a neighbour into a crossfade.</summary>
+    /// <summary>Places an unplaced clip over [<paramref name="start"/>, <paramref name="end"/>], or abutting a neighbour as a crossfade.</summary>
     private void Land(TimelineTrackModel track, TimelineClip clip, double start, double end, bool allowCrossfadeOverlap, bool free)
     {
         TimelineClip? later = null;
         var crossfade = 0.0;
         if (Overlapped(track, start, end, null) is { } hit)
         {
-            // Dropped over a neighbour by a little (4.2.0's drag-over crossfade, from a frame on): put against it, the
-            // later of the two crossfading from the earlier.
+            // Drag-over crossfade (overlap of at least one frame): abut, with the later clip crossfading from the earlier.
             var length = end - start;
             var overlap = Math.Min(end, hit.End) - Math.Max(start, hit.Start);
             var least = Quantizing(free) ? Rate.FrameDuration - 2 * Slack : 0.02;
@@ -1293,7 +1229,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
             targetTrack = AddTrack(insertTrackAtIndex, targetTrack.Kind, null);
         Editable(targetTrack);
 
-        // What goes with it (4.4): its children that lie with it, and theirs, each to move by as much on its own track.
+        // Overlapping descendants move by the same delta on their own tracks.
         var family = Family(clip);
 
         // Lifted. The crossfade it had belongs to the cut it leaves, unless it lands against the same clip again.
@@ -1342,7 +1278,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         if (!(at - clip.Start >= minimum - Slack && clip.End - at >= minimum - Slack && firstSound >= minimum - Slack && secondSound >= minimum - Slack))
             throw new TimelineEditException($"{Seconds(at)} s is not inside the clip ({Seconds(clip.Start)} to {Seconds(clip.End)} s) by the shortest clip.");
 
-        // Its children past the cut (4.4), found before it is cut.
+        // Collect children past the cut before splitting.
         var children = ChildrenWith(clip, at, clip.End);
 
         Remember(track);
@@ -1366,9 +1302,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         Touch(second.Id);
         _splits?.Add((clip, second));
 
-        // Its children go with the halves (4.4): one across the cut is cut there too, its second part the second half's, and
-        // one wholly after the cut is the second half's. One that cannot be cut there (too near its own edge, its sound too
-        // short, on a locked track) stays whole with the first half, where it starts.
+        // Children crossing the cut are split too (second part re-parented to the second half); children wholly after it move to
+        // the second half. Unsplittable children (edge too close, audio too short, locked) stay whole with the first half.
         if (children is not null)
         {
             foreach (var (_, child) in children)
@@ -1417,11 +1352,11 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         var tracks = ripple ? RippleTracks(track, rippleAll) : [];
         var (oldStart, oldEnd) = (clip.Start, clip.End);
 
-        // What rides a ripple of it (4.4): its children on its start or its end, or in the stretch its end may give up.
+        // Ripple riders: children on the start or end, or within the range the end may release.
         var riders = ripple ? Riders(clip, head: true, lostFrom: oldEnd - Math.Max(delta, 0)) : null;
         if (ripple && delta > 0)
         {
-            // What follows must be able to come back with the clip's end (4.2.0 trimmed it all and left the gap).
+            // Limit by how far following clips can move back with the end (never leave a gap).
             var follow = RippleLimit(tracks, clip.End, -delta, clip, riders);
             if (-follow < delta)
                 delta = -follow;
@@ -1477,7 +1412,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         var delta = end - oldEnd;
         var tracks = ripple ? RippleTracks(track, rippleAll) : [];
 
-        // What rides a ripple of it (4.4): its children on its end, or in the stretch it may give up.
+        // Ripple riders: children on the end or within the range it may release.
         var riders = ripple ? Riders(clip, head: false, lostFrom: Math.Min(end, oldEnd)) : null;
         if (ripple && delta < 0)
             delta = Math.Max(delta, RippleLimit(tracks, oldEnd, delta, clip, riders));
@@ -1524,9 +1459,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         var lead = double.IsFinite(newLead) ? Math.Min(Near(newLead, free), leadMost) : oldLead;
         var tail = double.IsFinite(newTail) ? Math.Min(Near(newTail, free), tailMost) : oldTail;
 
-        // And it lasts at least the shortest clip: a sound cut too far inside its picture is let out again, on the side
-        // that moved the most first, as far as its picture's edge (the picture is at least the shortest clip), each side
-        // to the frame on the picture's side of it.
+        // Enforce minimum audio length: expand an over-inset side (largest move first) up to the video edge, snapping each side to
+        // the frame toward the video.
         var missing = MinimumLength(free) - (clip.Duration + lead + tail);
         if (missing > Slack)
         {
@@ -1584,9 +1518,8 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
             later.MediaOffset = Math.Max(later.MediaOffset + delta * later.Speed, 0);
         SetSpan(later, cut, later.End);
 
-        // Their children follow the cut as the two trims' would (4.4-BugHunt): those on it move with it, those it leaves wholly
-        // outside their parent are unlinked. The side that gives up time goes first, so that the side taking it finds room
-        // (two children that met on the cut meet on the new one).
+        // Children follow as for two trims: those on the cut move, those left outside their parent unlink. The shrinking side goes
+        // first so the growing side finds room (children abutting at the cut abut at the new cut).
         if (delta > 0)
         {
             FollowStart(later, oldCut, later.End);
@@ -1622,7 +1555,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         return delta;
     }
 
-    /// <summary>Takes a clip off its track; with <paramref name="family"/> (4.4), what goes with it (<see cref="Family"/>) too.</summary>
+    /// <summary>Removes a clip; with <paramref name="family"/>, also its <see cref="Family"/>.</summary>
     private TimelineTrackModel Lift(TimelineClip clip, bool reconcile = true, bool family = true)
     {
         var track = Editable(TrackOf(clip));
@@ -1641,9 +1574,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
         return track;
     }
 
-    // The crossfades are looked at once the gap is closed: the clip after the deleted one keeps its crossfade when it
-    // comes to meet the one before (pairs are by who meets whom, as in 4.2.0). What goes with it goes too (4.4), and the
-    // tracks it was on close up with the clip's.
+    // Crossfades are re-evaluated after closing the gap (pairs are by adjacency). The family is removed too and its tracks close up.
     private double LiftRippling(TimelineClip clip, bool rippleAll)
     {
         var (start, end) = (clip.Start, clip.End);
@@ -1681,7 +1612,7 @@ internal sealed partial class TimelineTransaction : ITimelineTransaction
     {
         Editable(track);
 
-        // A gap's edge is a clip's edge where one is there, on a frame or not (a free trim's); anywhere else, on a frame.
+        // Gap edges at a clip use its exact edge (possibly off-frame after a free trim); elsewhere they snap to frames.
         var start = Edge(track, Math.Max(Finite(gapStart, "The gap's start"), 0));
         var end = Edge(track, Math.Min(Finite(gapEnd, "The gap's end"), Farthest));
         if (!(end - start > Slack))

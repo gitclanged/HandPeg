@@ -10,26 +10,20 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Mask pictures: carried inside the files that have to stand on their own (a style preset, a project), and
-/// drawn from shapes. A carried mask is kept under a name made from its content, so two different masks that
-/// share a file name never take each other's place, and one mask used by several layers is carried once.
-///
-/// A drawn mask is a set of closed outlines, each a list of points given as fractions of the source frame,
-/// written as text: "x,y x,y x,y" for an outline, outlines separated by ";". The picture is drawn from that
-/// text, white inside the outlines and black outside, and the layer keeps the text, so the outlines can be
-/// opened and changed again, and the picture drawn again when it is missing.
+/// Mask storage: masks embedded in self-contained files (presets, projects) are content-addressed (no name collisions; shared masks
+/// stored once). Drawn masks are closed outlines in source-frame fractions serialized as "x,y x,y x,y" with ";" between outlines,
+/// rasterized white-inside on demand; the layer keeps the text so outlines stay editable.
 /// </summary>
 public static class MaskStore
 {
     // ----- Carried inside a file -----
 
     /// <summary>
-    /// Adds the mask a layer uses to the set being written, and has the layer name it by its key. A layer
-    /// without a mask file is left as it is.
+    /// Adds a layer's mask to the outgoing set and relinks the layer by key; layers without a mask file are unchanged.
     /// </summary>
     public static void Pack(LayerState layer, Dictionary<string, string> masks)
     {
-        // A drawn mask is its outlines alone: nothing is carried but them (5.1-Release).
+        // Drawn masks carry only their outlines.
         if (IsDrawn(SourceOf(layer.MaskPath, layer.MaskShapes)))
         {
             layer.MaskPath = "";
@@ -54,14 +48,13 @@ public static class MaskStore
     }
 
     /// <summary>
-    /// Writes a carried mask into the masks folder and points the layer at it there. A file of that name that
-    /// already holds the same picture is used as it is; one that holds another picture is left alone, and this
-    /// one is written beside it under its content's name. A name the set does not carry is left as it is.
+    /// Extracts an embedded mask to the masks folder and relinks the layer. Reuses an identical existing file; on a name clash with
+    /// different content writes beside it under the content name. Unknown names are left unchanged.
     /// </summary>
-    /// <returns>Null, or why the mask could not be written.</returns>
+    /// <returns>Null, or an error message.</returns>
     public static string? Unpack(LayerState layer, IReadOnlyDictionary<string, string> masks)
     {
-        // A picture HandPeg once drew from the layer's own outlines (an older file's shape_*.png): the outlines stand in for it.
+        // Legacy shape_*.png rasterized from the layer's outlines: use the outlines instead.
         if (IsDrawn(SourceOf(layer.MaskPath, layer.MaskShapes)))
         {
             layer.MaskPath = "";
@@ -105,10 +98,8 @@ public static class MaskStore
     private static readonly Dictionary<string, bool> AlphaKnown = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Whether a mask picture is to be read by its transparency rather than its brightness: it has an alpha
-    /// channel, and some of it is actually see-through. Such a mask shows the layer where the picture is painted,
-    /// in any colour, and cuts it away where the picture is transparent. A picture without transparency is read
-    /// as black and white. False for a file that cannot be read.
+    /// True when a mask should be sampled by alpha (has an alpha channel with actual transparency) rather than luminance. False for
+    /// unreadable files.
     /// </summary>
     public static bool UsesAlpha(string path)
     {
@@ -142,8 +133,7 @@ public static class MaskStore
     {
         using var stream = File.OpenRead(path);
 
-        // The pixel format first, from the header without decoding: a picture with no alpha channel (JPEG, BMP, an RGB PNG) is never
-        // decoded at all.
+        // Check the header pixel format first so formats without alpha (JPEG, BMP, RGB PNG) are never decoded.
         var format = BitmapDecoder.Create(stream, BitmapCreateOptions.DelayCreation | BitmapCreateOptions.IgnoreColorProfile, BitmapCacheOption.None).Frames[0].Format;
         if (!HasAlphaChannel(format))
             return false;
@@ -174,8 +164,7 @@ public static class MaskStore
         || format == PixelFormats.Rgba128Float || format == PixelFormats.Prgba128Float;
 
     /// <summary>
-    /// A mask picture as grey levels, white where it shows, read as <see cref="UsesAlpha"/> says, and made small
-    /// enough to look over quickly: at most so many pixels across. For finding the separate pieces in a mask.
+    /// Downscaled greyscale coverage map (white = visible, per <see cref="UsesAlpha"/>) for island detection.
     /// </summary>
     public static (byte[] Pixels, int Width, int Height)? ReadGrey(string path, int largest = 960)
     {
@@ -208,8 +197,7 @@ public static class MaskStore
     // ----- The separate pieces of a mask -----
 
     /// <summary>
-    /// The islands of a mask of the whole frame: each patch that shows, apart from the rest, as the box round
-    /// it in fractions of the frame. Specks of a few pixels are left out. Null when the picture cannot be read.
+    /// Bounding boxes (frame fractions) of connected visible regions in a full-frame mask, ignoring tiny specks; null if unreadable.
     /// </summary>
     public static List<Rect>? FindIslands(string path)
     {
@@ -260,9 +248,8 @@ public static class MaskStore
     }
 
     /// <summary>
-    /// Islands joined into pieces: two that come closer than the distance given (a fraction of the frame's width,
-    /// across or down) are one piece, so that a row of separately traced ability icons is one layer, not one
-    /// each. In reading order: top to bottom, then left to right. Each piece's box has a little room spare.
+    /// Merges islands closer than the given distance (fraction of frame width) into pieces (e.g. a row of icons becomes one layer),
+    /// sorted top-to-bottom then left-to-right, each box slightly padded.
     /// </summary>
     public static List<Rect> GroupIslands(IReadOnlyList<Rect> islands, double join, double aspect = 16.0 / 9)
     {
@@ -340,9 +327,8 @@ public static class MaskStore
             string.Create(CultureInfo.InvariantCulture, $"{Math.Round(p.X, 5)},{Math.Round(p.Y, 5)}")))));
 
     /// <summary>
-    /// A Cutout's own drawn mask (not the frame's) moved from the part of the picture it was cut from (<paramref name="part"/>,
-    /// fractions of the whole) onto the whole picture, as the mask of a Cutout of a file is (5.2-AuditB): its outlines go where
-    /// they lay, so the crop cuts the same mask. A mask picture of its own is left as it is: it cannot be moved without a file.
+    /// Remaps a Cutout's drawn mask from its source region (<paramref name="part"/>, frame fractions) to full-frame coordinates so the
+    /// crop selects the same mask. Bitmap masks are left unchanged.
     /// </summary>
     public static void SpreadOverPicture(LayerState state, (double X, double Y, double Width, double Height) part)
     {
@@ -353,12 +339,11 @@ public static class MaskStore
         (state.MaskPath, state.MaskShapes) = ("", FormatShapes(moved));
     }
 
-    // ----- Drawn masks: outlines only, never a file (5.1.0, a product decision) -----
+    // ----- Drawn masks: outlines only, no files -----
 
     /// <summary>
-    /// The start of a drawn mask's key: a mask that is its layer's outlines alone. It is no file: the GPU engine and the hit test
-    /// fill the outlines in memory at the size they need (<see cref="Rasterize"/>), styles and projects carry only the outlines, and
-    /// only FFmpeg's fallback graph is given a picture, in the session's temp folder (<see cref="FileFor"/>).
+    /// Key prefix for drawn masks (outline-only, no file). The GPU engine and hit testing rasterize in memory (<see cref="Rasterize"/>);
+    /// presets and projects store outlines only. <see cref="FileFor"/> can produce a temporary file when one is required.
     /// </summary>
     public const string DrawnPrefix = "drawn:";
 
@@ -380,13 +365,12 @@ public static class MaskStore
     /// <summary>Whether a mask source is a drawn mask's key, not a file.</summary>
     public static bool IsDrawn(string? source) => source?.StartsWith(DrawnPrefix, StringComparison.Ordinal) == true;
 
-    /// <summary>Whether a mask file is one HandPeg drew from outlines before 5.1-Release (shape_*.png): its layer's outlines stand in for it.</summary>
+    /// <summary>True for legacy outline-rasterized mask files (shape_*.png), superseded by the layer's outlines.</summary>
     public static bool IsGeneratedFile(string? path) =>
         Path.GetFileName((path ?? "").Trim().Trim('"')).StartsWith("shape_", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// What a layer's mask is: its outlines (a drawn key) when it has some and names no picture of its own (or only one HandPeg
-    /// drew from them), else its picture file, trimmed; "" for none.
+    /// Effective mask source: drawn key when outlines exist and no custom bitmap (or only a legacy shape file), else the trimmed file path; "" for none.
     /// </summary>
     public static string SourceOf(string? path, string? shapes)
     {
@@ -397,14 +381,13 @@ public static class MaskStore
     /// <summary>A layer's mask source (<see cref="SourceOf(string?, string?)"/> of its mask file and outlines).</summary>
     public static string SourceOf(Layer layer) => SourceOf(layer.MaskPath, layer.MaskShapes);
 
-    /// <summary>Whether a mask source is there to be shown: a drawn key whose outlines are known, or a file that exists.</summary>
+    /// <summary>True when the source is usable: a drawn key with known outlines or an existing file.</summary>
     public static bool Exists(string? source) =>
         IsDrawn(source) ? DrawnShapes.ContainsKey(source!) : !string.IsNullOrEmpty(source) && FileState.Exists(source);
 
     /// <summary>
-    /// A drawn mask filled in memory: the part of the frame <paramref name="cut"/> covers (fractions of the frame) at the size
-    /// asked, each value the share of the pixel inside the outlines (nonzero winding: overlapping outlines add up), 0..1. Pure
-    /// arithmetic, so on any thread. Null for a key whose outlines are not known.
+    /// Rasterizes a drawn mask over region <paramref name="cut"/> (frame fractions) at the requested size: per-pixel coverage 0..1 (nonzero
+    /// winding, overlaps add). Pure and thread-safe. Null for unknown keys.
     /// </summary>
     public static float[]? Rasterize(string key, (double X, double Y, double Width, double Height) cut, int width, int height)
     {
@@ -424,7 +407,7 @@ public static class MaskStore
             }
         }
 
-        // Four lines through each row of pixels; along each, the stretches inside are added exactly, to the fraction of a pixel.
+        // Four scanlines per pixel row; inside spans accumulate exact fractional coverage.
         const int Lines = 4;
         var cover = new float[width * height];
         var crossings = new List<(double X, int Up)>();
@@ -462,7 +445,7 @@ public static class MaskStore
         return cover;
     }
 
-    // Adds a stretch of one row, from x = a to b (pixels, fractional), with its weight: whole pixels in full, the two ends in part.
+    // Accumulates span [a, b) (fractional pixels) with weight: full interior pixels, partial end pixels.
     private static void AddSpan(float[] cover, int row, int width, double a, double b, float weight)
     {
         (a, b) = (Math.Clamp(a, 0, width), Math.Clamp(b, 0, width));
@@ -484,9 +467,8 @@ public static class MaskStore
     }
 
     /// <summary>
-    /// A mask source as a file, for FFmpeg's fallback graph, which reads masks as pictures: a file as it is; a drawn mask filled
-    /// at <paramref name="width"/> x <paramref name="height"/> into the session's temp folder (gone when it closes), never the
-    /// Masks folder. "" when it cannot be made.
+    /// Mask source as a file for file-based consumers: files as-is; drawn masks rasterized at <paramref name="width"/> x
+    /// <paramref name="height"/> into the session temp folder (deleted on exit, never the Masks folder). "" on failure.
     /// </summary>
     public static string FileFor(string source, int width, int height)
     {
@@ -522,8 +504,7 @@ public static class MaskStore
 
     // ----- Outlines for the built-in shapes, as fractions of a 16:9 frame -----
 
-    // The frame the built-in outlines are measured on: the shapes are worked out in its pixels, so that a
-    // circle is round and a corner is as round across as it is down, and then given as fractions of it.
+    // Reference frame for built-in shapes: computed in its pixels (true circles and symmetric corners) then converted to fractions.
     private const double FrameWidth = 1920, FrameHeight = 1080;
 
     /// <summary>A rectangle with rounded corners, the radius in pixels of a 1920 x 1080 frame.</summary>
@@ -558,7 +539,7 @@ public static class MaskStore
             .ToList();
     }
 
-    /// <summary>A bar leaning to the right inside a box: its top edge starts a slant's width in, its bottom edge stops that far short.</summary>
+    /// <summary>Right-leaning parallelogram in a box: top edge inset by the slant, bottom edge shortened by it.</summary>
     public static List<Point> Slant(double x, double y, double width, double height, double lean = 0.1) =>
     [
         new(x + width * lean, y), new(x + width, y), new(x + width * (1 - lean), y + height), new(x, y + height),

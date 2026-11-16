@@ -4,23 +4,23 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Views;
 
-// ----- Project Media, the project's bin (5.4C) -----
-// Project Media lists the project's own bin (TimelineDocument.MediaPool, through ProjectFiles): files put in by hand stay until taken out.
-// The pane only asks: the window puts files in (a drop on the pane, Add to Project Media from the Folder Browser or the Clip Library) and
-// takes them out (Remove from Project Media, Delete in the list), each a step of Undo; a file a clip on the Sequence plays goes only
-// with its clips, once the user says so (5.4D, Q5 b).
+// ----- Project Media (the project bin) -----
+// Lists the project's bin (TimelineDocument.MediaPool via ProjectFiles); manually added files persist until removed. The pane only
+// requests changes: the window adds files (pane drop, Add to Project Media from Folder Browser or Clip Library) and removes them
+// (Remove from Project Media, Delete in the list), each one Undo step. A file used by Sequence clips is removed only together with
+// those clips, after confirmation.
 public partial class MediaBrowserPane : IOwnsKeys
 {
-    /// <summary>Files were asked to be put into Project Media (from the Folder Browser or the Clip Library).</summary>
+    /// <summary>Request to add files to Project Media (from Folder Browser or Clip Library).</summary>
     public event Action<IReadOnlyList<string>>? ProjectMediaAddRequested;
 
-    /// <summary>Files were asked to be taken out of Project Media (its menu, or Delete in its list).</summary>
+    /// <summary>Request to remove files from Project Media (context menu or Delete in its list).</summary>
     public event Action<IReadOnlyList<string>>? ProjectMediaRemoveRequested;
 
-    /// <summary>Whether a clip on the Sequence plays a file (such a file cannot be taken out of Project Media).</summary>
+    /// <summary>True when a Sequence clip uses the file (removal then also removes those clips, after confirmation).</summary>
     public Func<string, bool>? IsFileInUse { get; set; }
 
-    /// <summary>Shows Project Media (after a drop onto the pane put files into it); listed again at once when it was shown already.</summary>
+    /// <summary>Switches to Project Media (e.g. after a drop added files); re-lists immediately if already shown.</summary>
     public void ShowProjectMedia()
     {
         if (PickerMode)
@@ -36,13 +36,13 @@ public partial class MediaBrowserPane : IOwnsKeys
     }
 
     /// <summary>
-    /// Delete is Project Media's own while the keyboard is in its list (5.4C, MainWindow.KeyBelongsToFocus): it takes the files chosen out
-    /// of the bin. Anywhere else in the pane, and in the other lists, Delete stays the timeline's.
+    /// Claims Delete while the Project Media list has focus (MainWindow.KeyBelongsToFocus), removing the selected files from the bin.
+    /// Elsewhere in the pane and in other lists, Delete stays with the Timeline.
     /// </summary>
     public bool OwnsKey(Key key, ModifierKeys modifiers) =>
         key == Key.Delete && modifiers == ModifierKeys.None && _projectMode && !PickerMode && Items.IsKeyboardFocusWithin;
 
-    /// <summary>The files chosen in Project Media, asked to be taken out of it.</summary>
+    /// <summary>Requests removal of the selected Project Media files.</summary>
     private void RemoveSelectedFromProject()
     {
         var files = Selected().Where(i => i.IsFile).Select(i => i.Path).ToList();
@@ -50,7 +50,7 @@ public partial class MediaBrowserPane : IOwnsKeys
             ProjectMediaRemoveRequested?.Invoke(files);
     }
 
-    /// <summary>The menu's Project Media lines: in Project Media, Remove (5.4D: used files too, with their clips); elsewhere, Add.</summary>
+    /// <summary>Adds the Project Media menu item: Remove in Project Media (used files too, with their clips); Add elsewhere.</summary>
     private void AddProjectMediaItems(ContextMenu menu, IReadOnlyList<MediaBrowserItem> files)
     {
         if (PickerMode || files.Count == 0)
@@ -60,7 +60,7 @@ public partial class MediaBrowserPane : IOwnsKeys
         MenuItem entry;
         if (_projectMode)
         {
-            // 5.4D (Q5 b): enabled for used files too: their clips go with them, after a question (MainViewModel.RemoveFromProjectMedia).
+            // Enabled for used files too: their clips are removed with them after confirmation (MainViewModel.RemoveFromProjectMedia).
             var used = paths.Count(p => IsFileInUse?.Invoke(p) == true);
             entry = new MenuItem
             {
@@ -76,7 +76,7 @@ public partial class MediaBrowserPane : IOwnsKeys
         }
         else
         {
-            // 5.4D (Q4 b): with nothing open too: a blank window keeps the bin for the project its first file starts.
+            // Allowed with nothing open: a blank window keeps the bin for the project its first file creates.
             entry = new MenuItem
             {
                 Header = paths.Count > 1 ? $"Add {paths.Count} Files to Project Media" : "Add to Project Media",

@@ -4,20 +4,20 @@ using HandPegApp.Views;
 
 namespace HandPegApp;
 
-// ----- The studios as dock panes (5.4C) -----
-// The Subtitle Studio, the Voiceover Studio, the Render Queue and the Video Scopes, each a first-class pane: listed in Tabs and Panes,
-// docked anywhere in the main window or torn off into a side window. They are optional panes (DockPane.Optional): shown exactly while the
-// arrangement holds one, never put back by a load or a layout that leaves it out, opened where their HomeWith mates are and closed from
-// their tab's menu, Tabs and Panes, or the arrangement changing. Their contents are made by their factories when first shown (never in
-// PaneLibrary, which is parsed before the first frame whatever the arrangement says: Law 1), and their constructors stay light.
+// ----- Studio dock panes -----
+// Subtitle Studio, Voiceover Studio, Render Queue and Video Scopes are first-class panes: listed in Tabs and Panes, dockable anywhere or
+// torn off into a side window. As optional panes (DockPane.Optional) they show exactly while the arrangement contains them, are never
+// re-added by a load or layout that omits them, open beside their HomeWith mates, and close via tab menu, Tabs and Panes, or an arrangement
+// change. Content is built by factories on first show (never in PaneLibrary, which is parsed before Frame 1 regardless of arrangement:
+// Law 1); constructors stay light.
 public partial class MainWindow
 {
-    /// <summary>The studios' pane ids, kept in saved arrangements: never rename them.</summary>
+    /// <summary>Studio pane ids, persisted in saved arrangements: never rename.</summary>
     internal const string SubtitleStudioId = "SubtitleStudio", VoiceoverStudioId = "VoiceoverStudio", RenderQueueId = "RenderQueue", VideoScopesId = "VideoScopes";
 
     /// <summary>
-    /// The four studios: id, title, the panes each goes in with when opened (a tab of the first one's group found; the right-hand
-    /// column of the window when none is there) and what Tabs and Panes says of it. Window-free, for the goldens (dock-optional-panes).
+    /// Studio table: id, title, HomeWith panes (opens as a tab in the first one found; else the window's right column) and the Tabs and
+    /// Panes description. Window-free for the dock-optional-panes golden.
     /// </summary>
     internal static readonly IReadOnlyList<(string Id, string Title, string[] HomeWith, string About)> Studios =
     [
@@ -31,7 +31,7 @@ public partial class MainWindow
             "The Histogram, the Luma Waveform or the RGB Parade of the frame in the player, read while it is paused."),
     ];
 
-    /// <summary>A studio's pane: optional, homed with its mates, always shown while the arrangement holds it. Window-free (the goldens register it too).</summary>
+    /// <summary>Builds a studio DockPane: optional, homed with its mates, always shown while arranged. Window-free (goldens register it too).</summary>
     internal static DockPane StudioPane(string id, Func<FrameworkElement> content, Action? close, double minWidth, double minHeight)
     {
         var studio = Studios.First(s => s.Id == id);
@@ -42,13 +42,13 @@ public partial class MainWindow
         };
     }
 
-    // The Voiceover Studio once made: closing it finishes a recording under way.
+    // Voiceover Studio instance once built; closing it finishes any active recording.
     private VoiceoverStudioPane? _voiceoverPane;
 
-    /// <summary>Registers the studio panes with the dock (called from InitializeDocking, before the one dock build).</summary>
+    /// <summary>Registers the studio panes with the dock (from InitializeDocking, before the single dock build).</summary>
     private void RegisterStudioPanes()
     {
-        // Each in a panel of its own, as the panes in PaneLibrary are.
+        // Wrap each in a "Panel"-styled border, like PaneLibrary panes.
         FrameworkElement Panel(FrameworkElement child)
         {
             var panel = new System.Windows.Controls.Border { Child = child };
@@ -56,8 +56,8 @@ public partial class MainWindow
             return panel;
         }
 
-        // Their least widths (5.4D, the splitter's range): the Subtitle Studio, the Voiceover Studio and the Render Queue 240, where their rows
-        // (a cue's words and times, the recorder's buttons, a job's name and its buttons) still stand whole; the Video Scopes the panes' 180.
+        // Minimum widths (splitter range): 240 for Subtitle Studio, Voiceover Studio and Render Queue, where their rows (cue text and
+        // times, recorder buttons, job name and buttons) still fit; 180 (the standard pane minimum) for Video Scopes.
         _dock.Register(StudioPane(SubtitleStudioId, () => Panel(new SubtitleStudioPane(_viewModel, new StudioHost(this))), () => CloseStudio(SubtitleStudioId), 240, 180));
         _dock.Register(StudioPane(VoiceoverStudioId, () => Panel(_voiceoverPane = new VoiceoverStudioPane(_viewModel)), () => CloseStudio(VoiceoverStudioId), 240, 160));
         _dock.Register(StudioPane(RenderQueueId, () => Panel(new RenderQueuePane()), () => CloseStudio(RenderQueueId), 240, 140));
@@ -65,9 +65,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The paused player's frame, small, for the Video Scopes (null while playing or with no player: GpuPreviewEngine.CaptureThumbnailAsync).
-    /// A save's or a tab's thumbnail still waiting goes first (5.4C review): the engine keeps one request, and a newer one gives the older
-    /// none; the scopes wait their turn (a second at most) instead.
+    /// Small paused-player frame for the Video Scopes (null while playing or without a player; GpuPreviewEngine.CaptureThumbnailAsync).
+    /// A pending save or tab thumbnail goes first: the engine holds one request and a newer one cancels the older, so the scopes wait
+    /// (up to one second) instead.
     /// </summary>
     private async Task<(byte[] Bgra, int Width, int Height)?> CaptureForScopes()
     {
@@ -76,7 +76,7 @@ public partial class MainWindow
         return _gpu is { IsThumbnailWaiting: false } engine ? await engine.CaptureThumbnailAsync(256) : null;
     }
 
-    /// <summary>The studios' lines in Tabs and Panes (appended to PaneToggles): ticked while the arrangement holds the pane.</summary>
+    /// <summary>Studio entries for Tabs and Panes (appended to PaneToggles), checked while the pane is arranged.</summary>
     private IEnumerable<ViewToggle> StudioToggles() => Studios.Select(s => new ViewToggle(s.Title, () => _dock.Contains(s.Id), on =>
     {
         if (on)
@@ -85,12 +85,12 @@ public partial class MainWindow
             CloseStudio(s.Id);
     }, s.About));
 
-    /// <summary>Shows a studio: put in with its mates when the arrangement does not hold it, then brought to the front of its group.</summary>
+    /// <summary>Shows a studio: adds it beside its mates if not arranged, then activates its tab.</summary>
     private void OpenStudio(string id) => _dock.Open(id);
 
     /// <summary>
-    /// A layout taken up (a card kept, the first-run choice, Reset Panes Layout; never a card's preview): a recording whose Voiceover Studio
-    /// the new arrangement leaves out is finished, so the microphone is never left recording with no Stop on screen (5.4C review).
+    /// After a layout is applied (kept card, first-run choice, Reset Panes Layout; never a card preview): finishes any recording whose
+    /// Voiceover Studio the new arrangement omits, so the microphone never records without a visible Stop.
     /// </summary>
     private void FinishRecordingUnlessShown()
     {
@@ -98,7 +98,7 @@ public partial class MainWindow
             _voiceoverPane?.FinishRecording();
     }
 
-    /// <summary>Takes a studio out of the arrangement (its tab's Close, Tabs and Panes): the Voiceover Studio finishes a recording first.</summary>
+    /// <summary>Removes a studio from the arrangement (tab Close, Tabs and Panes); Voiceover Studio finishes recording first.</summary>
     private void CloseStudio(string id)
     {
         if (id == VoiceoverStudioId)
@@ -106,13 +106,13 @@ public partial class MainWindow
         _dock.Close(id);
     }
 
-    /// <summary>The Render Queue (the work flyout's Queue, the Export tab's).</summary>
+    /// <summary>Opens the Render Queue (from the work flyout's Queue or the Export tab).</summary>
     private void OpenRenderQueue() => OpenStudio(RenderQueueId);
 
-    /// <summary>The Voiceover Studio (Add Layer's Record Voiceover, the Audio tab's button): recording goes with watching the video, so it is a pane.</summary>
+    /// <summary>Opens the Voiceover Studio (Add Track's Record Voiceover, Audio tab button); a pane so recording happens alongside the video.</summary>
     private void OpenVoiceoverStudio() => OpenStudio(VoiceoverStudioId);
 
-    /// <summary>What the Subtitle Studio asks of the window: the player's Play, the window's Undo and Redo, the timeline drawn again.</summary>
+    /// <summary>Subtitle Studio host adapter: player Play/Pause, window Undo/Redo, and timeline redraw.</summary>
     private sealed class StudioHost(MainWindow window) : ISubtitleStudioHost
     {
         public void TogglePlay() => window.PlayPause_Click(window, new RoutedEventArgs());

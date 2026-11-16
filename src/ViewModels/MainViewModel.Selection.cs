@@ -5,33 +5,32 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Clips selected together (5.0, the user's directive 1) -----
-// Ctrl + click and Shift + click on the timeline make a group of clips: a drag of one of them moves (or trims) them all, and
-// Delete, Ripple Delete, Mute and Paste Effects act on all of them; each is one step of Undo. The window keeps the primary
-// selection (the one clip the inspector, the Crop boxes and the Keyframes pane show); the group is kept here, so that
-// every pane can see it (the Effects pane's Paste Effects). A group is two clips or more of the timeline with times of their
-// own: never the background, the captions or an empty track's stand-in.
+// ----- Multi-clip selection -----
+// Ctrl/Shift+click builds a group: dragging one moves or trims all, and Delete, Ripple Delete, Mute and Paste Effects apply to all,
+// each in one undo step. The window owns the primary selection (inspector, Crop boxes, Keyframes); the group lives here so every
+// pane can read it (Effects pane Paste Effects). A group is two or more timed timeline clips; never background, captions or
+// empty-track placeholders.
 public partial class MainViewModel
 {
     private readonly List<Layer> _selectedClips = [];
     private readonly HashSet<Layer> _selectedClipSet = new(ReferenceEqualityComparer.Instance);
 
-    /// <summary>The clips selected together on the timeline, in the order they were chosen; fewer than two is no group.</summary>
+    /// <summary>Grouped clips in selection order; fewer than two means no group.</summary>
     public IReadOnlyList<Layer> SelectedClips => _selectedClips;
 
-    /// <summary>Whether two clips or more are selected together.</summary>
+    /// <summary>Whether a group of two or more clips is selected.</summary>
     public bool HasClipGroup => _selectedClips.Count > 1;
 
-    /// <summary>The group changed (chosen, narrowed, emptied by an edit that took its clips away, or by an undo).</summary>
+    /// <summary>Raised when the group changes (selection, narrowing, removal by an edit, undo).</summary>
     public event Action? ClipSelectionChanged;
 
-    /// <summary>Whether a clip is one of the group (never true while there is no group of two or more).</summary>
+    /// <summary>Whether a clip is in the group (false when no group exists).</summary>
     public bool IsInClipGroup(Layer clip) => _selectedClips.Count > 1 && _selectedClipSet.Contains(clip);
 
-    /// <summary>Whether a clip can be one of a group: a clip of the timeline with times of its own.</summary>
+    /// <summary>Whether a clip is groupable (a timed timeline clip).</summary>
     public bool CanGroup(Layer clip) => clip is { HasTiming: true, IsBackground: false, IsCaptions: false, IsEmptyTrack: false } && ClipOf(clip) is not null;
 
-    /// <summary>The clips selected together from now on, in order (each once; those that cannot be in a group are left out).</summary>
+    /// <summary>Sets the group in order (deduplicated; ungroupable clips filtered).</summary>
     public void SetClipSelection(IEnumerable<Layer> clips)
     {
         var chosen = new List<Layer>();
@@ -52,13 +51,10 @@ public partial class MainViewModel
         ClipSelectionChanged?.Invoke();
     }
 
-    /// <summary>No clips are selected together any more.</summary>
+    /// <summary>Clears the group.</summary>
     public void ClearClipGroup() => SetClipSelection([]);
 
-    /// <summary>
-    /// The group found again in the views made afresh (an undo, a redo, a project put in place: every view is new), by the
-    /// clips' ids; a clip no longer on the timeline leaves it.
-    /// </summary>
+    /// <summary>Rebinds the group to rebuilt views by clip id after undo/redo/load; clips no longer present drop out.</summary>
     public void RemapClipSelection()
     {
         if (_selectedClips.Count == 0)
@@ -68,17 +64,15 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Makes several edits as one (5.0: a group of clips dragged together): every verb called inside <paramref name="body"/>
-    /// (CommitClipMove, TrimClipStart and the rest) folds into the one transaction, so the whole is one step of Undo, named
-    /// <paramref name="label"/>, and a refusal of any of them takes back all of them. False when it was refused or failed.
+    /// Batches edits (e.g. group drag): verbs inside <paramref name="body"/> (CommitClipMove, TrimClipStart, ...) fold into one
+    /// transaction and one undo step named <paramref name="label"/>; any refusal rolls back all. False when refused or failed.
     /// </summary>
     public bool EditTogether(string label, Action body) => Edit(label, _ => body());
 
     /// <summary>
-    /// Deletes clips together, one step of Undo (5.0: Delete or Ripple Delete on a group): each goes to the recycle bin with
-    /// what went with it. A clip whose parent is deleted with it is taken by its parent (the model's rule: its children that lie
-    /// with it go with it) and kept in the bin with it. Rippled, they go from the latest to the earliest, so that what follows
-    /// each closes up and the earlier ones stay where they are (a child then goes by itself, before its parent).
+    /// Group Delete/Ripple Delete in one undo step, each to the recycle bin with its family. Children whose parent is also deleted go
+    /// with the parent (model rule: overlapping children follow) and share its bin entry. Ripple deletes run latest-first so earlier
+    /// clips stay put (a child is then removed on its own, before its parent).
     /// </summary>
     public bool DeleteClips(IReadOnlyList<Layer> views, bool ripple)
     {
@@ -95,8 +89,8 @@ public partial class MainViewModel
             return false;
         }
 
-        // The ones whose parent (or its parent, and so on) is deleted too are taken with it: the roots first, then any of the
-        // others still on the timeline after them (a child that does not lie with its parent stays, and goes by itself).
+        // Clips with a deleted ancestor go with it: delete roots first, then any still present (non-overlapping children are deleted
+        // individually).
         var ids = members.Select(m => m.Clip.Id).ToHashSet();
         bool HasParentIn(TimelineClip clip)
         {
@@ -135,8 +129,7 @@ public partial class MainViewModel
             return false;
         }
 
-        // Each clip deleted by itself in the bin, with those of its kin the delete took off the timeline; a clip taken with
-        // its parent is among its parent's.
+        // One bin entry per independently deleted clip, holding the family members it removed; carried children are in the parent's.
         foreach (var (view, clip, binned, kin) in kept)
         {
             if (!deleted.Contains(clip.Id))
@@ -151,7 +144,7 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>Whether every one of these clips that has sound is muted (false when none has).</summary>
+    /// <summary>Whether all audio-bearing clips here are muted (false when none have audio).</summary>
     public bool AreClipsMuted(IReadOnlyList<Layer> views)
     {
         var any = false;
@@ -167,7 +160,7 @@ public partial class MainViewModel
         return any;
     }
 
-    /// <summary>Mutes the sound of clips together, or lets it be heard again (their pictures stay): one step of Undo.</summary>
+    /// <summary>Mutes or unmutes clip audio together (picture unaffected). One undo step.</summary>
     public void SetClipsMuted(IReadOnlyList<Layer> views, bool muted)
     {
         var clips = views.Select(ClipOf).OfType<TimelineClip>().Where(c => c.HasSound && c.IsMuted != muted).DistinctBy(c => c.Id).ToList();
@@ -189,9 +182,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Gives each of these clips a copy of an effect stack (5.0: Paste Effects on a group), with the values its cards carry,
-    /// one step of Undo: each clip's stack replaced, or (<paramref name="append"/>, Paste Some Effects...) added to, an effect
-    /// a clip has once at most taking the place of the one there.
+    /// Group Paste Effects: copies an effect stack with its card values to each clip in one undo step, replacing the stack or, with
+    /// <paramref name="append"/> (Paste Some Effects...), appending; single-instance effects replace the existing one.
     /// </summary>
     public void PasteEffectsToClips(IReadOnlyList<Layer> clips, IReadOnlyList<EffectState> cards, bool append = false)
     {

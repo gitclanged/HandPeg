@@ -6,15 +6,13 @@ using System.Windows.Media.Imaging;
 
 namespace HandPegApp.Services;
 
-// ----- Baked project thumbnails (Pass 5.2D) -----
-// Every save carries a small picture of the Sequence at the playhead: the composite as the player shows it (its Cutouts, Effects,
-// text and captions; the fades left out, so a project that fades in is not black at its start), drawn small on the GPU engine
-// (GpuPreviewEngine.CaptureThumbnailAsync, the short side 360 pixels) and kept as a JPEG. A .hproj carries it as Base64 right after
-// its header (thumbnailJpeg), a .hpb as a stored thumbnail.jpg entry beside its project. The Project Manager and the launch window
-// show it, and so does Windows Explorer through HandPeg's own thumbnail handler (src\ShellThumbnails, ExplorerThumbnails), which
-// reads it the same quick way as ReadFromProject and ReadFromBundle do here.
+// ----- Baked project thumbnails -----
+// Each save embeds a JPEG of the Sequence composite at the playhead (Cutouts, Effects, text, captions; fades excluded so fade-ins are
+// not black), rendered by GpuPreviewEngine.CaptureThumbnailAsync at a 360 px short side. .hproj stores it as Base64 after the header
+// (thumbnailJpeg); .hpb as a stored thumbnail.jpg entry. Shown by Project Manager, the launch window and Explorer (src\ShellThumbnails,
+// ExplorerThumbnails), which read it as quickly as ReadFromProject / ReadFromBundle.
 
-/// <summary>Makes, reads and decodes a project's baked thumbnail: a JPEG of the Sequence at the playhead as it was saved.</summary>
+/// <summary>Creates, reads and decodes a project's baked playhead thumbnail (JPEG).</summary>
 public static class ProjectThumbnail
 {
     /// <summary>The short side of a thumbnail, pixels: 360 x 640 for a 9:16 Sequence, 640 x 360 for a 16:9 one.</summary>
@@ -30,14 +28,13 @@ public static class ProjectThumbnail
     private static ReadOnlySpan<byte> PropertyName => "thumbnailJpeg"u8;
     private static ReadOnlySpan<byte> WriterProperty => "writtenBy"u8;
 
-    // How much of a project file is read at most to find the thumbnail (it lies in the first hundred kilobytes or so), and the first
-    // step of that: read again four times as far while the thumbnail runs past what was read.
+    // Max bytes scanned for the thumbnail (usually within ~100 KB) and the initial read, growing 4x while the thumbnail is truncated.
     private const int MostBytesRead = 4 << 20;
     private const int FirstRead = 128 << 10;
 
     /// <summary>
-    /// A thumbnail's size for a canvas: its short side <paramref name="shortSide"/> (never more than the canvas's own), the long side in
-    /// the canvas's shape, both even (1080 x 1920 is 360 x 640, 1920 x 1080 is 640 x 360). At least 2 x 2.
+    /// Thumbnail size: short side <paramref name="shortSide"/> (not above the canvas), long side by aspect, both even (1920 x 1080 to
+    /// 640 x 360); minimum 2 x 2.
     /// </summary>
     public static (int Width, int Height) ThumbnailSize(int canvasWidth, int canvasHeight, int shortSide)
     {
@@ -50,8 +47,7 @@ public static class ProjectThumbnail
     }
 
     /// <summary>
-    /// A BGRA8 frame (its alpha not read) as a JPEG at <see cref="JpegQuality"/>; null when it cannot be made. Works on any thread (a save
-    /// encodes it on the thread pool).
+    /// Encodes a BGRA8 frame (alpha ignored) as JPEG at <see cref="JpegQuality"/>; null on failure. Thread-safe (saves run it on the pool).
     /// </summary>
     public static byte[]? EncodeJpeg(byte[] bgra, int width, int height)
     {
@@ -76,14 +72,13 @@ public static class ProjectThumbnail
     }
 
     /// <summary>
-    /// A thumbnail decoded at <paramref name="decodeHeight"/> pixels tall (its shape kept), as the media browser decodes its pictures:
-    /// frozen, so any thread may show it. Null when it cannot be read.
+    /// Decodes at <paramref name="decodeHeight"/> px (aspect kept), frozen for cross-thread use; null when unreadable.
     /// </summary>
     public static BitmapSource? Decode(byte[] jpeg, int decodeHeight)
     {
         try
         {
-            // From a stream, never a URI; no IgnoreImageCache with a stream (WPF keeps its cache by address, and throws with none).
+            // Stream source, never a URI; no IgnoreImageCache with streams (WPF's cache is URI-keyed and throws without one).
             using var stream = new MemoryStream(jpeg, writable: false);
             var image = new BitmapImage();
             image.BeginInit();
@@ -103,8 +98,8 @@ public static class ProjectThumbnail
     }
 
     /// <summary>
-    /// The thumbnail a project file carries, read from its first kilobytes (at most 4 MB) without reading the rest: its top level is
-    /// walked as far as the property after "writtenBy". Null when it has none, or the file cannot be read.
+    /// Reads a project's thumbnail from its head (max 4 MB), walking top-level properties up to the one after "writtenBy". Null when absent
+    /// or unreadable.
     /// </summary>
     public static byte[]? ReadFromProject(string path)
     {
@@ -137,9 +132,8 @@ public static class ProjectThumbnail
     }
 
     /// <summary>
-    /// The thumbnail in a project's text (or the start of it): the top level's properties walked in order, objects stepped over, until
-    /// "thumbnailJpeg" (its Base64 decoded) or the first property after "writtenBy" that is not it. <paramref name="cutOff"/> says the
-    /// search ran past <paramref name="bytes"/> before it could tell (read further and ask again).
+    /// Scans top-level properties (skipping objects) for "thumbnailJpeg" (Base64-decoded), stopping at the first other property after
+    /// "writtenBy". <paramref name="cutOff"/> is set when <paramref name="bytes"/> ended first (read more and retry).
     /// </summary>
     internal static byte[]? ReadFromJson(ReadOnlySpan<byte> bytes, bool isFinalBlock, out bool cutOff)
     {
@@ -202,8 +196,7 @@ public static class ProjectThumbnail
     }
 
     /// <summary>
-    /// The thumbnail a project bundle carries (its stored thumbnail.jpg entry): read through the archive's directory at its end, never
-    /// the media. Null when it has none, or the file cannot be read.
+    /// Reads a bundle's stored thumbnail.jpg via the ZIP central directory (never the media). Null when absent or unreadable.
     /// </summary>
     public static byte[]? ReadFromBundle(string path)
     {

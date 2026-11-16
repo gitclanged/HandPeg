@@ -3,9 +3,8 @@ using CommunityToolkit.Mvvm.ComponentModel;
 namespace HandPegApp.Models;
 
 /// <summary>
-/// One subtitle: what is shown, from when to when (seconds of the timeline, before the track's offset). Read
-/// from an .srt or .vtt file, made from the auto-captions, or typed in the Subtitle Studio. For a track of
-/// pictures (PGS, VobSub) there is no text to read: the cue is its timing only.
+/// One subtitle: text and timeline start/end in seconds (before the track offset). Sourced from .srt/.vtt, auto-captions or the
+/// Subtitle Studio. Bitmap tracks (PGS, VobSub) carry timing only.
 /// </summary>
 public sealed partial class SubtitleCue : ObservableObject
 {
@@ -24,19 +23,18 @@ public sealed partial class SubtitleCue : ObservableObject
     public double Duration => Math.Max(End - Start, 0);
 
     // ----- Words -----
-    // A cue's words are spoken one after another through its time. Where one ends and the next begins is kept
-    // as a fraction of the cue's length (0 to 1), one for each gap between two words, so the words keep their
-    // share of the cue when it is moved or made longer. With none kept, each word gets time by its length.
+    // Word boundaries are stored as fractions (0-1) of the cue length, one per inter-word gap, so words keep their share when the
+    // cue is moved or stretched. Without stored boundaries, time is distributed by word length.
 
     /// <summary>How close two word boundaries may come, as a fraction of the cue: no word is squeezed to nothing.</summary>
     public const double SmallestWordShare = 0.02;
 
-    /// <summary>Where each word but the first begins, as fractions of the cue's length; null while they are not set by hand.</summary>
+    /// <summary>Start fractions of each word after the first; null until set manually.</summary>
     public double[]? WordBreaks { get; set; }
 
     public string[] GetWords() => Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    /// <summary>The boundaries in use: the ones set, when they still fit the words; otherwise each word's share is its share of the letters.</summary>
+    /// <summary>Effective boundaries: stored ones if they match the words, else letter-share boundaries.</summary>
     public double[] GetBreaks()
     {
         var words = GetWords();
@@ -63,7 +61,7 @@ public sealed partial class SubtitleCue : ObservableObject
         return breaks;
     }
 
-    /// <summary>Moves the boundary between word <paramref name="index"/> and the next, as far as its neighbours allow.</summary>
+    /// <summary>Moves the boundary after word <paramref name="index"/>, clamped between its neighbours.</summary>
     public void SetBreak(int index, double fraction)
     {
         var breaks = (double[])GetBreaks().Clone();
@@ -97,37 +95,34 @@ public sealed partial class SubtitleCue : ObservableObject
     }
 
     /// <summary>
-    /// The anchored caption this cue shows a piece of, seen through one clip (4.4); null for a cue on the timeline's own
-    /// clock (imported, typed by hand, or made from a source with no clips of its own). Rebuilt by every projection.
+    /// Anchored caption piece shown through one clip; null for timeline-clock cues (imported, typed, or from a clip-less source).
+    /// Rebuilt on every projection.
     /// </summary>
     public CaptionPiece? Piece { get; set; }
 
     public SubtitleCue Clone() => new() { Index = Index, Start = Start, End = End, Text = Text, WordBreaks = (double[]?)WordBreaks?.Clone(), Piece = Piece };
 }
 
-/// <summary>A subtitle as it is written to a project.</summary>
-/// <param name="Breaks">Where each word but the first begins, as fractions of the cue; left out while the words share the time by their length.</param>
+/// <summary>Serialized subtitle in a project.</summary>
+/// <param name="Breaks">Word start fractions after the first; omitted when time is shared by length.</param>
 public sealed record SubtitleCueState(
     double Start, double End, string Text,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] double[]? Breaks = null)
 {
     /// <summary>
-    /// An anchored caption's words as they were heard (4.4): each word's start and end in its source's own seconds, in
-    /// pairs, one pair for each word of <see cref="Text"/>. Left out for a cue on the timeline's clock and for an anchored
-    /// caption whose words share its time by their length.
+    /// Anchored word times: start/end pairs in source seconds, one per word of <see cref="Text"/>. Omitted for timeline-clock cues and
+    /// length-distributed captions.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public double[]? Words { get; init; }
 
     /// <summary>
-    /// A cue that shows a piece of an anchored caption on the timeline (4.4). It is written with the others, so that a
-    /// HandPeg that knows no anchors still shows the captions where they are; this one leaves it out on reading and makes
-    /// it again from the anchors.
+    /// Projected cue of an anchored caption. Written for readers without anchor support; skipped on load and re-projected from anchors.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool Projected { get; init; }
 
-    /// <summary>The piece of an anchored caption a cue on the timeline shows, kept with it by undo in the Subtitle Studio. Never written.</summary>
+    /// <summary>Projected caption piece, preserved by Subtitle Studio undo. Never serialized.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public CaptionPiece? Piece { get; init; }
 }
@@ -146,31 +141,29 @@ public sealed class SubtitleTrackData
 
     public List<SubtitleCueState> Cues { get; set; } = [];
 
-    /// <summary>What the anchored captions were made from and follow on the timeline (4.4); left out while there are none.</summary>
+    /// <summary>Source the anchored captions follow; omitted when there are none.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public CaptionSource? Source { get; set; }
 
     /// <summary>
-    /// The anchored captions (4.4): in their source's own time, each with its words' own times, ordered by their start.
-    /// What the cues marked <see cref="SubtitleCueState.Projected"/> show of them is made again from these and the timeline.
+    /// Anchored captions in source time with word times, sorted by start; <see cref="SubtitleCueState.Projected"/> cues are rebuilt
+    /// from these and the timeline.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public List<SubtitleCueState>? Anchors { get; set; }
 }
 
-/// <summary>What auto-captions listen to, and so what the captions made from it follow on the timeline (4.4).</summary>
+/// <summary>Caption source kind: what auto-captions transcribe and what the resulting captions follow.</summary>
 public enum CaptionSourceKind
 {
     /// <summary>
-    /// Legacy (before 5.2-AuditB): one of the main video's file's audio streams; with stream -1, its picture (an imported
-    /// track timed to the file). Kept so that a project of that shape still reads: converted to <see cref="Clip"/> of the same file and
-    /// stream as it is opened (LegacyMainVideo.MigrateCaptions), and so that the kinds after it keep their numbers; nothing makes it any more.
+    /// Legacy: a main-video audio stream (stream -1: its picture). Read-only for old projects, migrated to <see cref="Clip"/> on open
+    /// (LegacyMainVideo.MigrateCaptions); kept to preserve enum values.
     /// </summary>
     MainFile,
 
     /// <summary>
-    /// A file the timeline plays as clips of its own: a sound clip, a video clip's sound or a stream of it on a Sub-Lane;
-    /// with stream -1, its picture (an imported track timed to the file).
+    /// A file played as clips (audio clip, video clip audio, or a Sub-Lane stream); stream -1 means its picture (imported track).
     /// </summary>
     Clip,
 
@@ -181,29 +174,28 @@ public enum CaptionSourceKind
     Voiceover,
 }
 
-/// <summary>A source captions are made from: its kind, its file, and which of its audio streams (counted among them from 0).</summary>
+/// <summary>Caption source: kind, file and zero-based audio stream index.</summary>
 public sealed record CaptionSource(CaptionSourceKind Kind, string Path, int Stream)
 {
     /// <summary>
-    /// Its captions are kept in its own time and projected through the clips that play it (a clip's file): cuts, trims, folds
-    /// and moves made before or after the captions carry them along.
+    /// True when captions are stored in source time and projected through its clips, following cuts, trims, folds and moves.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsAnchored => Kind is CaptionSourceKind.Clip;
 
-    /// <summary>Whether it is the same source: the same kind of the same file (any stream of it: the words are where they are said).</summary>
+    /// <summary>True for the same kind and file (stream ignored: word timing is identical).</summary>
     public bool SameAs(CaptionSource? other) =>
         other is not null && other.Kind == Kind && string.Equals(other.Path, Path, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
-/// One clip's window onto a source (4.4): the part of the source it plays and where that lands on the sequence. A moment
-/// <c>t</c> of the source inside it is heard at <c>Start + (t - MediaOffset) / Speed</c>, J and L cuts and slips included.
+/// A clip's window onto a source: source time <c>t</c> maps to Sequence time <c>Start + (t - MediaOffset) / Speed</c> (J/L cuts and
+/// slips included).
 /// </summary>
-/// <param name="Start">Where the window opens on the sequence, in seconds.</param>
-/// <param name="End">Where it closes on the sequence.</param>
-/// <param name="MediaOffset">The moment of the source heard at <paramref name="Start"/>.</param>
-/// <param name="Speed">How many seconds of the source a second of the sequence plays.</param>
+/// <param name="Start">Window start on the Sequence (s).</param>
+/// <param name="End">Window end on the Sequence (s).</param>
+/// <param name="MediaOffset">Source time at <paramref name="Start"/>.</param>
+/// <param name="Speed">Source seconds per Sequence second.</param>
 public readonly record struct CaptionSpan(double Start, double End, double MediaOffset, double Speed)
 {
     /// <summary>Where the window closes in the source.</summary>
@@ -213,14 +205,12 @@ public readonly record struct CaptionSpan(double Start, double End, double Media
 
     public double ToSource(double sequence) => MediaOffset + (sequence - Start) * Speed;
 
-    /// <summary>A source whose time is the sequence's: an external recording, or a main video that is the whole sequence.</summary>
+    /// <summary>Identity window: source time equals Sequence time.</summary>
     public static CaptionSpan Identity { get; } = new(0, 1e9, 0, 1);
 }
 
 /// <summary>
-/// What a cue on the timeline shows of an anchored caption (4.4): the clip window it is seen through, the caption it is
-/// a piece of (<paramref name="Anchor"/>, the very one projected), the words of it shown (<paramref name="Source"/>, in the
-/// source's time), and the cue as the projection made it, by which a cue edited since is told from one that is not: an
-/// unedited cue gives back its words exactly as they were heard.
+/// Projection record for a timeline cue: its clip window, the projected <paramref name="Anchor"/>, the shown words
+/// (<paramref name="Source"/>, source time) and the cue as projected, used to detect edits (unedited cues write back their exact words).
 /// </summary>
 public sealed record CaptionPiece(CaptionSpan Span, SubtitleCueState Anchor, SubtitleCueState Source, double Start, double End, string Text, double[]? Breaks);

@@ -10,26 +10,26 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp.Views;
 
-// ----- Pass 5.6A: the Color Studio's LUT, Output and Legacy Grade folds, and its histogram before the grade -----
+// ----- Color Studio LUT, Output and Legacy Grade sections, and the pre-grade histogram -----
 public partial class ColorStudioPane
 {
-    /// <summary>The least time between two captures of the input still, milliseconds (about 8 Hz, as the Video Scopes).</summary>
+    /// <summary>Minimum interval between input-still captures, ms (~8 Hz, matching Video Scopes).</summary>
     internal const int ThrottleMs = 125;
 
-    // A trailing throttle (made on first use): a change starts it, its tick captures; changes meanwhile are one capture.
+    // Trailing throttle (created lazily): a change arms it, the tick captures; intermediate changes coalesce.
     private DispatcherTimer? _throttle;
     private bool _capturing, _wanted;
     private Border? _legacyCard;
     private TextBlock? _legacySummary;
     private Button? _legacyConvert;
 
-    // The LUT box's text as the pane last put it (5.6A): leaving the box commits only a path the user typed.
+    // LUT box text as last written by the pane; blur commits only when the text was edited.
     private string _lutShown = "";
 
-    /// <summary>How many input stills were asked for (the goldens: none while hidden or playing).</summary>
+    /// <summary>Number of input-still captures requested (goldens assert none while hidden or playing).</summary>
     internal int CaptureCount { get; private set; }
 
-    // ----- The LUT -----
+    // ----- LUT -----
 
     private StackPanel LutRows(EffectDefinition? definition)
     {
@@ -60,7 +60,7 @@ public partial class ColorStudioPane
         return rows;
     }
 
-    // Only a path the user typed (5.6A): leaving the box untouched writes nothing (an Undo's path stays undone).
+    // Commits only an edited path: leaving the box untouched writes nothing (so an undone path stays undone).
     private void CommitLut()
     {
         if (_lutBox.Text == _lutShown)
@@ -78,7 +78,7 @@ public partial class ColorStudioPane
             QueueText(ColorGradeKeys.Lut, dialog.FileName);
     }
 
-    // ----- Output: the whole picture's switches (their one home since the Filters tab went) -----
+    // ----- Output: whole-picture switches (their single home since the Filters tab was removed) -----
 
     private Expander OutputFold()
     {
@@ -101,7 +101,7 @@ public partial class ColorStudioPane
         return fold;
     }
 
-    // ----- Legacy Grade: the old Filters tab's sliders and LUT, while the project has them -----
+    // ----- Legacy Grade: former Filters tab sliders and LUT, shown while the project still uses them -----
 
     private Border LegacyFold()
     {
@@ -125,9 +125,9 @@ public partial class ColorStudioPane
     }
 
     /// <summary>
-    /// The Legacy Grade card shown while the project has the old grade (sliders not neutral, or a LUT path), naming what it holds. A LUT a
-    /// Sequence Output card's LUT keeps out of Convert (5.6A: never two on one stack) is said to be kept; Convert is off when nothing else is left
-    /// (Reset still takes the kept LUT away).
+    /// Shows the Legacy Grade card while the project has a legacy grade (non-neutral sliders or a LUT path) and lists its parts. A legacy LUT
+    /// blocked from Convert by an existing Sequence Output LUT (never two per stack) is labelled kept; Convert is disabled when nothing else
+    /// remains (Reset still removes the kept LUT).
     /// </summary>
     private void UpdateLegacy()
     {
@@ -159,7 +159,7 @@ public partial class ColorStudioPane
             _legacyConvert.IsEnabled = !grade.IsNeutral || !lutKept;
     }
 
-    // Convert (5.6A): one step of Undo that holds the LUT path too (MainViewModel.SequenceLook), so nothing is kept here.
+    // Convert: one Undo step that includes the LUT path (MainViewModel.SequenceLook); no local state.
     private void ConvertLegacy()
     {
         FlushWrites();
@@ -169,8 +169,8 @@ public partial class ColorStudioPane
         UpdateLegacy();
     }
 
-    // Reset (5.6A): the sliders and the legacy LUT, kept or not, as one step of Undo (MainViewModel.ResetLegacyGrade), so a LUT Convert
-    // keeps as it is can still be taken away.
+    // Reset: clears the sliders and the legacy LUT (kept or not) as one Undo step (MainViewModel.ResetLegacyGrade), so a LUT that
+    // Convert kept can still be removed.
     private void ResetLegacy()
     {
         FlushWrites();
@@ -180,22 +180,22 @@ public partial class ColorStudioPane
         UpdateLegacy();
     }
 
-    // ----- The histogram before the grade -----
+    // ----- Pre-grade histogram -----
 
-    // The timeline or the preview changed: the input may have (a write of this pane's own changes only the grade: not captured for).
+    // Timeline or preview changed, so the input may have; ignored within 400 ms of this pane's own write (which changes only the grade).
     private void Invalidated()
     {
         if (Environment.TickCount64 - _lastOwnWrite > 400)
             Want();
     }
 
-    /// <summary>The input may have changed: captured once the throttle lets it, only while the tab is in sight and the player paused.</summary>
+    /// <summary>Schedules a throttled input capture, only while the tab is visible and the player paused.</summary>
     private void Want(bool afterRest = false)
     {
         if (!_built || !_listening || !IsVisible || _vm is null || _capture is null)
             return;
 
-        // Nothing to grade (5.6A: no clip, a sound clip): the curves are hidden, so no still is asked for.
+        // Nothing to grade (no clip, or an audio clip): curves are hidden, so skip the capture.
         if (!_vm.CanColorGrade(_target))
         {
             _throttle?.Stop();
@@ -229,7 +229,7 @@ public partial class ColorStudioPane
         if (_capturing || !_listening || !IsVisible || _vm is not { IsPlaying: false } || _capture is not { } capture)
             return;
 
-        // Not in the middle of a drag: the still would wait behind its frames (it is asked for as the drag ends).
+        // Skip during a gesture: the readback would queue behind its frames (requested again when the gesture ends).
         if (InGesture)
             return;
 
@@ -258,7 +258,7 @@ public partial class ColorStudioPane
             _throttle?.Start();
     }
 
-    /// <summary>A still's BT.709 luma counted at each of 256 levels (VideoScopes.Histogram's luma row).</summary>
+    /// <summary>256-bin BT.709 luma histogram of a still (VideoScopes.Histogram's luma row).</summary>
     internal static int[] LumaOf(byte[] bgra, int width, int height)
     {
         var counts = VideoScopes.Histogram(bgra, width, height);

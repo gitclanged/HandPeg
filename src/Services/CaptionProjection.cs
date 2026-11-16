@@ -3,11 +3,9 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Anchored captions (4.4): captions are kept in their source's own time (the voice file or the main file's stream they
-/// were heard in) and shown on the timeline through every clip window that plays that source. Cuts, trims, folds, dead air
-/// and moves made before or after the captions therefore line up by construction, and words in a stretch that is folded,
-/// trimmed or deleted stay stored, to come back with it. Everything here is pure: the same anchors and windows always give
-/// the same cues, which is what lets undo, loading and every commit simply project again.
+/// Anchored captions: stored in source time (the voice file or main stream) and projected onto the timeline through every clip window
+/// playing that source, so cuts, trims, folds, dead-air removal and moves stay aligned by construction, and hidden words are retained.
+/// Pure: identical anchors and windows always yield identical cues, so undo, load and commit simply re-project.
 /// </summary>
 public static class CaptionProjection
 {
@@ -18,13 +16,12 @@ public static class CaptionProjection
     private const double ShortestWord = 0.05;
 
     /// <summary>
-    /// The anchored captions as cues on the timeline: every caption a window plays is shown through it, as far as it plays
-    /// it (the words that start inside it; a caption without word times, the part of it inside). A caption a cut runs
-    /// through gives a piece on each side; a source played twice shows its captions twice. Each cue carries its
-    /// <see cref="CaptionPiece"/> (for writing edits back) and is marked <see cref="SubtitleCueState.Projected"/>.
+    /// Projects anchors to timeline cues through each window (words starting inside it; untimed captions clipped to it). A cut yields a
+    /// piece per side; a source played twice appears twice. Each cue carries its <see cref="CaptionPiece"/> (for write-back) and is
+    /// marked <see cref="SubtitleCueState.Projected"/>.
     /// </summary>
-    /// <param name="anchors">The captions in the source's time, ordered by their start.</param>
-    /// <param name="spans">The windows that play the source.</param>
+    /// <param name="anchors">Captions in source time, sorted by start.</param>
+    /// <param name="spans">Clip windows playing the source.</param>
     public static List<SubtitleCueState> Project(IReadOnlyList<SubtitleCueState> anchors, IReadOnlyList<CaptionSpan> spans)
     {
         var cues = new List<SubtitleCueState>();
@@ -65,7 +62,7 @@ public static class CaptionProjection
         return cues;
     }
 
-    /// <summary>Words heard in the source's time, as they are heard on the timeline through the windows that play them, in order.</summary>
+    /// <summary>Projects source-time words onto the timeline through their windows, in playback order.</summary>
     public static List<CaptionWord> ProjectWords(IReadOnlyList<CaptionWord> words, IReadOnlyList<CaptionSpan>? spans)
     {
         if (spans is null || spans.Count == 0)
@@ -87,17 +84,15 @@ public static class CaptionProjection
             }
         }
 
-        // Windows can be given in any order, and can overlap (a J or L cut): the words are shown in the order they are heard.
+        // Windows may be unordered or overlap (J/L cuts): output is sorted by timeline time.
         if (spans.Count > 1)
             shown.Sort((a, b) => a.Start.CompareTo(b.Start));
         return shown;
     }
 
     /// <summary>
-    /// Words heard in the source's time grouped into captions as the timeline shows them (5.1-Polish, the user's directive:
-    /// a caption is never carried across a cut): each window's words grouped on their own (CaptionGenerator.Lines), so a
-    /// split of the clip they are heard through splits the caption there too; then all of them in order. No windows: the
-    /// words as they are, grouped.
+    /// Groups source-time words into captions per window (CaptionGenerator.Lines) so no caption spans a cut; results are concatenated in
+    /// order. Without windows, groups the words directly.
     /// </summary>
     public static List<List<CaptionWord>> ProjectLines(IReadOnlyList<CaptionWord> words, IReadOnlyList<CaptionSpan>? spans, CaptionStyle style)
     {
@@ -112,12 +107,10 @@ public static class CaptionProjection
     }
 
     /// <summary>
-    /// A caption split in two at the word under a moment (5.1-Polish, the user's directive: splitting a caption block splits
-    /// its words, never trims them). The words said before <paramref name="at"/> stay in the first; those from the first
-    /// word that begins at or after it on (the last word alone when none does) are the second; each word keeps its moment,
-    /// and the cut is where the second's first word begins. Its word boundaries (<see cref="SubtitleCueState.Breaks"/>; by
-    /// their letters when it has none) say where each word is. Null for a caption of fewer than two words, or a moment
-    /// outside it.
+    /// Splits a caption at the word boundary under <paramref name="at"/> (words are divided, never trimmed): earlier words stay first; the
+    /// second starts at the first word beginning at or after it (else the last word). Words keep their times; the split point is the
+    /// second part's first word. Word positions come from <see cref="SubtitleCueState.Breaks"/> (else letter shares). Null for fewer than
+    /// two words or an out-of-range time.
     /// </summary>
     public static (SubtitleCueState First, SubtitleCueState Second)? SplitAtWord(SubtitleCueState cue, double at)
     {
@@ -140,7 +133,7 @@ public static class CaptionProjection
                 new SubtitleCueState(cut, cue.End, string.Join(" ", words[kept..]), secondBreaks));
     }
 
-    /// <summary>Captions grouped from words heard in the source's time (CaptionGenerator.Lines), as anchors: each with its words' own times.</summary>
+    /// <summary>Groups source-time words into anchors (CaptionGenerator.Lines), each keeping its word times.</summary>
     public static List<SubtitleCueState> Anchor(IReadOnlyList<List<CaptionWord>> lines)
     {
         var anchors = new List<SubtitleCueState>(lines.Count);
@@ -161,8 +154,7 @@ public static class CaptionProjection
     }
 
     /// <summary>
-    /// The words of the anchored captions, in the source's time and in order: a caption with word times gives each word;
-    /// one without gives its words spread over it by their length.
+    /// Flattens anchors into ordered source-time words; untimed captions distribute words by length.
     /// </summary>
     public static List<CaptionWord> Words(IReadOnlyList<SubtitleCueState> anchors)
     {
@@ -183,9 +175,8 @@ public static class CaptionProjection
     }
 
     /// <summary>
-    /// A caption with its words timed (4.4: an imported subtitle file's cues): one without word times gets its words spread
-    /// over it by their length, so a cut or a fold through it divides its words and what no window shows is kept. One that
-    /// has them, or has no words, is given back as it is.
+    /// Adds word times to an untimed caption (e.g. imported subtitles) by distributing words by length, so cuts and folds divide words
+    /// and hidden parts are retained. Timed or empty captions are returned unchanged.
     /// </summary>
     public static SubtitleCueState WithWordTimes(SubtitleCueState anchor)
     {
@@ -207,13 +198,10 @@ public static class CaptionProjection
     }
 
     /// <summary>
-    /// Writes the cues as they now stand on the timeline back into anchors (4.4: the Subtitle Studio's edits). A cue that is
-    /// still what the projection made gives back its words exactly as heard; one edited since is taken back into the source
-    /// through the window it is seen through (moved off that window, as a new cue); a new cue over a window is anchored
-    /// through the one under its middle; a cue over none stays on the
-    /// timeline's clock (returned as <c>Loose</c>). Words no window shows (folded, trimmed, deleted) are kept as they were.
-    /// A source shown twice gives its words back once, and an edit made to one of its showings wins over the other. A
-    /// caption every showing of which is still as projected is kept whole, so nothing is broken up by an edit elsewhere.
+    /// Writes timeline cues back into anchors (Subtitle Studio edits). Unedited projected cues return their exact words; edited ones map
+    /// back through their window (or, if moved off it, are treated as new). New cues anchor through the window under their midpoint;
+    /// cues over no window stay on the timeline clock (<c>Loose</c>). Hidden words are retained. A source shown twice writes back once,
+    /// with edited showings winning; captions unedited in every showing stay whole.
     /// </summary>
     public static (List<SubtitleCueState> Anchors, List<SubtitleCueState> Loose) WriteBack(
         IReadOnlyList<SubtitleCueState> anchors, IReadOnlyList<CaptionSpan> spans, IReadOnlyList<SubtitleCueState> cues)
@@ -270,8 +258,7 @@ public static class CaptionProjection
                     continue;
                 }
 
-                // Still over the window it was shown in, it goes back through that one; moved off it, it is taken as a
-                // cue typed there (below): through the window now under its middle, or onto the timeline's clock.
+                // Still over its window: map back through it. Moved off: treat as a new cue (window under its midpoint, or timeline clock).
                 replaced.Add((piece.Source.Start, piece.Source.Text));
                 if (middle >= piece.Span.Start && middle < piece.Span.End)
                 {
@@ -307,12 +294,11 @@ public static class CaptionProjection
     }
 
     /// <summary>
-    /// The gaps between spoken words (4.4: Remove Dead Air from the captions), in the words' own time: every silence
-    /// between two words (and before the first, and after the last up to <paramref name="sourceEnd"/>) at least
-    /// <paramref name="minimumGap"/> long, less a little before the next word and after the last one.
+    /// Silences between words in source time for Remove Dead Air: gaps (including before the first and after the last, up to
+    /// <paramref name="sourceEnd"/>) of at least <paramref name="minimumGap"/>, minus small pads around words.
     /// </summary>
-    /// <param name="words">The words, in order of their start.</param>
-    /// <param name="sourceEnd">Where the source ends; 0 or less when unknown (the last gap then runs on past it).</param>
+    /// <param name="words">Words sorted by start.</param>
+    /// <param name="sourceEnd">Source end; &lt;= 0 when unknown (the trailing gap is open-ended).</param>
     public static List<(double Start, double End)> WordGaps(
         IReadOnlyList<CaptionWord> words, double minimumGap, double padBefore, double padAfter, double sourceEnd)
     {
@@ -343,9 +329,8 @@ public static class CaptionProjection
     }
 
     /// <summary>
-    /// Captions on the sequence's clock as they are on an output that plays only some stretches of it, joined end to end
-    /// (no caller asks for stretches since Render Preview was retired in 5.4.1A; an export passes none), moved by <paramref name="offset"/>: a word outside every stretch is left out, a caption left
-    /// with none goes. No stretches: the whole sequence, only moved.
+    /// Remaps Sequence captions onto an output made of concatenated stretches, shifted by <paramref name="offset"/>: words outside every
+    /// stretch are dropped and emptied captions removed. With no stretches (exports pass none), only the shift applies.
     /// </summary>
     public static List<List<CaptionWord>> ToOutputClock(
         IReadOnlyList<List<CaptionWord>> lines, IReadOnlyList<(double Start, double End)> ranges, double offset)
@@ -425,7 +410,7 @@ public static class CaptionProjection
         return new SubtitleCueState(times[0], Math.Max(Math.Min(times[^1], to), times[0]), text) { Words = times };
     }
 
-    /// <summary>Where each word but the first begins on the cue, as fractions of it; null when they cannot be told apart.</summary>
+    /// <summary>Start fractions of each word after the first within the cue; null when indeterminable.</summary>
     private static double[]? Breaks(SubtitleCueState part, CaptionSpan span, double start, double end)
     {
         if (part.Words is not { Length: >= 4 } times || end <= start)
@@ -442,7 +427,7 @@ public static class CaptionProjection
         return breaks;
     }
 
-    /// <summary>What of a caption no window shows, in runs of words next to each other: kept as it is while it cannot be seen.</summary>
+    /// <summary>Runs of consecutive words no window shows, retained unchanged while hidden.</summary>
     private static IEnumerable<SubtitleCueState> Hidden(SubtitleCueState anchor, IReadOnlyList<CaptionSpan> spans)
     {
         var texts = SplitWords(anchor.Text);
@@ -494,7 +479,7 @@ public static class CaptionProjection
         Math.Abs(cue.Start - piece.Start) < 1e-6 && Math.Abs(cue.End - piece.End) < 1e-6 && cue.Text == piece.Text
         && (cue.Breaks ?? []).AsSpan().SequenceEqual(piece.Breaks ?? []);
 
-    /// <summary>A cue on the timeline taken back into its source's time through a window: its words timed by their boundaries.</summary>
+    /// <summary>Maps a timeline cue back to source time through a window, timing words by their boundaries.</summary>
     private static SubtitleCueState? ToSource(SubtitleCueState cue, CaptionSpan span)
     {
         var texts = SplitWords(cue.Text);
@@ -513,7 +498,7 @@ public static class CaptionProjection
         return new SubtitleCueState(span.ToSource(cue.Start), span.ToSource(cue.End), cue.Text) { Words = times };
     }
 
-    /// <summary>The word boundaries a cue keeps when they fit its words; otherwise each word's share of the letters (as SubtitleCue.GetBreaks).</summary>
+    /// <summary>Stored word boundaries if they match the words; otherwise letter-share boundaries (as SubtitleCue.GetBreaks).</summary>
     private static double[] ValidBreaks(double[]? kept, string[] words)
     {
         if (words.Length < 2)

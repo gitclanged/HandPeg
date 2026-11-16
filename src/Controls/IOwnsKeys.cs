@@ -3,12 +3,12 @@ using System.Windows.Input;
 namespace HandPegApp;
 
 /// <summary>
-/// A control that keeps some keys for itself while it (or anything inside it) has the keyboard focus (5.4C): the main window's
-/// shortcuts then leave those keys to it (MainWindow.KeyBelongsToFocus). The Media Browser's filmstrip cutter keeps I, O, Space and
-/// the arrows; the Subtitle Studio keeps Delete for its cues.
+/// Control that claims certain keys while it (or a descendant) has keyboard focus; main-window shortcuts then yield them
+/// (MainWindow.KeyBelongsToFocus). E.g. the filmstrip cutter claims I, O, Space and arrows; the Subtitle Studio and Project Media
+/// list claim Delete.
 /// </summary>
 public interface IOwnsKeys
 {
-    /// <summary>Whether <paramref name="key"/> with <paramref name="modifiers"/> is this control's own while it has the focus.</summary>
+    /// <summary>True when this control claims <paramref name="key"/> with <paramref name="modifiers"/> while focused.</summary>
     bool OwnsKey(Key key, ModifierKeys modifiers);
 }

@@ -12,39 +12,37 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp.Views;
 
-/// <summary>What the Subtitle Studio asks of the window it serves (5.4C): it has no player, no clock and no undo of its own.</summary>
+/// <summary>Host services for the Subtitle Studio, which owns no player, clock or undo history.</summary>
 public interface ISubtitleStudioHost
 {
     /// <summary>Plays or pauses the main player (as Space does).</summary>
     void TogglePlay();
 
-    /// <summary>The main window's Undo, or Redo: one step of the one history.</summary>
+    /// <summary>Main window Undo (or Redo when <paramref name="redo"/>): one step of the shared history.</summary>
     void Undo(bool redo);
 
-    /// <summary>The cues were committed (a step of the main history): the timeline's rows are drawn again.</summary>
+    /// <summary>Cues committed as a main-history step: redraw the timeline rows.</summary>
     void SubtitlesCommitted();
 }
 
 /// <summary>
-/// The Subtitle Studio as a dock pane (5.4C; a modal window of its own until then): the subtitle track's cues on a strip of
-/// their own (<see cref="SubtitleTimeline"/>, hosted as it is), its transport, and the selected cue's words and times. It is not
-/// modal (5.4D: the modal editor's flag is gone from the view model), so the main player goes on drawing the captions as they are
-/// edited and the main Undo always works. It has no clock: its playhead follows the main player's (PositionMs, while the pane is in sight; a
-/// scrub of the strip moves the player, and a coasting strip is left alone). It has no undo of its own: each gesture commits through
-/// MainViewModel.CommitSubtitleEdits as one step of the main history (a drag when it is let go, a run of typing once it rests, a
-/// time typed in, Add, Split, Add Word and each Delete), and its Undo and Redo buttons are the main window's. Delete and Back are
-/// its own while the keyboard is in it (<see cref="IOwnsKeys"/>), for the cue or the word picked out; Space is the main player's.
-/// Every dock rebuild takes the pane out and puts it back, so it listens only while loaded, and attaching twice does nothing.
+/// Subtitle Studio dock pane: the subtitle track's cues on a dedicated strip (<see cref="SubtitleTimeline"/>), a transport, and the
+/// selected cue's words and times. Non-modal, so the main player keeps rendering captions during edits and the main Undo stays live.
+/// No own clock: the strip playhead follows PositionMs while visible (strip scrubs seek the player; a coasting strip is not
+/// overridden). No own undo: each gesture commits via MainViewModel.CommitSubtitleEdits as one main-history step (drag release,
+/// debounced typing, typed time, Add, Split, Add Word, each Delete); Undo/Redo buttons forward to the main window. Delete and Back
+/// act on the active cue or word while the pane has focus (<see cref="IOwnsKeys"/>); Space stays with the main player.
+/// Dock rebuilds detach and re-attach the pane, so it subscribes only while loaded and Attach is idempotent.
 /// </summary>
 public partial class SubtitleStudioPane : UserControl, IOwnsKeys
 {
-    /// <summary>How long typing rests before it is committed as a step, milliseconds.</summary>
+    /// <summary>Typing idle time before a commit, in milliseconds.</summary>
     internal const int CommitAfterMs = 600;
 
     private readonly MainViewModel _viewModel;
     private readonly ISubtitleStudioHost _host;
 
-    // Commits a run of typing once it has rested; restarted by every key.
+    // Debounced typing commit; restarted on every key.
     private readonly DispatcherTimer _commitSoon = new() { Interval = TimeSpan.FromMilliseconds(CommitAfterMs) };
 
     private bool _attached, _images, _showingCue, _filling, _edited, _refreshQueued;
@@ -78,10 +76,10 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         };
         Timeline.ActiveWordChanged += () => DeleteButton.Content = Timeline.ActiveWord >= 0 ? "Delete Word" : "Delete";
 
-        // A press on the strip gives the pane the keyboard, so Delete is the cue's (the strip itself takes no focus).
+        // Strip presses focus the pane (the strip is not focusable) so Delete targets the cue.
         Timeline.PreviewMouseDown += (_, _) => Focus();
 
-        // The same things, on a right-click of the strip: about the subtitle (and the word) under the pointer.
+        // Strip context menu: the same commands for the subtitle (and word) under the pointer.
         var menu = new ContextMenu();
         void Item(string header, RoutedEventHandler action, Func<bool> enabled)
         {
@@ -110,7 +108,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
 
     private double OffsetSeconds => double.IsFinite(_viewModel.SubtitleOffsetMs) ? _viewModel.SubtitleOffsetMs / 1000 : 0;
 
-    // ----- Listening (while loaded) -----
+    // ----- Subscriptions (while loaded) -----
 
     private void Attach()
     {
@@ -133,7 +131,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         if (!_attached)
             return;
 
-        // What the debounce had not yet committed is a step now.
+        // Commit any pending debounced edit as a step.
         FlushEdits();
         _attached = false;
         _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
@@ -161,7 +159,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
 
     private void Cues_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => RefreshSoon();
 
-    /// <summary>The cues changed somewhere (an undo puts them back cue by cue): shown again once, after the change.</summary>
+    /// <summary>Coalesces cue changes (Undo restores cue by cue) into one Background-priority refresh.</summary>
     private void RefreshSoon()
     {
         if (_refreshQueued || !_attached)
@@ -177,8 +175,8 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
     }
 
     /// <summary>
-    /// The track as it is now: whether it is pictures, its offset and length, the selected cue (found again when the step put back
-    /// holds another object with its values, else none), the boxes (never one being typed into), the summary and the hint.
+    /// Syncs the pane to the track: image mode, offset and length, the selection (re-resolved when a restored step holds new cue
+    /// objects), the edit boxes (never the focused one), the summary and the hint.
     /// </summary>
     private void Refresh()
     {
@@ -190,8 +188,8 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
 
         if (Timeline.Selected is { } selected && !cues.Contains(selected))
         {
-            // Its values, else (an undo of its text or its times: 5.4C review) the cue over its middle, else the one starting nearest it
-            // (within half a second), so an undo keeps the cue being worked on selected.
+            // Re-resolve by equal values, else (Undo of its text or times) the cue spanning its midpoint, else the nearest start within
+            // 0.5 s, so Undo keeps the working cue selected.
             var middle = (selected.Start + selected.End) / 2;
             var same = cues.FirstOrDefault(c => Math.Abs(c.Start - selected.Start) < 0.0005 && c.Text == selected.Text)
                        ?? cues.FirstOrDefault(c => c.Start <= middle && middle < c.End)
@@ -212,9 +210,9 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         Timeline.InvalidateVisual();
     }
 
-    // ----- The playhead: the main player's -----
+    // ----- Playhead (driven by the main player) -----
 
-    /// <summary>The strip follows the player while the pane is in sight; never under a drag of its own, nor while it coasts after a flick.</summary>
+    /// <summary>Syncs the strip playhead to the player while visible; skipped during a strip drag or post-flick coast.</summary>
     private void FollowPlayhead()
     {
         if (!_attached || !IsVisible || Timeline.IsMouseCaptured || Timeline.IsCoasting)
@@ -224,14 +222,14 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         UpdateTime();
     }
 
-    /// <summary>Sends the main player to a moment of the strip (setting the position moves the timeline, which seeks the player).</summary>
+    /// <summary>Seeks the main player to a strip time (setting PositionMs moves the timeline, which seeks the player).</summary>
     private void Seek(double seconds)
     {
         if (_viewModel.DurationMs > 0)
             _viewModel.PositionMs = Math.Clamp(seconds * 1000, 0, _viewModel.DurationMs);
     }
 
-    /// <summary>Moves the strip's playhead and the player's to a moment.</summary>
+    /// <summary>Moves both the strip playhead and the player to a time.</summary>
     private void MoveTo(double seconds)
     {
         Timeline.PositionSeconds = seconds;
@@ -241,9 +239,9 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
 
     private void UpdatePlayButton() => PlayButton.Content = _viewModel.IsPlaying ? Glyphs.Pause : Glyphs.Play;
 
-    // ----- Committing: each gesture one step of the main history -----
+    // ----- Commits (one main-history step per gesture) -----
 
-    /// <summary>The cues were changed in place: the strip shows it at once, the main history takes it once the typing rests.</summary>
+    /// <summary>Marks an in-place cue change: redraws the strip now and restarts the debounced commit.</summary>
     private void Changed()
     {
         _edited = true;
@@ -253,7 +251,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         UpdateSummary();
     }
 
-    /// <summary>Commits what was changed in place as one step (nothing when nothing was changed: MainViewModel compares).</summary>
+    /// <summary>Commits in-place changes as one step (a no-op when unchanged; MainViewModel compares).</summary>
     private void Commit()
     {
         _commitSoon.Stop();
@@ -262,7 +260,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         _host.SubtitlesCommitted();
     }
 
-    /// <summary>A change made in place and not yet committed is committed now, before another gesture takes a step of its own.</summary>
+    /// <summary>Commits any pending in-place change before another gesture records its own step.</summary>
     private void FlushEdits()
     {
         if (_edited)
@@ -271,7 +269,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
             _commitSoon.Stop();
     }
 
-    // ----- The selected cue -----
+    // ----- Selected cue -----
 
     private void ShowCue(SubtitleCue? cue)
     {
@@ -300,7 +298,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         Changed();
     }
 
-    // Leaving a box commits what was typed in it: the next gesture is a step of its own.
+    // Losing focus commits the box's typing so the next gesture gets its own step.
     private void EditBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e) => FlushEdits();
 
     private void TimeBox_KeyDown(object sender, KeyEventArgs e)
@@ -337,14 +335,14 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         Fill(EndBox, cue.End.ToString("0.000", CultureInfo.InvariantCulture));
     }
 
-    // The Global Offset is applied as it is typed: every cue moves on the strip and in the player with each digit, one step once it rests.
+    // Global Offset applies live per keystroke (strip and player update immediately); committed as one debounced step.
     private void OffsetBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (_attached && !_filling && double.TryParse(OffsetBox.Text.Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out var offset) && double.IsFinite(offset))
             ApplyOffset(offset);
     }
 
-    // Leaving the box (or Enter) tidies what was typed (something that is not a number goes back to the offset in use) and commits it.
+    // On blur or Enter: normalize the text (non-numeric input reverts to the current offset) and commit.
     private void OffsetBox_LostFocus(object sender, RoutedEventArgs e)
     {
         var text = _viewModel.SubtitleOffsetMs.ToString("0", CultureInfo.InvariantCulture);
@@ -425,7 +423,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         if (_images || Timeline.Selected is not { } cue)
             return;
 
-        // The new word goes on the end, and is left selected in the box to be typed over.
+        // Append a placeholder word and leave it selected for overtyping.
         FlushEdits();
         cue.Text = cue.Text.TrimEnd().Length > 0 ? cue.Text.TrimEnd() + " word" : "word";
         Commit();
@@ -434,7 +432,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
         CueText.Select(Math.Max(CueText.Text.Length - 4, 0), 4);
     }
 
-    // Delete: the word that is picked out, when one is and it is not the cue's only word; the whole subtitle otherwise.
+    // Deletes the active word when one is set and is not the cue's only word; otherwise deletes the whole subtitle.
     private void Delete_Click(object sender, RoutedEventArgs e)
     {
         if (_images || Timeline.Selected is not { } cue)
@@ -477,7 +475,7 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
 
     // ----- Keys -----
 
-    /// <summary>Delete and Back are the studio's while the keyboard is in it (and not in one of its boxes, where they type): the cue's or the word's.</summary>
+    /// <summary>Claims unmodified Delete and Back for the active cue or word while focused, except inside a text box.</summary>
     public bool OwnsKey(Key key, ModifierKeys modifiers) =>
         key is Key.Delete or Key.Back && modifiers == ModifierKeys.None && Keyboard.FocusedElement is not TextBoxBase;
 
@@ -504,8 +502,8 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
                            + (_viewModel.SubtitleSourcePath.Length > 0 ? $"  ·  {Path.GetFileName(_viewModel.SubtitleSourcePath)}" : "");
 
     /// <summary>
-    /// Fills a box from the cues unless typing in it is not yet committed (the box holds the newer text then); a box whose typing was
-    /// committed, or taken back by the main Undo, shows the cue as it now is.
+    /// Fills a box from the cue unless it holds uncommitted typing (newer than the model); committed or undone boxes show the current
+    /// cue.
     /// </summary>
     private void FillUnlessTyping(TextBox box, string text)
     {
@@ -514,8 +512,8 @@ public partial class SubtitleStudioPane : UserControl, IOwnsKeys
     }
 
     /// <summary>
-    /// Puts text into a box from the cues, not as typing: the box's own undo is emptied, so Ctrl+Z there never brings back another
-    /// cue's words, and the text is not taken as an edit. Text already there is left alone (the caret stays where it is).
+    /// Sets box text programmatically (not as an edit): clears the box's local undo so Ctrl+Z never restores another cue's text.
+    /// Unchanged text is left as is, preserving the caret.
     /// </summary>
     private void Fill(TextBox box, string text)
     {

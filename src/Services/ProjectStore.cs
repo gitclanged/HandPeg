@@ -12,76 +12,53 @@ namespace HandPegApp.Services;
 /// <param name="FilePath">The project file itself.</param>
 /// <param name="SourceName">File name of the video the project was made from.</param>
 /// <param name="SourcePath">Full path (or URL) of that video.</param>
-/// <param name="Thumbnail">The project's baked thumbnail (a JPEG, Pass 5.2D); null when its file has none.</param>
+/// <param name="Thumbnail">Embedded JPEG thumbnail; null when the file has none.</param>
 public sealed record ProjectEntry(string FilePath, string Name, string SourceName, string SourcePath, DateTime SavedAt, byte[]? Thumbnail = null)
 {
     public string SavedText => $"Saved {SavedAt:g}";
 }
 
-// ----- The project file (.hproj), format 6 -----
-// A project is its timeline, a TimelineDocument (every track and clip, the main video's among them, the markers and the
-// Sequence Output's effects), and what lies around it: where its video comes from, where the export goes, what is done
-// with each of the main file's own audio streams, the recycle bin, and the export's settings. The file is laid out that
-// way, the timeline last. Nothing is written that is still at its default. What says which file it is (the format, its
-// version, the HandPeg that wrote it) comes first, so that it is read from the first few kilobytes, and before anything
-// else of the file.
+// ----- Project file (.hproj), formats 6 and 7 -----
+// JSON layout: header (format, version, writer) first so PeekHeader reads it from the first few KB; then thumbnail, source, output,
+// sequence extras (audio stream map, recycle bin), settings, masks, seek facts, undo/redo history, and the timeline
+// (TimelineDocument) last. Default values are never written.
 //
-// Format 6 is HandPeg 5.0's (the GPU engine's), and the only one this version opens: v5.0 owes earlier projects nothing (the
-// user's call), so projects of formats 1 to 5 (HandPeg 1.x's .txt, the .hproj of HandPeg 2.0 to 4.4) are refused with the
-// reason, and not converted. A newer format is opened only when the user asks, and is never written over. Format 6 is
-// format 5's layout (HandPeg 4.3's, the first whose timeline is the document) with the background behind the main video as
-// a layer of its own (sequence.background: its blur, zoom and effects), and anchored captions written once, as their anchors
-// in their source's time: the cues that showed them on the timeline are made again from those, never written.
+// Formats 1-5 are refused, not converted. A newer format opens only on explicit request and is never overwritten. Format 6 has the
+// background as its own layer (sequence.background) and stores anchored captions as anchors in source time (cues are regenerated).
 //
-// A save also carries the undo and redo history (undoFormat, undoHistory, redoHistory, just before the timeline), so that
-// Ctrl+Z goes on where the save left it. It is optional and left out when empty. Read leniently: a history of another
-// shape, or one that is not a history at all, is let go, never the project. A project bundle (.hpb, ProjectBundle) is a
-// format 6 project with the files it reads, in one archive.
+// Optional sections, omitted when empty: thumbnailJpeg (Base64 JPEG right after the header for Explorer's preview handler) and
+// undoFormat/undoHistory/redoHistory (just before the timeline; read leniently: a malformed history is dropped, never the project).
+// A bundle (.hpb, ProjectBundle) is a project plus its media in one archive.
 //
-// Pass 5.2D keeps format 6 too: a save carries a small JPEG of the Sequence at the playhead (thumbnailJpeg,
-// Base64, right after the header, where Explorer's preview reads it from the first kilobytes), optional and left out when there is none.
+// Legacy main-video projects are detected by content (OldShapeOf: MainVideo or Video clips, main-file captions), loaded as-is and
+// converted once on open by the view model (LegacyMainVideo), which then overwrites the file. Their sequence.audio stream mixing is
+// conversion input only. Source.Path/LocalPath remain the last-opened file (Info, Streams, Download panes, default output name).
 //
-// 5.2-AuditB (no track is privileged, no file is "the main video") keeps format 6. What it adds is optional and left out
-// while unset (the timeline's naturalWidth and naturalHeight), and what it stops writing (the settings' VerticalFramer, the
-// clips of the legacy kinds) every reader of format 6 reads without. A project of 5.1's is told by what it holds, not by its
-// number (OldShapeOf): its clips of the main video (kind MainVideo), the cut-outs of it (kind Video), captions heard from
-// the main video's file. Such a project is read as it is and converted once, as it is opened (LegacyMainVideo, run by the view
-// model, which has the probed facts of the file it opens: 5.2-AuditB, refused from 5.2-Arm64AndNpu, converted again since
-// 5.2E, the user's answer); the window then writes the converted project over its own file. Its main streams' mixing
-// in sequence.audio (gain, filters, ducking, voice, slip, silenced pieces) is that conversion's input only: since 5.2-AuditB an
-// entry there is only what is made of a stream place in the output. Source.Path and
-// Source.LocalPath stay what they are: the file last opened (its Info, Streams and Download panes, the default output name),
-// which plays only through clips of it on the timeline.
-//
-// Pass 5.5A keeps format 6 too. A clip tethered to another by the Timeline's drag carries "tethered": true (left out while false),
-// and the timeline carries "tethersMarked": true only when it holds a piece that lies where a tether would (TimelineDocument.TethersMarked).
-// A timeline read without that has its tethers found as it is read (TimelineDocument's OnDeserialized: every file written before the
-// mark, a 5.5A preview's too); a project of 5.4.4 whose pieces lie under their clips' tracks (as its templates put them) is read and
-// written back as it was.
+// Tethers: a tethered clip writes "tethered": true; the timeline writes "tethersMarked": true only when it holds a loose child
+// (TimelineDocument.TethersMarked). Without the mark, tethers are inferred on read (TimelineDocument.OnDeserialized).
 
 /// <summary>A project as it is written to disk.</summary>
 public sealed class ProjectFile
 {
     public const string FormatName = "handpeg-project";
 
-    /// <summary>The newest format this version reads and writes (a newer one opens too, as far as it is known, when the user asks).</summary>
+    /// <summary>Newest format read and written (newer formats open read-only on explicit request).</summary>
     public const int CurrentVersion = 7;
 
     /// <summary>
-    /// The format of a project that uses nothing newer than 5.5 can store: still written as 6, so a 5.5 release opens it. A
-    /// project that uses a 5.6 feature (<see cref="ProjectStore.FormatFor"/>) is written as 7, which 5.5 refuses to overwrite.
+    /// Format written when no format-7 feature is used, so older releases still open it. Projects using a newer feature
+    /// (<see cref="ProjectStore.FormatFor"/>) are written as 7, which older releases refuse to overwrite.
     /// </summary>
     public const int BaseVersion = 6;
 
-    /// <summary>The oldest format this version opens: formats 1 to 5 (HandPeg 4.4 and earlier) are refused, not converted.</summary>
+    /// <summary>Oldest format opened; formats 1-5 are refused, not converted.</summary>
     public const int OldestReadable = 6;
 
-    // No defaults here: a file that does not say what it is must not pass for one that does. These three come first in the
-    // file (its values are written in the order they are declared here), where PeekHeader finds them.
+    // No defaults: a file without a header must not pass as valid. Declared first so they serialize first, where PeekHeader reads them.
     public string? Format { get; set; }
     public int Version { get; set; }
 
-    /// <summary>The HandPeg that wrote the file ("HandPeg 4.3.0"). Named when a version too old for the file refuses it.</summary>
+    /// <summary>Writer name and version ("HandPeg &lt;version&gt;"), shown when an older version refuses the file.</summary>
     public string? WrittenBy { get; set; }
 
     /// <summary>Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them.</summary>
@@ -89,10 +66,8 @@ public sealed class ProjectFile
     public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 
     /// <summary>
-    /// The project's thumbnail (5.2.0): a small JPEG of the Sequence at the playhead as it was saved, in Base64,
-    /// for the Project Manager, the launch window and Windows Explorer's preview (ProjectThumbnail, the HandPeg.ShellThumbnails handler).
-    /// Right after the three above, so that a reader finds it in the file's first hundred kilobytes or so without reading the rest
-    /// (PeekHeader has stopped by then). Absent when the save had none; an older HandPeg reads past it.
+    /// Base64 JPEG of the playhead frame at save time for the Project Manager, launch window and Explorer preview
+    /// (ProjectThumbnail, HandPeg.ShellThumbnails). Serialized right after the header so it sits in the first ~100 KB. Optional.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? ThumbnailJpeg { get; set; }
@@ -102,79 +77,73 @@ public sealed class ProjectFile
     public ProjectSource Source { get; set; } = new();
     public ProjectOutput Output { get; set; } = new();
 
-    /// <summary>What of the sequence is not on its timeline: the main file's audio streams, the recycle bin, the captions' sound.</summary>
+    /// <summary>Sequence data outside the timeline: audio stream map, recycle bin, caption audio source.</summary>
     public ProjectSequence Sequence { get; set; } = new();
 
     /// <summary>Everything that is not on the timeline: the frame, the encoders, the filters, the caption style.</summary>
     public EncodingPreset Settings { get; set; } = new();
 
     /// <summary>
-    /// The mask pictures the clips, the tracks and the caption box use, each as Base64 under the name their looks give it:
-    /// carried inside the project, so that the file is all another machine needs of them. Absent when nothing has a mask.
+    /// Embedded mask images (Base64) keyed by the name their looks reference, so the file is self-contained. Optional.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, string>? Masks { get; set; }
 
     /// <summary>
-    /// What is known about seeking in the project's video files (every clip's video file), as it was at
-    /// the save: taken up again on opening, for each file still exactly as it was, so the first graph can seek in them before
-    /// anything is probed. Absent when nothing was known.
+    /// Cached seek indexes for the project's video files at save time; reused on open for unchanged files so seeking works before
+    /// probing. Optional.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<ProjectSeekIndex>? SeekIndexes { get; set; }
 
     /// <summary>
-    /// The shape of the undo history's steps this version writes and reads (the view model's TimelineSnapshot as JSON, packed:
-    /// UndoSteps). Bump it when that changes shape incompatibly: a history of another shape is let go on opening.
+    /// Undo step schema version (packed TimelineSnapshot JSON, UndoSteps). Bump on incompatible change; mismatched histories are dropped on open.
     /// </summary>
     public const int CurrentUndoFormat = 1;
 
     /// <summary>The most steps of each history a file carries (Undo keeps twenty).</summary>
     public const int MaximumUndoSteps = 20;
 
-    /// <summary>The shape the undo history's steps are in (<see cref="CurrentUndoFormat"/> as written); left out (0) with no history.</summary>
+    /// <summary>Undo schema of the stored history (<see cref="CurrentUndoFormat"/> at write); 0 and omitted without history.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault), JsonConverter(typeof(LenientIntConverter))]
     public int UndoFormat { get; set; }
 
     /// <summary>
-    /// The undo history at the save (4.4): oldest first, at most twenty steps, each its name and the timeline it puts back as
-    /// Undo keeps it (packed, Base64). Optional and left out when empty; read leniently (<see cref="UndoStepsConverter"/>).
+    /// Undo history at save, oldest first, max 20 steps (label + packed Base64 timeline). Optional; read leniently (<see cref="UndoStepsConverter"/>).
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull), JsonConverter(typeof(UndoStepsConverter))]
     public List<ProjectUndoStep>? UndoHistory { get; set; }
 
-    /// <summary>The redo history at the save, as <see cref="UndoHistory"/> is kept: the step Redo puts back first is the last.</summary>
+    /// <summary>Redo history at save, same encoding as <see cref="UndoHistory"/>; the next Redo step is last.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull), JsonConverter(typeof(UndoStepsConverter))]
     public List<ProjectUndoStep>? RedoHistory { get; set; }
 
-    /// <summary>The window as it was at the save (Pass 5.4.1-M5): never part of the unsaved-changes fingerprint. Absent when not saved from a window.</summary>
+    /// <summary>Workspace (window state) at save; excluded from the dirty fingerprint. Absent when not saved from a window.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ProjectWorkspace? Workspace { get; set; }
 
     /// <summary>
-    /// The timeline: every track and clip (the main video's among them), the markers and the Sequence Output's effects.
-    /// Last in the file, and required: a project without one is refused.
+    /// Timeline (tracks, clips, markers, Sequence Output effects). Serialized last; required.
     /// </summary>
     public TimelineDocument? Timeline { get; set; }
 }
 
-/// <summary>One step of a project's undo history as the file carries it: its name ("delete Logo"), and the timeline it puts back, packed as Undo keeps it, in Base64.</summary>
+/// <summary>Serialized undo step: label (e.g. "delete Logo") and packed Base64 timeline.</summary>
 public sealed class ProjectUndoStep
 {
     public string What { get; set; } = "";
     public string State { get; set; } = "";
 
     /// <summary>
-    /// The step as Undo keeps it (packed), when it is being written (5.4D-TabPerf): written as the Base64 <see cref="State"/> would be,
-    /// a few kilobytes at a time, without the text itself ever being made (a step of a big Sequence is a few hundred kilobytes of it).
+    /// Packed bytes for writing: streamed as the Base64 <see cref="State"/> in small chunks without materializing the string
+    /// (large steps reach hundreds of KB).
     /// </summary>
     internal byte[]? Packed { get; init; }
 }
 
 /// <summary>
-/// Reads an undo history leniently (4.4): a history is never the reason a project cannot be opened. What is not a list
-/// reads as none, and an entry that is not a step (an object whose "what" and "state" are text) is passed over. Written as
-/// a list of steps.
+/// Lenient undo-history converter: never fails the project. Non-arrays read as empty; entries without string "what"/"state" are
+/// skipped. Writes a JSON array of steps.
 /// </summary>
 internal sealed class UndoStepsConverter : JsonConverter<List<ProjectUndoStep>>
 {
@@ -219,7 +188,7 @@ internal sealed class UndoStepsConverter : JsonConverter<List<ProjectUndoStep>>
     private const int PieceBytes = 3 * 1024;
 
     /// <summary>
-    /// Writes bytes as the JSON string Convert.ToBase64String's text would be, the very same bytes (escaped as the writer escapes any
+    /// Writes bytes as the exact JSON string Convert.ToBase64String would produce (with the writer's escaping of any
     /// text: a "+" as \u002B), from a 4 KB buffer on the stack instead of a string of the whole.
     /// </summary>
     private static void WriteBase64(Utf8JsonWriter writer, string name, byte[] bytes)
@@ -238,7 +207,7 @@ internal sealed class UndoStepsConverter : JsonConverter<List<ProjectUndoStep>>
     }
 }
 
-/// <summary>Reads a whole number leniently: anything else (text, a list, an object) reads as 0, and never fails the file.</summary>
+/// <summary>Lenient integer converter: any non-number reads as 0 without failing the file.</summary>
 internal sealed class LenientIntConverter : JsonConverter<int>
 {
     public override int Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
@@ -254,7 +223,7 @@ internal sealed class LenientIntConverter : JsonConverter<int>
     public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options) => writer.WriteNumberValue(value);
 }
 
-/// <summary>One video file's seek facts in a project (see <see cref="SeekFacts"/>): the file as it was (size, last write) and where its I-frames are.</summary>
+/// <summary>Cached seek facts for one video (<see cref="SeekFacts"/>): size, last write, and I-frame times.</summary>
 public sealed class ProjectSeekIndex
 {
     public string Path { get; set; } = "";
@@ -267,7 +236,7 @@ public sealed class ProjectSeekIndex
     public double VideoStart { get; set; }
     public double Duration { get; set; }
 
-    /// <summary>The I-frames' times on the file's own clock: Base64 of the doubles, little-endian (see MediaProbe.PackTimes).</summary>
+    /// <summary>I-frame times in file seconds, Base64 little-endian doubles (MediaProbe.PackTimes).</summary>
     public string IFrames { get; set; } = "";
 }
 
@@ -293,14 +262,14 @@ public sealed class ProjectOutput
     public bool WebOptimized { get; set; }
     public bool ChapterMarkers { get; set; } = true;
 
-    /// <summary>A chapter where each clip of the main video starts (4.3C; until then, at each kept stretch of the cut list).</summary>
+    /// <summary>Writes a chapter at each primary clip start.</summary>
     public bool ChaptersAtCuts { get; set; }
 
     public bool ChaptersAtMarkers { get; set; }
     public string TargetFileSize { get; set; } = "";
     public string? ManualCommand { get; set; }
 
-    /// <summary>The subtitle track (imported, or edited by hand): its cues, its offset, where it came from. Left out when there is none.</summary>
+    /// <summary>Subtitle track (cues, offset, source); omitted when absent.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public SubtitleTrackData? Subtitles { get; set; }
 
@@ -319,14 +288,12 @@ public sealed class ProjectSequence
     /// <summary>Splits and the playhead keep to the main video's I-frames.</summary>
     public bool SnapToIFrames { get; set; }
 
-    /// <summary>The blurred background behind the main video, a layer of its own (format 6): written only where it differs from a new one's.</summary>
+    /// <summary>Blur-fill background layer; written only where it differs from defaults.</summary>
     public ProjectBackground Background { get; set; } = new();
 
     /// <summary>
-    /// The output's audio tracks by stream place (5.2-AuditB): what is done with each in the output (copied, encoded again,
-    /// dropped; its codec, bitrate and title). In a project from before, also each of the main video's own streams as it
-    /// was heard (its gain, filters, ducking, voice, slip and silenced stretches): the input of the conversion that put them
-    /// on the Sub-Lanes of its clips (5.2-AuditB), which the app no longer makes (5.2-Arm64AndNpu); kept as it is written.
+    /// Output audio tracks by stream position (copy, re-encode or drop; codec, bitrate, title). Legacy projects also store per-stream
+    /// mixing here as input to the main-video conversion; preserved as written.
     /// </summary>
     public List<AudioTrackState> Audio { get; set; } = [];
 
@@ -336,8 +303,7 @@ public sealed class ProjectSequence
     public List<DeletedClip> Deleted { get; set; } = [];
 
     /// <summary>
-    /// Whether the bin's tethers are to be read as written (5.5.0, the user's Q6; as TimelineDocument.TethersMarked for the timeline):
-    /// true only when the bin holds a piece that lies where a reader of an older file finds a tether, so every other file is as it was.
+    /// Recycle-bin counterpart of TimelineDocument.TethersMarked: written only when the bin holds a loose child, so other files are unchanged.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool BinTethersMarked { get; set; }
@@ -348,10 +314,8 @@ public sealed class ProjectSequence
 }
 
 /// <summary>
-/// The blurred background behind the main video as format 6 writes it (5.0-Release: the main video's video-only child): whether
-/// it is shown, its blur in pixels of the frame (0 sharp to 64), its passes, its darkening, its zoom about the middle (1
-/// covers the frame) and its own effect stack. The settings hold the same values while the project is open (EncodingPreset);
-/// the file keeps them here, together, and the settings it writes leave them out. The defaults are a new project's.
+/// Serialized blur-fill background: enabled, blur radius (0-64 frame px), passes, darkening, centre zoom (1 = cover) and effect
+/// stack. Live values sit in EncodingPreset; the file stores them here and omits them from settings. Defaults match a new project.
 /// </summary>
 public sealed class ProjectBackground
 {
@@ -372,9 +336,8 @@ public sealed class ProjectBackground
 }
 
 /// <summary>
-/// A project file of a newer format than this version reads. It can still be opened when the user asks (reading what this
-/// version knows of it), but is never written over: what the newer version put in it would be lost. An IOException, so that
-/// whatever opens or lists projects reports it as a file it could not read.
+/// Project of a newer format. Can be opened on request (known fields only) but is never overwritten, to avoid losing newer data.
+/// Derives from IOException so open/list paths report it as unreadable.
 /// </summary>
 public sealed class NewerProjectFormatException(int version, string? writtenBy)
     : IOException($"This project was saved by {writtenBy ?? "a newer version of HandPeg"} in project format {version}; this version of HandPeg "
@@ -384,12 +347,12 @@ public sealed class NewerProjectFormatException(int version, string? writtenBy)
     public string? WrittenBy { get; } = writtenBy;
 }
 
-/// <summary>Project files live in the Projects folder (see <see cref="AppPaths"/>), as .hproj: JSON in the layout above, format 6.</summary>
+/// <summary>Reads and writes .hproj project files (JSON, layout above) in the Projects folder (<see cref="AppPaths"/>).</summary>
 public static class ProjectStore
 {
     public const string Extension = ".hproj";
 
-    /// <summary>The name written into each project as the HandPeg that wrote it: "HandPeg 4.3.0".</summary>
+    /// <summary>Writer string stored in each project ("HandPeg &lt;version&gt;").</summary>
     public static string WriterName { get; } = typeof(ProjectStore).Assembly.GetName().Version is { } version
         ? $"HandPeg {version.Major}.{version.Minor}.{Math.Max(version.Build, 0)}"
         : "HandPeg";
@@ -409,8 +372,8 @@ public static class ProjectStore
     public static void NotifyChanged() => Changed?.Invoke();
 
     /// <summary>
-    /// Leaves out of the file whatever is as a new object of its kind would have it: zero, false, empty, or
-    /// the value the property starts with (an opacity of 100, a contrast of 1). Reading puts the same values back.
+    /// Omits properties equal to a fresh instance's value (zero, false, empty, or initializer such as opacity 100, contrast 1);
+    /// deserialization restores the same values.
     /// </summary>
     private static void SkipDefaults(JsonTypeInfo info)
     {
@@ -447,9 +410,8 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// The constructor a value is read through, when it has one whose parameters can all be left out: what it makes of
-    /// nothing is what a value left out of the file reads as. A keyframe read without its easing is Ease In-Out (its
-    /// constructor's default), so Ease In-Out is what is left out, and Linear is written.
+    /// Deserialization constructor whose parameters all have defaults; its no-argument result defines omitted values (e.g. keyframe
+    /// easing defaults to Ease In-Out, so Ease In-Out is omitted and Linear is written).
     /// </summary>
     private static System.Reflection.ConstructorInfo? ReadingConstructor(Type type) =>
         type.GetConstructors().FirstOrDefault(c => c.IsDefined(typeof(JsonConstructorAttribute), inherit: false)
@@ -478,10 +440,10 @@ public static class ProjectStore
     /// <summary>What an autosave's file name ends in, before the extension: "My Project.autosave.hproj".</summary>
     public const string AutosaveSuffix = ".autosave";
 
-    /// <summary>Saves the state to a file of the user's choosing, wherever it is.</summary>
+    /// <summary>Saves the state to an arbitrary path.</summary>
     /// <param name="durable">
-    /// Flush the file to the disk before it replaces the old one (<see cref="AtomicFile"/>): true for the user's project saves and
-    /// autosaves; false for the project-tab cache, which is rewritten on every tab switch and only has to survive a process crash.
+    /// Flush to disk before replacing (<see cref="AtomicFile"/>): true for saves and autosaves; false for the tab cache, which only
+    /// needs to survive a process crash.
     /// </param>
     public static string SaveTo(ProjectState state, string path, bool durable = true)
     {
@@ -491,11 +453,9 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// The state written as <see cref="Serialize"/> would make its text, the very same bytes (UTF-8, no byte order mark), but
-    /// straight into the file (5.4.0): the JSON goes out to it in pieces of about 16 KB as it is made, so the whole text is
-    /// never held, nor a buffer of all of it (a tab put behind writes one of these, on the pool, at every switch). Only the undo
-    /// history goes out as one piece (UndoStepsConverter writes it whole), its steps' Base64 made as it goes. Whole or not at all
-    /// (<see cref="AtomicFile.Write"/>): what goes wrong while it is written leaves the old file as it was.
+    /// Streams the same bytes as <see cref="Serialize"/> (UTF-8, no BOM) directly to the file in ~16 KB chunks, never holding the full
+    /// text (tab switches write these on the pool). Undo steps stream their Base64 incrementally. Atomic (<see cref="AtomicFile.Write"/>):
+    /// failure leaves the old file intact.
     /// </summary>
     private static void WriteProject(ProjectState state, string path, bool durable)
     {
@@ -504,8 +464,7 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Refuses to write over a project file of a newer format than this version writes, however it was opened: what the
-    /// newer HandPeg put in it would be lost. An IOException, so that every save reports it as a save that could not be made.
+    /// Throws (IOException) instead of overwriting a newer-format project, so every save path reports a failed save.
     /// </summary>
     private static void RefuseNewer(string path)
     {
@@ -517,9 +476,7 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// What a project file says it is (format, version, writer), read from its first few kilobytes: they come first in
-    /// the file, so a project carrying megabytes of masks is not read whole. Null when there is no such file or it does
-    /// not start like a project.
+    /// Reads the header (format, version, writer) from the first few KB without loading the whole file. Null when missing or not a project.
     /// </summary>
     public static (string? Format, int Version, string? WrittenBy)? PeekHeader(string path)
     {
@@ -543,12 +500,10 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// What a project's text says it is (format, version, writer): the plain values of its top level. An object or a list
-    /// among them (the source, say) is stepped over while it lies whole in <paramref name="bytes"/>; one that runs past them
-    /// ends the search, with what was found so far, and so does finding all three. Null when the text does not start like
-    /// a project (an object that names its format).
+    /// Scans top-level scalars for format, version and writer, skipping complete nested values in <paramref name="bytes"/>. Stops at
+    /// a truncated value or once all three are found. Null when the text does not start as a project object.
     /// </summary>
-    /// <param name="isFinalBlock">Whether <paramref name="bytes"/> are the whole text, not only its start.</param>
+    /// <param name="isFinalBlock">True when <paramref name="bytes"/> is the entire text.</param>
     private static (string? Format, int Version, string? WrittenBy)? ReadHeader(ReadOnlySpan<byte> bytes, bool isFinalBlock)
     {
         if (bytes.StartsWith("﻿"u8))
@@ -598,7 +553,7 @@ public static class ProjectStore
         return format is null ? null : (format, version, writtenBy);
     }
 
-    /// <summary>Where a project's autosave goes: beside the project when it has a file, in the projects folder under its name otherwise.</summary>
+    /// <summary>Autosave path: beside the project file, else in the Projects folder by name.</summary>
     public static string AutosavePath(string projectPath, string name)
     {
         if (projectPath.Length > 0 && Path.GetDirectoryName(projectPath) is { Length: > 0 } folder)
@@ -609,26 +564,24 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Writes a file whole (<see cref="AtomicFile"/>): the target holds either its old or its new content, never part of each.
-    /// Not flushed to the disk: for caches and side files that only have to survive a process crash. Project saves go through
-    /// <see cref="SaveTo"/>, which flushes.
+    /// Atomic write (<see cref="AtomicFile"/>) without flush, for caches and side files that only need to survive a process crash.
+    /// Project saves use <see cref="SaveTo"/>, which flushes.
     /// </summary>
     public static void WriteWhole(string path, string content, bool durable = false) => AtomicFile.WriteAllText(path, content, durable);
 
-    /// <summary>The temporary file a whole write goes into before it replaces <paramref name="path"/> (<see cref="AtomicFile.PartialPath"/>).</summary>
+    /// <summary>Temp path used before replacing <paramref name="path"/> (<see cref="AtomicFile.PartialPath"/>).</summary>
     internal static string PartialPath(string path) => AtomicFile.PartialPath(path);
 
     /// <summary>
-    /// <see cref="WriteWhole(string, string, bool)"/> for content produced while it is written: <paramref name="write"/> streams it into
-    /// the temporary file, which then replaces the target. A failure part of the way leaves the target as it was.
+    /// Streaming <see cref="WriteWhole(string, string, bool)"/>: <paramref name="write"/> fills the temp file, which then replaces the
+    /// target; failure leaves the target intact.
     /// </summary>
     public static void WriteWhole(string path, Action<Stream> write, bool durable = false) => AtomicFile.Write(path, write, durable);
 
     /// <summary>
-    /// The format a project is written in: <see cref="ProjectFile.BaseVersion"/> (6) unless it uses something only 5.6 and later
-    /// can store, then <see cref="ProjectFile.CurrentVersion"/> (7), so a 5.5 release refuses to save over it instead of silently
-    /// dropping it. 5.6 additions: a clip faster than 10x (5.5 plays at most 10x), and a look with Keep Pitch off, Smooth Slow-Mo
-    /// or Spectral Audio. Every pass that adds a field 5.5 would lose extends this test (the <c>project-format-7</c> golden).
+    /// Write format: <see cref="ProjectFile.BaseVersion"/> (6) unless a format-7 feature is used, then <see cref="ProjectFile.CurrentVersion"/>
+    /// (7) so older releases refuse to overwrite instead of dropping data. Format-7 features: speed above 10x, Keep Pitch off, Smooth
+    /// Slow-Mo, Spectral Audio. Extend this test with every such field (<c>project-format-7</c> golden).
     /// </summary>
     internal static int FormatFor(TimelineDocument timeline, IEnumerable<DeletedClip> deleted)
     {
@@ -642,17 +595,16 @@ public static class ProjectStore
         return needs7 ? ProjectFile.CurrentVersion : ProjectFile.BaseVersion;
     }
 
-    /// <summary>The state as a format 6 file. The state is left as it was: its timeline is written from a copy of its own.</summary>
+    /// <summary>Serializes the state; the timeline is written from a copy, leaving the state unchanged.</summary>
     public static string Serialize(ProjectState state) => JsonSerializer.Serialize(ToFile(state), JsonOptions);
 
-    /// <param name="unpackMasks">Write the masks the project carries into the masks folder and point its looks at them, take up the seek indexes of its video files, and read its undo history (4.4): when it is being opened, not when it is only being listed.</param>
-    /// <param name="allowNewer">Read a file of a newer format too, as far as this version knows it, instead of refusing it: for when the user asked to open it anyway.</param>
+    /// <param name="unpackMasks">On open (not listing): extract embedded masks to the masks folder and relink looks, import seek indexes, and read undo history.</param>
+    /// <param name="allowNewer">Read a newer format (known fields only) instead of refusing it, after explicit confirmation.</param>
     public static ProjectState Load(string filePath, bool unpackMasks = true, bool allowNewer = false) =>
         Deserialize(PortableProject.Resolve(File.ReadAllText(filePath), filePath), unpackMasks, allowNewer);
 
     /// <summary>
-    /// The file of a saved project by its name (the Swap Project list): Projects\Name.hproj, or a fully portable one's
-    /// Projects\Name\Name.hproj (5.2A); the first when neither is there.
+    /// Project path by name (Swap Project list): Projects\Name.hproj or portable Projects\Name\Name.hproj; the former when neither exists.
     /// </summary>
     public static string PathOfName(string name)
     {
@@ -661,7 +613,7 @@ public static class ProjectStore
         return !File.Exists(flat) && File.Exists(portable) ? portable : flat;
     }
 
-    /// <summary>The saved projects in the Projects folder: its .hproj files, and each fully portable project's in a folder of its own (5.2A).</summary>
+    /// <summary>Projects in the Projects folder: top-level .hproj files plus portable project folders.</summary>
     public static IEnumerable<FileInfo> ProjectFiles()
     {
         if (!Directory.Exists(Folder))
@@ -673,15 +625,13 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Reads a format 6 project from its text, its timeline with it (<see cref="ProjectState.Timeline"/>). What the text says
-    /// it is is read first, before anything else of it: a file that is not a HandPeg project, or one of formats 1 to 5 (which
-    /// are not converted), is refused with <see cref="InvalidDataException"/> saying so, and one of a newer format with
-    /// <see cref="NewerProjectFormatException"/> unless <paramref name="allowNewer"/>. A project without its timeline is refused.
-    /// One of the shape before 5.2-AuditB (<see cref="OldShapeOf"/>) is read as it is: the view model converts it as it opens it.
+    /// Parses a project including <see cref="ProjectState.Timeline"/>. The header is validated first: non-projects and formats 1-5
+    /// throw <see cref="InvalidDataException"/>; newer formats throw <see cref="NewerProjectFormatException"/> unless
+    /// <paramref name="allowNewer"/>. A missing timeline is refused. Legacy shapes (<see cref="OldShapeOf"/>) load as-is for conversion.
     /// </summary>
     public static ProjectState Deserialize(string json, bool unpackMasks = false, bool allowNewer = false)
     {
-        // The header first: a file of another format is refused as what it is, not for a part of it this version reads otherwise.
+        // Validate the header first so a wrong format is reported as such, not as a downstream parse error.
         if (HeaderOf(json) is not { Format: ProjectFile.FormatName } header)
             throw new InvalidDataException("This is not a HandPeg project.");
         if (header.Version > ProjectFile.CurrentVersion && !allowNewer)
@@ -706,9 +656,8 @@ public static class ProjectStore
     private const int HeaderChars = 4096;
 
     /// <summary>
-    /// What a project's text says it is, as <see cref="ReadHeader"/> reads it from the whole text, from its first few kilobytes when
-    /// all three values are there (5.4D-TabPerf: the whole text was copied to UTF-8 for this alone, megabytes on every tab brought
-    /// back). A text that does not give all three there (a file written by hand, its header further on) is read whole, as before.
+    /// Header from text, parsed from the first few KB when complete there (avoids encoding megabytes to UTF-8 per tab resume); falls
+    /// back to the whole text for hand-written files with a later header.
     /// </summary>
     private static (string? Format, int Version, string? WrittenBy)? HeaderOf(string json)
     {
@@ -721,15 +670,14 @@ public static class ProjectStore
         return ReadHeader(Encoding.UTF8.GetBytes(json), isFinalBlock: true);
     }
 
-    // ----- Projects of the shape before 5.2-AuditB (converted as they are opened: MainViewModel.ConvertLegacy) -----
+    // ----- Legacy main-video projects (converted on open: MainViewModel.ConvertLegacy) -----
 
-    /// <summary>A clip of the kinds only a project from before 5.2-AuditB holds: the main video (MainVideo) or a cut-out of it (Video).</summary>
+    /// <summary>True for legacy clip kinds: MainVideo or its cut-out (Video).</summary>
     public static bool IsOldKind(TimelineClip? clip) => clip?.ContentKind is LayerKind.MainVideo or LayerKind.Video;
 
     /// <summary>
-    /// Whether a timeline (with its recycle bin) holds a clip of the old kinds (<see cref="IsOldKind"/>): on a track, in a fold, or
-    /// in the bin, with whatever went there with a clip. What a project of 5.2-AuditB and since never holds: a Game Preset's
-    /// cut-out of the video becomes a clip of the video's own file as it is put on the timeline.
+    /// True when the timeline or recycle bin holds a legacy-kind clip (<see cref="IsOldKind"/>) on a track, in a fold or in the bin.
+    /// Current projects never do: preset Cutouts are placed as clips of the source file.
     /// </summary>
     public static bool HoldsOldKinds(TimelineDocument timeline, IEnumerable<DeletedClip?>? bin)
     {
@@ -740,11 +688,9 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// What makes a project one of the shape before 5.2-AuditB, in words for the log and the status line as it is converted: a clip of the main video or
-    /// a cut-out of it (<see cref="HoldsOldKinds"/>), or captions heard from the main video's file (a subtitle track's
-    /// <see cref="CaptionSourceKind.MainFile"/> source). Null for a project of the current shape. The old stream mixing a 5.1
-    /// project kept in sequence.audio (gain, filters, ducking, voice, slip, silenced pieces) is not a sign of it: only the
-    /// conversion read it, and a project of 5.2 may still carry the duck a preset once set there, which nothing reads.
+    /// Human-readable reason a project has the legacy shape (for log/status during conversion): legacy-kind clips
+    /// (<see cref="HoldsOldKinds"/>) or <see cref="CaptionSourceKind.MainFile"/> captions. Null for current projects. Stream mixing in
+    /// sequence.audio is not a signal (current projects may carry stale preset ducking there).
     /// </summary>
     public static string? OldShapeOf(TimelineDocument timeline, IEnumerable<DeletedClip?>? bin, SubtitleTrackData? subtitles)
     {
@@ -772,18 +718,18 @@ public static class ProjectStore
     /// <summary>A timeline as a format 6 file writes it: camel case, enums by name, nothing at its default.</summary>
     public static System.Text.Json.Nodes.JsonNode? TimelineNode(TimelineDocument document) => JsonSerializer.SerializeToNode(document, JsonOptions);
 
-    /// <summary>Whether a piece of JSON says it is a .hproj project of a format this version opens: 6, or a newer one (which asks before it opens).</summary>
+    /// <summary>True when the JSON declares a supported .hproj format (current, or newer with confirmation).</summary>
     public static bool IsProject(System.Text.Json.Nodes.JsonObject node) =>
         node["format"] is System.Text.Json.Nodes.JsonValue format && format.TryGetValue<string>(out var name) && name == ProjectFile.FormatName
         && node["version"] is System.Text.Json.Nodes.JsonValue version && version.TryGetValue<int>(out var number) && number >= ProjectFile.OldestReadable;
 
-    /// <summary>Whether a file is one to open as a project (typed in, dropped, chosen): a .hproj, or a project bundle (.hpb, 5.0.0), that is there.</summary>
+    /// <summary>True for an existing .hproj or .hpb file.</summary>
     public static bool IsProjectFile(string path) =>
         (path.EndsWith(Extension, StringComparison.OrdinalIgnoreCase) || path.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase)) && File.Exists(path);
 
     // ----- Between the window's state and the file -----
 
-    /// <summary>A copy of a clip that is its own, its look too: one the file can point at a carried mask without changing the state's.</summary>
+    /// <summary>Deep clip copy (including look) so mask relinking for the file never mutates live state.</summary>
     private static TimelineClip CopyOf(TimelineClip clip)
     {
         var copy = clip.Snapshot();
@@ -792,8 +738,7 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Everything in a project file that can carry a mask: each track's shared look, each clip's look (on the timeline and
-    /// in the recycle bin), and the caption box.
+    /// All mask-bearing looks: track looks, clip looks (timeline and recycle bin), and the caption box.
     /// </summary>
     private static IEnumerable<LayerState> MaskedLooks(ProjectFile file, TimelineDocument timeline)
     {
@@ -822,8 +767,7 @@ public static class ProjectStore
     {
         var settings = state.Settings;
 
-        // The settings without what the timeline and the sequence hold (the layers, the main video's look and place, its
-        // background and its streams, the Sequence Output's effects): each is written once, where it is kept.
+        // Settings minus data owned by the timeline/sequence (layers, primary look, background, streams, output effects): no duplication.
         var rest = JsonSerializer.Deserialize<EncodingPreset>(JsonSerializer.Serialize(settings))!;
         (rest.Name, rest.Layers, rest.MainLayer, rest.MainVideoIndex, rest.BackgroundHidden, rest.AudioTracks) = ("", [], null, 0, false, []);
         var fresh = new EncodingPreset();
@@ -831,8 +775,7 @@ public static class ProjectStore
             (fresh.BlurRadius, fresh.BlurPasses, fresh.BackgroundDim, fresh.BackgroundZoom, null, false);
         (rest.SequenceEffects, rest.SequenceEffectsBypassed) = (null, false);
 
-        // The file's own timeline, its looks too: they are pointed at the masks carried with them (below), while the state's
-        // (the window's, a queued job's) go on naming the files on the disk.
+        // Private timeline copy whose looks are relinked to embedded masks; the live state keeps its on-disk mask paths.
         var timeline = state.Timeline.Clone(deep: true);
         var extras = state.Timeline.CarriedProjectFields;
         rest.Extra ??= extras?.Settings;
@@ -903,7 +846,7 @@ public static class ProjectStore
         }).ToList();
         file.SeekIndexes = seeks.Count > 0 ? seeks : null;
 
-        // The undo history, when the state carries one (a save's, 4.4): with the shape of its steps. None is written otherwise.
+        // Undo history with its schema version, only when the state carries one.
         if (state.UndoHistory is { Count: > 0 } || state.RedoHistory is { Count: > 0 })
         {
             file.UndoFormat = ProjectFile.CurrentUndoFormat;
@@ -915,9 +858,8 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// The subtitle track as format 6 writes it: anchored captions as their anchors alone, the cues that showed them on the
-    /// timeline (Projected) left out, since opening makes them again from the anchors and the clips (CaptionProjection).
-    /// Cues of the user's own (imported, typed, cut loose) are written as they are.
+    /// Subtitle track for writing: anchored captions as anchors only; projected cues are omitted and regenerated on open
+    /// (CaptionProjection). Free cues (imported, typed, detached) are written as-is.
     /// </summary>
     private static SubtitleTrackData? WrittenOnce(SubtitleTrackData? track) =>
         track is { IsImage: false, Source.IsAnchored: true, Anchors.Count: > 0, Cues: { } cues } && cues.Any(c => c.Projected)
@@ -929,8 +871,8 @@ public static class ProjectStore
             : track;
 
     /// <summary>
-    /// A history as the file carries it: its newest twenty steps, oldest first, each in Base64; null when empty. The packed steps
-    /// themselves are handed on (shared, never changed), and their Base64 is made only as it is written (<see cref="ProjectUndoStep.Packed"/>).
+    /// History for writing: newest 20 steps, oldest first; null when empty. Packed steps are shared (immutable) and Base64-encoded
+    /// lazily during write (<see cref="ProjectUndoStep.Packed"/>).
     /// </summary>
     private static List<ProjectUndoStep>? StepsOf(List<UndoStepState>? steps) =>
         steps is { Count: > 0 }
@@ -938,10 +880,8 @@ public static class ProjectStore
             : null;
 
     /// <summary>
-    /// The undo and redo history a project carries (4.4), as the view model keeps them: only one whose steps are of the shape
-    /// this version writes (another is let go, and logged), each step's Base64 read back (one that cannot be is passed over),
-    /// the newest twenty of each. Never the reason a project cannot be opened: a step that turns out unreadable is let go
-    /// when it is stepped to (MainViewModel.Step).
+    /// Reads stored undo/redo history: dropped (and logged) on schema mismatch; undecodable steps skipped; newest 20 of each. Never
+    /// fails the open; steps that prove unreadable are discarded when reached (MainViewModel.Step).
     /// </summary>
     private static (List<UndoStepState>? Undo, List<UndoStepState>? Redo) HistoryOf(ProjectFile file)
     {
@@ -985,18 +925,16 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// The video files a project plays: the file of every clip that plays one, once each (5.2-AuditB: from the clips alone; the
-    /// file last opened is one only while a clip plays it). A project of the shape before 5.2-AuditB, read but not opened (the
-    /// golden tests' fixtures, which are converted after), still names its main video by its clips of the legacy kind.
+    /// Distinct video files referenced by clips (the last-opened source counts only if a clip uses it). Unconverted legacy projects
+    /// still report their main video via legacy-kind clips.
     /// </summary>
     private static IEnumerable<string> VideoFiles(ProjectState state) =>
         state.Timeline.Tracks.SelectMany(t => t.Clips).Where(c => c.ContentKind is LayerKind.VideoFile or LayerKind.MainVideo).Select(c => c.SourcePath)
             .Select(p => (p ?? "").Trim().Trim('"')).Where(p => p.Length > 0 && !p.Contains("://", StringComparison.Ordinal)).Distinct(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Makes the project's video files ready to be seeked in, as the project is opened and before anything is built from
-    /// it: from the facts the project carries, for each file still exactly as it was; else from the Timeline cache.
-    /// Logged: how many were ready, and from where.
+    /// Primes seek indexes on open, before any graph is built: from embedded facts for unchanged files, else the Timeline cache.
+    /// Logs counts by source.
     /// </summary>
     private static void TakeUpSeekIndexes(ProjectFile file, ProjectState state)
     {
@@ -1035,15 +973,14 @@ public static class ProjectStore
             }
         }
 
-        // The settings get back what the sequence holds for them; the layers, the main video's look and the Sequence
-        // Output's effects are the timeline's (a clip's look, a track's, the document's effects), and stay empty here.
+        // Restore sequence-held settings; layers, primary look and output effects belong to the timeline and stay empty here.
         var sequence = file.Sequence;
         var audio = sequence.Audio ?? [];
         var settings = file.Settings;
         settings.Name = file.Name;
         var background = sequence.Background ?? new ProjectBackground();
 
-        // What this version does not know of the objects the editor rebuilds on save goes with the timeline, to be written back.
+        // Unknown fields of objects rebuilt on save travel with the timeline so they are written back.
         timeline.CarriedProjectFields = ProjectExtras.Of(file.Extra, file.Source.Extra, file.Output.Extra, sequence.Extra, background.Extra, settings.Extra);
         (settings.BackgroundHidden, settings.AudioTracks) = (background.Hidden, audio);
         (settings.BlurRadius, settings.BlurPasses, settings.BackgroundDim, settings.BackgroundZoom, settings.BackgroundEffects, settings.BackgroundEffectsBypassed) =
@@ -1069,7 +1006,7 @@ public static class ProjectStore
             Timeline = timeline,
             SnapToIFrames = sequence.SnapToIFrames,
 
-            // An entry of another shape (a clip deleted in 4.2.0, left in a project translated by hand) has no clip to put back.
+            // Legacy-shaped entry (hand-translated project) with no clip to restore.
             Deleted = [.. (sequence.Deleted ?? []).Where(d => d?.Clip is not null)],
             Settings = settings,
             AudioTracks = audio,
@@ -1081,15 +1018,14 @@ public static class ProjectStore
             Workspace = file.Workspace,
         };
 
-        // 5.5.0 (the user's Q6): a bin written before tethers were marked has its tethers found as it is read, as the timeline's are.
+        // Infer tethers in an unmarked recycle bin, as for the timeline.
         if (!sequence.BinTethersMarked)
         {
             foreach (var clip in timeline.LooseIn(state.Deleted))
                 clip.Tethered = true;
         }
 
-        // Opened (not only listed): its video files are made ready to be seeked in now, before the first graph is built, and
-        // the undo history it carries is read (4.4).
+        // On open (not listing): prime seek indexes before the first graph and read the undo history.
         if (unpackMasks)
         {
             TakeUpSeekIndexes(file, state);
@@ -1099,7 +1035,7 @@ public static class ProjectStore
         return state;
     }
 
-    /// <summary>The project's thumbnail as the file carries it (Base64 of a JPEG); none when it is not Base64 (read leniently: the picture is let go, never the project).</summary>
+    /// <summary>Decodes the embedded Base64 JPEG; null when invalid (lenient: never fails the project).</summary>
     private static byte[]? ThumbnailOf(string? base64)
     {
         if (string.IsNullOrEmpty(base64))
@@ -1116,8 +1052,7 @@ public static class ProjectStore
     }
 
     /// <summary>
-    /// Saved projects (the .hproj files), most recently saved first: format 6's, and a newer format's (which asks before it
-    /// opens). Files that cannot be read are left out, and so are projects of formats 2 to 5, which this version does not open.
+    /// Saved .hproj projects, newest first, including newer formats (opened with confirmation). Unreadable files and formats 2-5 are excluded.
     /// </summary>
     public static List<ProjectEntry> ListRecent()
     {

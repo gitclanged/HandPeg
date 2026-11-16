@@ -6,18 +6,17 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- A pane's own settings on its tab's right-click menu (Pass 4.2B-2) -----
-// Right-clicking a pane's tab (or its hover tab) opens with "<Pane> Settings": the settings that pane's work turns on,
-// changed in place (each the same AppSettings value the Settings window shows, saved at once), then "More <Pane>
-// Settings..." opening the Settings window at the tab that has the rest. Panes without settings of their own (the
-// header, the preset bar, the settings tabs) get no section. The Timeline's is a menu of its own (5.3, Timeline Settings),
-// the same from its tab and from the gear on its row of tools.
+// ----- Per-pane settings in the tab context menu -----
+// Right-clicking a pane tab (or hover tab) starts with a "<Pane> Settings" section: that pane's settings, edited in place (the same
+// AppSettings values the Settings window shows, saved immediately), then "More <Pane> Settings..." opening Settings at the relevant
+// tab. Panes without settings (header, preset bar, settings tabs) get no section. The Timeline uses the dedicated Timeline Settings
+// menu, shared by its tab and its toolbar gear.
 public partial class MainWindow
 {
-    /// <summary>The section for a pane, put at the top of its tab's menu (DockManager.ExtendTabMenu).</summary>
+    /// <summary>Inserts a pane's settings section at the top of its tab menu (DockManager.ExtendTabMenu).</summary>
     private void AddPaneSettingsMenu(ContextMenu menu, string pane)
     {
-        // The Timeline's (5.3): the Timeline Settings menu its gear opens too, at the top of its tab's menu.
+        // Timeline: the same Timeline Settings menu its gear opens, at the top of the tab menu.
         if (pane == TimelinePaneId)
         {
             var count = FillTimelineSettings(menu, at: 0);
@@ -64,7 +63,7 @@ public partial class MainWindow
             case "Media":
                 Toggle("Hover Previews", settings.GenerateHoverPreviews, on => Save(s => s.GenerateHoverPreviews = on, nameof(MainViewModel.ShowHoverPreviews)),
                     "Pictures of a video's inside, made in the background, shown as the pointer moves across a tile.");
-                // The view (5.4C, as the pane's View box), and the tiles' size for the Grid (only there: the List and Filmstrip views have rows).
+                // View (mirrors the pane's View box) and Grid tile size (disabled for List and Filmstrip, which use rows).
                 Choice("View", [("Grid", Views.MediaBrowserView.Grid), ("List", Views.MediaBrowserView.List), ("Filmstrip", Views.MediaBrowserView.Filmstrip)],
                     MediaBrowser.ViewMode, view => MediaBrowser.ViewMode = view,
                     "How the files are shown (as the View box in the pane's title row): tiles, a table of their details, or a preview and sub-clip cutter beside the list.");
@@ -87,7 +86,7 @@ public partial class MainWindow
                 Toggle($"Sync {ScrubberTitle} Stretch", _viewModel.SyncMasterTimeline, on => _viewModel.SyncMasterTimeline = on,
                     $"On: the {ScrubberTitle} is zoomed and moved along with the timeline. Off: it always shows the whole sequence.");
 
-                // Tall is the tallest a drag gives it (120 px, ScrubberStep), not more.
+                // Tall matches the maximum drag height (120 px via ScrubberStep).
                 Choice($"{ScrubberTitle} Height",
                     [("Compact", ScrubberStep(MainViewModel.CompactMasterTimeline)), ("Medium", ScrubberStep(MainViewModel.MediumMasterTimeline)), ("Tall", ScrubberStep(MainViewModel.TallMasterTimeline))],
                     _viewModel.MasterTimelineHeight, height => _viewModel.MasterTimelineHeight = height,
@@ -123,17 +122,16 @@ public partial class MainWindow
         return item;
     }
 
-    /// <summary>The tile size preset nearest a tile size (0 to 100), for the menu's check mark.</summary>
+    /// <summary>Nearest tile size preset to a size (0 to 100), for the menu check mark.</summary>
     private static double NearestTileSize(double size) => new[] { 30.0, 55, 85 }.MinBy(s => Math.Abs(s - size));
 
-    // ----- The Timeline Settings menu (5.3) -----
-    // One menu for the Timeline's own settings, opened from its tab's right-click and from the gear beside Snap on its row of tools
-    // (the user's call): what is drawn on its lanes and blocks, how it snaps and follows the playhead, its bars and sizes, and how edits
-    // spread, in four groups under headers of their own. It is made from one table (TimelineSettingGroups, which the golden test
-    // timeline-settings-menu reads without a window); each switch is the very value the Settings window, the toolbar's toggles and the
-    // Views menu show, saved at once, and the Timeline is drawn again with it.
+    // ----- Timeline Settings menu -----
+    // Single menu for Timeline settings, opened from the tab context menu and the gear beside Snap on the tool row: lane and block
+    // overlays, snapping and playhead follow, bars and sizes, and edit propagation, in four headed groups. Built from one table
+    // (TimelineSettingGroups, read window-less by the timeline-settings-menu golden); each switch is the same value shown by the
+    // Settings window, toolbar toggles and Views menu, saved immediately, and the Timeline redraws.
 
-    /// <summary>What an item of the Timeline Settings menu changes (5.3); <see cref="TimelineSettingGroups"/> places each once.</summary>
+    /// <summary>Timeline Settings menu item identity; <see cref="TimelineSettingGroups"/> places each exactly once.</summary>
     internal enum TimelineSetting
     {
         EffectLanes, BuiltInMaskLanes, KeyframeDiamonds, Filmstrips, Waveforms, BeatGrid, IFrameLines, GainLines,
@@ -143,16 +141,15 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// An item of the Timeline Settings menu (5.3): what it changes, its words and its tooltip, the <see cref="AppSettings"/> property it
-    /// is kept in (null: not kept by HandPeg's settings, the project's or the session's own), and the KeybindManager action whose key it
-    /// shows beside it (null for none).
+    /// Timeline Settings menu item: setting, header, tooltip, backing <see cref="AppSettings"/> property (null when stored by the
+    /// project or session instead), and the KeybindManager action whose shortcut is shown beside it (null for none).
     /// </summary>
     internal sealed record TimelineSettingItem(TimelineSetting Setting, string Header, string About, string? Kept, string? KeyAction = null);
 
-    /// <summary>A group of the Timeline Settings menu: its header, and its items in their order.</summary>
+    /// <summary>Timeline Settings menu group: header and ordered items.</summary>
     internal sealed record TimelineSettingGroup(string Header, IReadOnlyList<TimelineSettingItem> Items);
 
-    /// <summary>The Timeline Settings menu, group by group in order (5.3): the tab's right-click and the gear are both made from it.</summary>
+    /// <summary>Ordered Timeline Settings groups; both the tab context menu and the gear menu are built from this table.</summary>
     internal static readonly IReadOnlyList<TimelineSettingGroup> TimelineSettingGroups =
     [
         new("Lanes & Overlays",
@@ -225,18 +222,18 @@ public partial class MainWindow
         ]),
     ];
 
-    /// <summary>The Track Height presets of the Timeline Settings menu (MainViewModel.LayerTrackHeight, 1 to 50; 25 is HandPeg's own).</summary>
+    /// <summary>Track Height presets (MainViewModel.LayerTrackHeight, 1 to 50; 25 is the default).</summary>
     internal static readonly IReadOnlyList<(string Label, int Height)> TrackHeightPresets = [("Compact", 8), ("Medium", 25), ("Large", 42), ("Extra Large", 50)];
 
-    /// <summary>The track height preset nearest the height set, for the menu's check mark (the lower of two as near).</summary>
+    /// <summary>Nearest track height preset, for the check mark; ties resolve to the lower preset.</summary>
     internal static int NearestTrackHeight(double height) => TrackHeightPresets.MinBy(preset => Math.Abs(preset.Height - height)).Height;
 
     /// <summary>
-    /// Fills the Timeline Settings menu (5.3) from <see cref="TimelineSettingGroups"/>: each group under a header of its own, separators
-    /// between them, its switches ticked as they are now and changed in place (the menu stays open), Track Height's presets, then More
-    /// Timeline Settings... Put into <paramref name="menu"/> from <paramref name="at"/> on, or after what it holds (-1).
+    /// Builds the Timeline Settings menu from <see cref="TimelineSettingGroups"/>: headed groups separated, switches reflecting current
+    /// state and toggled in place (menu stays open), Track Height presets, then More Timeline Settings... Inserted into
+    /// <paramref name="menu"/> starting at <paramref name="at"/>, or appended when -1.
     /// </summary>
-    /// <returns>How many items were put in.</returns>
+    /// <returns>Number of items inserted.</returns>
     private int FillTimelineSettings(ItemsControl menu, int at = -1)
     {
         var count = 0;
@@ -264,8 +261,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The Timeline Settings menu from the gear on the Timeline's row of tools (5.3): over the gear, or at the pointer when the gear was
-    /// chosen from the row's "more" menu (left out of a narrow row, it is laid out at no size).
+    /// Opens the Timeline Settings menu from the tool-row gear: above the gear, or at the pointer when invoked from the row's overflow
+    /// menu (an overflowed gear has zero size).
     /// </summary>
     private void OpenTimelineSettings(FrameworkElement? button)
     {
@@ -278,7 +275,7 @@ public partial class MainWindow
         menu.IsOpen = true;
     }
 
-    // One switch of the menu: ticked as it is now; a click sets it (guarded) and the Timeline is drawn again with it.
+    // Checkable switch reflecting current state; a click applies it (guarded) and schedules a Timeline redraw.
     private MenuItem TimelineSwitch(TimelineSettingItem entry)
     {
         var (on, set) = TimelineSettingState(entry.Setting);
@@ -286,7 +283,7 @@ public partial class MainWindow
         {
             Header = entry.Header, IsCheckable = true, IsChecked = on, ToolTip = entry.About,
 
-            // Showing or hiding a pane lays the panes out again: the menu closes with that one.
+            // Toggling the Scrubber pane triggers a dock re-layout, so that item closes the menu.
             StaysOpenOnClick = entry.Setting != TimelineSetting.Scrubber,
         };
         if (entry.KeyAction is { } action)
@@ -299,7 +296,7 @@ public partial class MainWindow
         return item;
     }
 
-    // Track Height's presets: the one nearest the height set is ticked; a row with a height of its own keeps it.
+    // Track Height presets with the nearest one checked; rows with a custom height keep it.
     private MenuItem TrackHeightMenu(TimelineSettingItem entry)
     {
         var root = new MenuItem { Header = entry.Header, ToolTip = entry.About };
@@ -314,10 +311,9 @@ public partial class MainWindow
         return root;
     }
 
-    // What each switch of the menu shows and sets: the AppSettings value the Settings window shows (saved at once), or the view model's
-    // copy of one, which saves it itself; Snap Cuts to I-Frames is the project's, Show Linked Audio the session's. The Scrubber is shown
-    // or hidden as Tabs and Panes does it, the hotbar (its Quick FX button) and the Undo / Redo buttons as the hotbar's own menu does
-    // (SaveHotbar: the row of tools shown again as the settings say).
+    // State and setter per switch: an AppSettings value (saved immediately) or its view-model mirror (which saves itself); Snap to
+    // I-Frames is per project, Show Linked Audio per session. The Scrubber toggles like Tabs and Panes does; the hotbar (Quick FX) and
+    // Undo/Redo buttons go through SaveHotbar, which re-applies the tool row from settings.
     private (bool On, Action<bool> Set) TimelineSettingState(TimelineSetting setting)
     {
         var settings = AppSettings.Current;

@@ -5,12 +5,11 @@ using HandPegApp.Services;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// Draws one <see cref="FrameSceneHeader"/> and its layers into a render target (Pass 5.0-Core, 5.0B). Every layer, bottom
-/// first: its picture into a working texture at the size it has on screen (Zone 0: the source, cropped, scaled with
-/// Catmull-Rom or a box prefilter), its effects in order on that texture (Zones 1-3, ping-ponging two textures), then laid
-/// on the canvas (Zone 4: its blurred background, its shadow, its transform, opacity, transitions and blend mode). The
-/// canvas (RGBA16F, premultiplied) goes to the output last. Nothing is read back; no graph is rebuilt; a changed value is
-/// just a different constant on the next frame.
+/// Renders one <see cref="FrameSceneHeader"/> and its layers into a render target. Each layer, bottom first: its picture into a working
+/// texture at on-screen size (Zone 0: source cropped and scaled with Catmull-Rom or a box prefilter), its effects in order on that texture
+/// (Zones 1-3, ping-ponging two textures), then composited onto the canvas (Zone 4: blur fill, shadow, transform, opacity, transitions,
+/// blend mode). The canvas (RGBA16F, premultiplied) is resolved to the output last. No readback and no graph rebuilds: a changed value is
+/// just a different constant next frame.
 /// </summary>
 internal sealed unsafe partial class SceneRenderer : IDisposable
 {
@@ -22,16 +21,16 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     private GpuTexture? _canvas;
     private GpuTexture? _canvasCopy;
 
-    // The two canvases a flat frame draws into (5.4.4): whole, and drawn smaller (Dynamic Preview Scaling), each kept at its own capacity,
-    // so play and pause, a scrub begun and ended, make no texture. _canvas is the one of the frame being drawn: dispose these, never it.
+    // Flat-path canvases: full size and scaled (Dynamic Preview Scaling), each kept at its own capacity so play/pause and scrub start/stop
+    // allocate nothing. _canvas aliases the current one: dispose these, never _canvas.
     private GpuTexture? _canvasWhole, _canvasScaled;
 
-    // Each one's copy a blend or a frosted glass reads (5.4.4), kept with it, so going from one to the other makes none either. _canvasCopy
-    // is the one of the frame being drawn (a 3D plane's and the loupe's are their own): dispose these, never it.
+    // Matching canvas copies read by blend modes and Frosted Glass, kept alongside so switching allocates nothing. _canvasCopy aliases the
+    // current one (3D planes and the loupe use their own): dispose these, never _canvasCopy.
     private GpuTexture? _canvasCopyWhole, _canvasCopyScaled;
     private long _frame;
 
-    // The frame being drawn.
+    // Current frame state.
     private int _outWidth, _outHeight;
     private float _scaleX, _scaleY;
     private float _offsetX, _offsetY;
@@ -49,7 +48,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
     public PassTimer Timer => _timer;
 
-    /// <summary>Draws the scene into <paramref name="outputRtv"/> (its size given). <paramref name="raw"/>: the canvas as it is, premultiplied, no background.</summary>
+    /// <summary>Renders the scene into <paramref name="outputRtv"/> of the given size. <paramref name="raw"/>: premultiplied canvas, no background.</summary>
     public void Render(in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, nint outputRtv, int outputWidth, int outputHeight, bool raw)
     {
         _frame++;
@@ -63,7 +62,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         }
         finally
         {
-            // Whatever happened, the frames it pinned are let go and the decode lanes hear what is missing.
+            // Always unpin frames and report missing ones to the decode lanes.
             _decoders.EndFrame();
         }
     }
@@ -71,9 +70,9 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     private bool _playing;
 
     /// <summary>
-    /// Where the player puts the canvas in an output of this size (<see cref="FrameSceneHeader.FlagLetterbox"/>): fitted and centred, then
-    /// zoomed about the middle and moved by the pan. The picture's top left on the output, and output pixels per canvas pixel. The flat
-    /// path and the Export Quality Preview's compare pass (5.4B) place it alike.
+    /// Player canvas placement in an output of this size (<see cref="FrameSceneHeader.FlagLetterbox"/>): fit and centre, zoom about the
+    /// centre, then pan. Returns the picture's top-left on the output and output pixels per canvas pixel. Shared by the flat path and the
+    /// Live Encoded Preview compare pass.
     /// </summary>
     internal static (float OffsetX, float OffsetY, float Scale) Letterbox(in FrameSceneHeader header, int outputWidth, int outputHeight)
     {
@@ -88,8 +87,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// The fraction of the output a flat player frame is drawn at (5.4.3, Dynamic Preview Scaling: <see cref="FrameSceneHeader.PreviewScale"/>,
-    /// 0.25 to 1), stretched over the output by the final pass; 1 for anything read back, exact, raw, in 3D or under the loupe.
+    /// Render scale for flat player frames (Dynamic Preview Scaling: <see cref="FrameSceneHeader.PreviewScale"/>, 0.25 to 1), stretched to the
+    /// output by the final pass; 1 for readback, exact, raw, 3D or loupe frames.
     /// </summary>
     internal static float DrawScale(in FrameSceneHeader header, bool raw)
     {
@@ -102,19 +101,19 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
     private void RenderLayers(in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, nint outputRtv, int outputWidth, int outputHeight, bool raw, float drawScale = 1)
     {
-        // The 3D exploded layer stack (5.0D) has a path of its own (SceneRenderer.Exploded.cs); the flat one follows unchanged.
+        // 3D exploded view has its own path (SceneRenderer.Exploded.cs).
         if (header.ViewMode == 1)
         {
             RenderExploded(header, layers, outputRtv, outputWidth, outputHeight, raw);
             return;
         }
 
-        // Scaled (5.4.3): everything below is drawn at the smaller size; only the final pass fills the whole output.
+        // Scaled: everything below renders at the reduced size; only the final pass fills the full output.
         var (finalWidth, finalHeight) = (outputWidth, outputHeight);
         if (drawScale < 1)
             (outputWidth, outputHeight) = (Math.Max((int)MathF.Round(outputWidth * drawScale), 16), Math.Max((int)MathF.Round(outputHeight * drawScale), 16));
 
-        // (The 3D view's textures go a while after it was last drawn.)
+        // Release 3D view textures on the first flat frame.
         ForgetExplodedTextures();
         _outWidth = outputWidth;
         _outHeight = outputHeight;
@@ -133,7 +132,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             (_offsetX, _offsetY) = (0, 0);
         }
 
-        // The frame on the output (the scissor of every layer laid on), within the output.
+        // Frame rectangle on the output (scissor for every composited layer).
         _frameRect = (_offsetX, _offsetY, canvasWidth * _scaleX, canvasHeight * _scaleY);
         _pxScale1080 = canvasWidth * _scaleX / 1080f;
         _pixelScale = _scaleX;
@@ -143,10 +142,9 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _timer.BeginFrame(timing);
         _gpu.BindCommon();
 
-        // The canvas is kept at a capacity (CompositorWorker.OutputCapacity, 5.4.1-M2) and drawn into its top left, so a dock splitter's
-        // drag of the player makes a few canvases, not one a pixel; an export's stays exactly its size. The copy a blend reads is the
-        // drawn part's size exactly (CopyCanvas). A frame drawn smaller has a canvas of its own (5.4.4), which only grows while it fits
-        // (a step down draws into its top left), so going back to where a run starts makes none either.
+        // The canvas is kept at a capacity (CompositorWorker.OutputCapacity) and drawn into its top-left, so dragging a dock splitter creates
+        // a few canvases rather than one per pixel; exports use exactly their size. The blend copy matches the drawn region (CopyCanvas). The
+        // scaled canvas only grows while the frame fits (smaller steps draw into its top-left), so returning to a run's start allocates nothing.
         var scaled = drawScale < 1;
         ref var slot = ref scaled ? ref _canvasScaled : ref _canvasWhole;
         var capacity = scaled && slot is not null && outputWidth <= slot.Width && outputHeight <= slot.Height
@@ -161,7 +159,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
         _canvas = slot;
 
-        // Its copy is the drawn part's size exactly: made again only when that size changes (CopyCanvas makes it when a blend first wants it).
+        // The copy matches the drawn region exactly: recreated only on size change (CopyCanvas creates it when a blend first needs it).
         ref var copy = ref scaled ? ref _canvasCopyScaled : ref _canvasCopyWhole;
         if (copy is not null && (copy.Width != outputWidth || copy.Height != outputHeight))
         {
@@ -173,7 +171,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
         _gpu.Context.ClearRenderTargetView(_canvas.Rtv, 0, 0, 0, 0);
 
-        // Letterboxed, the sequence's background fills only the picture; around it the player is black.
+        // Letterboxed: the sequence background fills only the picture; the surround stays black.
         if (_letterbox)
         {
             var fill = default(PassConstants);
@@ -193,19 +191,19 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             _gpu.Textures.ReturnAll();
         }
 
-        // The magnifier loupe over the picture, while an edge is tuned (the player only).
+        // Magnifier loupe over the picture while an edge is tuned (player only).
         if (header.LoupeClipKey != 0 && _letterbox && !raw && PrepareLoupe(header, layers, outputWidth, outputHeight))
             CompositeLoupe(_canvas.Rtv, outputWidth, outputHeight);
 
-        // The canvas to the output.
+        // Resolve the canvas to the output.
         var constants = default(PassConstants);
         constants.Color = _letterbox ? new Vector4(0, 0, 0, 1) : new Vector4(header.BackgroundR, header.BackgroundG, header.BackgroundB, 1);
         constants.Params4 = new Vector4(1, 1, raw ? 1 : 0, (float)_time);
         (constants.U0, constants.V0, constants.U1, constants.V1) = (0, 0, (float)outputWidth / _canvas.Width, (float)outputHeight / _canvas.Height);
         if ((finalWidth, finalHeight) != (outputWidth, outputHeight))
         {
-            // Stretched and filtered: the far edges are taken half a texel in (5.4.4), so the filter never reads the cleared texels
-            // beyond the drawn part (a dark fringe along the right and bottom of a picture that reaches them).
+            // Stretched with filtering: inset the far edges by half a texel so the filter never samples cleared texels beyond the drawn
+            // region (otherwise a dark fringe appears along the right and bottom).
             constants.U1 = (outputWidth - 0.5f) / _canvas.Width;
             constants.V1 = (outputHeight - 0.5f) / _canvas.Height;
             constants.Params2 = new Vector4(0, 1, 0, 0);
@@ -218,19 +216,19 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         ForgetOldHistories();
     }
 
-    // ----- One layer -----
+    // ----- Layer rendering -----
 
     private void DrawLayer(in GpuLayerDescriptor layer)
     {
         _layerStep = 0;
-        // The box on the output, and the working texture's size (what it covers on screen, at least 2 x 2).
+        // Output box and working texture size (on-screen coverage, at least 2 x 2).
         var box = (X: layer.X * _scaleX + _offsetX, Y: layer.Y * _scaleY + _offsetY, W: layer.Width * _scaleX, H: layer.Height * _scaleY);
         var workWidth = (int)Math.Clamp(MathF.Round(MathF.Abs(box.W)), 2, 8192);
         var workHeight = (int)Math.Clamp(MathF.Round(MathF.Abs(box.H)), 2, 8192);
         if (OffScreen(box, layer.Rotation, tilted: layer.TiltX != 0 || layer.TiltY != 0))
             return;
 
-        // What lays it on, gathered from its packets wherever they stand.
+        // Gather composite-time parameters from the packets, wherever they appear.
         var opacity = Math.Clamp(layer.Opacity, 0, 1);
         var blendMode = layer.BlendMode;
         var dissolve = 1f;
@@ -280,11 +278,11 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                     glass = packet;
                     break;
                 case GpuShaderSlot.RimGlass when GpuEffectPacket.IsPulsePacket(packet):
-                    // An Audio Reactive Pulse's own packet whose card's first is not before it: nothing to lift.
+                    // Orphan pulse packet (no preceding effect packet): nothing to scale.
                     break;
                 case GpuShaderSlot.RimGlass:
-                    // Its Audio Reactive Pulse's own packet after it (5.2B, marked: GpuEffectPacket.PulseMarker; sent only while the pulse is in
-                    // use): the pulse and its band, which lift its strength.
+                    // Optional following pulse packet (marked with GpuEffectPacket.PulseMarker; sent only while the pulse is used): pulse and
+                    // band scale the rim strength.
                     if (k + 1 < count && effects[k + 1] is { Slot: GpuShaderSlot.RimGlass } pulse && GpuEffectPacket.IsPulsePacket(pulse))
                     {
                         var lift = PulseOf(pulse.P0, pulse.P1);
@@ -303,8 +301,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             }
         }
 
-        // Drawn alone (the loupe and its edge search, SceneRenderer.Loupe.cs): the layer's own picture and edge only, whole,
-        // as it is laid on at rest: no blurred background, no shadow, no opacity, blend or transition.
+        // Drawn alone (loupe and its edge search, SceneRenderer.Loupe.cs): only the layer's picture and edges, at rest: no blur fill,
+        // shadow, opacity, blend or transition.
         if (_alone)
         {
             (opacity, dissolve, blendMode) = (1, 1, 0);
@@ -314,32 +312,31 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         if (opacity * dissolve <= 0.0005f)
             return;
 
-        // Only its blurred background (a clip's blur fill, its twin): over the whole frame, at its place in the stack.
-        // (5.0-Release: a radius of 0 is a sharp background, drawn all the same.)
+        // Blur-fill-only layer (a clip's twin): full frame at its stack position. Radius 0 still draws (a sharp background).
         if ((layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0)
         {
             DrawBlurFill(layer, opacity * dissolve, withLook: true);
             return;
         }
 
-        // Zone 0: the picture.
+        // Zone 0: source picture.
         var work = _gpu.Textures.Rent(workWidth, workHeight);
         var adjustment = (layer.Flags & GpuLayerDescriptor.FlagAdjustment) != 0;
         if (adjustment ? !CopyCanvasInto(work, box) : !DrawSource(layer, work, CropUv(layer), cover: false))
             return;
 
-        // Zones 1-3: the effects, in order.
+        // Zones 1-3: effects in order.
         for (var k = 0; k < count; k++)
         {
             var packet = effects[k];
-            // The packet that goes with it (Paired), or none: a card alone is never handed the next card's packet (5.2B).
+            // Paired second packet, or none: a standalone effect never receives the next effect's packet.
             var second = k + 1 < count && Paired(packet, effects[k + 1]) ? effects[k + 1] : default;
             if (second.Slot != GpuShaderSlot.None)
                 k++;
             work = RunEffect(layer, packet, second, work);
         }
 
-        // A blur dissolve's blur: all of it where the picture is not there yet.
+        // Blur dissolve: maximum blur where the picture has not yet appeared.
         if (blurDissolve is { } blurring)
         {
             var most = Math.Clamp((int)MathF.Round(Math.Max(workWidth, workHeight) / 40f), 2, 64);
@@ -348,11 +345,11 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             work = Blur(work, radius, iterations: 1, (int)GpuShaderSlot.TransitionBlurDissolve);
         }
 
-        // A social cut's pass (5.2.1): over the picture with its effects, before it is placed.
+        // Social cut pass over the processed picture, before placement.
         if (social is { } cut)
             work = SocialCut(layer, cut, work);
 
-        // Where it goes: slides move it, zooms scale it about its middle.
+        // Placement: slides translate the box, zooms scale it about its centre.
         if (slide is { } sliding)
         {
             var side = sliding.P4 > 0.5f ? -1 : 1;
@@ -370,20 +367,20 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             box = (cx - box.W * factor / 2, cy - box.H * factor / 2, box.W * factor, box.H * factor);
         }
 
-        // Under it: its blurred background, then its shadow (going as a snapped picture goes).
+        // Beneath it: blur fill, then shadow (fading with a particle-snapped picture).
         var under = opacity * dissolve * (snap is { } snapping ? Math.Clamp(snapping.P0, 0, 1) : 1);
         if (layer.BlurFillRadius > 0 && !adjustment && !_alone)
             DrawBlurFill(layer, under, withLook: false);
         if (shadow is { } shading)
             DrawShadow(layer, shading, work, box, under, wipe);
 
-        // The Thanos Snap: its embers fly outside its box, so the box grows to hold them (about the same point of the picture).
+        // Particle Snap: embers fly beyond the box, so the box grows to contain them (pivot preserved).
         var (anchorX, anchorY) = (layer.AnchorX, layer.AnchorY);
         if (snap is { } snapped)
             (work, box, anchorX, anchorY) = ParticleSnap(layer, snapped, work, box);
 
-        // Frosted Glass (5.1-GpuFx): the canvas under its shape, blurred, before what stays of its picture; the Neon Rim on the picture, with room for its glow; the
-        // shutter last, over all of that: sub-frames of the picture as it is laid on.
+        // Frosted Glass: blurred canvas under the shape, drawn before the remaining picture share; Neon Rim on the picture with glow padding;
+        // shutter last over all of it (sub-frames of the composited picture).
         var rotation = layer.Rotation + (social is { Slot: GpuShaderSlot.TransitionSpin } spin ? SpinTurn(spin) : 0);
         var share = 1f;
         if (glass is { } frost)
@@ -406,7 +403,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             wipe = null;
         }
 
-        // Zone 4: laid on (5.2A: tilted in 3D, in perspective).
+        // Zone 4: composite (with optional 3D tilt in perspective).
         var constants = default(PassConstants);
         constants.Transform = Matrix4.Box(box.X, box.Y, box.W, box.H, rotation, anchorX, anchorY, _outWidth, _outHeight, layer.TiltX, layer.TiltY);
         constants.WholeUv();
@@ -414,7 +411,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         SetWipe(ref constants, wipe, box);
         if (blendMode is > 0 and <= 7)
         {
-            // The mixed colours need the canvas under it: a copy of it, read where the layer lands.
+            // Blend modes read the canvas beneath via a copy, sampled where the layer lands.
             var canvasUnder = CopyCanvas();
             _timer.Begin((int)GpuShaderSlot.BlendMode);
             Quad("PSCompositeBlend", work, _canvas!.Rtv, ref constants, blend: false, aux: canvasUnder.Srv);
@@ -429,8 +426,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// The Thanos Snap (slot 69, ParticleSnap.hlsl): the working picture drawn into a larger one with room round it for the embers, and
-    /// the box grown to match.
+    /// Particle Snap (slot 69, ParticleSnap.hlsl): draws the working picture into a larger texture padded for the embers and grows the box
+    /// to match.
     /// </summary>
     private (GpuTexture Work, (float X, float Y, float W, float H) Box, float AnchorX, float AnchorY) ParticleSnap(
         in GpuLayerDescriptor layer, GpuEffectPacket snap, GpuTexture work, (float X, float Y, float W, float H) box)
@@ -461,10 +458,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         return (output, grown, anchorX, anchorY);
     }
 
-    // The room round a snapped picture for its embers, as a share of its size each way.
+    // Ember padding around a snapped picture, as a fraction of its size per side.
     private const float SnapRoom = 0.3f;
 
-    /// <summary>How far a slide must carry the box to be wholly off the frame (the slide transition's reach, as the export's graph had it before 5.2-Audit).</summary>
+    /// <summary>Distance a slide must move the box to be fully off-frame (the slide transition's reach).</summary>
     private static float Beyond(float toward, float at, float size, float frame) => toward > 0 ? frame - at + 2 : -(at + size) - 2;
 
     private void SetWipe(ref PassConstants constants, GpuEffectPacket? wipe, (float X, float Y, float W, float H) box)
@@ -478,8 +475,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var (shown, feather) = (Math.Clamp(w.P0, 0, 1), Math.Max(2, MathF.Round(Math.Max(size.Item1, size.Item2) * 0.02f)));
         if (w.P5 > 0)
         {
-            // The grade's Before/After (GpuScenePlan.CompareWipe): P0 is where the divider stands across the box and P5 its edge in
-            // pixels; each side's edge is centred on the divider, so the two halves meet with neither a gap nor a seam.
+            // Grade Before/After (GpuScenePlan.CompareWipe): P0 = divider position across the box, P5 = edge width in pixels; both
+            // sides' edges are centred on the divider so the halves meet without gap or seam.
             feather = w.P5;
             var across = dx != 0 ? size.Item1 : size.Item2;
             var at = (shown * across + feather / 2) / (across + feather);
@@ -492,7 +489,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
     private bool OffScreen((float X, float Y, float W, float H) box, float rotation, bool tilted = false)
     {
-        // A generous test: the box's circumscribed circle against the frame (twice as wide for a box tilted in 3D, whose near side is drawn larger).
+        // Conservative test: the box's circumscribed circle vs. the frame (doubled for 3D-tilted boxes, whose near side renders larger).
         var (cx, cy) = (box.X + box.W / 2, box.Y + box.H / 2);
         var radius = MathF.Sqrt(box.W * box.W + box.H * box.H) / 2 * (tilted ? 2 : 1) + 2;
         return cx + radius < 0 || cy + radius < 0 || cx - radius > _outWidth || cy - radius > _outHeight;
@@ -509,8 +506,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     // ----- Zone 0 -----
 
     /// <summary>
-    /// Draws the layer's picture (the part <paramref name="uv"/> names) into <paramref name="target"/>; with
-    /// <paramref name="cover"/> the part is cut further to the target's shape (a blurred background fills the frame).
+    /// Draws the layer's picture region <paramref name="uv"/> into <paramref name="target"/>; with <paramref name="cover"/> the region is
+    /// further cropped to the target's aspect (blur fill covers the frame).
     /// </summary>
     private bool DrawSource(in GpuLayerDescriptor layer, GpuTexture target, Vector4 uv, bool cover)
     {
@@ -520,7 +517,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         {
             case GpuSourceKind.Media:
                 {
-                    // Instant Seek: the exact frame, or the nearest one decoded while the exact one is on its way.
+                    // Instant Seek: the exact frame, or the nearest decoded one while the exact frame is pending.
                     var frame = _decoders.Resolve(layer.SourceId, layer.MediaSeconds, layer.SourcePathHash, layer.ClipKey);
                     if (frame is null || frame.LumaSrv == 0)
                         return false;
@@ -528,7 +525,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                         _layerStep = double.IsFinite(frame.Until) && frame.Until > frame.Time ? frame.Until - frame.Time : 0;
                     if (cover)
                         uv = Cover(uv, frame.Width, frame.Height, target.Width, target.Height);
-                    // Smooth Slow-Mo: an in-between of this frame and the next by optical flow (SceneRenderer.Interpolate.cs).
+                    // Smooth Slow-Mo: optical-flow in-between of this frame and the next (SceneRenderer.Interpolate.cs).
                     if (!cover && (layer.Flags & GpuLayerDescriptor.FlagInterpolate) != 0 && Interpolate(layer, frame, target, uv))
                         return true;
                     DrawFrame(frame, target, uv, layer.Flags);
@@ -578,8 +575,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// The part <paramref name="uv"/> names of a decoded frame, into a target: deinterlaced and tone-mapped to SDR when the layer's
-    /// flags say (<see cref="GpuLayerDescriptor.FlagDeinterlace"/>, <see cref="GpuLayerDescriptor.FlagToneMapSdr"/>: only a PQ or HLG frame is).
+    /// Draws region <paramref name="uv"/> of a decoded frame into a target, deinterlaced and SDR tone-mapped per the layer flags
+    /// (<see cref="GpuLayerDescriptor.FlagDeinterlace"/>, <see cref="GpuLayerDescriptor.FlagToneMapSdr"/>: PQ/HLG frames only).
     /// </summary>
     private void DrawFrame(CachedFrame frame, GpuTexture target, Vector4 uv, int layerFlags = 0)
     {
@@ -603,7 +600,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _gpu.Context.PSSetShaderResources(3, 2, none);
     }
 
-    /// <summary>A part of a picture cut further, about its middle, to the shape of the target (cover: no bars).</summary>
+    /// <summary>Centre-crops a UV region to the target aspect (cover: no bars).</summary>
     private static Vector4 Cover(Vector4 uv, int width, int height, int targetWidth, int targetHeight)
     {
         var partWidth = (uv.Z - uv.X) * width;
@@ -625,7 +622,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         }
     }
 
-    /// <summary>The YUV to RGB rows for a frame's matrix and range (limited: Y 16-235, C 16-240 in 8-bit terms).</summary>
+    /// <summary>Sets YUV-to-RGB matrix rows for a frame's matrix and range (limited: Y 16-235, C 16-240 in 8-bit terms).</summary>
     internal static void SetYuv(ref PassConstants constants, int matrix, bool fullRange)
     {
         var (kr, kb) = matrix switch
@@ -648,7 +645,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         constants.YuvRow2 = new Vector4(yScale, bCb, 0, lumaOffset - bCb * 0.5f);
     }
 
-    /// <summary>An adjustment layer's picture: the canvas under its box.</summary>
+    /// <summary>Adjustment layer source: copies the canvas under its box.</summary>
     private bool CopyCanvasInto(GpuTexture target, (float X, float Y, float W, float H) box)
     {
         var under = CopyCanvas();
@@ -662,8 +659,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// The canvas as it is now, in its copy (made at the drawn part's size when there is none): the whole texture when the two are one size
-    /// (a 3D plane's own copy), else the drawn part, the canvas's top left (the flat canvas is kept at a capacity, 5.4.1-M2).
+    /// Snapshots the canvas into its copy (created at drawn-region size if missing): the whole texture when sizes match (3D plane copies),
+    /// else the drawn top-left region (the flat canvas is kept at a larger capacity).
     /// </summary>
     private GpuTexture CopyCanvas()
     {
@@ -672,7 +669,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         {
             copy = _canvasCopy = _gpu.CreateTexture(_outWidth, _outHeight, DxgiFormat.R16G16B16A16Float, renderTarget: false);
 
-            // A flat canvas's copy is kept with it (5.4.4); a 3D plane's or the loupe's is its caller's.
+            // Flat canvas copies are cached with their canvas; 3D plane and loupe copies belong to their caller.
             if (ReferenceEquals(canvas, _canvasWhole))
                 _canvasCopyWhole = copy;
             else if (ReferenceEquals(canvas, _canvasScaled))
@@ -694,7 +691,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
     // ----- Zones 1-3 -----
 
-    /// <summary>Runs one effect on the working texture; returns the texture holding the result (the same one when it did nothing).</summary>
+    /// <summary>Runs one effect on the working texture; returns the result texture (the input when nothing was done).</summary>
     private GpuTexture RunEffect(in GpuLayerDescriptor layer, GpuEffectPacket packet, GpuEffectPacket second, GpuTexture work)
     {
         switch (packet.Slot)
@@ -714,7 +711,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             case GpuShaderSlot.ColorGrade:
                 return Effect("PSColorGrade", packet, default, work);
 
-            // The Color Studio's grade (SceneRenderer.ColorStudio.cs): two packets, its curves and its LUT.
+            // Color Studio grade (SceneRenderer.ColorStudio.cs): two packets plus curves and LUT.
             case GpuShaderSlot.ColorStudio:
                 return RunColorStudio(layer, packet, second, work);
 
@@ -733,8 +730,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                     if (packet.P5 > 0.001f)
                         work = Effect("PSDespill", packet, default, work, timedAs: (int)GpuShaderSlot.Despill);
 
-                    // Its Advanced Choke (P6, px) and Smooth (P7, px), 5.0-Release: Matte Choke's square and Matte Smooth's
-                    // Hann weights in space, on its own transparency (the builder's erosion or dilation and convolution).
+                    // Advanced Choke (P6, px) and Smooth (P7, px): Matte Choke's square kernel and Matte Smooth's spatial Hann weights on
+                    // the key's own alpha (erosion/dilation and convolution).
                     if (MathF.Abs(packet.P6) >= 0.5f)
                     {
                         var passes = Math.Max((int)MathF.Round(MathF.Abs(packet.P6) * _pixelScale), 1);
@@ -762,7 +759,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                     if (frames <= 1)
                         return work;
 
-                    // Over time while it plays or steps in order (the user's Q3, as FFmpeg's tmix); over space after a jump.
+                    // Temporal while playing or stepping sequentially (like FFmpeg tmix); spatial after a jump.
                     if (TemporalMatte(layer, frames, work) is { } smoothed)
                         return smoothed;
                     var radius = Math.Max((int)MathF.Round((frames - 1) / 2f * Math.Max(_pixelScale, 0.25f)), 1);
@@ -789,14 +786,14 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
             case GpuShaderSlot.BoxBlur:
                 {
-                    // FFmpeg's boxblur (avgblur with a box of its own down), as wide as a Gaussian of half the radius, run
-                    // Passes times (P1; 0 in a packet made by hand: the 2 it always was), Horizontal / Vertical (P2), then
-                    // the Dim (P3, %): EffectRegistry's Blur and BlurSizes.
+                    // FFmpeg boxblur semantics (separate vertical box), width matching a Gaussian of half the radius, run Passes times
+                    // (P1; 0 in hand-built packets means the default 2), Horizontal/Vertical ratio (P2), then Dim (P3, %): EffectRegistry
+                    // Blur and BlurSizes.
                     var radiusPx = Math.Clamp(packet.P0, 0, 50);
                     if (radiusPx >= 0.05f)
                     {
-                        // The frame's width is the canvas's in the target's pixels (the target is the canvas only on an
-                        // export: a letterboxed player, the loupe and a 3D plane draw it at their own scale).
+                        // Frame width = canvas width in target pixels (target equals canvas only in export; the letterboxed player,
+                        // loupe and 3D planes render at their own scale).
                         var passes = packet.P1 >= 1 ? (int)MathF.Round(Math.Clamp(packet.P1, 1, 4)) : 2;
                         var frameWidth = (int)MathF.Round(_pxScale1080 * 1080);
                         var (across, down) = EffectRegistry.BlurSizes(radiusPx, packet.P2 > 0 ? packet.P2 : 1, passes, frameWidth, work.Width, work.Height);
@@ -809,9 +806,9 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
             case GpuShaderSlot.Sharpen:
                 {
-                    // An unsharp mask (5.1-Polish, the user's Q3): the picture box-blurred into a texture of its own (EffectRegistry's
-                    // SharpenBox, once across and down: unsharp's square), then PSSharpen with it as Aux. The Radius is P1 (0 in a
-                    // packet made by hand: the card's default), the Threshold P2.
+                    // Unsharp mask: box-blur the picture into a separate texture (EffectRegistry.SharpenBox, one horizontal and vertical
+                    // pass: unsharp's square kernel), then PSSharpen with it as Aux. Radius P1 (0 in hand-built packets = effect
+                    // default), Threshold P2.
                     if (packet.P0 < 0.005f || !_shaders.Has("PSSharpen") || !_shaders.Has("PSBoxBlur"))
                         return work;
                     var frameWidth = (int)MathF.Round(_pxScale1080 * 1080);
@@ -838,23 +835,22 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
                 return Generated(packet, second, work);
 
             default:
-                // Composite-stage packets (handled when the layer is laid on), reserved slots, a plugin's unknown slot.
+                // Composite-stage packets (handled in Zone 4), reserved slots, unknown plugin slots.
                 return work;
         }
     }
 
-    // ----- Matte Smooth over time (the user's Q3) -----
+    // ----- Temporal Matte Smooth -----
 
-    /// <summary>The layer's source's frame length (0: not a media layer, a 30 fps step is assumed).</summary>
+    /// <summary>Frame duration of the layer's source (0 for non-media layers; a 30 fps step is assumed).</summary>
     private double _layerStep;
 
     private readonly Dictionary<long, AlphaHistory> _histories = [];
 
     /// <summary>
-    /// Matte Smooth over the last <paramref name="frames"/> frames (Hann weights, as the FFmpeg path's tmix): the layer's
-    /// alpha of each frame drawn is kept (R8, its working size) while the moments follow one another a frame apart; a
-    /// redraw of the same moment reuses them. Null after a jump (or before enough frames came in order): the caller
-    /// smooths over space instead, and the history starts again from this frame.
+    /// Temporal Matte Smooth over the last <paramref name="frames"/> frames (Hann weights, like tmix): keeps each drawn frame's alpha (R8 at
+    /// working size) while times advance one frame apart; redraws of the same time reuse it. Returns null after a jump (or before enough
+    /// sequential frames): the caller smooths spatially and the history restarts from this frame.
     /// </summary>
     private GpuTexture? TemporalMatte(in GpuLayerDescriptor layer, int frames, GpuTexture work)
     {
@@ -863,7 +859,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         var moment = layer.SourceKind == (int)GpuSourceKind.Media ? layer.MediaSeconds : _time;
         var step = _layerStep > 1e-4 ? _layerStep : 1 / 30.0;
 
-        // A layer drawn again alone at another size (the loupe) keeps a history of its own: the picture's is never reset by it.
+        // A layer redrawn alone at another size (loupe) uses a separate history (salted key) so the main one is never reset.
         var key = layer.ClipKey ^ _historySalt;
         if (!_histories.TryGetValue(key, out var history))
             _histories[key] = history = new AlphaHistory();
@@ -878,7 +874,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         if (!same)
             PushAlpha(history, work, moment);
 
-        // The frames-1 before the newest (the current one), all a frame apart.
+        // Need frames-1 entries before the newest (current), all one frame apart.
         var needed = Math.Min(frames - 1, AlphaHistory.Slots);
         if (history.Count - 1 < needed || !history.InStep(needed, step))
             return null;
@@ -929,7 +925,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         history.Pushed(moment);
     }
 
-    /// <summary>Histories of layers not drawn for two seconds' worth of frames go.</summary>
+    /// <summary>Evicts alpha histories (and flows) of layers not drawn for 120 frames; checked every 60 frames.</summary>
     private void ForgetOldHistories()
     {
         if (_frame % 60 == 0)
@@ -943,10 +939,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         }
     }
 
-    /// <summary>A smoothed layer's last frames' transparency (R8 at its working size), newest last, with their moments.</summary>
+    /// <summary>Ring of a smoothed layer's recent alpha frames (R8 at working size) with their times, newest last.</summary>
     private sealed class AlphaHistory : IDisposable
     {
-        // The current frame and the eight before it (Matte Smooth's most, 9 frames); eight are bound at t5..t12.
+        // Current frame plus eight before it (Matte Smooth max 9 frames); the eight are bound at t5..t12.
         public const int Depth = 9, Slots = 8;
         private readonly GpuTexture?[] _ring = new GpuTexture?[Depth];
         private readonly double[] _times = new double[Depth];
@@ -976,10 +972,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             Count = Math.Min(Count + 1, Depth);
         }
 
-        /// <summary>The entry <paramref name="back"/> frames before the newest (1 the one just before it).</summary>
+        /// <summary>Entry <paramref name="back"/> frames before the newest (1 = immediately before).</summary>
         public GpuTexture? Back(int back) => back < Count ? _ring[(_next - 1 - back + 2 * Depth) % Depth] : null;
 
-        /// <summary>Whether the newest and the <paramref name="count"/> before it follow one another a frame apart.</summary>
+        /// <summary>True when the newest and the <paramref name="count"/> entries before it are each one frame apart.</summary>
         public bool InStep(int count, double step)
         {
             for (var i = 0; i < count; i++)
@@ -1005,7 +1001,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         }
     }
 
-    /// <summary>One full-texture pass of an effect, into a fresh texture of the same size; the old one goes back to the pool.</summary>
+    /// <summary>Runs one full-texture effect pass into a new same-size texture; the input returns to the pool.</summary>
     private GpuTexture Effect(string shader, GpuEffectPacket packet, GpuEffectPacket second, GpuTexture input, nint aux = 0, nint lut = 0,
         Vector4 params2 = default, int timedAs = -1)
     {
@@ -1026,13 +1022,13 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         return output;
     }
 
-    /// <summary>A separable pass: across then down (Params.y), <paramref name="radius"/> texels (Params.z), so many times.</summary>
+    /// <summary>Separable pass: horizontal then vertical (Params.y), <paramref name="radius"/> texels (Params.z), repeated <paramref name="iterations"/> times.</summary>
     private GpuTexture Separable(string shader, GpuEffectPacket packet, GpuTexture work, int radius, int iterations, int timedAs = -1) =>
         Separable(shader, packet, work, radius, (float)radius, iterations, timedAs);
 
     /// <summary>
-    /// A separable pass with a radius of its own down: across <paramref name="radius"/> texels, down <paramref name="down"/>
-    /// (Params.z; a box blur takes a fraction of a texel as the outer taps' weight), so many times.
+    /// Separable pass with independent radii: <paramref name="radius"/> texels horizontally, <paramref name="down"/> vertically (Params.z; box
+    /// blur uses the fractional part as the outer tap weight), repeated <paramref name="iterations"/> times.
     /// </summary>
     private GpuTexture Separable(string shader, GpuEffectPacket packet, GpuTexture work, float radius, float down, int iterations, int timedAs = -1)
     {
@@ -1060,8 +1056,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// A box blur of a texture into a new one (<paramref name="radius"/> texels, across then down, once: PSBoxBlur's two
-    /// passes), the texture itself kept: what an unsharp mask takes its difference from.
+    /// Box-blurs a texture into a new one (<paramref name="radius"/> texels, one horizontal and one vertical PSBoxBlur pass), keeping the
+    /// source: the reference an unsharp mask subtracts.
     /// </summary>
     private GpuTexture BlurCopy(GpuTexture source, int radius, int timedAs)
     {
@@ -1090,18 +1086,17 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     private GpuTexture Blur(GpuTexture work, int radius, int iterations, int timedAs) =>
         Separable("PSBoxBlur", new GpuEffectPacket(GpuShaderSlot.BoxBlur, radius, 0, 0, 0, 0, 0, 0, 0), work, Math.Min(radius, 64), iterations, timedAs);
 
-    /// <summary>A box blur with a box of its own down (texels, a fraction weighing the outer taps; held to 64), so many times.</summary>
+    /// <summary>Box blur with independent horizontal and vertical radii (texels, fractional outer-tap weight; max 64), repeated.</summary>
     private GpuTexture Blur(GpuTexture work, float across, float down, int iterations, int timedAs) =>
         Separable("PSBoxBlur", new GpuEffectPacket(GpuShaderSlot.BoxBlur, across, 0, 0, 0, 0, 0, 0, 0), work, Math.Min(across, 64), Math.Min(down, 64), iterations, timedAs);
 
     /// <summary>
-    /// What eq's brightness b comes to on the RGB the GPU works in (5.0-Release): eq adds 256 b to the 8-bit luma of the
-    /// export's limited-range YUV, which is 256 / 219 of b on each channel once decoded (the blurred background's dimming and
-    /// the Blur card's Dim, measured against the export by gpu-scene-differential).
+    /// FFmpeg eq brightness b in GPU RGB terms: eq adds 256 b to limited-range 8-bit luma, i.e. 256/219 b per channel after decode (used for
+    /// blur fill dimming and the Blur effect's Dim; verified by gpu-scene-differential).
     /// </summary>
     private const float EqBrightness = 256f / 219f;
 
-    /// <summary>The picture's brightness changed by <paramref name="amount"/> (PSDim: added to every channel alike).</summary>
+    /// <summary>Offsets brightness by <paramref name="amount"/> (PSDim: added equally to every channel).</summary>
     private GpuTexture Dim(GpuTexture work, float amount, int timedAs)
     {
         if (!_shaders.Has("PSDim"))
@@ -1118,11 +1113,11 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         return output;
     }
 
-    // ----- Zone 4: under the layer -----
+    // ----- Zone 4: beneath the layer -----
 
     /// <summary>
-    /// The layer's drop shadow (4.1.1-B): its outline in the shadow's colour at its opacity, with room round it for the
-    /// blur (boxblur's alpha twice, as FFmpeg makes it), laid down moved along the light's angle.
+    /// Drop shadow: the layer silhouette in the shadow colour and opacity, padded for the blur (two box-blur passes on alpha, as FFmpeg
+    /// boxblur), offset along the light angle.
     /// </summary>
     private void DrawShadow(in GpuLayerDescriptor layer, GpuEffectPacket shadow, GpuTexture work, (float X, float Y, float W, float H) box, float alpha, GpuEffectPacket? wipe)
     {
@@ -1144,7 +1139,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         if (soft > 0)
             seed = Blur(seed, soft, iterations: 2, (int)GpuShaderSlot.DropShadow);
 
-        // The bigger box keeps the same turning point.
+        // The padded box keeps the same pivot.
         var roomX = room * MathF.Sign(box.W == 0 ? 1 : box.W);
         var roomY = room * MathF.Sign(box.H == 0 ? 1 : box.H);
         var (w, h) = (box.W + 2 * roomX, box.H + 2 * roomY);
@@ -1161,11 +1156,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// The blurred background made of the layer's picture (GpuScenePlan.Create.cs Blur: the recipe the export's graph followed before 5.2-Audit): the part its crop
-    /// names (the background's zoom) cut to the frame's shape, drawn smaller the more it is blurred (a half from 6 output
-    /// pixels of radius, a quarter from 16: the box stays narrow and cheap and the blur hides the smaller picture), box-blurred
-    /// BlurFillPasses times with the radius's fraction its own (5.0-Release: continuous from 0, sharp, and drawn whole then),
-    /// dimmed, then (<paramref name="withLook"/>) its own Look cards on the frame-sized picture, and laid over the whole frame.
+    /// Blur fill from the layer's picture (see GpuScenePlan.Create.cs Blur): the crop region (zoom) cropped to frame aspect, downscaled more
+    /// for larger radii (1/2 from 6 output px, 1/4 from 16: keeps the box narrow and cheap while the blur hides the downscale), box-blurred
+    /// BlurFillPasses times with fractional radius (continuous from 0 = sharp), dimmed, then (<paramref name="withLook"/>) its own Look
+    /// effects at frame size, and composited over the whole frame.
     /// </summary>
     private void DrawBlurFill(in GpuLayerDescriptor layer, float alpha, bool withLook)
     {
@@ -1183,7 +1177,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         if (layer.BlurFillDim < 0)
             small = Dim(small, Math.Clamp(layer.BlurFillDim, -0.5f, 0) * EqBrightness, (int)GpuShaderSlot.BoxBlur);
 
-        // Its own effects (colour, a LUT, a vignette...), on the picture at the frame's size, so that their pixel sizes are the frame's.
+        // Its own effects (colour, LUT, vignette...) at frame size so pixel-based parameters match the frame.
         var count = Math.Clamp(layer.EffectCount, 0, CompositorProtocol.MaxEffectsPerLayer);
         if (withLook && HasLook(layer, count))
         {
@@ -1214,10 +1208,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _timer.End();
     }
 
-    /// <summary>How many times smaller than the frame a blurred background is drawn for its radius in output pixels: 1, 2 or 4.</summary>
+    /// <summary>Blur fill downscale factor for a radius in output pixels: 1, 2 or 4.</summary>
     internal static int BlurFillShrink(float radius) => radius >= 16 ? 4 : radius >= 6 ? 2 : 1;
 
-    /// <summary>Whether a layer's packets hold a Look or Key and Matte effect (anything but what lays it on: zone 4's and the transitions').</summary>
+    /// <summary>True when the layer has a Look or Key and Matte effect (anything other than Zone 4 composite and transition packets).</summary>
     private static bool HasLook(in GpuLayerDescriptor layer, int count)
     {
         for (var k = 0; k < count; k++)
@@ -1232,7 +1226,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 
     // ----- Drawing -----
 
-    /// <summary>A full-target pass (VSFull): input in t0, aux in t1, the LUT in t2.</summary>
+    /// <summary>Full-target pass (VSFull): input in t0, aux in t1, LUT in t2.</summary>
     private void Draw(string shader, GpuTexture? input, nint target, int width, int height, ref PassConstants constants, bool blend, nint aux = 0, nint lut = 0)
     {
         if (input is not null)
@@ -1243,8 +1237,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// A finished frame stretched over another target of its own size (5.4.4-Final, the Live Encoded Preview of a smaller or larger export: the
-    /// scene drawn once at the canvas's size, filtered to the export's), linear (PSCopy over the whole picture).
+    /// Stretches a finished frame onto a differently sized target with linear filtering (PSCopy), used by the Live Encoded Preview when the
+    /// export size differs from the canvas.
     /// </summary>
     public void Stretch(GpuTexture picture, GpuTexture target)
     {
@@ -1254,7 +1248,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         Draw("PSCopy", picture, target.Rtv, target.Width, target.Height, ref constants, blend: false);
     }
 
-    /// <summary>A finished frame as NV12's two planes (FlagReadbackNv12): each is a render target of its own, read back by the worker.</summary>
+    /// <summary>Converts a finished frame into NV12 planes (FlagReadbackNv12), each its own render target read back by the worker.</summary>
     public void ToNv12(GpuTexture picture, GpuTexture luma, GpuTexture chroma)
     {
         var constants = default(PassConstants);
@@ -1264,8 +1258,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// An HDR export's finished frame as P010's two planes (FlagReadbackP010, 5.4B): R16 and R16G16 render targets, BT.2020 non-constant
-    /// luminance in limited range, each sample's 10 bits in the top of its 16. <paramref name="picture"/> is the 16-bit float frame.
+    /// Converts an HDR export frame into P010 planes (FlagReadbackP010): R16 and R16G16 targets, BT.2020 non-constant luminance, limited
+    /// range, 10 bits in the top of each 16-bit sample. <paramref name="picture"/> is the RGBA16F frame.
     /// </summary>
     public void ToP010(GpuTexture picture, GpuTexture luma, GpuTexture chroma)
     {
@@ -1276,10 +1270,10 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// The Export Quality Preview's compare (5.4B, Shaders/Loopback.hlsl): the source's NV12 planes (<paramref name="sourceLuma"/>,
-    /// <paramref name="sourceChroma"/>) against the decoded ones (two views), drawn over the whole output with the picture at
-    /// <paramref name="picture"/> (output pixels) and black round it. <paramref name="mode"/> 0 the encoded picture, 1 a split wipe at
-    /// <paramref name="wipe"/> (0..1 of the picture's width), 2 the difference x <paramref name="gain"/>.
+    /// Live Encoded Preview compare (Shaders/Loopback.hlsl): source NV12 planes (<paramref name="sourceLuma"/>, <paramref name="sourceChroma"/>)
+    /// vs. decoded planes, drawn over the whole output with the picture at <paramref name="picture"/> (output pixels) and black around it.
+    /// <paramref name="mode"/>: 0 encoded picture, 1 split wipe at <paramref name="wipe"/> (0..1 of picture width), 2 difference x
+    /// <paramref name="gain"/>.
     /// </summary>
     public void DrawLoopbackCompare(nint sourceLuma, nint sourceChroma, nint decodedLuma, nint decodedChroma, nint target, int width, int height,
         (float X, float Y, float W, float H) picture, int mode, float wipe, float gain, float dividerHalfWidth)
@@ -1298,7 +1292,7 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _gpu.Context.PSSetShaderResources(3, 2, none);
     }
 
-    /// <summary>A placed quad (VSQuad) onto the canvas, kept within the frame (letterboxed: never over the bars).</summary>
+    /// <summary>Draws a placed quad (VSQuad) onto the canvas, scissored to the frame when letterboxed (never over the bars).</summary>
     private void Quad(string shader, GpuTexture input, nint target, ref PassConstants constants, bool blend, nint aux = 0)
     {
         constants.Sizes(input.Width, input.Height, _outWidth, _outHeight);
@@ -1332,20 +1326,18 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
             _gpu.SetBlend(blend);
         context.Draw(vertices, 0);
 
-        // Let go of the inputs and the target, so the next pass may write into either.
+        // Unbind inputs and target so the next pass may write to either.
         var none = stackalloc nint[3];
         context.PSSetShaderResources(0, 3, none);
         context.OMSetRenderTargets(0);
     }
 
     /// <summary>
-    /// Lets go of the textures kept between frames that the next frame makes again when it wants them (the worker's trim, 5.4D-TabPerf
-    /// follow-up): the canvases' copies a blend mode reads, the 3D view's picture and plane (their budget step kept, so the 3D picture drawn
-    /// again is the same), and the loupe's scan, view, point and staging (the point it follows kept). With <paramref name="history"/> (a
-    /// trim the client asked for: a tab put behind, Settings' Clear) also what carries one frame into the next: the Motion Blur's flows,
-    /// the Explosion's noise, and Matte Smooth's alpha histories; the idle trim keeps them, so the paused picture it draws again is the
-    /// one shown. The whole canvas stays: every flat frame draws into it; the canvas of frames drawn smaller (5.4.4) goes, made again by
-    /// the next play. Between frames only (the worker's own thread).
+    /// Worker trim: releases inter-frame textures that are recreated on demand: blend canvas copies, the 3D picture and plane (budget step
+    /// kept so the redrawn 3D picture matches), and loupe scan, view, point and staging (tracked point kept). With <paramref name="history"/>
+    /// (requested trim: tab deactivated, Settings Clear) also frame-to-frame state: Motion Blur flows, Explosion noise and Matte Smooth alpha
+    /// histories; the idle trim keeps them so the paused redraw matches what is shown. The full canvas stays (every flat frame uses it); the
+    /// scaled canvas is released and recreated on the next play. Between frames only (worker thread).
     /// </summary>
     public void ReleaseIdleTextures(bool history)
     {
@@ -1367,8 +1359,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
     }
 
     /// <summary>
-    /// What <see cref="ReleaseIdleTextures"/> lets go of, held now (the goldens): the textures it always releases, and those it releases
-    /// only with history (flows, the noise, alpha histories).
+    /// Goldens: counts of textures <see cref="ReleaseIdleTextures"/> would release now: always-released ones, and history-only ones (flows,
+    /// noise, alpha histories).
     /// </summary>
     internal (int Textures, int History) IdleTexturesForTests()
     {
@@ -1397,8 +1389,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
 }
 
 /// <summary>
-/// GPU timestamps around each pass, summed per shader slot (ControlBlock.SlotGpuMs): the proof that every slot runs in
-/// well under half a millisecond. Only when the scene asks (FrameSceneHeader.FlagTimePasses).
+/// GPU timestamps around each pass, summed per shader slot (ControlBlock.SlotGpuMs) to verify per-slot cost. Active only when the scene
+/// requests it (FrameSceneHeader.FlagTimePasses).
 /// </summary>
 internal sealed unsafe class PassTimer(GpuDevice gpu) : IDisposable
 {
@@ -1458,7 +1450,7 @@ internal sealed unsafe class PassTimer(GpuDevice gpu) : IDisposable
         gpu.Context.End(_disjoint);
     }
 
-    /// <summary>Waits for this frame's timestamps (tests and the benchmark only) and sums them per slot. False when the clock was disjoint.</summary>
+    /// <summary>Blocks for this frame's timestamps (tests and benchmark only) and sums them per slot. False when the clock was disjoint.</summary>
     public bool Collect()
     {
         if (!_on || _disjoint == 0)

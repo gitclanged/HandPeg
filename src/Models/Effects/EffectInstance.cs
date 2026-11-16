@@ -7,10 +7,8 @@ using CommunityToolkit.Mvvm.ComponentModel;
 namespace HandPegApp.Models.Effects;
 
 /// <summary>
-/// One card in an effect stack: which effect it is, whether it is on, its values, the keyframes of the values that
-/// are animated, and optionally the stretch of the clip it works in. What the effect does with them is its
-/// definition's (<see cref="EffectRegistry"/>); a card whose type this HandPeg does not know is kept as it was read
-/// (<see cref="Unknown"/>) and written back unchanged, so a project made with a later plugin survives a round trip.
+/// One effect stack card: type, enabled state, values, keyframes for animated values, and optional clip range. Behaviour comes from
+/// the definition (<see cref="EffectRegistry"/>); unknown types are preserved verbatim (<see cref="Unknown"/>) for lossless round trips.
 /// </summary>
 public sealed partial class EffectInstance : ObservableObject
 {
@@ -27,13 +25,13 @@ public sealed partial class EffectInstance : ObservableObject
     /// <summary>The words: a file, a colour, a choice, a curve.</summary>
     public Dictionary<string, string> Texts { get; } = [];
 
-    /// <summary>The keyframes of an animated value, by the parameter's key; times are seconds from where the clip begins.</summary>
+    /// <summary>Keyframes per parameter key; times in seconds from clip start.</summary>
     public Dictionary<string, List<Keyframe>> Keys { get; } = [];
 
-    /// <summary>The stretch it works in, in seconds of the clip (of the sequence, for the Sequence Output); null for all of it.</summary>
+    /// <summary>Active range in clip seconds (Sequence seconds for the Sequence Output); null for the whole clip.</summary>
     public (double Start, double End)? Range { get; set; }
 
-    /// <summary>For a type this HandPeg does not know: the card as it was read. It is shown as missing, does nothing, and is saved as it came.</summary>
+    /// <summary>Raw card for an unknown type: shown as missing, inert, saved unchanged.</summary>
     public EffectState? Unknown { get; init; }
 
     public EffectDefinition? Definition => EffectRegistry.Find(Type);
@@ -42,7 +40,7 @@ public sealed partial class EffectInstance : ObservableObject
 
     public string Title => Definition?.Name ?? $"Missing effect ({Type})";
 
-    /// <summary>A value, a text, the keyframes or the switch changed: the key of what changed (<see cref="EnabledKey"/> for the switch).</summary>
+    /// <summary>Raised on value, text, keyframe or enabled change with the changed key (<see cref="EnabledKey"/> for enabled).</summary>
     public event Action<EffectInstance, string>? ValueChanged;
 
     public const string EnabledKey = "$enabled";
@@ -150,8 +148,8 @@ public sealed partial class EffectInstance : ObservableObject
         return effect;
     }
 
-    /// <summary>A copy with a new id: for Paste, presets and the clips of a track.</summary>
-    /// <remarks>A missing effect is copied as it was read, id and all: it is not this HandPeg's to change.</remarks>
+    /// <summary>Copy with a new id (Paste, presets, track clips).</summary>
+    /// <remarks>Unknown effects are copied verbatim, id included.</remarks>
     public EffectInstance Clone()
     {
         if (Unknown is not null)
@@ -167,31 +165,28 @@ public sealed partial class EffectInstance : ObservableObject
         return copy;
     }
 
-    // ----- The card as the v5.0 compositor takes it (ARCHITECTURE_CONTRACTS.md) -----
+    // ----- GPU compositor packets -----
 
     /// <summary>
-    /// The card's values at a moment of its clip as a <see cref="GpuEffectPacket"/>: every parameter in its order, an
-    /// animated one evaluated along its keyframes (<see cref="EasingCurves.ValueAt"/>, as the graph does), held to its
-    /// range. An effect with more than eight lanes is sent as several packets: <paramref name="packet"/> picks which.
-    /// Off, outside its stretch of the clip, without a shader, or missing, it is a packet of <see cref="GpuShaderSlot.None"/>.
+    /// Card values at a clip time as a <see cref="GpuEffectPacket"/>: parameters in order, keyframed ones evaluated via
+    /// <see cref="EasingCurves.ValueAt"/>, clamped to range. Effects with more than eight lanes span several packets (<paramref name="packet"/>).
+    /// Disabled, out of range, shaderless or unknown cards yield <see cref="GpuShaderSlot.None"/>.
     /// </summary>
-    /// <param name="clipTimeSeconds">Seconds from where the clip begins (of the sequence, for the Sequence Output).</param>
-    /// <param name="layer">The card's layer, for the values a bound card keeps on it (the key colour, the shadow, the opacity).</param>
+    /// <param name="clipTimeSeconds">Seconds from clip start (Sequence time for the Sequence Output).</param>
+    /// <param name="layer">Owning layer, for bound values (key colour, shadow, opacity).</param>
     /// <remarks>
-    /// Ready to be called for every card on every frame (Pass 4.3-0B): no reflection (a bound value is read through its
-    /// parameter's <see cref="EffectParam.Binding"/>) and nothing allocated: the lists are walked by index, a colour is
-    /// read from a span and the pieced curves are evaluated on the stack (<see cref="EasingCurves.Evaluate"/>).
+    /// Per-card, per-frame hot path: no reflection (bound values via <see cref="EffectParam.Binding"/>) and no allocation (indexed loops,
+    /// span colour parsing, stack-evaluated pieced curves via <see cref="EasingCurves.Evaluate"/>).
     /// </remarks>
     public GpuEffectPacket EvaluateGpuPacket(double clipTimeSeconds, Layer? layer = null, int packet = 0) =>
         Enabled && Definition is { } definition ? EvaluateGpuPacket(definition, clipTimeSeconds, layer, packet) : default;
 
     /// <summary>
-    /// The same with the card's <see cref="Definition"/> in hand (a look-up of its type in the registry), for the GPU scene, which
-    /// has just asked for it: once for a card on a frame, not again for each of its packets.
+    /// Overload taking a pre-resolved <see cref="Definition"/> so the GPU scene looks it up once per card per frame, not per packet.
     /// </summary>
     internal GpuEffectPacket EvaluateGpuPacket(EffectDefinition definition, double clipTimeSeconds, Layer? layer = null, int packet = 0)
     {
-        // (5.2B: the Audio Reactive Pulse's own packet only while the pulse is in use, EffectDefinition.GpuPulsePacket.)
+        // (The Audio Reactive Pulse packet is emitted only while the pulse is in use: EffectDefinition.GpuPulsePacket.)
         if (!Enabled || packet < 0 || packet >= definition.GpuPacketCount
             || Range is { } range && (clipTimeSeconds < range.Start || clipTimeSeconds > range.End)
             || packet == definition.GpuPulsePacket && !PulseInUse())
@@ -239,7 +234,7 @@ public sealed partial class EffectInstance : ObservableObject
         return GpuEffectPacket.From(definition.GpuSlot, lanes);
     }
 
-    // Whether the card's Audio Reactive Pulse is in use (5.2B): its keys when it has any, else its value (EffectRegistry.PulseInUse).
+    // True when the Audio Reactive Pulse is active: by keyframes if any, else by value (EffectRegistry.PulseInUse).
     private bool PulseInUse() =>
         EffectRegistry.PulseInUse(Keys.GetValueOrDefault(EffectRegistry.AudioPulseKey), Values.GetValueOrDefault(EffectRegistry.AudioPulseKey));
 
@@ -249,7 +244,7 @@ public sealed partial class EffectInstance : ObservableObject
             lanes[lane - first] = (float)value;
     }
 
-    // In the order the Effects pane shows a value: the card's keyframes, then the layer's property it is bound to, then the card's own.
+    // Value precedence (as the Effects pane): keyframes, then bound layer property, then the card's stored value.
     private double GpuValue(EffectParam param, double time, Layer? layer)
     {
         if (layer is not null && param.Bind == nameof(Layer.Opacity))
@@ -262,7 +257,7 @@ public sealed partial class EffectInstance : ObservableObject
         return Values.TryGetValue(param.Key, out var value) ? value : param.Default;
     }
 
-    // A colour's or a choice's words: the layer's property it is bound to, else the card's own (GetText, without looking the parameter up again).
+    // Colour/choice text: bound layer property, else the card's own (GetText without a second parameter lookup).
     private string GpuText(EffectParam param, Layer? layer) =>
         layer is not null && param.Binding?.Text is { } bound && bound(layer) is { } text ? text
         : Texts.TryGetValue(param.Key, out var own) ? own : param.TextDefault;
@@ -286,7 +281,7 @@ public sealed partial class EffectInstance : ObservableObject
         return 0;
     }
 
-    /// <summary>A colour written #RRGGBB (or #AARRGGBB, the alpha left out) as red, green and blue from 0 to 1; black when it is not one.</summary>
+    /// <summary>Parses #RRGGBB or #AARRGGBB (alpha ignored) to RGB 0..1; black when invalid.</summary>
     private static (double R, double G, double B) GpuColor(string text)
     {
         var hex = text.AsSpan().Trim().TrimStart('#');
@@ -299,8 +294,8 @@ public sealed partial class EffectInstance : ObservableObject
 }
 
 /// <summary>
-/// A card as projects, presets and Undo keep it: <c>{ "type", "id", "on", "values", "keys", "range" }</c>. Anything
-/// else a later version writes is kept in <see cref="Extra"/> and written back.
+/// Serialized card for projects, presets and Undo: <c>{ "type", "id", "on", "values", "keys", "range" }</c>; unknown fields are
+/// preserved in <see cref="Extra"/>.
 /// </summary>
 public sealed class EffectState
 {
@@ -315,8 +310,8 @@ public sealed class EffectState
 }
 
 /// <summary>
-/// Listens to every card of a stack, as cards come and go: one callback for whatever changed in it. Used by a layer
-/// for its own stack, and by the sequence for the Sequence Output's.
+/// Subscribes to every card in a stack as cards are added or removed, forwarding all changes to one callback (layer stacks and the
+/// Sequence Output).
 /// </summary>
 public sealed class EffectStackWatcher
 {

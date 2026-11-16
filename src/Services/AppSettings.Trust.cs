@@ -4,13 +4,12 @@ namespace HandPegApp.Services;
 
 public sealed partial class AppSettings
 {
-    /// <summary>How many trusted project-command fingerprints are kept (the oldest go first).</summary>
+    /// <summary>Max trusted project-command fingerprints retained (oldest evicted first).</summary>
     public const int TrustedProjectCommandsKept = 64;
 
     /// <summary>
-    /// SHA-256 fingerprints of the FFmpeg commands and Extra options a project file carried that the user confirmed on this PC, or wrote
-    /// here and saved: a project bringing one of them back runs it without asking again. Kept on this PC only (never in a project file),
-    /// newest last; a project from elsewhere with a command never seen here still asks.
+    /// SHA-256 fingerprints of project FFmpeg commands and Extra options confirmed or authored locally; matching projects run without a
+    /// prompt. Machine-local (never in project files), newest last; unseen commands from elsewhere still prompt.
     /// </summary>
     public List<string> TrustedProjectCommands { get; set; } = [];
 }

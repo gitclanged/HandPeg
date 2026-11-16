@@ -5,14 +5,13 @@ using HandPegApp.Compositor.Native;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The other end of the compositor's output (Pass 5.0-Core): a Direct3D 11 device of this process on the worker's card,
-/// with the worker's shared output textures opened by name (ID3D11Device1::OpenSharedResourceByName, keyed mutex key 0).
-/// <para>The hot path (5.0D's GpuViewport) copies the presented texture into its own swap chain on the card:
-/// <see cref="CopyPresentedCentered"/>, no pixel leaves video memory; a side window's Live Video Preview copies the canvas's part of it
-/// (5.4C, <see cref="CopyPresentedRegionTo"/>) on the same device. <see cref="TryRead"/> brings one frame back to the
-/// processor, for the golden tests and diagnostics only.</para>
-/// <para>Since 5.4.1A a frame can be smaller than the texture it is in (a resized player keeps the worker's ring while it fits): every
-/// copy takes the frame's own size, the slot's content size (<see cref="ContentSize"/>), read while the slot is held.</para>
+/// Client side of the compositor output: a D3D11 device on the worker's adapter that opens its shared output textures by name
+/// (ID3D11Device1::OpenSharedResourceByName, keyed mutex key 0).
+/// <para>Hot path: GpuViewport copies the presented texture into its swap chain (<see cref="CopyPresentedCentered"/>, VRAM only); side
+/// windows' Live Video Preview copies the canvas region (<see cref="CopyPresentedRegionTo"/>). <see cref="TryRead"/> reads back to the
+/// CPU for goldens and diagnostics only.</para>
+/// <para>Frames may be smaller than their texture (a resized player reuses the ring while it fits): copies use the slot's content size
+/// (<see cref="ContentSize"/>), read while the slot is held.</para>
 /// </summary>
 public sealed unsafe class CompositorFrameReader : IDisposable
 {
@@ -23,7 +22,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     private nint _staging;
     private (int Width, int Height) _stagingSize;
 
-    // The size of the textures opened (the ring of their generation, 5.4.1A).
+    // Opened texture size (the ring of the current generation).
     private (int Width, int Height) _ring;
 
     public CompositorFrameReader(CompositorClient client) => _client = client;
@@ -32,16 +31,15 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     public long Sequence { get; private set; }
 
     /// <summary>
-    /// Whether the last <see cref="CopyPresentedCentered"/> or <see cref="CopyPresentedRegionTo"/> copied nothing because the presented
-    /// frame was read back (a capture: the scopes' picture, a thumbnail, a tab's still), never the player's to show (5.4.1A): the caller
-    /// takes it as seen, and shows the next.
+    /// True when the last <see cref="CopyPresentedCentered"/> or <see cref="CopyPresentedRegionTo"/> skipped a capture frame (scopes,
+    /// thumbnail, tab still) not meant for display; the caller treats it as consumed and shows the next.
     /// </summary>
     internal bool SkippedReadback { get; private set; }
 
-    /// <summary>This reader's device (null until the output was first opened): the GPU viewport's swap chain lives on it.</summary>
+    /// <summary>Reader device (null until first open); hosts the GPU viewport's swap chain.</summary>
     internal GpuDevice? Device => _gpu;
 
-    /// <summary>Opens the worker's output when there is one (a new worker generation, a lost device); false while there is none.</summary>
+    /// <summary>Opens or reopens the worker output (new generation, lost device); false when none exists.</summary>
     internal bool Ready() => Open();
 
     private bool Open()
@@ -53,8 +51,8 @@ public sealed unsafe class CompositorFrameReader : IDisposable
         if (_gpu is not null && generation == _generation)
             return true;
 
-        // A new worker generation (a respawn, a resized output): the textures are new, and the device may be gone too (a
-        // real TDR removes every device on the card, this one's as well) or on another card (WARP after a failure).
+        // New generation (respawn, resize): textures are new and the device may be lost (TDR removes all devices on the adapter) or
+        // on another adapter (WARP fallback).
         Close();
         if (_gpu is not null && (_gpu.Device.GetDeviceRemovedReason() < 0 || _gpu.AdapterLuid != control.AdapterLuid))
         {
@@ -76,8 +74,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
             _opened[i] = (texture, Com.Query(texture, Iid.DxgiKeyedMutex));
         }
 
-        // The ring's size from its own textures (never control.OutputWidth: a newer ring's size can be written there before its
-        // generation), and kept only if no newer ring was announced meanwhile.
+        // Ring size from its textures (not control.OutputWidth, which may already describe a newer ring); kept only if no newer ring appeared.
         Texture2DDesc desc;
         ((delegate* unmanaged<nint, Texture2DDesc*, void>)Com.Table(_opened[0].Texture)[ID3D11Texture2DSlot.GetDesc])(_opened[0].Texture, &desc);
         _ring = ((int)desc.Width, (int)desc.Height);
@@ -92,9 +89,8 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     }
 
     /// <summary>
-    /// The size of the frame in output slot <paramref name="index"/> (5.4.1A): the worker's content size, kept inside the textures this
-    /// reader opened. Exact only while the slot is held (its keyed mutex); outside it, the size of the frame there a moment ago. Empty
-    /// (0 x 0) when the slot was last drawn into another ring than the one opened (a new ring being announced): not this frame's size.
+    /// Content size of output slot <paramref name="index"/>, clamped to the opened textures. Exact only while the slot's keyed mutex is
+    /// held; 0 x 0 when last drawn into a different ring (a new ring pending).
     /// </summary>
     internal (int Width, int Height) ContentSize(int index)
     {
@@ -102,7 +98,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
         if (control.OutputContentTag(index) >> 1 != _generation)
             return (0, 0);
 
-        // The slot's own size against the textures opened (never the control block's ring size: a newer ring's may be there already).
+        // Validate against the opened textures, not the control block's ring size (which may be newer).
         var (width, height) = control.OutputContentWritten(index);
         return width <= 0 || height <= 0 ? _ring : (Math.Min(width, _ring.Width), Math.Min(height, _ring.Height));
     }
@@ -111,11 +107,9 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     internal bool ReadbackIn(int index) => (_client.Memory.Control.OutputContentTag(index) & 1) != 0;
 
     /// <summary>
-    /// The presented frame copied into a texture of this reader's device (BGRA8, <paramref name="targetWidth"/> x <paramref name="targetHeight"/>):
-    /// the player's zero-copy path. A frame of the target's size in a texture of that size is one CopyResource; any other (a resize
-    /// under way, a ring larger than its frame) is laid 1:1 in the middle of the target, never scaled (5.4.1A,
-    /// GpuViewport.CenteredCopy): the target cleared black through <paramref name="destinationRtv"/> first (0: not cleared),
-    /// then the frame's middle copied in whole pixels. Waits at most <paramref name="milliseconds"/> for the frame.
+    /// Zero-copy player path: copies the presented frame into a BGRA8 <paramref name="targetWidth"/> x <paramref name="targetHeight"/>
+    /// texture. Exact size match is one CopyResource; otherwise the frame is centred 1:1, never scaled (GpuViewport.CenteredCopy), after
+    /// clearing via <paramref name="destinationRtv"/> (0: no clear). Waits up to <paramref name="milliseconds"/>.
     /// </summary>
     internal bool CopyPresentedCentered(nint destination, nint destinationRtv, int targetWidth, int targetHeight, uint milliseconds = 16)
     {
@@ -145,7 +139,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
             }
             else
             {
-                // Black only where the frame leaves margins (a ring larger than its frame alone is copied over the whole target).
+                // Clear only when the frame leaves margins.
                 if (destinationRtv != 0 && (content.Width < targetWidth || content.Height < targetHeight))
                     context.ClearRenderTargetView(destinationRtv, 0, 0, 0, 1);
                 var (left, top, right, bottom, x, y) = GpuViewport.CenteredCopy(content.Width, content.Height, targetWidth, targetHeight);
@@ -167,10 +161,9 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     }
 
     /// <summary>
-    /// A rectangle of the presented frame (left, top, right, bottom in its pixels, kept inside the frame's own size, 5.4.1A) copied to
-    /// (<paramref name="x"/>, <paramref name="y"/>) of a texture of this reader's device (BGRA8, at least that large; the top-left corner
-    /// by default): a side window's Live Video Preview, the canvas without the player's bars (5.4C). Waits at most
-    /// <paramref name="milliseconds"/> for the frame (0: never waits; false when it is busy or the rectangle is empty).
+    /// Copies a frame rectangle (clamped to content size) to (<paramref name="x"/>, <paramref name="y"/>) of a BGRA8 texture for side
+    /// window Live Video Preview (canvas without letterbox). Waits up to <paramref name="milliseconds"/> (0: no wait; false if busy or
+    /// empty).
     /// </summary>
     internal bool CopyPresentedRegionTo(nint destination, int left, int top, int right, int bottom, uint milliseconds = 0, int x = 0, int y = 0)
     {
@@ -208,8 +201,7 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     }
 
     /// <summary>
-    /// The presented frame's pixels, BGRA8 rows packed (tests and diagnostics only: a readback), at exactly the size the worker drew it
-    /// (its slot's content size, 5.4.1A, never the ring's).
+    /// CPU readback of the presented frame (BGRA8, packed rows) at its content size; tests and diagnostics only.
     /// </summary>
     public bool TryRead(out byte[] bgra, out int width, out int height)
     {
@@ -261,10 +253,8 @@ public sealed unsafe class CompositorFrameReader : IDisposable
     }
 
     /// <summary>
-    /// A part of the presented frame brought back to the processor at once (5.4.3: a project tab put behind with no still of its playhead):
-    /// <paramref name="region"/> gives the rectangle (left, top, right, bottom) for the frame's content size, every <paramref name="step"/>-th
-    /// pixel of it is kept (a still, never full size), and the staging texture is let go after. False for a frame read back for a capture
-    /// (never the player's picture) or no frame.
+    /// Immediate decimated readback of <paramref name="region"/> (every <paramref name="step"/>-th pixel) for a background tab's playhead
+    /// still; the staging texture is released afterwards. False for capture frames or no frame.
     /// </summary>
     internal bool TryReadStill(Func<int, int, (int Left, int Top, int Right, int Bottom)> region, Func<int, int, int> step, out byte[] bgra, out int width, out int height)
     {

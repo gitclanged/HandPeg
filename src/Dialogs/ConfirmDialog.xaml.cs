@@ -3,14 +3,11 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-/// <summary>
-/// A question with two answers, in HandPeg's own window rather than a Windows message box: something is about
-/// to happen that the user may not have meant, and this says what, once, before it does.
-/// </summary>
+/// <summary>Themed confirmation dialog (instead of a Windows message box) shown before a possibly unintended action.</summary>
 public partial class ConfirmDialog : Window
 {
-    /// <param name="confirm">What the button that goes ahead says.</param>
-    /// <param name="other">A second way of going ahead, for a question with two; null for a plain yes or no.</param>
+    /// <param name="confirm">Confirm button label.</param>
+    /// <param name="other">Optional second confirm option label; null for a plain yes/no.</param>
     public ConfirmDialog(string title, string message, string confirm, string? other = null)
     {
         InitializeComponent();
@@ -22,13 +19,10 @@ public partial class ConfirmDialog : Window
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
     }
 
-    /// <summary>Whether the second way of going ahead was the one chosen.</summary>
+    /// <summary>Whether the second confirm option was chosen.</summary>
     public bool ChoseOther { get; private set; }
 
-    /// <summary>
-    /// Makes Cancel the button Enter presses: for a warning, where going ahead should take a deliberate click and a
-    /// key pressed out of habit should change nothing.
-    /// </summary>
+    /// <summary>Makes Cancel the default (Enter) button for destructive warnings, requiring a deliberate click to proceed.</summary>
     public bool DefaultsToCancel
     {
         get => CancelButton.IsDefault;
@@ -36,8 +30,7 @@ public partial class ConfirmDialog : Window
     }
 
     /// <summary>
-    /// The words of a "Remember my choice" box under the message, for a question that can be answered once for all
-    /// (4.4); null, the default, shows none. Whatever button closes the dialog, <see cref="Remember"/> says whether it was ticked.
+    /// Optional "Remember my choice" checkbox label (null = hidden). <see cref="Remember"/> reports its state for any closing button.
     /// </summary>
     public string? RememberText
     {
@@ -45,10 +38,10 @@ public partial class ConfirmDialog : Window
         init => (RememberBox.Content, RememberBox.Visibility) = (value, value is null ? Visibility.Collapsed : Visibility.Visible);
     }
 
-    /// <summary>Whether "Remember my choice" was ticked (see <see cref="RememberText"/>).</summary>
+    /// <summary>Whether "Remember my choice" was checked (<see cref="RememberText"/>).</summary>
     public bool Remember => RememberBox.IsChecked == true;
 
-    /// <summary>What the button that calls it off says: "Cancel" unless given ("Don't Copy").</summary>
+    /// <summary>Cancel button label ("Cancel" by default, e.g. "Don't Copy").</summary>
     public string CancelText
     {
         get => CancelButton.Content as string ?? "";

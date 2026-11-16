@@ -3,13 +3,11 @@ using HandPegApp.Compositor.Native;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- The sound engine's Windows calls (Pass 5.0-AudioAnd3D, 5.0C) -----
+// ----- Sound engine Win32 interop -----
 //
-// WASAPI (IMMDeviceEnumerator, IMMDevice, IAudioClient / IAudioClient3, IAudioRenderClient, IAudioClock), the endpoint
-// notifications, the property store (a device's name), MMCSS, events and timers, and the Media Foundation calls the audio
-// decoder needs beyond the compositor's (Compositor/Native/MediaFoundation.cs). COM by hand as the compositor does it
-// (Com.Table): each method is a function pointer at its place in the interface's table, IUnknown being 0-2, then each base
-// interface's methods in declaration order (Windows.Win32.winmd). No ComImport, no marshaller, nothing allocates.
+// WASAPI (IMMDeviceEnumerator, IMMDevice, IAudioClient/IAudioClient3, IAudioRenderClient, IAudioCaptureClient, IAudioClock), endpoint notifications, the
+// property store (device names), MMCSS, and the Media Foundation calls the audio decoder needs beyond Compositor/Native/MediaFoundation.cs.
+// Hand-rolled COM via Com.Table with named vtable slots (ComSlots.cs). No ComImport, no marshaller, no allocation.
 
 /// <summary>WAVEFORMATEXTENSIBLE (40 bytes; a plain WAVEFORMATEX is its first 18).</summary>
 [StructLayout(LayoutKind.Explicit, Size = 40)]
@@ -29,7 +27,7 @@ internal struct WaveFormat
     public const ushort Pcm = 1, IeeeFloat = 3, Extensible = 0xFFFE;
 }
 
-/// <summary>PROPERTYKEY: a property's set and number.</summary>
+/// <summary>PROPERTYKEY: property set id and property number.</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct PropertyKey
 {
@@ -37,7 +35,7 @@ internal struct PropertyKey
     public uint PropertyId;
 }
 
-/// <summary>A PROPVARIANT (24 bytes on 64-bit Windows), read for its type and its first pointer-sized value.</summary>
+/// <summary>PROPVARIANT (24 bytes on 64-bit Windows), read for its type and first pointer-sized value.</summary>
 [StructLayout(LayoutKind.Explicit, Size = 24)]
 internal struct PropVariantValue
 {
@@ -54,6 +52,7 @@ internal static unsafe partial class AudioNative
     public static readonly Guid AudioClientId = new("1cb9ad4c-dbfa-4c32-b178-c2f568a703b2");
     public static readonly Guid AudioClient3Id = new("7ed4ee07-8e67-4cd4-8c1a-2b7a5987ad42");
     public static readonly Guid RenderClientId = new("f294acfc-3146-4483-a7bf-addca7c260e2");
+    public static readonly Guid CaptureClientId = new("c8adbd64-e71e-48a0-a4de-185c395cd317");
     public static readonly Guid AudioClockId = new("cd63314f-3fba-4a1b-812c-ef96358728e7");
     public static readonly Guid NotificationClientId = new("7991eec9-7e89-4d85-8390-6c703cec60c0");
     public static readonly Guid UnknownId = new("00000000-0000-0000-c000-000000000046");
@@ -63,17 +62,22 @@ internal static unsafe partial class AudioNative
     /// <summary>PKEY_Device_FriendlyName: "Speakers (Realtek(R) Audio)".</summary>
     public static readonly PropertyKey DeviceFriendlyName = new() { FormatId = new("a45c254e-df1c-4efd-8020-67d146a850e0"), PropertyId = 14 };
 
-    public const int Render = 0, Console = 0;
+    public const int Render = 0, Capture = 1, Console = 0;
     public const uint DeviceStateActive = 1;
     public const uint ClassContextAll = 0x17;
     public const uint StreamFlagsEventCallback = 0x00040000;
+
+    // Shared-mode format conversion by the audio engine (channel matrix + rate converter) to the format given to Initialize.
+    public const uint StreamFlagsAutoConvertPcm = 0x80000000, StreamFlagsSrcDefaultQuality = 0x08000000;
     public const uint BufferFlagsSilent = 0x2;
+    public const int AccessDenied = unchecked((int)0x80070005);
+    public const int DeviceInUse = unchecked((int)0x8889000A);
     public const int DeviceInvalidated = unchecked((int)0x88890004);
     public const int ServiceNotRunning = unchecked((int)0x88890010);
     public const int ResourcesInvalidated = unchecked((int)0x88890026);
     public const uint WaitObject0 = 0, WaitTimeout = 0x102, Infinite = 0xFFFFFFFF;
 
-    /// <summary>Whether a WASAPI failure means the endpoint went away (unplugged, disabled, the service restarted): open again.</summary>
+    /// <summary>True when a WASAPI failure means the endpoint is gone (unplugged, disabled, service restarted): reopen.</summary>
     public static bool IsDeviceGone(int hr) => hr is DeviceInvalidated or ServiceNotRunning or ResourcesInvalidated;
 
     [LibraryImport("ole32.dll")]
@@ -88,7 +92,7 @@ internal static unsafe partial class AudioNative
     [LibraryImport("avrt.dll")]
     public static partial int AvRevertMmThreadCharacteristics(nint handle);
 
-    // (The events, waits and waitable timers the mixer uses are HandPegApp.Native.Kernel32's, shared with the compositor.)
+    // Events, waits and waitable timers come from HandPegApp.Native.Kernel32, shared with the compositor.
 
     // ----- IMMDeviceEnumerator -----
 
@@ -152,7 +156,7 @@ internal static unsafe partial class AudioNative
         return hr;
     }
 
-    /// <summary>The device's id ("{0.0.0.00000000}.{guid}"), or "" when it cannot say.</summary>
+    /// <summary>Endpoint id ("{0.0.0.00000000}.{guid}"), or "" on failure.</summary>
     public static string DeviceId(nint device)
     {
         char* text = null;
@@ -168,7 +172,7 @@ internal static unsafe partial class AudioNative
         }
     }
 
-    /// <summary>The device's friendly name from its property store, or "" when it has none.</summary>
+    /// <summary>Friendly name from the property store, or "" when absent.</summary>
     public static string DeviceName(nint device)
     {
         nint store = 0;
@@ -195,7 +199,7 @@ internal static unsafe partial class AudioNative
         }
     }
 
-    // ----- IAudioClient (3-14), IAudioClient2 (15-17), IAudioClient3 (18-20) -----
+    // ----- IAudioClient / IAudioClient3 -----
 
     public static int Initialize(nint client, uint flags, long bufferDuration, WaveFormat* format) =>
         ((delegate* unmanaged<nint, int, uint, long, long, WaveFormat*, Guid*, int>)Com.Table(client)[IAudioClientSlot.Initialize])(client, 0, flags, bufferDuration, 0, format, null);
@@ -224,7 +228,7 @@ internal static unsafe partial class AudioNative
         return hr;
     }
 
-    /// <summary>The shared-mode mix format, allocated by COM (free it with CoTaskMemFree).</summary>
+    /// <summary>Shared-mode mix format, allocated by COM (free with CoTaskMemFree).</summary>
     public static int GetMixFormat(nint client, out WaveFormat* format)
     {
         WaveFormat* result = null;
@@ -283,6 +287,30 @@ internal static unsafe partial class AudioNative
     public static int ReleaseBuffer(nint render, uint frames, uint flags) =>
         ((delegate* unmanaged<nint, uint, uint, int>)Com.Table(render)[IAudioRenderClientSlot.ReleaseBuffer])(render, frames, flags);
 
+    // ----- IAudioCaptureClient -----
+
+    /// <summary>Next captured packet: its frames and buffer flags (silent, discontinuity); pair with <see cref="ReleaseCaptured"/>.</summary>
+    public static int GetCaptured(nint capture, out byte* data, out uint frames, out uint flags)
+    {
+        byte* result = null;
+        uint count = 0, bits = 0;
+        var hr = ((delegate* unmanaged<nint, byte**, uint*, uint*, ulong*, ulong*, int>)Com.Table(capture)[IAudioCaptureClientSlot.GetBuffer])(capture, &result, &count, &bits, null, null);
+        data = result;
+        (frames, flags) = (count, bits);
+        return hr;
+    }
+
+    public static int ReleaseCaptured(nint capture, uint frames) =>
+        ((delegate* unmanaged<nint, uint, int>)Com.Table(capture)[IAudioCaptureClientSlot.ReleaseBuffer])(capture, frames);
+
+    public static int NextPacketFrames(nint capture, out uint frames)
+    {
+        uint result = 0;
+        var hr = ((delegate* unmanaged<nint, uint*, int>)Com.Table(capture)[IAudioCaptureClientSlot.GetNextPacketSize])(capture, &result);
+        frames = result;
+        return hr;
+    }
+
     // ----- IAudioClock -----
 
     public static int GetFrequency(nint clock, out ulong frequency)
@@ -293,7 +321,7 @@ internal static unsafe partial class AudioNative
         return hr;
     }
 
-    /// <summary>The position of the sample at the speakers (units of the clock's frequency), and when (QPC, 100 ns).</summary>
+    /// <summary>Position of the sample at the speakers (clock-frequency units) and its QPC time (100 ns units).</summary>
     public static int GetPosition(nint clock, out ulong position, out ulong qpc100ns)
     {
         ulong p = 0, q = 0;
@@ -303,7 +331,7 @@ internal static unsafe partial class AudioNative
     }
 }
 
-/// <summary>The Media Foundation pieces the audio decoder adds to the compositor's (MfGuids, Mf).</summary>
+/// <summary>Media Foundation additions for the audio decoder beyond the compositor's MfGuids/Mf.</summary>
 internal static unsafe class MfAudio
 {
     public static readonly Guid Audio = new("73647561-0000-0010-8000-00aa00389b71");
@@ -313,7 +341,7 @@ internal static unsafe class MfAudio
     public static readonly Guid BitsPerSample = new("f2deb57f-40fa-4764-aa33-ed4f2d1ff669");
     public static readonly Guid ChannelMask = new("55fb5765-644a-4caf-8479-938983bb1588");
 
-    /// <summary>IMFSample::ConvertToContiguousBuffer: one buffer holding all of the sample.</summary>
+    /// <summary>IMFSample::ConvertToContiguousBuffer: a single buffer holding the whole sample.</summary>
     public static int ContiguousBuffer(nint sample, out nint buffer)
     {
         nint result = 0;
@@ -322,7 +350,7 @@ internal static unsafe class MfAudio
         return hr;
     }
 
-    // MFStartup is counted by Media Foundation, so the sound engine's own is independent of the compositor's.
+    // MFStartup is reference-counted, so the sound engine starts MF independently of the compositor.
     private static int _started;
     private static readonly object StartGate = new();
 

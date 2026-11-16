@@ -11,40 +11,37 @@ using static HandPegApp.Native.User32;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// What the computer is, for a crash report's environment (Pass 4.1B): the processor's model and its cores, the memory
-/// and its speed, each card's memory, the main display, the power plan, the theme and the engines' versions. Asked of
-/// Windows directly, once, after the first frame (<see cref="CrashReporter"/>): CPUID, GetLogicalProcessorInformationEx,
-/// the raw SMBIOS tables (GetSystemFirmwareTable), EnumDisplaySettings, the power plan's GUID. No WMI, well under a
-/// millisecond. Only numbers and model names are read: never a serial number, an asset tag, a part number, the
-/// computer's name or a power plan's own name (a plan Windows does not ship is "custom").
+/// Crash report environment: CPU model and cores, memory size and speed, per-adapter VRAM, main display, power plan, theme and engine
+/// versions. Queried once after Frame 1 (<see cref="CrashReporter"/>) via CPUID, GetLogicalProcessorInformationEx, raw SMBIOS
+/// (GetSystemFirmwareTable), EnumDisplaySettings and the power plan GUID; no WMI, under 1 ms. Only numbers and model names: never
+/// serials, asset tags, part numbers, computer names or custom plan names (reported as "custom").
 ///
-/// The sentinel learns them through the shared memory: <see cref="Pack"/> puts them in four "env." context slots and
-/// <see cref="Unpack"/> reads them back, so the report it writes says the same as one HandPeg writes itself.
+/// Shared with the sentinel via four "env." context slots (<see cref="Pack"/> / <see cref="Unpack"/>) so both report identically.
 /// </summary>
 public static partial class CrashHardware
 {
-    /// <summary>The processor as it names itself ("AMD Ryzen 9 7950X 16-Core Processor"); null when it does not say.</summary>
+    /// <summary>CPU brand string; null when unavailable.</summary>
     public static string? Cpu { get; private set; }
 
     /// <summary>Its cores (fewer than its logical processors when SMT / Hyper-Threading is on); 0 when not known.</summary>
     public static int PhysicalCores { get; private set; }
 
-    /// <summary>The memory installed, in GB (the modules SMBIOS lists, else what Windows says is installed); 0 when not known.</summary>
+    /// <summary>Installed memory in GB (SMBIOS modules, else Windows' installed figure); 0 when unknown.</summary>
     public static double RamGb { get; private set; }
 
     /// <summary>The speed the memory runs at, in MT/s (SMBIOS's configured speed); 0 when not known.</summary>
     public static int RamMts { get; private set; }
 
-    /// <summary>The modules' own rated speed, in MT/s: above <see cref="RamMts"/> when XMP / EXPO is off; 0 when not known.</summary>
+    /// <summary>Module rated speed (MT/s), above <see cref="RamMts"/> when XMP/EXPO is off; 0 when unknown.</summary>
     public static int RamRatedMts { get; private set; }
 
-    /// <summary>The main display's mode: its size in pixels and its refresh rate; and the system's scale, in percent.</summary>
+    /// <summary>Main display resolution and refresh rate, plus system scale (%).</summary>
     public static int DisplayWidth { get; private set; }
     public static int DisplayHeight { get; private set; }
     public static int DisplayHz { get; private set; }
     public static int DisplayScalePercent { get; private set; }
 
-    /// <summary>"Balanced, Best performance, on AC": the power plan by its well-known GUID, Windows' power mode, the power source and battery saver.</summary>
+    /// <summary>Power plan (well-known GUID), power mode, source and battery saver, e.g. "Balanced, Best performance, on AC".</summary>
     public static string? PowerPlan { get; private set; }
 
     private static int _learnt;
@@ -78,7 +75,7 @@ public static partial class CrashHardware
 
     // ----- The processor -----
 
-    /// <summary>The brand string CPUID gives (leaves 0x80000002 to 4); on a processor without CPUID, the one Windows keeps.</summary>
+    /// <summary>CPUID brand string (leaves 0x80000002-4), else the registry value Windows stores.</summary>
     private static string? ProcessorName()
     {
         if (X86Base.IsSupported && (uint)X86Base.CpuId(unchecked((int)0x80000000), 0).Eax >= 0x80000004)
@@ -141,9 +138,8 @@ public static partial class CrashHardware
     private const byte EndOfTable = 127;
 
     /// <summary>
-    /// Sums the memory devices SMBIOS lists and takes their speed: the size (0x0C, or the extended size at 0x1C), the
-    /// rated speed (0x15, or 0x54) and the configured speed (0x20, or 0x58). Only these numbers are read: the
-    /// structures' strings (maker, serial and part numbers) are skipped over unread.
+    /// Sums SMBIOS memory devices: size (0x0C, extended 0x1C), rated speed (0x15 / 0x54) and configured speed (0x20 / 0x58). String
+    /// sections (manufacturer, serial, part number) are skipped unread.
     /// </summary>
     private static unsafe void ReadMemory()
     {
@@ -231,7 +227,7 @@ public static partial class CrashHardware
     private const int EnumCurrentSettings = -1;
     private const int DevModeSize = 220;
 
-    /// <summary>The main display's mode (DEVMODEW: dmPelsWidth at 172, dmPelsHeight at 176, dmDisplayFrequency at 184) and the system's DPI.</summary>
+    /// <summary>Main display mode (DEVMODEW: dmPelsWidth @172, dmPelsHeight @176, dmDisplayFrequency @184) and system DPI.</summary>
     private static unsafe void ReadDisplay()
     {
         var mode = stackalloc byte[DevModeSize];
@@ -309,7 +305,7 @@ public static partial class CrashHardware
     public static string? Whisper { get; set; }
     public static string? YtDlp { get; set; }
 
-    /// <summary>Fills a report's environment with what was learnt (and the cards, theme and Efficiency mode passed in).</summary>
+    /// <summary>Populates a report environment with captured facts plus the given adapters, theme and Efficiency mode.</summary>
     public static void Fill(CrashEnvironment environment, IEnumerable<GpuAdapter> cards, string? theme, bool? efficiencyMode)
     {
         environment.Cpu = Clean(Cpu, 100);
@@ -337,8 +333,8 @@ public static partial class CrashHardware
 
     private static string? Clean(string? text, int max) => string.IsNullOrWhiteSpace(text) ? null : CrashSanitizer.Sanitize(text, max);
 
-    // The four slots (232 bytes each). Fields are separated by '|', cards by ';' with their fields by ':' (the name last,
-    // so a ':' in it survives). Model names are cut to fit; nothing else here is long.
+    // Four 232-byte slots: fields separated by '|', adapters by ';', adapter fields by ':' (name last so embedded ':' survives).
+    // Model names are truncated to fit.
     public const string CpuSlot = "env.cpu";
     public const string AdaptersSlot = "env.adapters";
     public const string SystemSlot = "env.system";

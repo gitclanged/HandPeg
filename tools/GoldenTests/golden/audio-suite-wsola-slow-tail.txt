@@ -1,0 +1,6 @@
+# WSOLA at the slowest tempos (5.6J): a short tail fed in small reads plays to its end, its search window never past the input's start.
+0.10x, a 4000-sample tail in 256-sample reads: played to its end, every sample finite
+0.10x, a 1920-sample tail in 256-sample reads: played to its end, every sample finite
+0.05x, a 2500-sample tail in 256-sample reads: played to its end, every sample finite
+0.25x, a 3000-sample tail in 256-sample reads: played to its end, every sample finite
+0.50x, a 2200-sample tail in 256-sample reads: played to its end, every sample finite

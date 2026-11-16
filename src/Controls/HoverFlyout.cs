@@ -5,33 +5,31 @@ using System.Windows.Threading;
 namespace HandPegApp;
 
 /// <summary>
-/// A flyout that opens while the pointer rests on a button (the Settings button's pattern, also Add Media and Add
-/// Layer): it opens once the pointer has stayed on the button for <see cref="OpenDelayMs"/>, so moving across the
-/// button never flashes it; it stays while the pointer is on the button or on the flyout (and, when
-/// <see cref="HoldsWhileFocused"/>, while the flyout has the keyboard); and it closes <see cref="CloseDelayMs"/> after
-/// the pointer has left both, which gives it time to cross from one to the other. The flyout's own panel answers the
-/// pointer too, so the button losing the pointer to the flyout's window never closes it.
+/// Hover-rest flyout (Settings, Add Media, Add Track): opens after the pointer rests on the button for <see cref="OpenDelayMs"/>, so
+/// passing over never flashes it; stays open while the pointer is on the button or flyout (and, with <see cref="HoldsWhileFocused"/>,
+/// while the flyout has keyboard focus); closes <see cref="CloseDelayMs"/> after leaving both, allowing time to cross between them. The
+/// flyout panel also tracks the pointer, so the button losing it to the popup window never closes the flyout.
 /// </summary>
 public sealed class HoverFlyout
 {
-    /// <summary>How long the pointer rests on the button before the flyout opens.</summary>
+    /// <summary>Hover rest on the button before opening, ms.</summary>
     public const int OpenDelayMs = 180;
 
-    /// <summary>How long after the pointer left both the button and the flyout it closes.</summary>
+    /// <summary>Delay after the pointer leaves both button and flyout before closing, ms.</summary>
     public const int CloseDelayMs = 260;
 
     private readonly Popup _popup;
     private readonly DispatcherTimer _open = new() { Interval = TimeSpan.FromMilliseconds(OpenDelayMs) };
     private readonly DispatcherTimer _close = new() { Interval = TimeSpan.FromMilliseconds(CloseDelayMs) };
 
-    /// <param name="host">What the pointer rests on: the button, or the grid holding it and the popup.</param>
-    /// <param name="panel">The popup's content (its child), which keeps it open while the pointer is on it.</param>
+    /// <param name="host">Hover target: the button, or the grid containing it and the popup.</param>
+    /// <param name="panel">Popup content (its child); keeps the flyout open while hovered.</param>
     public HoverFlyout(FrameworkElement host, Popup popup, FrameworkElement panel)
         : this([host], popup, panel)
     {
     }
 
-    /// <summary>One flyout for several buttons (the same button in two places): it opens from whichever the pointer rests on.</summary>
+    /// <summary>One flyout shared by several hosts (e.g. the same button in two places); opens from whichever is hovered.</summary>
     public HoverFlyout(IReadOnlyList<FrameworkElement> hosts, Popup popup, FrameworkElement panel)
     {
         _popup = popup;
@@ -75,29 +73,29 @@ public sealed class HoverFlyout
         };
     }
 
-    // The button the pointer came to rest on last.
+    // Most recently hovered host.
     private FrameworkElement _resting;
 
-    /// <summary>The button the flyout was last opened from (for <see cref="Opening"/> to place it by).</summary>
+    /// <summary>Host the flyout was last opened from (used by <see cref="Opening"/> for placement).</summary>
     public FrameworkElement OpenedFrom { get; private set; }
 
-    /// <summary>Stays open while something in the flyout has the keyboard (a box being typed into).</summary>
+    /// <summary>Keep open while the flyout has keyboard focus (e.g. a text box being edited).</summary>
     public bool HoldsWhileFocused { get; init; }
 
-    /// <summary>Stays open while this says so: a menu opened from one of its rows, a window of its own the pointer is on.</summary>
+    /// <summary>Extra keep-open predicate (e.g. a row's context menu is open, or the pointer is over a child window).</summary>
     public Func<bool>? HoldsWhile { get; init; }
 
-    /// <summary>Whether resting on the button may open it now: not while something the button opened by a click is open (the Layout selector: not while a project tab is being switched, 5.4D).</summary>
+    /// <summary>Gate for hover-opening (e.g. suppressed while a click-opened surface is open, or the Layout selector during a tab switch).</summary>
     public Func<bool>? CanOpen { get; init; }
 
-    /// <summary>What held it open has let go: it closes a moment later, unless the pointer is on the button or the flyout.</summary>
+    /// <summary>Signals that an external hold ended; closes after the delay unless the pointer is on the button or flyout.</summary>
     public void Release() => Left();
 
-    /// <summary>Called just before the flyout opens: to place it, or to bring what it shows up to date.</summary>
+    /// <summary>Invoked just before opening, for placement or content refresh.</summary>
     public Action? Opening { get; init; }
 
-    /// <summary>Opens it now (from the keyboard, say), with no wait.</summary>
-    /// <param name="from">The button it opens from; the one it last opened from when not said.</param>
+    /// <summary>Opens immediately (e.g. from the keyboard), with no delay.</summary>
+    /// <param name="from">Host to open from; defaults to the last one used.</param>
     public void Open(FrameworkElement? from = null)
     {
         _open.Stop();
@@ -107,7 +105,7 @@ public sealed class HoverFlyout
         _popup.IsOpen = true;
     }
 
-    /// <summary>Closes it now (a choice was made in it, Escape).</summary>
+    /// <summary>Closes immediately (after a selection or Escape).</summary>
     public void Close()
     {
         _open.Stop();
@@ -115,7 +113,7 @@ public sealed class HoverFlyout
         _popup.IsOpen = false;
     }
 
-    // The pointer left the button or the flyout: it closes a moment later, unless it comes back to either.
+    // Pointer left the button or flyout: arm the close delay (cancelled if it returns to either).
     private void Left()
     {
         if (!_popup.IsOpen)

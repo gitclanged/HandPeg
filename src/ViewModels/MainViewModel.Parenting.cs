@@ -3,31 +3,26 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Child layers by drag (5.5A, the user's directive): a clip tethered to a clip, a track header nested, moved or taken out of its stack -----
-// The Timeline's two drags that make a child layer, each one step of Undo. A clip let go on another clip it overlaps (UnifiedTimelineControl's
-// tether) becomes that clip's child (SetClipParent): it moves, trims, splits, deletes and folds with it while they overlap, and its Link switch
-// (the block's Lock, top right) unlinks it. A track's header dragged to a seam between the picture tracks moves the track there with its
-// picture Sub-Lanes, together (a Sub-Lane dragged there leaves its stack as the menu's Unlink from Parent takes it out); dragged onto the
-// lower half of another top-level picture track's header, the track becomes that track's Sub-Lane (SetTrackParent), its family kept
-// together beside it on the side it was on, its clips' links left as they are. A tethered clip carries the mark (TimelineClip.Tethered, Pass
-// 5.5A fix round 3), so it is never one of its parent's Game Preset pieces wherever it, its lane or its parent goes, and a piece stays one
-// wherever it lies: no drag needs refusing for where a lane would lie. Stateless: nothing of it is kept between drags.
+// ----- Drag parenting: clip tethers and track nesting -----
+// Two Timeline drags, each one undo step. Clip tether: dropping a clip onto an overlapping clip makes it a child (SetClipParent) that
+// moves, trims, splits, deletes and folds with the parent while overlapping; the block's Lock (Link) switch unlinks it.
+// Header drag to a seam between picture tracks moves the track with its picture Sub-Lanes (a Sub-Lane leaves its stack like Unlink
+// from Parent); onto the lower half of another top-level picture header it becomes that track's Sub-Lane (SetTrackParent), family kept
+// together on its original side, clip links unchanged. Tethered clips carry TimelineClip.Tethered so they are never Game Preset pieces
+// regardless of lane position, and pieces remain pieces anywhere. Stateless between drags.
 public partial class MainViewModel
 {
-    // How far up a clip's parents a loop is looked for (the model refuses one too).
+    // Max parent-chain depth checked for cycles (the model also rejects cycles).
     private const int MostParentSteps = 64;
 
     /// <summary>
-    /// Whether <paramref name="child"/>, starting at <paramref name="start"/> (seconds), may become <paramref name="parent"/>'s child (5.5A, the
-    /// tether): two clips on different tracks, neither on an audio or a captions track, the child on an unlocked track and no clip's child yet
-    /// (a Cutout, a stream's sound and a clip already tethered keep theirs: its Link switch frees it first), not a video of the parent's own
-    /// file (that would be one of its Cutouts), the parent not among the child's own family (no loop), and the two overlapping in time there
-    /// (a child goes with its parent only while they overlap). Wherever the child's track lies, under the parent's own track too: it is marked
-    /// tethered (Pass 5.5A), never one of the parent's Game Preset pieces.
+    /// Whether <paramref name="child"/> at <paramref name="start"/> (s) may be tethered to <paramref name="parent"/>: different tracks, neither
+    /// audio nor captions, child unlocked and unparented (Cutouts, stream audio and existing tethers must be unlinked first), not a video of
+    /// the parent's file (would read as a Cutout), no cycle, and overlapping in time. Allowed under the parent's own track; always marked tethered.
     /// </summary>
     public bool CanAttachClip(Layer child, Layer parent, double start) => AttachRefusal(child, parent, start) is null;
 
-    /// <summary>Why <paramref name="child"/> may not become <paramref name="parent"/>'s child at <paramref name="start"/> (5.5A, said in the status bar); null when it may (<see cref="CanAttachClip"/>).</summary>
+    /// <summary>Status-bar reason a tether is refused, or null when allowed (<see cref="CanAttachClip"/>).</summary>
     private string? AttachRefusal(Layer child, Layer parent, double start)
     {
         var plain = $"{child.Name} cannot become {parent.Name}'s child there: it has to overlap {parent.Name} in time on another unlocked picture track, and be no clip's child already (its Link switch frees it).";
@@ -40,19 +35,18 @@ public partial class MainViewModel
         if (track.Kind == TimelineTrackKind.Subtitle || overTrack.Kind == TimelineTrackKind.Subtitle)
             return plain;
 
-        // A sound on an audio track stays a clip of its own (5.5A review): a tethered one would stop counting toward the Sequence's length
-        // (SequenceSpans counts a loose sound only) and be taken for its picture's own sound; nor is a sound a picture's parent.
+        // Audio-track clips stay independent: a tethered one would drop out of the Sequence length (SequenceSpans counts only loose audio)
+        // and read as the picture's own audio; audio is never a picture's parent either.
         if (track.Kind == TimelineTrackKind.Audio)
             return $"{child.Name} is on an audio track: a sound is never tethered to a clip (it counts toward the Sequence's length on its own). Select both to move them together.";
         if (overTrack.Kind == TimelineTrackKind.Audio)
             return $"{parent.Name} is on an audio track: a clip is tethered only to a picture. Select both to move them together.";
 
-        // A video of the parent's own file tethered to it would be taken for one of its Cutouts (IsCutout: its speed, its presets), never as
-        // a clip of its own (5.5A review): refused.
+        // A same-file video child would be classified as a Cutout (IsCutout: speed, presets): refuse.
         if (kid.ContentKind == LayerKind.VideoFile && over.ContentKind == LayerKind.VideoFile && SameFile(kid.SourcePath, over.SourcePath ?? ""))
             return $"{child.Name} plays {parent.Name}'s own file: tethered to it, it would be one of {parent.Name}'s Cutouts. A Game Preset or the Cutout Studio makes Cutouts; select both to move them together.";
 
-        // Not one of the child's own (followed up from the parent, the links never come back to the child).
+        // Cycle check: walking up from the parent must never reach the child.
         var up = over;
         for (var steps = 0; steps < MostParentSteps && up.ParentClipId is { } above; steps++)
         {
@@ -68,9 +62,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Makes <paramref name="child"/> <paramref name="parent"/>'s child where it was let go (5.5A, the tether): moved along its own track to
-    /// <paramref name="start"/> first when it was dragged in time, then linked and marked tethered (<see cref="TimelineClip.Tethered"/>: none
-    /// of the parent's Game Preset pieces). One step of Undo ("attach ... to ..."); refused (why, said in the status bar) when it may not be.
+    /// Tethers <paramref name="child"/> to <paramref name="parent"/>: moves it to <paramref name="start"/> on its track if dragged in time, then
+    /// links it and sets <see cref="TimelineClip.Tethered"/> (never a Game Preset piece). One undo step; refusals post the reason.
     /// </summary>
     public bool AttachClip(Layer child, Layer parent, double start)
     {
@@ -99,12 +92,12 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>Whether a track's header may be dragged (5.5A): a picture track's (Video or Switch), top-level or a picture Sub-Lane.</summary>
+    /// <summary>Whether a track header is draggable: picture tracks (Video or Switch), top-level or Sub-Lane.</summary>
     public bool CanDragTrack(Layer row) => TrackOfRow(row) is { Kind: TimelineTrackKind.Video or TimelineTrackKind.Switch };
 
     /// <summary>
-    /// Whether a dragged header's track may go to the seam beside <paramref name="besideRow"/>'s top-level picture track (above it: in front):
-    /// a Sub-Lane always may (it leaves its stack), a top-level track where that changes the stacking order.
+    /// Whether a dragged track may move to the seam beside <paramref name="besideRow"/>'s top-level picture track (above = composited over it):
+    /// always for a Sub-Lane (leaves its stack); for a top-level track only if the order changes.
     /// </summary>
     public bool CanMoveTrackToSeam(Layer row, Layer besideRow, bool above)
     {
@@ -118,9 +111,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Moves a dragged header's track to the seam beside <paramref name="besideRow"/>'s top-level picture track (5.5A), its picture Sub-Lanes with
-    /// it, together; a Sub-Lane leaves its stack first, as the menu's Unlink from Parent takes it out (its clips' links to that track's clips go
-    /// too). One step of Undo.
+    /// Moves a dragged track (with its picture Sub-Lanes) to the seam beside <paramref name="besideRow"/>'s track; a Sub-Lane first leaves
+    /// its stack like Unlink from Parent (clearing clip links to that track). One undo step.
     /// </summary>
     public bool MoveTrackToSeam(Layer row, Layer besideRow, bool above)
     {
@@ -132,8 +124,7 @@ public partial class MainViewModel
         var label = from is not null ? $"take {row.Name} out of {from.DisplayName}'s stack" : $"move {row.Name} {where} {besideRow.Name}";
         if (!Edit(label, edit =>
             {
-                // The one canonical way out of a stack: the menu's own, given the view that stands for the track's row (UnlinkFromParent folds
-                // into this step: the track out of its stack, its clips' links cleared).
+                // Reuse the canonical unlink path (UnlinkFromParent, folded into this step): leave the stack and clear clip links.
                 if (track.ParentTrackId is not null)
                     UnlinkFromParent(RowOf(track) ?? row);
                 if (track.ParentTrackId is not null)
@@ -151,16 +142,14 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether a dragged header's track may become a Sub-Lane of <paramref name="parentRow"/>'s top-level picture track (5.5A): both picture
-    /// tracks, not the same, not its Sub-Lane already, and the parent not under it. Its clips' tethers and pieces stay what they are (Pass 5.5A:
-    /// the mark, never where a lane lies, says which a child is).
+    /// Whether a dragged track may nest under <paramref name="parentRow"/>'s top-level picture track: both picture tracks, distinct, not
+    /// already its Sub-Lane, no cycle. Tether/piece classification is unaffected (the Tethered mark decides, not lane position).
     /// </summary>
     public bool CanNestTrack(Layer row, Layer parentRow) => NestPair(row, parentRow) is not null;
 
     /// <summary>
-    /// Makes a dragged header's track a Sub-Lane of <paramref name="parentRow"/>'s top-level picture track (5.5A): it folds, ripples and hides
-    /// with it, drawn in its stack; its picture Sub-Lanes come with it, kept together beside the new parent on the side it was on (in front
-    /// stays in front). Its clips' links and tethers are left as they are. One step of Undo.
+    /// Nests a dragged track (with its picture Sub-Lanes) under <paramref name="parentRow"/>'s track so it folds, ripples and hides with it,
+    /// keeping its original side (front stays front). Clip links and tethers unchanged. One undo step.
     /// </summary>
     public bool NestTrackUnder(Layer row, Layer parentRow)
     {
@@ -182,15 +171,14 @@ public partial class MainViewModel
         return true;
     }
 
-    // The dragged header's track and the top-level picture track it would be nested under (5.5A): both picture tracks, not the same, not its
-    // Sub-Lane already, and the parent not under it; else null.
+    // Resolves (track, parent) for nesting when valid (both picture, distinct, not already nested, no cycle); else null.
     private (TimelineTrackModel Track, TimelineTrackModel Parent)? NestPair(Layer row, Layer parentRow) =>
         CanDragTrack(row) && TrackOfRow(row) is { } track && TrackOfRow(parentRow) is { } parent && IsTopPicture(parent) && !ReferenceEquals(track, parent)
         && track.ParentTrackId != parent.Id && !LiesUnder(parent, track)
             ? (track, parent)
             : null;
 
-    // Whether a track lies under another (in its stack, at any depth).
+    // Whether a track is nested under another at any depth.
     private bool LiesUnder(TimelineTrackModel lane, TimelineTrackModel track)
     {
         var at = lane;
@@ -206,13 +194,13 @@ public partial class MainViewModel
         return false;
     }
 
-    /// <summary>A track and the picture lanes under it (at any depth: its Cutouts, its nested tracks), in the stacking order; sound and caption lanes are not counted (they stay at the end).</summary>
+    /// <summary>A track plus all nested picture lanes (Cutouts, nested tracks) in stack order; audio and caption lanes excluded.</summary>
     private List<TimelineTrackModel> PictureFamilyOf(TimelineTrackModel track) =>
         Document.Tracks.Where(t => ReferenceEquals(t, track) || (t.Kind is not (TimelineTrackKind.Audio or TimelineTrackKind.Subtitle) && LiesUnder(t, track))).ToList();
 
     /// <summary>
-    /// The stacking order with <paramref name="moving"/> (in its order) put together just above (in front of) or just below the whole picture
-    /// family of <paramref name="beside"/>, as a new track beside it would go (NewTrackIndex); every other track keeps its order.
+    /// New stack order with <paramref name="moving"/> placed contiguously just above or below <paramref name="beside"/>'s whole picture
+    /// family (as NewTrackIndex); other tracks keep their order.
     /// </summary>
     private List<TimelineTrackModel> OrderWith(List<TimelineTrackModel> moving, TimelineTrackModel beside, bool above)
     {
@@ -228,7 +216,7 @@ public partial class MainViewModel
         return rest;
     }
 
-    // The tracks put in this order, within the edit (the document as it is now: each move leaves those before it in place).
+    // Applies the order within the edit; each move leaves earlier positions intact.
     private void Reorder(ITimelineTransaction edit, IReadOnlyList<TimelineTrackModel> order)
     {
         for (var i = 0; i < order.Count && i < Document.Tracks.Count; i++)

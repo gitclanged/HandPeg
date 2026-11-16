@@ -8,22 +8,21 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 /// <summary>
-/// A tooltip that names the keys of a KeybindManager action as they are bound now (4.4-BugHunt), instead of keys written
-/// into the XAML that went stale when the keys changed. <c>KeyTip.Text</c> holds the words, with "{keys}" where " (F)" goes
-/// (nothing while <c>KeyTip.Action</c> has no key) and "{key:action.id}" for another action's key inside a sentence (the
-/// action's name while it has none; "{key:action.id|words}" says what to write instead). The tooltip is filled in each time
-/// it opens, so keys changed in Settings show at once. Until then the element holds the words without keys, made without
-/// asking KeybindManager anything (5.0: even asking whether its map was made made its table of actions, before the first
-/// frame, for every KeyTip of the window and the timeline); the map is made at the first key or tooltip. Text never starts
-/// with "{" (XAML would read it as a markup extension). OverflowStrip's "..." menu reads it too (<see cref="Render"/>).
+/// Tooltip showing a KeybindManager action's current bindings, replacing hard-coded keys in XAML that went stale on rebind.
+/// <c>KeyTip.Text</c> holds the text with "{keys}" for " (F)" (empty while <c>KeyTip.Action</c> is unbound) and "{key:action.id}" for
+/// another action's key inline (the action name when unbound; "{key:action.id|words}" supplies fallback words). Text is resolved on
+/// each open, so Settings changes show immediately. Before that, the element holds a key-less stand-in built without touching
+/// KeybindManager (even querying whether its map exists would build the action table before Frame 1 for every KeyTip); the map is
+/// built on the first key press or tooltip. Text never starts with "{" (XAML would parse it as a markup extension).
+/// OverflowStrip's "..." menu also reads it (<see cref="Render"/>).
 /// </summary>
 /// <remarks>
-/// Two stages: a text of the form "Name{keys}: what it does" (or a short name before ": ") first shows only the name and its keys;
-/// after <see cref="DetailDwellMs"/> of hover the description (twelve words at most) opens under them. Any other text shows whole at once.
+/// Two-stage display: text shaped "Name{keys}: description" (or a short name before ": ") first shows only name and keys; after
+/// <see cref="DetailDwellMs"/> of hover the description (at most twelve words) expands below. Other text shows in full immediately.
 /// </remarks>
 public static class KeyTip
 {
-    /// <summary>How long the pointer rests on a control before its tooltip's description opens under its name and keys, ms.</summary>
+    /// <summary>Hover dwell in ms before the description expands below the name and keys.</summary>
     public const int DetailDwellMs = 1000;
 
     public static readonly DependencyProperty ActionProperty = DependencyProperty.RegisterAttached(
@@ -32,11 +31,11 @@ public static class KeyTip
     public static readonly DependencyProperty TextProperty = DependencyProperty.RegisterAttached(
         "Text", typeof(string), typeof(KeyTip), new PropertyMetadata(null, OnChanged));
 
-    // The element's two-stage tooltip, made the first time it opens.
+    // Per-element two-stage tooltip card, created on first open.
     private static readonly DependencyProperty CardProperty = DependencyProperty.RegisterAttached(
         "Card", typeof(ToolTip), typeof(KeyTip));
 
-    // The one dwell timer (one tooltip is open at a time) and the card it opens: made at the first two-stage tooltip, after Frame 1.
+    // Shared dwell timer (only one tooltip is open at a time) and its target card; created on the first two-stage tooltip, after Frame 1.
     private static DispatcherTimer? _dwell;
     private static ToolTip? _dwelling;
 
@@ -55,11 +54,11 @@ public static class KeyTip
 
         element.ToolTipOpening -= Opening;
         element.ToolTipOpening += Opening;
-        // A stand-in, so there is a tooltip to open: Opening fills in the keys before it is ever seen.
+        // Key-less stand-in so a tooltip exists to open; Opening replaces it with the resolved keys before display.
         element.ToolTip = Fill(text, GetAction(element), keys: false);
     }
 
-    // WPF reads the tooltip after raising ToolTipOpening, so what is set here is what shows.
+    // WPF reads ToolTip after raising ToolTipOpening, so the value set here is what displays.
     private static void Opening(object sender, ToolTipEventArgs e)
     {
         if (sender is FrameworkElement element && Prepare(element) is { } tip)
@@ -67,8 +66,8 @@ public static class KeyTip
     }
 
     /// <summary>
-    /// What the element's tooltip shows now: its words whole (one stage), or its card with the name and keys and the description
-    /// still closed (two stages); null when it has no KeyTip.
+    /// Current tooltip content: the full text (one stage), or the card with name and keys and the description collapsed (two
+    /// stages); null when the element has no KeyTip.
     /// </summary>
     internal static object? Prepare(FrameworkElement element)
     {
@@ -87,8 +86,8 @@ public static class KeyTip
     }
 
     /// <summary>
-    /// The two stages of a KeyTip's words: the name with its keys, and what it does ("" when the words are one stage). A text splits at
-    /// its first ": " when what comes before is a name: it ends with the keys, or is five words or fewer with no parenthesis.
+    /// Splits KeyTip text into (name with keys, description); description is "" for one-stage text. Splits at the first ": " only
+    /// when the prefix is a name: it ends with a single trailing "(keys)" group, or has at most five words and no parenthesis.
     /// </summary>
     internal static (string Name, string Detail) Split(string text)
     {
@@ -106,7 +105,7 @@ public static class KeyTip
         return (name, detail.Length == 0 ? "" : char.ToUpperInvariant(detail[0]) + detail[1..]);
     }
 
-    /// <summary>Words in a description, the keys' tokens counted as one: the microcopy law allows twelve.</summary>
+    /// <summary>Description word count with each brace token counted as one (microcopy limit: twelve).</summary>
     internal static int Words(string detail) => Regex.Replace(detail, @"\{[^}]*\}", "X").Split(' ', StringSplitOptions.RemoveEmptyEntries).Length;
 
     private static ToolTip CardFor(FrameworkElement element)
@@ -135,7 +134,7 @@ public static class KeyTip
     private static (TextBlock Title, TextBlock More) Parts(ToolTip card) =>
         card.Content is StackPanel { Children: [TextBlock title, TextBlock more] } ? (title, more) : throw new InvalidOperationException("Not a KeyTip card.");
 
-    // The description opens DetailDwellMs after the pointer came to rest on the element: the tooltip itself opened its initial delay in.
+    // Expand DetailDwellMs after hover rest; the tooltip's own initial show delay is subtracted from the wait.
     private static void StartDwell(FrameworkElement element, ToolTip card)
     {
         _dwelling = card;
@@ -156,16 +155,16 @@ public static class KeyTip
         _dwell.Start();
     }
 
-    /// <summary>Opens a card's description (the dwell ran out; tests call it directly).</summary>
+    /// <summary>Expands a card's description (on dwell expiry; tests call it directly).</summary>
     internal static void Expand(ToolTip card) => Parts(card).More.Visibility = Visibility.Visible;
 
-    /// <summary>The element's KeyTip words with the keys as bound now; null when it has none.</summary>
+    /// <summary>KeyTip text resolved with current bindings; null when the element has none.</summary>
     public static string? Render(DependencyObject element) =>
         GetText(element) is { } text ? Fill(text, GetAction(element), keys: true) : null;
 
-    // "{keys}" becomes " (F)" (or nothing), "{key:id}" the key's name (or the action's, or the words after "|"); anything else
-    // in braces stays as it is. Without keys (the stand-in), every key is left out the same way an unbound one is, and an
-    // action with no words after "|" is named by its id: the stand-in never touches KeybindManager, and is never seen.
+    // "{keys}" -> " (F)" or empty; "{key:id}" -> the key name (else the action name, else the words after "|"); other brace
+    // tokens stay verbatim. With keys:false (stand-in), keys are omitted as if unbound and "{key:id}" without "|" words falls
+    // back to the id, so the stand-in never touches KeybindManager (and is never displayed).
     private static string Fill(string text, string? action, bool keys)
     {
         if (text.IndexOf('{') < 0)

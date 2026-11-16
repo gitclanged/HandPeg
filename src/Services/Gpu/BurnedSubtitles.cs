@@ -10,21 +10,18 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Services.Gpu;
 
-// ----- A file's subtitles burned into an export, by the compositor (Pass 5.2-Audit) -----
-// What FFmpeg's libass (the subtitles filter) used to draw on the video's frames is the GPU's now, through the very path the
-// preview draws a picture subtitle track by (PictureSubtitleTrack, GpuScenePlan.Pictures.cs: each cue's picture a still over the
-// picture of the clip it is shown in). A picture stream (PGS, VobSub, DVB) is decoded as the preview decodes one
-// (PictureSubtitleDecoder); a text stream (SubRip, ASS, mov_text, WebVTT) is read out as SubRip by FFmpeg (a subtitle
-// transcode, no filter) and each cue drawn by WPF as libass draws SubRip by default: Arial, white, a thin black outline, bottom
-// centre, on the video's own frame. The stream is the file the Subtitles settings name's (SequenceExportState.StreamSourcePath,
-// the file last opened); each cue is placed on the sequence by that file's clips (SequenceSpans.SpansOf, 5.2-AuditB: on any
-// track, at each one's speed; a cue across a cut is cut with it), and drawn through the clip each piece of it is placed by.
+// ----- Export subtitle burn-in, rendered by the compositor -----
+// Replaces FFmpeg's libass subtitles filter with the preview's picture-subtitle path (PictureSubtitleTrack, GpuScenePlan.Pictures.cs:
+// each cue a still over its clip). Bitmap streams (PGS, VobSub, DVB) decode via PictureSubtitleDecoder; text streams (SubRip, ASS,
+// mov_text, WebVTT) are transcoded to SubRip by FFmpeg (no filter) and drawn by WPF in libass's default SubRip style (Arial, white,
+// thin black outline, bottom centre). Source: SequenceExportState.StreamSourcePath. Cues map onto the sequence through that file's
+// clips on any track at each clip's speed (SequenceSpans.SpansOf), split at cuts.
 
 public static class BurnedSubtitles
 {
     /// <summary>
-    /// The burned subtitle streams of an export's state as the track its plan draws (null for none, or none readable: the log
-    /// says why). Off the interface's thread: it decodes and draws (an STA thread of its own for WPF).
+    /// Builds the burn-in track for an export state; null when none is requested or readable (reason logged). Call off the UI
+    /// thread: it decodes, and draws on its own STA thread.
     /// </summary>
     public static async Task<PictureSubtitleTrack?> PrepareAsync(SequenceExportState state, CancellationToken cancellationToken)
     {
@@ -59,8 +56,8 @@ public static class BurnedSubtitles
         if (set is null || set.Pictures.Count == 0)
             return null;
 
-        // Each picture where the file's clips put its moment (a cue across a cut is cut with it), at each clip's speed. The
-        // stream's times are on the file's container clock, the clips' moments on its picture's (the worker's, MediaStarts).
+        // Map each picture through the file's clips (split at cuts, scaled by speed). Stream times use the container clock,
+        // clip times the video stream's clock (MediaStarts), hence the shift.
         var shift = ContainerShiftOf(state, path);
         var (file, shown, clips) = (new List<(double, double)>(), new List<(double, double)>(), new List<Guid>());
         foreach (var picture in set.Pictures)
@@ -85,7 +82,7 @@ public static class BurnedSubtitles
         return track;
     }
 
-    /// <summary>The picture size of the first clip of a file that knows it (the frame a text stream is drawn for); 1920 x 1080 when none does.</summary>
+    /// <summary>Picture size of the file's first clip that records it (the frame text cues are drawn for); 1920x1080 otherwise.</summary>
     private static (int Width, int Height) PictureSizeOf(TimelineDocument document, IReadOnlyList<ClipSpan> spans)
     {
         foreach (var span in spans)
@@ -98,8 +95,8 @@ public static class BurnedSubtitles
     }
 
     /// <summary>
-    /// Where a file's picture starts on its container's clock (VideoStart - ContainerStart): how much later its subtitle
-    /// stream's times are than its clips' moments. 0 while either is not known.
+    /// Video start on the container clock (VideoStart - ContainerStart): the offset of subtitle stream times over clip media times.
+    /// 0 while either is unknown.
     /// </summary>
     private static double ContainerShiftOf(SequenceExportState state, string path)
     {
@@ -110,7 +107,7 @@ public static class BurnedSubtitles
 
     // ----- Text subtitles -----
 
-    /// <summary>A text subtitle stream's cues, each drawn as libass draws SubRip by default, on the video's frame.</summary>
+    /// <summary>Draws a text stream's cues in libass's default SubRip style at the video's frame size.</summary>
     private static async Task<PictureSubtitleSet?> DrawTextAsync(string path, int stream, string ffmpeg, int width, int height, CancellationToken token)
     {
         if (!File.Exists(ffmpeg))
@@ -130,7 +127,7 @@ public static class BurnedSubtitles
         return new PictureSubtitleSet(path, width, height, pictures, isComplete: true, overBudget: false);
     }
 
-    // libass's style for SubRip (FFmpeg's default ASS header): 16 / 288 of the height, outline 1 / 288, bottom centre, 10 / 288 up.
+    // libass SubRip default (FFmpeg's ASS header): font 16/288 of height, outline 1/288, bottom centre, margin 10/288.
     private static PictureSubtitlePicture? Draw(SubtitleCue cue, int n, string path, int stream, int width, int height)
     {
         var text = cue.Text.Trim();

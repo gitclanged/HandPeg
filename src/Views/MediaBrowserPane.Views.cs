@@ -9,43 +9,41 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Views;
 
-/// <summary>How the media browser lays its files out (5.4C): tiles, a table of details, or a preview and cutter beside a list.</summary>
+/// <summary>Media Browser layout: tiles, a details table, or a preview/cutter beside a list.</summary>
 public enum MediaBrowserView { Grid, List, Filmstrip }
 
-// ----- The media browser's three views (5.4C) -----
-// One list (Items) in all three, its template and panel switched (so the pictures, the hover scrubbing, the selection and the drag work
-// the same in each): Grid, the tiles that fill the pane (5.3.1); List, a table of each file's details under a header whose columns sort,
-// a narrow pane dropping the columns that matter least, and once the pane is 600 DIPs wide the preview and cutter beside it; Filmstrip,
-// the preview and sub-clip cutter on the left and the list in a column on the right (BrowserFilmstripListWidth), a splitter between.
-// Law 1: the pane is made before the first frame and shown by default, so nothing here is made in the constructor but the columns' widths;
-// the header, the preview and the cutter are made after the first frame (BuildDeferredParts, ContextIdle), and the details are read only
-// for the rows in sight, off the interface's thread.
+// ----- Media Browser views -----
+// One list (Items) for all three views; only its template and panel swap, so thumbnails, hover scrub, selection and drag behave alike.
+// Grid: tiles filling the pane. List: a sortable details table that drops low-priority columns when narrow and shows the preview/cutter
+// beside it from 600 DIPs. Filmstrip: preview and sub-clip cutter on the left, list column on the right (BrowserFilmstripListWidth),
+// splitter between. Law 1: the pane exists before Frame 1, so the constructor only sets column widths; header, preview and cutter build
+// after Frame 1 (BuildDeferredParts, ContextIdle), and details load off the UI thread only for visible rows.
 public partial class MediaBrowserPane
 {
-    /// <summary>The List view shows its preview from this width of the pane, DIPs...</summary>
+    /// <summary>List view shows its preview at or above this pane width (DIPs)...</summary>
     internal const double SplitPreviewFrom = 600;
 
-    /// <summary>...and hides it below this one, so dragging a splitter across the line never makes it flicker.</summary>
+    /// <summary>...and hides it below this one (hysteresis so splitter drags across the threshold never flicker).</summary>
     internal const double SplitPreviewBelow = 576;
 
-    /// <summary>The least the List view's table keeps beside its preview, DIPs.</summary>
+    /// <summary>Minimum List table width beside the preview (DIPs).</summary>
     internal const double ListKeepsAtLeast = 340;
 
-    /// <summary>The Filmstrip view's list: its least width, DIPs (and at most half the pane)...</summary>
+    /// <summary>Filmstrip list minimum width in DIPs (maximum is half the pane)...</summary>
     internal const double FilmstripListLeast = 180;
 
-    /// <summary>...down to this one in a narrow pane (5.4D), so the preview beside it keeps <see cref="PreviewLeast"/>.</summary>
+    /// <summary>...relaxed to this in a narrow pane so the preview keeps <see cref="PreviewLeast"/>.</summary>
     internal const double FilmstripListNarrow = 140;
 
-    /// <summary>The least the Filmstrip view's preview and cutter keep beside the list, DIPs (5.4D).</summary>
+    /// <summary>Minimum Filmstrip preview/cutter width beside the list (DIPs).</summary>
     internal const double PreviewLeast = 120;
 
-    /// <summary>The Filmstrip view's list width to start with, and the one a double-click on its splitter puts back (5.4D), DIPs.</summary>
+    /// <summary>Default Filmstrip list width, also restored by double-clicking the splitter (DIPs).</summary>
     internal const double FilmstripListDefault = 240;
 
     private const double SplitterWidth = 5;
 
-    // The List view's columns after the name, in the order they stand, with the width each takes and the sort key of its header.
+    // List detail columns after Name, in display order: resource key, sort key, header and width.
     internal static readonly (string Resource, string Key, string Header, double Width)[] DetailColumns =
     [
         ("ColResolution", "Resolution", "Resolution", 84),
@@ -56,10 +54,10 @@ public partial class MediaBrowserPane
         ("ColSize", "Size", "Size", 70),
     ];
 
-    // Which of them a narrowing table lets go first: the sound streams and the codec, then the size, the frame rate, the resolution.
+    // Column drop order as the table narrows (first dropped first).
     private static readonly string[] DroppedFirst = ["Audio", "Codec", "Size", "Framerate", "Resolution", "Duration"];
 
-    // The picture's column, and the least the name keeps, DIPs; and what a row has round its cells (the list item's edge and padding).
+    // DIPs: thumbnail column, minimum name width, and per-row chrome (item border and padding).
     private const double ThumbColumn = 72, NameAtLeast = 120, RowChrome = 16;
 
     private MediaBrowserView _view;
@@ -67,7 +65,7 @@ public partial class MediaBrowserPane
     private double _tileSize;
     private string _sortKey = "Name";
 
-    /// <summary>The view the pane shows; setting it switches the view at once and, outside the picker, keeps it in
+    /// <summary>Current view; setting switches immediately and, outside picker mode, persists to
     /// <see cref="Services.AppSettings.BrowserView"/>.</summary>
     public MediaBrowserView ViewMode
     {
@@ -76,16 +74,16 @@ public partial class MediaBrowserPane
     }
 
     /// <summary>
-    /// The view a saved <see cref="AppSettings.BrowserView"/> names; an empty or unknown one is the List view where the tile size was a
-    /// list's (below <see cref="ListBelow"/>, as the size slider had it before 5.4C), else the Grid.
+    /// Parses a saved <see cref="AppSettings.BrowserView"/>; empty or unknown falls back to List when the legacy tile size is below
+    /// <see cref="ListBelow"/>, else Grid.
     /// </summary>
     internal static MediaBrowserView ViewOf(string? saved, int tileSize) =>
         Enum.TryParse<MediaBrowserView>(saved?.Trim(), ignoreCase: true, out var view) && Enum.IsDefined(view) ? view
         : tileSize < ListBelow ? MediaBrowserView.List : MediaBrowserView.Grid;
 
     /// <summary>
-    /// How large the tiles are, 0 to 100 (the tab menu's Tile Size, 4.2B-2): a value below <see cref="ListBelow"/> is the List view (as the
-    /// size slider's smallest steps were), any other the Grid at that size. Outside the picker it is kept in BrowserTileSize.
+    /// Tile size 0..100 (tab menu Tile Size): below <see cref="ListBelow"/> selects List, otherwise Grid at that size. Persisted to
+    /// BrowserTileSize outside picker mode.
     /// </summary>
     public double TileSize
     {
@@ -98,13 +96,13 @@ public partial class MediaBrowserPane
             ApplyTileWidth(_tileSize);
             SetView(_tileSize < ListBelow ? MediaBrowserView.List : MediaBrowserView.Grid, remember: true);
 
-            // The pictures are scaled at once; once the size rests, those now drawn larger than they were made are made again.
+            // Thumbnails scale immediately; once the size settles, upscaled ones are regenerated at the new size.
             _sizeSettled.Stop();
             _sizeSettled.Start();
         }
     }
 
-    /// <summary>The sort and the view as the settings have them (the constructor; the picker leaves Filmstrip out, as it has no timeline).</summary>
+    /// <summary>Constructor-time sort and view from settings (picker mode excludes Filmstrip: no timeline target).</summary>
     private void InitializeView(AppSettings settings)
     {
         _tileSize = Math.Clamp(settings.BrowserTileSize, 0, 100);
@@ -114,7 +112,7 @@ public partial class MediaBrowserPane
         SetView(ViewOf(settings.BrowserView, settings.BrowserTileSize), remember: false);
     }
 
-    /// <summary>The sort the settings name: one of the Sort box's, or a column of the List view (the box then shows none).</summary>
+    /// <summary>Restores the saved sort: a Sort box key, or a List column key (Sort box then shows no selection).</summary>
     private void InitializeSort(AppSettings settings)
     {
         var known = SortKeys.Concat(DetailColumns.Select(c => c.Key)).FirstOrDefault(k => string.Equals(k, settings.BrowserSort, StringComparison.OrdinalIgnoreCase));
@@ -138,7 +136,7 @@ public partial class MediaBrowserPane
         SetView((MediaBrowserView)ViewBox.SelectedIndex, remember: true);
     }
 
-    /// <summary>Shows a view (the picker never shows Filmstrip: the Grid instead), kept in the settings when <paramref name="remember"/>.</summary>
+    /// <summary>Switches view (picker mode maps Filmstrip to Grid); persists when <paramref name="remember"/>.</summary>
     private void SetView(MediaBrowserView view, bool remember)
     {
         if (!Enum.IsDefined(view) || (PickerMode && view == MediaBrowserView.Filmstrip))
@@ -167,13 +165,13 @@ public partial class MediaBrowserPane
         ViewModeChanged?.Invoke(view);
     }
 
-    /// <summary>The view shown has changed (5.4D): the dock raises or lowers the Media pane's least width in place (the Filmstrip view's is wider).</summary>
+    /// <summary>Raised on view change; the dock adjusts the Media pane's minimum width in place (Filmstrip needs more).</summary>
     public event Action<MediaBrowserView>? ViewModeChanged;
 
-    /// <summary>The list's template and panel for the view, the header shown or not, and the columns laid out.</summary>
+    /// <summary>Applies the view's item template and panel, header visibility and column layout.</summary>
     private void ApplyView(MediaBrowserView? was)
     {
-        // Both panels make only what is in view (the tiles' panel scrolls itself by pixels); the List and Filmstrip views share theirs.
+        // Both panels virtualize (the tile panel scrolls by pixel); List and Filmstrip share the row panel.
         var (template, panel) = _view switch
         {
             MediaBrowserView.List => ("DetailRowTemplate", "RowPanel"),
@@ -201,14 +199,14 @@ public partial class MediaBrowserPane
     }
 
     /// <summary>
-    /// Whether the List view shows its preview at a width of the pane (<see cref="SplitPreviewFrom"/> on, below
-    /// <see cref="SplitPreviewBelow"/> off, as it was in between).
+    /// List preview visibility with hysteresis: on at <see cref="SplitPreviewFrom"/>, off below <see cref="SplitPreviewBelow"/>, unchanged
+    /// in between.
     /// </summary>
     internal static bool SplitShows(bool shown, double width) => width >= (shown ? SplitPreviewBelow : SplitPreviewFrom);
 
     /// <summary>
-    /// The Filmstrip view's list width: the one kept (240 by default), at least <see cref="FilmstripListLeastAt"/> and at most half the pane
-    /// (never under that least).
+    /// Filmstrip list width: the saved width (default 240) clamped to [<see cref="FilmstripListLeastAt"/>, half the pane], the minimum
+    /// winning.
     /// </summary>
     internal static double FilmstripListWidth(double kept, double paneWidth)
     {
@@ -218,18 +216,18 @@ public partial class MediaBrowserPane
     }
 
     /// <summary>
-    /// The least the Filmstrip view's list keeps in a pane this wide (5.4D): <see cref="FilmstripListLeast"/>, narrowed down to
-    /// <see cref="FilmstripListNarrow"/> as the pane narrows, so the preview beside it keeps <see cref="PreviewLeast"/>.
+    /// Filmstrip list minimum for a pane width: <see cref="FilmstripListLeast"/>, relaxed to <see cref="FilmstripListNarrow"/> as the pane
+    /// narrows so the preview keeps <see cref="PreviewLeast"/>.
     /// </summary>
     internal static double FilmstripListLeastAt(double paneWidth) =>
         Math.Max(FilmstripListNarrow, Math.Min(FilmstripListLeast, Math.Floor(paneWidth - SplitterWidth - PreviewLeast)));
 
-    /// <summary>The List view's table width beside its preview: about half the pane, never under <see cref="ListKeepsAtLeast"/>.</summary>
+    /// <summary>List table width beside the preview: 55% of the pane, at least <see cref="ListKeepsAtLeast"/>.</summary>
     internal static double SplitListWidth(double paneWidth) => Math.Max(ListKeepsAtLeast, Math.Round(paneWidth * 0.55));
 
     /// <summary>
-    /// The columns of the List view a row of <paramref name="rowWidth"/> DIPs shows, in order: every one while the name keeps
-    /// 120 DIPs, else the sound streams and the codec go first, then the size, the frame rate, the resolution and the length.
+    /// Detail columns that fit in <paramref name="rowWidth"/> DIPs while Name keeps 120: drops Audio, Codec, Size, Framerate, Resolution,
+    /// then Duration as needed.
     /// </summary>
     internal static IReadOnlyList<string> ColumnsShown(double rowWidth)
     {
@@ -244,7 +242,7 @@ public partial class MediaBrowserPane
         return shown;
     }
 
-    /// <summary>The preview's column, the splitter and the list's column for the view and the pane's width.</summary>
+    /// <summary>Lays out the preview column, splitter and list column for the current view and pane width.</summary>
     private void LayOutColumns()
     {
         var width = Math.Min(ContentGrid.ActualWidth, _contentOffered);
@@ -255,7 +253,7 @@ public partial class MediaBrowserPane
         switch (_view)
         {
             case MediaBrowserView.List:
-                // (Never in the picker: it has no timeline to put a sub-clip on.)
+                // Never in picker mode (no timeline for sub-clips).
                 _splitShown = !PickerMode && width > 0 && SplitShows(_splitShown, width);
                 preview = _splitShown;
                 ListColumn.Width = preview ? new GridLength(SplitListWidth(width)) : new GridLength(1, GridUnitType.Star);
@@ -283,8 +281,8 @@ public partial class MediaBrowserPane
     }
 
     /// <summary>
-    /// The Filmstrip view's list column for a width of the pane's content (5.4D): the width kept, at most half, and in a narrow pane its least
-    /// given way down to 140 DIPs so the preview and cutter keep 120 beside it (PreviewColumn's least).
+    /// Sets Filmstrip column constraints for a content width: saved list width up to half, with the list minimum relaxing to 140 DIPs in
+    /// narrow panes so the preview keeps 120 (PreviewColumn.MinWidth).
     /// </summary>
     private void FitFilmstripColumns(double width)
     {
@@ -296,13 +294,13 @@ public partial class MediaBrowserPane
             ListColumn.Width = new GridLength(list);
     }
 
-    // The width the pane last offered its content (5.4D): the content's grid is never laid out narrower than its columns' least widths
-    // together, so its own width alone would never let the Filmstrip list give way. Unbounded until a measure says.
+    // Width last offered to the content. ContentGrid never lays out below the sum of its column minimums, so its ActualWidth alone would
+    // never let the Filmstrip list shrink. Infinite until the first measure.
     private double _contentOffered = double.PositiveInfinity;
 
     /// <summary>
-    /// Measured for a width (5.4D): in the Filmstrip view, the list's least fitted to the width offered (less what lies round the content's
-    /// grid) before the grid is measured, so a pane narrowed to the Media column's least (280) lays the list and the preview out inside it.
+    /// In Filmstrip view, fits column minimums to the offered width (minus chrome around ContentGrid) before measuring, so a pane at the
+    /// Media column minimum (280) still lays out list and preview inside it.
     /// </summary>
     protected override Size MeasureOverride(Size constraint)
     {
@@ -320,7 +318,7 @@ public partial class MediaBrowserPane
         return base.MeasureOverride(constraint);
     }
 
-    /// <summary>The splitter let go: the list's width is kept (BrowserFilmstripListWidth), and laid out from it from now on.</summary>
+    /// <summary>Splitter release: persists the list width (BrowserFilmstripListWidth) for future layouts.</summary>
     private void PreviewSplitter_DragCompleted(object sender, DragCompletedEventArgs e)
     {
         var width = Math.Round(ListColumn.ActualWidth);
@@ -329,8 +327,8 @@ public partial class MediaBrowserPane
     }
 
     /// <summary>
-    /// A double-click on the splitter (5.4D): the list back to its 240 DIPs (as wide as the pane lets it be), kept. Taken on the press, so
-    /// the second click never starts a drag whose end would keep the old width.
+    /// Splitter double-click: resets and persists the list width to 240 DIPs (pane permitting). Handled on press so the second click never
+    /// starts a drag whose completion would save the old width.
     /// </summary>
     private void PreviewSplitter_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
@@ -342,7 +340,7 @@ public partial class MediaBrowserPane
         LayOutColumns();
     }
 
-    /// <summary>Each column of the List view as wide as it stands, or 0 where the row is too narrow for it (the header's and the rows' alike).</summary>
+    /// <summary>Sets each detail column's shared GridLength resource (header and rows): its width, or 0 when it does not fit.</summary>
     private void ApplyColumns(double rowWidth)
     {
         var shown = ColumnsShown(rowWidth);
@@ -354,14 +352,13 @@ public partial class MediaBrowserPane
         }
     }
 
-    // ----- The List view's header (made at first need) -----
+    // ----- List header (built lazily) -----
 
     private Grid? _header;
     private readonly Dictionary<string, TextBlock> _headerGlyphs = [];
 
     /// <summary>
-    /// The parts of the views made at first need, after the first frame (5.4C, Law 1): the List view's header and, where the view shows
-    /// it, the preview and the cutter.
+    /// Builds lazily created parts after Frame 1 (Law 1): the List header and, when the view shows it, the preview and cutter.
     /// </summary>
     private void BuildDeferredParts()
     {
@@ -371,7 +368,7 @@ public partial class MediaBrowserPane
             EnsurePreview();
     }
 
-    /// <summary>The header row: a cell per column, as wide as the rows' (the same resources); a click sorts by it, again the other way.</summary>
+    /// <summary>Builds the header: one cell per column sharing the rows' width resources; click sorts, click again reverses.</summary>
     private void BuildHeader()
     {
         var header = new Grid { Height = 22, Margin = new Thickness(0, 0, 0, 2) };
@@ -428,7 +425,7 @@ public partial class MediaBrowserPane
         Dispatcher.BeginInvoke(FitHeaderToRows, DispatcherPriority.Loaded);
     }
 
-    /// <summary>The header's edges where the rows' cells begin and end: inside the list's border and an item's padding, short of its scroll bar.</summary>
+    /// <summary>Aligns header margins with row cells: inside the list border and item padding, excluding the scroll bar.</summary>
     private void FitHeaderToRows()
     {
         if (_header is null || Scroller is not { } scroller || Items.ActualWidth <= 0)
@@ -442,11 +439,11 @@ public partial class MediaBrowserPane
         }
         catch (InvalidOperationException)
         {
-            // Not laid out together yet.
+            // Not yet in a common visual tree.
         }
     }
 
-    /// <summary>A column header clicked: the files sorted by it, ascending; the same one again, the other way.</summary>
+    /// <summary>Header click: sort ascending by the column; same column again toggles direction.</summary>
     private void SortByColumn(string key)
     {
         var descending = string.Equals(_sortKey, key, StringComparison.Ordinal) && SortDirectionButton.IsChecked != true;
@@ -471,12 +468,12 @@ public partial class MediaBrowserPane
         }
         else
         {
-            // Its handler sorts again and keeps the direction.
+            // The direction button's handler re-sorts with the new direction.
             SortDirectionButton.IsChecked = descending;
         }
     }
 
-    /// <summary>The sorting column's arrow in the header (up ascending, down descending); none on the others.</summary>
+    /// <summary>Shows the sort arrow on the active column only (up = ascending, down = descending).</summary>
     private void ShowSortInHeader()
     {
         var descending = SortDirectionButton.IsChecked == true;
@@ -484,12 +481,12 @@ public partial class MediaBrowserPane
             glyph.Text = key == _sortKey ? descending ? Glyphs.ChevronDown : Glyphs.ChevronUp : "";
     }
 
-    // ----- The details of the rows in sight (List and Filmstrip) -----
+    // ----- Visible-row details (List and Filmstrip) -----
 
     private readonly List<MediaBrowserItem> _detailsWanted = [];
     private bool _readingDetails;
 
-    /// <summary>Asks for the details of the files in sight, in the List and Filmstrip views only (the Grid shows none).</summary>
+    /// <summary>Queues detail reads for visible files (List and Filmstrip only; Grid shows no details).</summary>
     private void WantDetails()
     {
         if (_view == MediaBrowserView.Grid)
@@ -506,8 +503,8 @@ public partial class MediaBrowserPane
     }
 
     /// <summary>
-    /// Reads the details asked for, one file at a time, those still in sight first, away from the interface (MediaBrowserFrames: the
-    /// cache, else ffprobe in the Background lane), never while a drag and drop holds background work.
+    /// Reads queued details one file at a time, visible first, off the UI thread (MediaBrowserFrames: cache, else ffprobe on the Background
+    /// lane); pauses while drag-and-drop holds background work.
     /// </summary>
     private async Task ReadDetailsAsync()
     {
@@ -523,7 +520,7 @@ public partial class MediaBrowserPane
                 var item = _detailsWanted.FirstOrDefault(_inSight.Contains);
                 if (item is null)
                 {
-                    // Scrolled out of sight before their turn: asked for again when they come back.
+                    // Remaining items scrolled out of view; they are re-queued when visible again.
                     _detailsWanted.Clear();
                     break;
                 }

@@ -10,65 +10,62 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp.Shell;
 
-/// <summary>Where a file or link dropped on the window goes (5.4A): decided by <see cref="DropRouter.RouteOf"/>, a pure function the golden tests read.</summary>
+/// <summary>Destination of a dropped file or link, decided by the pure <see cref="DropRouter.RouteOf"/> (golden-tested).</summary>
 internal enum DropRoute
 {
-    /// <summary>Nothing that can be opened.</summary>
+    /// <summary>Nothing openable.</summary>
     None,
 
-    /// <summary>Onto the timeline where it was let go (FindDropPlace): a row and a moment.</summary>
+    /// <summary>Onto the timeline at the drop point (FindDropPlace: row and time).</summary>
     TimelinePlace,
 
-    /// <summary>Onto the timeline at the playhead as sound clips (let go on the Audio tab).</summary>
+    /// <summary>Audio clips at the playhead (dropped on the Audio tab).</summary>
     AudioTab,
 
-    /// <summary>Onto the timeline at the playhead, as the Media pane's Add does (AddFilesToTimeline).</summary>
+    /// <summary>Clips at the playhead, like the Media pane's Add (AddFilesToTimeline).</summary>
     AddAtPlayhead,
 
-    /// <summary>Nothing open: the first file opened, the pictures after it following it in line.</summary>
+    /// <summary>Nothing open: open the first file and append following images after it.</summary>
     OpenThenFollow,
 
-    /// <summary>Opened as the video (LoadDroppedFile): straight away with nothing open, or after the replace prompt.</summary>
+    /// <summary>Open as the source (LoadDroppedFile), directly or after the replace prompt.</summary>
     OpenOrReplace,
 
-    /// <summary>A project opened in a Project Tab (OpenProjectInTabAsync): never in place of the open one.</summary>
+    /// <summary>Open a project in a new tab (OpenProjectInTabAsync), never replacing the current one.</summary>
     OpenProject,
 
-    /// <summary>Onto the Media Browser pane (5.4C): into Project Media (TimelineDocument.MediaPool), nothing onto the timeline.</summary>
+    /// <summary>Into Project Media (TimelineDocument.MediaPool) via the Media Browser pane; nothing on the timeline.</summary>
     AddToProjectMedia,
 }
 
-/// <summary>One target of the drop overlay: a preset to drop a file on, with the icon it is drawn with.</summary>
+/// <summary>Drop overlay target: a preset and its icon.</summary>
 public sealed record DropTargetItem(string Name, string IconData, object Target)
 {
     /// <summary>A card with a header: a Game Preset.</summary>
     public const string StyleIcon = "M 3,5 H 23 V 21 H 3 Z M 3,10 H 23 M 7,14 H 15 M 7,17 H 12";
 }
 
-/// <summary>The window's parts the drop overlay is drawn with (MainWindow.xaml).</summary>
+/// <summary>MainWindow.xaml elements used by the drop overlay.</summary>
 internal sealed record DropOverlayParts(Grid Overlay, ItemsControl PresetList, ItemsControl SquishList, TextBlock PresetTitle,
     FrameworkElement PresetSection, FrameworkElement SquishSection, UIElement Video, Action ClearDropMark);
 
 /// <summary>
-/// What a drag carries and where its drop goes: the drag's files or link (<see cref="Dragged"/>), the routing policy (<see cref="RouteOf"/>,
-/// pure), the video made ready ahead of a likely drop (<see cref="PrewarmDrop"/>), and the drop overlay of an empty window (Game Presets and
-/// the Social Squisher's presets) shown while a file is carried in. The window runs the route (it adds clips, opens files and tabs).
+/// Drag-and-drop routing: payload extraction (<see cref="Dragged"/>), pure policy (<see cref="RouteOf"/>), pre-warming a likely drop
+/// (<see cref="PrewarmDrop"/>), and the empty-window overlay (Game Presets, Social Squisher presets). The window executes routes.
 /// </summary>
-/// <remarks>The window's thread only. The overlay's targets are made at the first idle moment after Frame 1 (<see cref="PrepareDropTargets"/>).</remarks>
+/// <remarks>UI thread only. Overlay targets are built at the first idle after Frame 1 (<see cref="PrepareDropTargets"/>).</remarks>
 internal sealed class DropRouter
 {
-    // A file dragged in holds background work back (WorkScheduler.HoldBackground, 4.3E) until a moment after its last move
-    // (each move holds it again: a drag from another program has no end HandPeg is told of for sure), and a drop holds it
-    // a moment more: until its own work, which holds it for as long as it takes, has begun (clips put on the timeline), or
-    // while a video it opens is probed (its own I-frames, waveforms and proxy are background work, and are not held long).
+    // A drag holds background work (WorkScheduler.HoldBackground), renewed on every move since cross-process drags have no reliable
+    // end event. A drop extends the hold until its own work starts (clip placement) or its probe finishes; the opened file's I-frames,
+    // waveforms and proxy are background work and are not held.
     internal static readonly TimeSpan DragHold = TimeSpan.FromMilliseconds(500), DropHold = TimeSpan.FromMilliseconds(400);
 
-    // A drag "leaves" every element it passes out of, on its way to the next one inside the window, and where
-    // the pointer is said to be at that moment cannot be relied on at the window's edge. So leaving only
-    // starts a short wait: the drag is still in the window if it is heard from again before the wait is out.
+    // DragLeave fires per element and pointer positions are unreliable at the window edge, so a leave only starts a short timer;
+    // any further drag event before it expires means the drag is still inside.
     private const int LeaveWaitMs = 140;
 
-    // The file made ready last, and when (Environment.TickCount64): asked again within this long, nothing is done again.
+    // Pre-warm dedupe window: repeat requests for the same file within this many ms are ignored.
     private const int PrewarmAgainMs = 10_000;
 
     private readonly MainViewModel _viewModel;
@@ -80,18 +77,17 @@ internal sealed class DropRouter
     private bool _dropTargetsBuilt;
     private string _dropTargetsMode = "";
 
-    // The last drag asked about, and what it carries: a drag is asked about at every move.
+    // Cache of the last queried drag and its payload (queried on every move).
     private IDataObject? _draggedData;
     private (string? File, string? Link) _dragged;
 
-    // Ahead of a drop (5.0-Release): the file made ready last, when, whether it was carried, and the inspection asked for it
-    // (cancelled when another is made ready, or it is let go of).
+    // Pre-warm state: last file, timestamp, whether dragged, and its probe (cancelled when superseded or released).
     private string? _prewarmed;
     private long _prewarmedAt;
     private bool _prewarmedCarried;
     private CancellationTokenSource? _prewarmProbe;
 
-    // Whether a drop on a target is being routed (the overlay is put away for it, and what was made ready is kept).
+    // Set while routing a drop on an overlay target (overlay hidden, pre-warm kept).
     private bool _routingDrop;
 
     public DropRouter(MainViewModel viewModel, Window window, DropOverlayParts parts, Func<GpuPreviewEngine?> engine)
@@ -102,10 +98,7 @@ internal sealed class DropRouter
 
     // ----- What a drag carries -----
 
-    /// <summary>
-    /// What a drag carries that HandPeg can open: files (from Explorer, or the media browser), or a link (from a web
-    /// browser's address bar or page: any address yt-dlp may download, not only YouTube's).
-    /// </summary>
+    /// <summary>Openable drag payload: files (Explorer or Media Browser) or a web link (any yt-dlp-supported URL).</summary>
     public (string? File, string? Link) Dragged(IDataObject data)
     {
         if (ReferenceEquals(data, _draggedData))
@@ -118,13 +111,13 @@ internal sealed class DropRouter
         return _dragged;
     }
 
-    /// <summary>Whether a drag carries something HandPeg can open (a file or a link).</summary>
+    /// <summary>Whether a drag carries an openable file or link.</summary>
     public bool CanOpen(IDataObject data) => Dragged(data) is { File: not null } or { Link: not null };
 
-    /// <summary>A drag that began in HandPeg's own Media Browser or Clip Library (MediaBrowserPane.DragFormat), not in Explorer.</summary>
+    /// <summary>Whether the drag originated in the Media Browser or Clip Library (MediaBrowserPane.DragFormat).</summary>
     public static bool IsInternalDrag(IDataObject data) => data.GetDataPresent(Views.MediaBrowserPane.DragFormat);
 
-    /// <summary>A web address a drag carries, in any of the forms browsers give one; null for none.</summary>
+    /// <summary>Web URL from any browser drag format; null when none.</summary>
     private static string? DraggedLink(IDataObject data)
     {
         foreach (var format in new[] { "UniformResourceLocatorW", "UniformResourceLocator", "text/x-moz-url", DataFormats.UnicodeText, DataFormats.Text })
@@ -148,7 +141,7 @@ internal sealed class DropRouter
                 continue;
             }
 
-            // The address is the first line (Firefox puts the page's title on the next one).
+            // URL is the first line (Firefox appends the page title on the next).
             var first = text?.Split(['\r', '\n', '\0'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
             if (first is not null && MainViewModel.IsWebAddress(first))
                 return first;
@@ -160,26 +153,23 @@ internal sealed class DropRouter
     // ----- The routing policy -----
 
     /// <summary>
-    /// Where a drop goes (5.4A, the user's standing rule: once the Sequence has clips, media dropped anywhere in the window is added
-    /// to its timeline, never opened over it). In order: on the timeline, where it was let go; on the Audio tab, its sound at the
-    /// playhead; on the Media Browser pane (5.4C; 5.4D: with nothing open too), the media files among it into Project Media (a link, and a
-    /// drag from the browser itself, go as anywhere else); with clips on the Sequence, the media files among it at the playhead (a link the
-    /// same, once downloaded), or from the media browser with a video open, every file but a project; a project with something open (or
-    /// held: 5.4D review), in a tab of its own; with nothing open, several files opened one after another; anything else opened as the
-    /// video (the replace prompt when one is open).
+    /// Drop routing policy (once the Sequence has clips, media is added, never opened over it). Precedence: timeline drop point; Audio
+    /// tab -> audio at playhead; Media Browser pane -> Project Media (links and browser-origin drags fall through); clips present ->
+    /// media at playhead (links after download; browser drags with a video open: all but projects); project with content open or held
+    /// -> new tab; nothing open -> open files in sequence; otherwise open as source (replace prompt if one is open).
     /// </summary>
     /// <param name="hasClips">The Sequence has at least one clip.</param>
-    /// <param name="hasSource">A video or project is open (MainViewModel.HasSource).</param>
+    /// <param name="hasSource">A source or project is open (MainViewModel.HasSource).</param>
     /// <param name="busy">An operation is running (MainViewModel.IsBusy).</param>
-    /// <param name="onTimeline">Let go over the timeline's rows (FindDropPlace found a place).</param>
-    /// <param name="onAudioTab">Let go over the Audio tab, with a video open.</param>
-    /// <param name="fromBrowser">Dragged from the Media pane's browser.</param>
-    /// <param name="isLink">A web address, not files.</param>
-    /// <param name="files">The files dropped (none for a link).</param>
-    /// <param name="onMediaBin">Let go over the Media Browser pane (5.4C), in the window it is in.</param>
+    /// <param name="onTimeline">Dropped over timeline rows (FindDropPlace succeeded).</param>
+    /// <param name="onAudioTab">Dropped over the Audio tab with a source open.</param>
+    /// <param name="fromBrowser">Dragged from the Media Browser.</param>
+    /// <param name="isLink">A web URL rather than files.</param>
+    /// <param name="files">Dropped files (empty for a link).</param>
+    /// <param name="onMediaBin">Dropped over the Media Browser pane.</param>
     /// <param name="holdsSomething">
-    /// The tab in front holds something worth keeping with no video open (5.4D review: !MainViewModel.HoldsNothingForTab, files pooled in a
-    /// blank window, say): a project dropped then opens in a tab of its own, as File &gt; Open does, never in place of the pool.
+    /// The active tab holds content without a source (!MainViewModel.HoldsNothingForTab, e.g. pooled media): a dropped project then
+    /// opens in a new tab like File &gt; Open, never replacing it.
     /// </param>
     internal static DropRoute RouteOf(bool hasClips, bool hasSource, bool busy, bool onTimeline, bool onAudioTab, bool fromBrowser, bool isLink, IReadOnlyList<string> files,
         bool onMediaBin = false, bool holdsSomething = false)
@@ -192,11 +182,10 @@ internal sealed class DropRouter
             return DropRoute.TimelinePlace;
         if (onAudioTab)
             return DropRoute.AudioTab;
-        // 5.4.4 (the user's): a drag out of the Media Browser let go over the Media Browser is no drop at all (it never went anywhere).
+        // A Media Browser drag dropped back on the Media Browser is a no-op.
         if (onMediaBin && fromBrowser)
             return DropRoute.None;
-        // 5.4D (Q4 b): even with nothing open, a drop on the Media Browser pools its media; a blank window keeps the pool for the project
-        // its first file starts.
+        // Even with nothing open, a Media Browser drop pools its media; the pool carries into the project the first file starts.
         if (onMediaBin && !fromBrowser && PlayheadFiles(files, fromBrowser: false).Length > 0)
             return DropRoute.AddToProjectMedia;
         if ((hasClips || (hasSource && fromBrowser)) && PlayheadFiles(files, fromBrowser && hasSource).Length > 0)
@@ -209,34 +198,32 @@ internal sealed class DropRouter
     }
 
     /// <summary>
-    /// The files of a drop added at the playhead (<see cref="DropRoute.AddAtPlayhead"/>): the media among them (a video, a sound or a
-    /// picture HandPeg reads, MediaFiles.KindOf), and from the media browser (<paramref name="fromBrowser"/>) anything but a project.
+    /// Files added by <see cref="DropRoute.AddAtPlayhead"/>: readable media (MediaFiles.KindOf), or for browser drags
+    /// (<paramref name="fromBrowser"/>) anything but projects.
     /// </summary>
     internal static string[] PlayheadFiles(IReadOnlyList<string> files, bool fromBrowser) =>
         files.Where(f => MediaFiles.KindOf(f) is not null || (fromBrowser && !IsProjectFile(f))).ToArray();
 
-    /// <summary>A HandPeg project or bundle (.hproj, .hpb).</summary>
+    /// <summary>Whether a path is a project or bundle (.hproj, .hpb).</summary>
     internal static bool IsProjectFile(string path) =>
         path.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) || path.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>The pictures a drag carries after its first file: what follows it in line when it is opened. Sounds and projects are no such thing.</summary>
+    /// <summary>Files after the first that are appended when it opens (excludes audio and projects).</summary>
     internal static string[] InLineAfterFirst(IDataObject data) => data.GetData(DataFormats.FileDrop) is string[] files ? InLineAfter(files) : [];
 
-    /// <summary>The same of a drop's files: those after the first that are neither a sound nor a project.</summary>
+    /// <summary>Same for a file list: entries after the first that are neither audio nor projects.</summary>
     internal static string[] InLineAfter(IReadOnlyList<string> files) =>
         files.Count > 1
             ? files.Skip(1).Where(f => !f.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) && MediaFiles.KindOf(f) != MediaBrowserKind.Audio).ToArray()
             : [];
 
-    // ----- Ahead of a drop (5.0-Release) -----
-    // A video likely to be dropped (its Media tile rested on, a drag of it begun, carried over the drop overlay's Game Presets):
-    // on a fast local drive (DriveKind), what its drop will ask for first is done now. Its inspection (MediaProbe keeps
-    // it by FileState) and its key frames (kept by the seek index); the player's worker opening it and decoding its first frames.
-    // A drop is urgent and never waits behind any of it; when no drop follows, the player lets go of it (UnPrewarm).
+    // ----- Drop pre-warm -----
+    // For a likely drop (tile hover, drag start, drag over Game Presets) on a fast local drive (DriveKind): probe (cached by FileState),
+    // key frames (seek index) and player worker open + first-frame decode. Real drops never wait on this; UnPrewarm releases it otherwise.
 
     /// <summary>
-    /// A video likely to be dropped: made ready ahead on a fast local drive. <paramref name="carried"/>: it is being dragged
-    /// (its key frames are listed too: a long recording's listing reads the whole file, worth it only for a drag).
+    /// Pre-warms a likely drop on a fast local drive. With <paramref name="carried"/> (an active drag) also lists key frames, which
+    /// reads whole long files and is only worth it for a drag.
     /// </summary>
     public void PrewarmDrop(string path, bool carried)
     {
@@ -244,7 +231,7 @@ internal sealed class DropRouter
         if (string.IsNullOrWhiteSpace(path) || MainViewModel.IsWebAddress(path))
             return;
 
-        // Learnt off the interface's thread, once per drive; until it is known, nothing (made ready when it is).
+        // Drive speed is classified off the UI thread once per drive; skip until known.
         if (!DriveKind.IsFast(path))
         {
             _ = LearnDriveThenPrewarmAsync(path, carried);
@@ -257,9 +244,8 @@ internal sealed class DropRouter
         var again = string.Equals(path, _prewarmed, StringComparison.OrdinalIgnoreCase);
         (_prewarmed, _prewarmedAt, _prewarmedCarried) = (path, now, carried);
 
-        // Its inspection, as the drop asks for it: background work (held while a file is dragged, and never ahead of a
-        // drop's or a project's own loading on the interactive lane: the drop's urgent probe covers it), the one asked for
-        // the file made ready before let go of (5.0-Release review: tiles passed over queued a probe each ahead of the drop).
+        // Probe as background work (held during drags, never ahead of interactive loads; the drop's urgent probe covers it),
+        // cancelling the previous pre-warm's probe so hovered tiles do not queue probes ahead of the drop.
         if (!again || _prewarmProbe is null)
         {
             _prewarmProbe?.Cancel();
@@ -267,13 +253,12 @@ internal sealed class DropRouter
             _ = MediaProbe.ProbeAsync(path, _prewarmProbe.Token, WorkLane.Background);
         }
 
-        // Its key frames, for a drag: off the interface's thread (what is known of them is read from the cache's disk first).
+        // Key frames for drags, off the UI thread (disk cache read first).
         if (carried)
             _ = Task.Run(() => FfmpegRunner.GetIFramesAsync(path, CancellationToken.None));
 
-        // Opened in the player's worker. 5.4.4: no longer in the Sequence Overview Scrubber's worker as well (GpuProgramStrip, started ahead of the
-        // drop when it was not running): on the Desktop that worker was on the Arc A310 and its start under a drag over the Game Presets
-        // ended in 0x116 VIDEO_TDR_FAILURE. It opens the file after the drop, as it always did for a drop on the timeline.
+        // Open in the player worker only. Not GpuProgramStrip: starting it during a drag ran it on a secondary Intel Arc GPU and caused
+        // 0x116 VIDEO_TDR_FAILURE; it opens the file after the drop as usual.
         _engine()?.Prewarm(path);
     }
 
@@ -290,7 +275,7 @@ internal sealed class DropRouter
         }
     }
 
-    /// <summary>No drop of the file made ready came (the drag left, or something else opened): the player lets go of it.</summary>
+    /// <summary>Releases the pre-warmed file when no drop followed (drag left, or something else opened).</summary>
     public void UnPrewarm()
     {
         _engine()?.Prewarm(null);
@@ -301,12 +286,12 @@ internal sealed class DropRouter
 
     // ----- The drop overlay: targets for a file that is being dragged in -----
 
-    /// <summary>Whether the overlay is up (a file carried into an empty window).</summary>
+    /// <summary>Whether the overlay is shown (file dragged into an empty window).</summary>
     public bool OverlayShown => _parts.Overlay.Visibility == Visibility.Visible;
 
     /// <summary>
-    /// Makes the overlay's targets ahead of time, once the window is up and idle, and lays the overlay out while it
-    /// is still hidden (Hidden, not Collapsed, keeps it laid out), so that the first drag shows it at once.
+    /// Pre-builds overlay targets at idle and lays out the overlay while Hidden (not Collapsed, so layout runs) so the first drag
+    /// shows instantly.
     /// </summary>
     public void PrepareDropTargets()
     {
@@ -315,10 +300,7 @@ internal sealed class DropRouter
             _parts.Overlay.Visibility = Visibility.Hidden;
     }
 
-    /// <summary>
-    /// Makes the overlay's targets: the Game Presets and the Social Squisher's presets. Their background is the
-    /// accent colour, toned down, so that a whole screen of them does not shout.
-    /// </summary>
+    /// <summary>Builds overlay targets (Game Presets, Social Squisher presets) on a muted accent background.</summary>
     private void BuildDropTargets()
     {
         var settings = AppSettings.Current;
@@ -338,7 +320,7 @@ internal sealed class DropRouter
         (_dropTargetsBuilt, _dropTargetsMode) = (true, DropTargetsSignature());
     }
 
-    /// <summary>What the overlay's targets are made from: when this changes, they are made again.</summary>
+    /// <summary>Overlay target inputs signature; a change triggers a rebuild.</summary>
     private string DropTargetsSignature()
     {
         var settings = AppSettings.Current;
@@ -357,41 +339,37 @@ internal sealed class DropRouter
             (_window.FindResource("AccentBrush") as SolidColorBrush)?.Color.ToString() ?? "");
     }
 
-    /// <summary>A drag entered or moved over the window: the overlay up, into an empty window only.</summary>
+    /// <summary>DragEnter/DragOver: shows the overlay, only for an empty window.</summary>
     public void ShowDropOverlay(DragEventArgs e)
     {
         _leave.Cancel();
         if (OverlayShown || !CanOpen(e.Data))
             return;
 
-        // Only into an empty window. With a video or a project open, a file dragged in is on its way to the
-        // timeline, the Canvas or the Audio tab, and nothing is put in its way.
+        // Empty window only: with content open the drag targets the timeline, Canvas or Audio tab, so nothing overlays them.
         if (_viewModel.HasSource || _viewModel.IsBusy)
             return;
 
-        // A file on its way to a Game Preset: what its drop will need is made ready while it is carried (on a fast drive). Not one dragged
-        // out of HandPeg's own Media Browser or Clip Library (5.4.4: an internal drag is on its way to the timeline).
+        // Pre-warm external drags heading for a Game Preset (fast drives only); internal Media Browser/Clip Library drags target the timeline.
         if (Dragged(e.Data).File is { } carried && !IsInternalDrag(e.Data))
             PrewarmDrop(carried, carried: true);
 
-        // Made at launch, once the window was idle (see PrepareDropTargets): only made again when the mode or the
-        // presets have changed since.
+        // Built at launch idle (PrepareDropTargets); rebuilt only if the mode or presets changed.
         if (DropTargetsSignature() != _dropTargetsMode)
             BuildDropTargets();
         _parts.Overlay.Visibility = Visibility.Visible;
 
-        // The player is a native window, which WPF cannot draw over: it would stay bright in the middle of the
-        // dimmed window. It is hidden for as long as the overlay is up.
+        // The player is a native HWND (airspace): WPF cannot draw over it, so hide it while the overlay is up.
         _parts.Video.Visibility = Visibility.Hidden;
     }
 
-    /// <summary>A file that leaves the window takes the overlay with it, a moment later (see LeaveWaitMs).</summary>
+    /// <summary>DragLeave: hides the overlay after LeaveWaitMs unless the drag returns.</summary>
     public void LeaveDropOverlay() => _leave.Poke();
 
-    /// <summary>The overlay put away: the drag left, a drop was let go, or a target is being routed.</summary>
+    /// <summary>Hides the overlay (drag left, dropped, or a target is being routed).</summary>
     public void HideDropOverlay()
     {
-        // Carried away, not dropped on a target: the player lets go of what it opened for it.
+        // Not dropped on a target: release the pre-warmed file.
         if (!_routingDrop)
             UnPrewarm();
         _leave.Cancel();
@@ -400,7 +378,7 @@ internal sealed class DropRouter
         _parts.Video.Visibility = Visibility.Visible;
     }
 
-    /// <summary>The overlay put away for a drop on one of its targets, keeping what was made ready for the drop.</summary>
+    /// <summary>Hides the overlay for a target drop, keeping the pre-warmed file.</summary>
     public void HideForTarget()
     {
         _routingDrop = true;

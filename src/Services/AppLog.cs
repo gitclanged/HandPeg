@@ -4,8 +4,7 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// A plain text log in the logs folder, for what happens out of sight: update checks, data migration,
-/// tool installs. Writing to it never fails the caller.
+/// Plain-text background log in the logs folder (update checks, migration, tool installs); writes never throw.
 /// </summary>
 public static class AppLog
 {
@@ -57,14 +56,12 @@ public static class AppLog
     }
 
     /// <summary>
-    /// Writes <paramref name="what"/> with the exception's type, message, stack trace and inner exceptions. An exception whose type and
-    /// stack were already written by this process is written as one line.
+    /// Logs <paramref name="what"/> with exception type, message, stack and inners; repeats (same type and stack) collapse to one line.
     /// </summary>
     public static void Write(string what, Exception ex) => Write(Describe(what, ex));
 
     /// <summary>
-    /// <see cref="Write(string, Exception)"/> once per <paramref name="key"/> for the life of the process: for failures that recur on every
-    /// refresh (a folder on an unplugged drive, read again each time the pane updates).
+    /// <see cref="Write(string, Exception)"/> once per <paramref name="key"/> per process, for failures recurring on every refresh.
     /// </summary>
     public static void WriteOnce(string key, string what, Exception ex)
     {
@@ -72,7 +69,7 @@ public static class AppLog
             Write(what, ex);
     }
 
-    /// <summary>The entry written for an exception: in full the first time its type and stack are seen, as one line after that.</summary>
+    /// <summary>Formats an exception entry: full on first sighting of its type and stack, one line afterwards.</summary>
     internal static string Describe(string what, Exception ex)
     {
         var stack = ex.StackTrace;

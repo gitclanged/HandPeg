@@ -7,64 +7,56 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Services.Gpu;
 
-// ----- The timeline, lowered: a TimelineDocument read once into what the picture and the sound are made from (4.3B) -----
-// No track of the document is privileged (5.2-AuditB: there is no main video, no primary file and no primary chain). Every
-// clip on every track is a layer made the one way (MakeLayer): placed, timed, cropped and looked as its own, read from its
-// own file (SourcePath) at its own moment (MediaOffset, on the file's own clock: MediaStarts, SeekIndexes), its sound cut at
-// the same origin and heard from its own stream. A Cutout is a clip of its file like any other, on its parent's clock. A
-// video whose blur fill is on (BlurFill true) has a blurred copy of its whole picture covering the frame at the very bottom of
-// the stack, under every picture of every track (its twin; 5.4A, the user's standing rule: an upper track's Background Blur never
-// covers a lower track), drawn as the sequence's blurred background used to be; the scene plan leaves a twin out while the
-// clip over it hides every pixel of it. A project of the old shape never reaches this (it is converted as it is opened,
-// LegacyMainVideo; the golden tests' fixtures the same way): the legacy kinds MainVideo and Video are never made here.
+// ----- Timeline lowering: a TimelineDocument compiled once into the inputs for picture and sound -----
+// No track is privileged (no main video, primary file or primary chain). Every clip on every track becomes a layer the same way
+// (MakeLayer): placed, timed, cropped and styled independently, decoded from its own file (SourcePath) at its own time (MediaOffset
+// on the file's clock: MediaStarts, SeekIndexes), with its audio cut at the same origin from its own stream. A Cutout is a clip of
+// its file like any other, on its parent's clock. A video with blur fill on (BlurFill) gets a blurred full-frame twin at the bottom
+// of the stack, under every picture of every track (an upper track's blur fill never covers a lower track); the scene plan skips a
+// twin while the clip above hides it completely. Old-format projects are converted on open (LegacyMainVideo, golden fixtures too),
+// so the legacy kinds MainVideo and Video are never produced here.
 //
-// The preparation the view model used to make of its copies is the lowering's: a track's crossfades laid over each other
-// across their cut (any two clips that have layers; a dip through what is under them otherwise), fades paired across tracks,
-// and a video that repeated to the end of the timeline read as the one repeating source 4.2.0 made of it. One lowering is
-// made for each document and shared by everything built from it: the GPU scene plan, the sound program and the exports.
+// The lowering also prepares the copies: overlapping crossfades across a track's cuts (between any two clips with layers; otherwise a
+// dip through what is underneath), fades paired across tracks, and a video looped to the timeline end read as one repeating source.
+// One lowering per document, shared by everything built from it: GPU scene plan, audio program and exports.
 
 /// <summary>
-/// A timeline as <see cref="TimelineLowering"/> lowers it (<see cref="TimelineLowering.Lowering"/>): what the picture, the sound
-/// and a measurement need to know of it. Shared with everything built from the same document: read it, never change it.
+/// A lowered timeline (<see cref="TimelineLowering.Lowering"/>): what picture, sound and measurements need. Shared by everything built
+/// from the same document: read-only.
 /// </summary>
 /// <param name="SequenceSeconds">
-/// How long the sequence is: the canvas's length, to its last picture (<see cref="SequenceSpans.ProgramSeconds"/>, 5.4A: an audio tail
-/// past the last picture adds no black frames; a standalone sound placed past it still does).
+/// Sequence length: the canvas runs to its last picture (<see cref="SequenceSpans.ProgramSeconds"/>; an audio tail past the last
+/// picture adds no black frames, a standalone sound placed past it still does).
 /// </param>
 /// <param name="Stack">
-/// The pictures as layers, bottom first: every blur twin first (5.4A: under every picture, in the order of their tracks), then each
-/// track's pictures in the order of its clips.
-/// Every layer carries the id of the clip it was made from (<see cref="Layer.ClipId"/>; a twin, its video's).
+/// Pictures as layers, bottom first: all blur twins (in track order), then each track's pictures in clip order. Every layer carries
+/// its source clip id (<see cref="Layer.ClipId"/>; a twin carries its video's).
 /// </param>
 /// <param name="LayerAudio">
-/// The sounds of the clips that are heard, in the order of the tracks: video clips that carry any, and sound clips, each
-/// carrying its clip's id (a J or L cut's sound, a copy moved by it, too).
+/// Audible clip sounds in track order (video clips with audio, and audio clips), each carrying its clip id (including J/L cut sound
+/// and the copies it moves).
 /// </param>
 public sealed record SequenceLowering(double SequenceSeconds, IReadOnlyList<Layer> Stack, IReadOnlyList<Layer> LayerAudio);
 
 public static partial class TimelineLowering
 {
     // ----- Keyframes -----
-    // A keyframe pins a clip's place, size and turn at once, so a clip that only moves has keyframes on its
-    // size and its turn that all say the same thing. Compiled as they stand, those would be worked out afresh
-    // for every frame (a scale and a rotation per frame, of a picture that does neither). So the compiler
-    // compares first: a property whose keyframes all hold one value is not a motion, and is written as the
-    // plain number it is; and within a property that does change, a stretch between two keyframes that hold
-    // the same value adds nothing to the expression.
+    // A keyframe pins position, size and rotation together, so a clip that only moves has constant size and rotation keys.
+    // Compiled as-is they would be evaluated every frame. Constant-valued properties are therefore folded to plain values, and
+    // within a changing property, segments between equal keys add nothing to the expression.
 
-    // Two values closer than this are the same: a fiftieth of a pixel on a 1920 frame, a hundredth of a degree.
+    // Equality tolerances: ~1/50 px on a 1920 frame, 1/100 degree.
     private const double SamePlace = 0.00001;
     private const double SameAngle = 0.01;
 
-    // Opacity is kept in whole percent: keyframes less than one apart hold it still.
+    // Opacity is whole percent: keys less than one apart are constant.
     private const double SameOpacity = 0.5;
 
     /// <summary>
-    /// Takes the keyframes off every property of a layer that they do not change, leaving the property at
-    /// the one value they hold. For a copy of a layer that is being prepared for a
-    /// <see cref="SequenceExportState"/>: what is then compiled for it is only what moves.
+    /// Removes keyframes from every property they do not change, setting the property to their single value. Applied to layer copies
+    /// prepared for a <see cref="SequenceExportState"/> so only real motion is compiled.
     /// </summary>
-    /// <returns>How many properties were folded into plain values.</returns>
+    /// <returns>Number of properties folded into plain values.</returns>
     public static int FoldConstantKeys(Layer layer)
     {
         var folded = 0;
@@ -76,8 +68,8 @@ public static partial class TimelineLowering
             if (keys.Count == 0)
                 continue;
 
-            // The place of a layer whose size changes keeps its keyframes, even when they all hold one value: keyed, they
-            // are the corner's; with none, the place would be the anchor point's, and the layer would grow about it.
+            // Keep position keys on a resizing layer even when constant: keyed positions are the corner's; unkeyed, the position
+            // becomes the anchor's and the layer would scale about it.
             if (resized && property is KeyProperty.X or KeyProperty.Y)
                 continue;
 
@@ -94,43 +86,42 @@ public static partial class TimelineLowering
         return folded;
     }
 
-    /// <summary>A state's timeline as it is lowered: the layers and the sounds (see <see cref="SequenceLowering"/>), from the document's cache.</summary>
+    /// <summary>A state's lowered timeline (layers and sounds, see <see cref="SequenceLowering"/>) from the per-document cache.</summary>
     public static SequenceLowering Lowering(SequenceExportState state) => Lower(state.Timeline).Shared;
 
-    /// <summary>A timeline as the picture and the sound are made from it (see <see cref="Lower"/>). Shared by everything built from one document: read, never changed.</summary>
+    /// <summary>Internal lowering result (see <see cref="Lower"/>). Shared by everything built from one document: read-only.</summary>
     private sealed class Lowered
     {
-        /// <summary>How long the sequence is: the canvas's length, to its last picture (<see cref="SequenceSpans.ProgramSeconds"/>).</summary>
+        /// <summary>Sequence length: the canvas runs to its last picture (<see cref="SequenceSpans.ProgramSeconds"/>).</summary>
         public required double SequenceSeconds { get; init; }
 
-        /// <summary>The blurred copies laid under the videos from files whose blur fill is on (4.4), all of them under every picture (5.4A).</summary>
+        /// <summary>Blurred twins of file videos with blur fill on, all placed under every picture.</summary>
         public required IReadOnlySet<Layer> BlurTwins { get; init; }
 
-        /// <summary>The pictures in stacking order, bottom first, the twins among them. Prepared for their crossfades.</summary>
+        /// <summary>Pictures in stacking order, bottom first, including twins; prepared for crossfades.</summary>
         public required IReadOnlyList<Layer> Stack { get; init; }
 
         /// <summary>
-        /// Where the captions are drawn among the pictures (5.1-Polish, the user's Q2): under the layer of <see cref="Stack"/> at
-        /// this index and every one above it (<see cref="Stack"/>'s count: over all of them, under the whole picture's look
-        /// and fades); -1 over everything, the fades too (no track is <see cref="TimelineTrackModel.CaptionsUnder"/>).
+        /// Caption position in the stack: drawn under the <see cref="Stack"/> layer at this index and all above it (count = above all
+        /// layers, under whole-frame look and fades); -1 = on top of everything including fades (no track is
+        /// <see cref="TimelineTrackModel.CaptionsUnder"/>).
         /// </summary>
         public required int CaptionsAt { get; init; }
 
-        /// <summary>The sounds of the clips that are heard: video clips that carry any, and sound clips.</summary>
+        /// <summary>Audible clip sounds: video clips with audio, and audio clips.</summary>
         public required IReadOnlyList<Layer> LayerAudio { get; init; }
 
         public required IReadOnlyList<EffectInstance> SequenceEffects { get; init; }
 
-        /// <summary>The same as the public record everything built from the state reads (one for each lowering).</summary>
+        /// <summary>The public record read by everything built from the state (one per lowering).</summary>
         public required SequenceLowering Shared { get; init; }
     }
 
-    // One lowering for each document, kept as long as the document is: the GPU scene plan, the sound engine's program and
-    // the exports are built from the same state again and again, and from copies of it that share its document. Nothing but
-    // the document goes into it (5.2-AuditB), so the document alone is the key.
+    // One lowering per document, kept for the document's lifetime: the scene plan, audio program and exports are rebuilt from the
+    // same state (and copies sharing its document) repeatedly. Only the document feeds it, so the document alone is the key.
     private static readonly ConditionalWeakTable<TimelineDocument, Lowered> LoweredTimelines = new();
 
-    /// <summary>A document, lowered: from its cache when it was lowered before.</summary>
+    /// <summary>Lowers a document, from cache when already lowered.</summary>
     private static Lowered Lower(TimelineDocument document)
     {
         if (LoweredTimelines.TryGetValue(document, out var known))
@@ -143,27 +134,27 @@ public static partial class TimelineLowering
 
     private static Lowered LowerAfresh(TimelineDocument document)
     {
-        // A document that still carries a legacy track look (built in code, or never installed) is lowered from a copy with the looks
-        // folded into its clips (TimelineDocument.FoldTrackLooks: the one merge rule); the editor's own documents are folded already.
+        // A document still carrying legacy track looks (built in code, or never installed) is lowered from a copy with the looks
+        // folded into its clips (TimelineDocument.FoldTrackLooks); editor documents are already folded.
         if (document.HasTrackLooks)
         {
             document = document.Clone();
             document.FoldTrackLooks();
         }
 
-        // The whole timeline's length tells a video that repeats "to the end" (its rounds reach it); the canvas runs to the last
-        // picture (no black frames for an audio tail past it).
+        // Total timeline length bounds videos looped "to the end"; the canvas runs to the last picture (no black frames for an
+        // audio tail past it).
         var length = document.TotalDuration;
         var program = SequenceSpans.ProgramSeconds(document);
 
-        // The tracks by id, for each track's header's switch (IsHiddenWithParents) at one look-up a
-        // step, where looking along the tracks for every clip made a document of many tracks slow to lower after every edit.
+        // Tracks by id so IsHiddenWithParents is one lookup per step (a linear scan per clip made many-track documents slow to
+        // lower after every edit).
         var tracksById = new Dictionary<Guid, TimelineTrackModel>(document.Tracks.Count);
         foreach (var track in document.Tracks)
             tracksById.TryAdd(track.Id, track);
 
-        // Every clip as a layer, numbered by its track (a crossfade across tracks pairs clips of two tracks). The caption box is
-        // the sequence's (CaptionLayer), and a clip of the legacy blurred background draws nothing (a clip's blur fill is its own).
+        // Every clip as a layer, numbered by track (cross-track crossfades pair clips of two tracks). The caption box is the
+        // sequence's (CaptionLayer), and legacy blurred-background clips draw nothing (blur fill is per clip).
         var layers = new Dictionary<TimelineClip, Layer>(ReferenceEqualityComparer.Instance);
         for (var t = 0; t < document.Tracks.Count; t++)
         {
@@ -179,9 +170,8 @@ public static partial class TimelineLowering
             }
         }
 
-        // A video that repeated to the end of the timeline (4.2.0's "to the end" loop, written as its rounds): one layer that
-        // repeats from its file's first frame, as 4.2.0 read it, not one decoder for each round. Before the crossfades, which
-        // 4.2.0 never gave such a layer.
+        // A video looped to the timeline end (legacy "to the end" loop stored as rounds) becomes one layer repeating from the file's
+        // first frame, not one decoder per round. Done before crossfades, which never apply to such a layer.
         foreach (var track in document.Tracks)
         {
             for (var i = 0; i < track.Clips.Count; i++)
@@ -196,12 +186,10 @@ public static partial class TimelineLowering
             }
         }
 
-        // Crossfades on a track: two clips that have layers are laid over each other across their cut, whatever they show
-        // (5.2-AuditB: the former main video's clips too); one without (a clip of the legacy blurred background), and the clip
-        // it meets, both dip through what is under them. Each track in the order of its clips, so a clip between two
-        // crossfades is laid out for the first before the second; a clip is laid over by one later clip at most (4.2.0 looked
-        // for the earlier one by its end, which the first had moved); and a sound that is not heard takes no part (4.2.0
-        // never made one).
+        // Same-track crossfades: two clips with layers overlap across their cut regardless of content; if either has no layer
+        // (legacy blurred-background clip), both dip through what is underneath. Clips are processed in order, so a clip between
+        // two crossfades is laid out for the first before the second; each clip is overlapped by at most one later clip; inaudible
+        // sounds take no part.
         var laidOver = new HashSet<Layer>(ReferenceEqualityComparer.Instance);
         foreach (var track in document.Tracks)
         {
@@ -228,8 +216,8 @@ public static partial class TimelineLowering
             }
         }
 
-        // The pictures bottom first, each track's in the order of its clips. The captions go under the pictures of the track
-        // they are put under (5.1-Polish), whatever it shows.
+        // Pictures bottom first, each track's in clip order. Captions go under the pictures of their CaptionsUnder track, whatever
+        // it holds.
         var pictures = new List<Layer>();
         var tracksAt = new List<(TimelineTrackModel Track, int From, int To)>();
         var captionsAt = -1;
@@ -252,13 +240,10 @@ public static partial class TimelineLowering
 
         PairLayerCrossfades(pictures);
 
-        // A video from a file whose blur fill is on (4.4; 5.2-AuditB: any clip's, the former main video's too): a blurred copy
-        // of its whole picture covering the frame, while it can be seen. Every twin goes at the very bottom of the stack (5.4A,
-        // the user's standing rule: Z = 0, behind every picture track; a twin under its own family only covered the tracks below
-        // that family, so an upper track's Background Blur hid Track 1's video). The twins go in the order of their tracks and
-        // their clips, bottom first: while two clips crossfade their fills crossfade under both, and while an upper track's
-        // blurred clip plays over a lower one's, its fill is the one seen. Captions put under a track stay above every twin, as
-        // they were above the blurred background.
+        // Blur fill: each visible file video with BlurFill gets a blurred full-frame twin. All twins go at the very bottom (Z = 0,
+        // behind every picture track; a twin placed under its own track family hid lower tracks' videos). Twins are ordered by track
+        // and clip, bottom first: crossfading clips crossfade their fills, and an upper track's fill wins over a lower one's.
+        // Captions placed under a track stay above every twin.
         var twinList = new List<Layer>();
         foreach (var (track, _, _) in tracksAt)
         {
@@ -284,11 +269,11 @@ public static partial class TimelineLowering
                 stack.Add(pictures[n]);
         }
 
-        // (Captions put under a track with no pictures at or above it are over every picture.)
+        // Captions under a track with no pictures at or above it go above every picture.
         if (captionsAt >= 0 && stackCaptionsAt < 0)
             stackCaptionsAt = stack.Count;
 
-        // The sounds heard, in the order of the tracks: each layer's own, moved by its J or L cut when it has one.
+        // Audible sounds in track order: each layer's own, shifted by its J/L cut if any.
         var sounds = new List<Layer>();
         foreach (var track in document.Tracks)
         {
@@ -311,14 +296,14 @@ public static partial class TimelineLowering
         };
     }
 
-    // ----- What the tracks hold -----
+    // ----- Track contents -----
 
-    /// <summary>A track whose clips are pictures laid on the canvas (a switch track holds what a video track holds).</summary>
+    /// <summary>True for tracks whose clips are canvas pictures (switch tracks hold what video tracks hold).</summary>
     private static bool ShowsPictures(TimelineTrackModel track) => track.Kind is TimelineTrackKind.Video or TimelineTrackKind.Switch;
 
     /// <summary>
-    /// The track a track's family is known by: the one it was made to go with (its ParentTrackId), up to one made for none; itself
-    /// for a track of its own (and for one whose parent is gone).
+    /// Root of a track's family: follows ParentTrackId up to a track with no parent; the track itself when standalone (or its parent is
+    /// missing).
     /// </summary>
     internal static TimelineTrackModel FamilyOf(TimelineTrackModel track, TimelineDocument document)
     {
@@ -328,7 +313,7 @@ public static partial class TimelineLowering
         return at;
     }
 
-    /// <summary><see cref="TimelineDocument.IsHiddenWithParents"/>, with the document's tracks by id.</summary>
+    /// <summary><see cref="TimelineDocument.IsHiddenWithParents"/> using a track-by-id dictionary.</summary>
     private static bool IsHiddenWithParents(TimelineTrackModel track, Dictionary<Guid, TimelineTrackModel> tracksById)
     {
         TimelineTrackModel? at = track;
@@ -343,19 +328,19 @@ public static partial class TimelineLowering
     }
 
     /// <summary>
-    /// Whether a clip's sound reaches the output: it has some, from whichever stream of its file it plays (each a sound of its
-    /// own, LayerAudio), and neither it nor its track is switched off or silenced.
+    /// True when a clip's audio reaches the output: it has sound (from whichever stream it plays; each is its own LayerAudio entry), and
+    /// neither it nor its track is hidden or muted.
     /// </summary>
     private static bool IsHeard(TimelineClip clip, TimelineTrackModel track) =>
         clip.HasSound && !clip.IsHidden && !clip.IsMuted && !track.IsMuted;
 
-    /// <summary>A clip that is only a sound (a sound clip, or any clip on a sound track) and is not heard.</summary>
+    /// <summary>True for an audio-only clip (audio clip, or any clip on an audio track) that is not audible.</summary>
     private static bool IsSilentSound(TimelineClip clip, TimelineTrackModel track) =>
         (clip.ContentKind == LayerKind.Audio || track.Kind == TimelineTrackKind.Audio) && !IsHeard(clip, track);
 
     /// <summary>
-    /// The clip on a track whose end meets the start of the one at <paramref name="index"/> (as 4.2.0 counted meeting: within
-    /// 11 ms), or null: the one before it, on a track whose clips are apart; any, on one whose clips were not kept apart.
+    /// The clip whose end meets the start of clip <paramref name="index"/> (within 11 ms), or null: the previous clip on a track without
+    /// overlaps, otherwise any matching clip.
     /// </summary>
     private static TimelineClip? Before(TimelineTrackModel track, int index)
     {
@@ -374,10 +359,9 @@ public static partial class TimelineLowering
     }
 
     /// <summary>
-    /// The rounds after the clip at <paramref name="index"/> of a video that repeated (how 4.2.0's "to the end" loop is
-    /// written as clips): that clip plays its file to its end, then each round, butted to the one before, plays the file
-    /// again from its first frame with the same look (keys running on) and its sound silenced (4.2.0's loop played its
-    /// sound once), whole but for the last, with no fade or crossfade where two meet. Empty when no round follows.
+    /// Loop rounds following clip <paramref name="index"/> (legacy "to the end" loop stored as clips): the first clip plays its file to the
+    /// end, then each butted round replays it from frame 0 with the same look (keys continuing) and muted sound, all whole except the last,
+    /// with no fade or crossfade at the joins. Empty when no round follows.
     /// </summary>
     private static List<TimelineClip> Rounds(TimelineTrackModel track, int index)
     {
@@ -408,7 +392,7 @@ public static partial class TimelineLowering
             rounds.Add(round);
             previous = round;
 
-            // A round that stops before its file's end, or fades out, is the last.
+            // A round ending before the file's end, or fading out, is the last.
             if (!Whole(round) || round.FadeOutSeconds > 0.001)
                 break;
         }
@@ -417,10 +401,9 @@ public static partial class TimelineLowering
     }
 
     /// <summary>
-    /// Two looks are one when everything but where they are in time is the same, and their keyframes are one motion: the
-    /// later clip's keys, counted from its own start, fall <paramref name="shift"/> seconds later on the first one's clock
-    /// (to a few microseconds: keys are moved to the microsecond as clips are cut and trimmed). <paramref name="firstTimeless"/>
-    /// keeps the first look as JSON once it has been made, for the next clip compared with it.
+    /// True when two looks match except for timing and their keys form one motion: the later clip's keys fall <paramref name="shift"/>
+    /// seconds later on the first clip's clock (within a few microseconds; cuts and trims round keys to the microsecond).
+    /// <paramref name="firstTimeless"/> caches the first look's JSON for subsequent comparisons.
     /// </summary>
     private static bool SameLook(LayerState look, LayerState first, double shift, ref JsonNode? firstTimeless)
     {
@@ -458,7 +441,7 @@ public static partial class TimelineLowering
 
     private const double KeySlack = 5e-6;
 
-    /// <summary>Whether a look has anything that is placed in time: keys, or an effect's keys or range.</summary>
+    /// <summary>True when a look has time-anchored data: keys, or effect keys or ranges.</summary>
     private static bool IsTimed(LayerState look) =>
         look.KeysX is { Count: > 0 } || look.KeysY is { Count: > 0 } || look.KeysScale is { Count: > 0 } || look.KeysRotation is { Count: > 0 }
         || look.KeysOpacity is { Count: > 0 } || look.Effects?.Any(e => e.Keys is { Count: > 0 } || e.Range is not null) == true;
@@ -477,7 +460,7 @@ public static partial class TimelineLowering
         return true;
     }
 
-    /// <summary>A look as JSON without what differs from round to round of one repeating video: where it is in time, its keys, its name.</summary>
+    /// <summary>A look as JSON minus the fields that differ between loop rounds (timing, keys, name, etc.).</summary>
     private static JsonNode? Timeless(LayerState look)
     {
         var node = JsonSerializer.SerializeToNode(look, TimelessOptions);
@@ -512,12 +495,10 @@ public static partial class TimelineLowering
     // ----- Clips as layers -----
 
     /// <summary>
-    /// A clip as the layer the picture and the sound are made from: its look, with its own kind, file, timing, fades,
-    /// visibility (its track hides its picture, not its sound), sound (its track's gain added to its own, the track's filters
-    /// and ducking), its clip's id and a number for its track. Every clip is made so, on whatever track. Its crop
-    /// reframes its picture (held by Layer.HeldCrop): the layer keeps it, the picture is cut by it where it is
-    /// read, and the layer's box takes the shape it leaves (Layer.GetOutputRect, at the clip's own picture size). Keyframes
-    /// that change nothing are folded (see <see cref="FoldConstantKeys"/>).
+    /// Builds the layer for a clip on any track: its look plus kind, file, timing, fades, visibility (a hidden track hides the picture, not
+    /// the sound), audio (track gain added to clip gain, track filters and ducking), clip id and track number. The crop reframes the picture
+    /// (Layer.HeldCrop): applied at decode, with the box taking the remaining aspect (Layer.GetOutputRect at native size). Constant keys are
+    /// folded (<see cref="FoldConstantKeys"/>).
     /// </summary>
     private static Layer MakeLayer(TimelineClip clip, TimelineTrackModel track, int trackNumber, LayerState look, bool trackHidden, TimelineDocument document)
     {
@@ -546,10 +527,10 @@ public static partial class TimelineLowering
     }
 
     /// <summary>
-    /// The blurred copy a video from a file fills the frame with (4.4): the same file, timing, fades, opacity (its keys too),
-    /// visibility and clip, no sound, place keys, crop, mask or effects of its own, in a box that is the frame. Its whole
-    /// picture is scaled to cover the frame about its middle and blurred as the sequence's blur fill says (BackgroundZoom,
-    /// BlurRadius, BlurPasses, BackgroundDim, BackgroundEffects) where it is written (GpuScenePlan's Twin, <see cref="Lowered.BlurTwins"/>).
+    /// Blur fill twin of a file video: same file, timing, fades, opacity (with keys), visibility and clip; no sound, position keys, crop,
+    /// mask or effects; box = frame. The whole picture is scaled to cover the frame about its centre and blurred per the sequence's blur
+    /// fill settings (BackgroundZoom, BlurRadius, BlurPasses, BackgroundDim, BackgroundEffects) in GpuScenePlan's Twin
+    /// (<see cref="Lowered.BlurTwins"/>).
     /// </summary>
     private static Layer BlurTwinOf(Layer layer, TimelineDocument document)
     {
@@ -591,10 +572,9 @@ public static partial class TimelineLowering
     }
 
     /// <summary>
-    /// The layer whose sound is heard for a clip: the clip's own, or, for a J or L cut, a copy (its clip's id with it) whose
-    /// sound starts that much sooner (into the file from as much earlier, as far as the file has: a crossfade may have taken
-    /// some of it) and lasts that much longer, so that picture and sound stay on one moment of the file. An unlinked clip's
-    /// slip is its <see cref="Layer.AudioOffset"/>, which moves where its sound starts.
+    /// The audio layer for a clip: the clip's own, or for a J/L cut a copy (same clip id) starting earlier by the lead (reading the file
+    /// from correspondingly earlier, as far as it allows; a crossfade may have consumed some) and lasting longer by the tail, keeping
+    /// picture and sound on the same file time. An unlinked clip's slip is its <see cref="Layer.AudioOffset"/>.
     /// </summary>
     private static Layer SoundOf(Layer layer, TimelineClip clip, TimelineDocument document)
     {
@@ -612,28 +592,26 @@ public static partial class TimelineLowering
         return sound;
     }
 
-    // ----- Crossfades on a track and across tracks -----
+    // ----- Same-track and cross-track crossfades -----
 
-    /// <summary>How fast a layer plays its file, as the graph plays it.</summary>
+    /// <summary>Playback speed of a layer's media (clamped).</summary>
     private static double MediaSpeed(Layer clip) => clip.HasSpeed ? Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
 
-    /// <summary>Whether a layer plays a stretch of a file (a video or a sound), so that its start is a moment of that file.</summary>
+    /// <summary>True when a layer plays a span of a file (video or audio), so its start maps to a file time.</summary>
     private static bool PlaysFile(Layer clip) => clip.IsVideoFile || clip.IsAudio;
 
-    /// <summary>How much more of its file there is after a layer's end, in seconds of the timeline; endless for a picture or words.</summary>
+    /// <summary>Media remaining after a layer's end, in timeline seconds; infinite for stills and text.</summary>
     private static double MediaAfter(Layer clip) => PlaysFile(clip) && clip.MediaDuration > 0.05
         ? Math.Max((clip.MediaDuration - clip.MediaOffset - clip.Duration * MediaSpeed(clip)) / MediaSpeed(clip), 0)
         : double.PositiveInfinity;
 
-    /// <summary>How much of its file there is before a layer's start, in seconds of the timeline; endless for a picture or words.</summary>
+    /// <summary>Media available before a layer's start, in timeline seconds; infinite for stills and text.</summary>
     private static double MediaBefore(Layer clip) => PlaysFile(clip) ? clip.MediaOffset / MediaSpeed(clip) : double.PositiveInfinity;
 
     /// <summary>
-    /// Two layers of a track that meet with a crossfade, laid over each other across the cut: the earlier runs on past it
-    /// and the later starts before it, into what their files have there (as much as they have, up to half the crossfade
-    /// each); the later one's picture comes up over the earlier's by its own fade (it lies above it: a track's clips are
-    /// stacked in the order they start), and their sounds fade out and in across the same stretch. Where neither file has
-    /// anything beyond the cut, both dip, picture and sound, through what is under them.
+    /// Overlaps two same-track layers across a crossfade cut: the earlier extends past the cut and the later starts before it, into the
+    /// available media (up to half the crossfade each). The later picture fades in over the earlier (clips stack in start order) while the
+    /// sounds cross-fade over the same span. When neither file has media beyond the cut, both dip picture and sound through what is below.
     /// </summary>
     private static void LayOverAcrossCut(Layer before, Layer after, double transition)
     {
@@ -661,9 +639,9 @@ public static partial class TimelineLowering
     }
 
     /// <summary>
-    /// A layer's keys, and its effects' keys and ranges, moved by the seconds given (to the millisecond, as
-    /// <see cref="Layer.ShiftKeys"/> moves them), for a clip whose start moved while what it shows stayed: a range is not held
-    /// at 0 (one that lies before the clip, as the document allows, stays there and never applies).
+    /// Shifts a layer's keys and its effects' keys and ranges by <paramref name="seconds"/> (rounded to the millisecond like
+    /// <see cref="Layer.ShiftKeys"/>) when its start moved but its content did not. Ranges are not clamped at 0 (a range before the clip
+    /// stays there and never applies).
     /// </summary>
     private static void ShiftKeys(Layer layer, double seconds)
     {
@@ -683,17 +661,16 @@ public static partial class TimelineLowering
     }
 
     /// <summary>
-    /// Fades paired across tracks (Crossfade with Overlapping Clip, or two fades dragged to the same stretch): where one
-    /// clip fades out while another, laid above it, fades in over exactly the same stretch, the lower one keeps its picture
-    /// through it and only its sound fades. The upper one's fade is the picture's side of the crossfade, so the two never
-    /// dip through what is under both. <paramref name="stack"/> is bottom first.
+    /// Pairs cross-track fades (Crossfade with Overlapping Clip, or matching fades): when a clip fades out while a clip above fades in over
+    /// the same span, the lower keeps its picture and only its sound fades, so the upper fade carries the picture transition and nothing dips
+    /// through to what is below both. <paramref name="stack"/> is bottom first.
     /// </summary>
     private static void PairLayerCrossfades(List<Layer> stack)
     {
         static bool Same(double a, double b) => Math.Abs(a - b) < 0.02;
         for (var lower = 0; lower < stack.Count; lower++)
         {
-            // (A layer with no fade of its own pairs with none: its look along the rest of the stack is skipped.)
+            // A layer without fades cannot pair: skip scanning the rest of the stack.
             var under = stack[lower];
             if (!under.IsPicture || under.Duration <= 0.001 || under.FadeOutSeconds <= 0.01 && under.FadeInSeconds <= 0.01)
                 continue;
@@ -707,11 +684,11 @@ public static partial class TimelineLowering
 
                 var (overIn, overOut) = (over.StartTime, over.StartTime + over.Duration);
 
-                // The upper one comes on as the lower one goes: the lower stays until it ends under it.
+                // Upper fades in as lower fades out: the lower stays opaque until it ends underneath.
                 if (under.FadeOutSeconds > 0.01 && Same(over.FadeInSeconds, under.FadeOutSeconds) && Same(overIn, underOut - under.FadeOutSeconds))
                     under.PictureFadeOutOff = true;
 
-                // The upper one goes as the lower one comes on: the lower is there already, under it.
+                // Upper fades out as lower fades in: the lower is already opaque underneath.
                 if (under.FadeInSeconds > 0.01 && Same(over.FadeOutSeconds, under.FadeInSeconds) && Same(underIn, overOut - over.FadeOutSeconds))
                     under.PictureFadeInOff = true;
             }
@@ -719,45 +696,43 @@ public static partial class TimelineLowering
     }
 }
 
-// ----- The timeline lowered, as the GPU engine reads it (Pass 5.0-AudioAnd3D) -----
-// The GPU scene (Services/Gpu/GpuScenePlan) is built on the very lowering the sound and the exports are made from (Lower,
-// Lowered): the same layers, the same twins, the same stack in the same order. Nothing of the lowering is changed or made
-// public here: this partial only hands over a read-only view of it, and the facts of the document the GPU's picking, labels
-// and 3D places need (which clip each layer was made from, and on which track).
+// ----- GPU view of the lowering -----
+// The GPU scene (Services/Gpu/GpuScenePlan) is built on the same lowering as audio and exports (Lower, Lowered): same layers, twins
+// and stack order. This partial exposes a read-only view plus the document facts needed for GPU picking, labels and 3D placement
+// (source clip and track of each layer).
 
 /// <summary>
-/// A state's timeline as <see cref="TimelineLowering"/> lowers it, for the GPU scene (<c>GpuScenePlan.Create</c>): the
-/// lowering's own lists, shared with everything built from the same document (read them, never change them), and which
-/// clip of the document each layer of the stack stands for.
+/// A state's lowered timeline for the GPU scene (<c>GpuScenePlan.Create</c>): the lowering's shared lists (read-only) and the source clip
+/// of each stack layer.
 /// </summary>
 internal sealed class GpuSceneLowering
 {
     public required double SequenceSeconds { get; init; }
 
-    /// <summary>How long a frame of the sequence lasts, in seconds (the shutter's measure, 5.1-GpuFx): the document's frame rate.</summary>
+    /// <summary>Sequence frame duration in seconds (from the document frame rate; used for shutter timing).</summary>
     public double FrameSeconds { get; init; } = 1 / 30.0;
 
-    /// <summary>The blurred copies of the videos whose blur fill is on, all of them under every picture (5.4A).</summary>
+    /// <summary>Blurred twins of videos with blur fill on, all under every picture.</summary>
     public required IReadOnlySet<Layer> BlurTwins { get; init; }
 
-    /// <summary>The pictures bottom first: the twins first (5.4A), then a track's in the order of its clips.</summary>
+    /// <summary>Pictures bottom first: twins, then each track's layers in clip order.</summary>
     public required IReadOnlyList<Layer> Stack { get; init; }
 
-    /// <summary>Where the captions are among <see cref="Stack"/> (5.1-Polish): under the layer at this index and those above; -1 over everything.</summary>
+    /// <summary>Caption position in <see cref="Stack"/>: under the layer at this index and those above; -1 = on top of everything.</summary>
     public required int CaptionsAt { get; init; }
 
     public required IReadOnlyList<EffectInstance> SequenceEffects { get; init; }
 
-    /// <summary>The clip each layer of <see cref="Stack"/> was made from, by its <see cref="Layer.ClipId"/> (a twin: its video's clip).</summary>
+    /// <summary>Source clip of each <see cref="Stack"/> layer by <see cref="Layer.ClipId"/> (a twin maps to its video's clip).</summary>
     public required IReadOnlyDictionary<Layer, TimelineClip> ClipOf { get; init; }
 
-    /// <summary>Where each layer's clip is among the document's tracks (0 the bottom), for the 3D view's labels and picking.</summary>
+    /// <summary>Track index of each layer's clip (0 = bottom), for 3D view labels and picking.</summary>
     public required IReadOnlyDictionary<Layer, int> TrackOf { get; init; }
 }
 
 public static partial class TimelineLowering
 {
-    /// <summary>A state's timeline lowered (from the document's cache, as everything built from it is), as the GPU scene reads it.</summary>
+    /// <summary>A state's lowered timeline (from the per-document cache) as the GPU scene reads it.</summary>
     internal static GpuSceneLowering LowerForGpu(SequenceExportState state)
     {
         var document = state.Timeline;
@@ -777,9 +752,8 @@ public static partial class TimelineLowering
     }
 
     /// <summary>
-    /// The clip each layer of the stack was made from, and the track it is on, by the clip's id every layer carries
-    /// (<see cref="Layer.ClipId"/>: MakeLayer's; a twin's is its video's). A layer whose clip is not found is left out (its
-    /// picture is still drawn; it only has no clip to be picked by).
+    /// Maps each stack layer to its source clip and track via <see cref="Layer.ClipId"/> (set by MakeLayer; a twin carries its video's).
+    /// Layers whose clip is not found are omitted (still drawn, just not pickable).
     /// </summary>
     private static (Dictionary<Layer, TimelineClip> ClipOf, Dictionary<Layer, int> TrackOf) MatchClips(IReadOnlyList<Layer> stack, TimelineDocument document)
     {

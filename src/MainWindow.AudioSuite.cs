@@ -5,15 +5,15 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- The Studio Audio Suite in the window (Pass 5.2B) -----
-// The master meters (the Audio tab's, across; the Master Meter pane's, upright) read the sound engine through one AudioMeterFeed, which
-// runs only while the player plays; their faders are the Sequence's master gain, a gesture of either one step of Undo. The beats found in
-// a clip's sound are ticks along its block (the beat grid) and times the timeline snaps to (SnapTimes).
+// ----- Studio Audio Suite window wiring -----
+// Master meters (Audio tab horizontal, Master Meter pane vertical) read the audio engine through one AudioMeterFeed that runs only during
+// playback; their faders drive the Sequence master gain, one Undo step per gesture. Detected clip beats render as ticks along the block
+// (beat grid) and serve as Timeline snap targets (SnapTimes).
 public partial class MainWindow
 {
     private AudioMeterFeed? _meterFeed;
 
-    // The one reader of the engine's meter, made as the first meter is wired: a timer that does not run until the player plays with a meter shown.
+    // Single engine meter reader, created when the first meter is wired; its timer runs only while playing with a meter visible.
     private AudioMeterFeed MeterFeed => _meterFeed ??= new AudioMeterFeed(() => _gpu?.Audio.Meter) { Playing = _viewModel.IsPlaying };
 
     private void InitializeAudioSuite()
@@ -34,7 +34,7 @@ public partial class MainWindow
         };
     }
 
-    /// <summary>A meter (the pane's, or the Audio tab's as the tab is made): fed by the one feed, its fader's gestures one step of Undo each.</summary>
+    /// <summary>Wires a meter (pane, or Audio tab on realization) to the shared feed; each fader gesture is one Undo step.</summary>
     private void WireMeter(AudioMeterControl meter)
     {
         meter.Feed = MeterFeed;
@@ -43,8 +43,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A clip's beats as ticks on its block (the beat grid): pixels from where the block is laid (<paramref name="blockStart"/>, seconds on the
-    /// Sequence), in order; null for a clip with none, or with the grid off.
+    /// Beat-grid tick offsets in pixels from the block start (<paramref name="blockStart"/>, Sequence seconds), in order; null when the clip
+    /// has no beats or the grid is off.
     /// </summary>
     private List<double>? BeatTicks(TimelineClip? model, double blockStart, double scale)
     {
@@ -58,7 +58,7 @@ public partial class MainWindow
         return ticks;
     }
 
-    /// <summary>Detect &amp; Snap to Audio Beats on a clip's menu: found in the background, then the rows drawn again with its beats.</summary>
+    /// <summary>Clip menu "Detect &amp; Snap to Audio Beats": detects in the background, then redraws rows with the beats.</summary>
     private async Task DetectBeatsAsync(Layer clip)
     {
         try

@@ -4,18 +4,16 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.ViewModels;
 
-// Dead air both ways (4.4-BugHunt): a folded stretch put back stays marked (TimelineDocument.RestoredFolds) and can be
-// folded out again as the same fold (the Hide pill, "Hide / Fold Dead Air Segment"), and a clip's edge at a folded seam
-// opens the fold by as far as it is dragged away from the clip, or folds as much more of the clip into it when dragged
-// into the clip (Q11). Each is one step of Undo. A fold keeps one id through fold, put back, fold again and every resize,
-// so the timeline pairs FoldSeams() with RestoredStretches() by it to slide the one into the other. A ripple trim at a
-// seam stays a ripple trim: only a plain edge drag is fold-aware (TrimClipStart, CommitClipMove).
+// Reversible dead-air folds: a restored stretch stays tracked (TimelineDocument.RestoredFolds) and can be re-folded as the same fold
+// (Hide pill, "Hide / Fold Dead Air Segment"); a clip edge at a folded seam reveals the fold when dragged outward or folds more of
+// the clip when dragged inward. One undo step each. A fold keeps a stable id through fold/restore/resize so the timeline pairs
+// FoldSeams() with RestoredStretches() for animation. Ripple trims at a seam stay ripple; only plain edge drags are fold-aware
+// (TrimClipStart, CommitClipMove).
 public partial class MainViewModel
 {
     /// <summary>
-    /// The folded stretches put back that can be folded again, for the timeline's Hide pills: the track each lies on, where
-    /// (seconds), and its record (whose <see cref="RestoredFold.Id"/> is the fold it was and will be). Those no longer there
-    /// are left out. One look through the clips for them all.
+    /// Re-foldable restored stretches for Hide pills: track, range (s) and record (<see cref="RestoredFold.Id"/> = stable fold id).
+    /// Stale entries are skipped. Single pass over clips.
     /// </summary>
     public IEnumerable<(Guid TrackId, double From, double To, RestoredFold Restored)> RestoredStretches()
     {
@@ -24,8 +22,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The stretches put back that a clip lies across (its right-click "Hide / Fold Dead Air Segment"): on its own track, on
-    /// a track it lies under, or folded out of every track before.
+    /// Restored stretches a clip spans (context menu "Hide / Fold Dead Air Segment"): on its track, an ancestor track, or previously
+    /// folded from all tracks.
     /// </summary>
     public IReadOnlyList<RestoredFold> RestoredFoldsOn(Layer clip)
     {
@@ -41,7 +39,7 @@ public partial class MainViewModel
         return on;
     }
 
-    /// <summary>Folds a stretch that was put back out of the timeline again, as the fold it was: one step of Undo.</summary>
+    /// <summary>Re-folds a restored stretch under its original fold id. One undo step.</summary>
     public bool HideRestoredStretch(RestoredFold restored)
     {
         FoldedSegment? folded = null;
@@ -56,16 +54,15 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The fold at a clip's edge, and the side of it that edge opens or folds into: a clip's start at a seam that is its start
-    /// (the fold's tail), or a clip's end at a seam that is its end, or that is the start of the clip after it on its track
-    /// (the fold's head). Null when no fold lies there, or the clip's track is locked.
+    /// Fold at a clip edge and its side: clip start at a seam = fold tail; clip end at a seam (or at the next adjacent clip's start)
+    /// = fold head. Null when none or the track is locked.
     /// </summary>
     public (FoldedSegment Fold, FoldSide Side)? FoldAtEdge(Layer clip, bool startEdge)
     {
         if (Document.Folds is not { Count: > 0 } folds || ClipOf(clip) is not { } model || Document.TrackOf(model) is not { IsLocked: false } track)
             return null;
 
-        // The clip after this one on its track, where it starts as this one ends: its seam is this one's end too.
+        // An adjacent following clip shares this clip's end seam.
         var index = track.IndexOf(model);
         var next = !startEdge && index >= 0 && index + 1 < track.Clips.Count && Math.Abs(track.Clips[index + 1].Start - model.End) <= 1e-6
             ? track.Clips[index + 1]
@@ -82,10 +79,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// How far a clip's edge at a fold may go, for the drag's live picture: outward, away from the clip (<c>Reveal</c>: the
-    /// fold's length, which shows it all), and inward (<c>Fold</c>: the clip's length but the shortest clip, on frames; 0
-    /// when it is that short already). Null when the edge is at no fold (<see cref="FoldAtEdge"/>). The edit holds an edge
-    /// let go anywhere to these, and shows or folds at least the shortest clip.
+    /// Drag limits for a fold edge (live preview): outward <c>Reveal</c> up to the fold length, inward <c>Fold</c> up to clip length
+    /// minus the minimum clip (frame-quantized; 0 if already minimal). Null when not at a fold (<see cref="FoldAtEdge"/>). The commit
+    /// clamps to these.
     /// </summary>
     public (double Reveal, double Fold)? SeamEdgeRange(Layer clip, bool startEdge)
     {
@@ -99,10 +95,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A clip's edge at a fold let go at <paramref name="newEdge"/> seconds (Q11): dragged away from the clip, it shows as
-    /// much of the fold there (all of it puts the fold back); dragged into the clip, it folds as much more of the clip into
-    /// it. The clip keeps its id. One step of Undo; false when nothing changed (the edge is at no fold, it moved less than
-    /// half a frame, or the edit was refused, with the reason in the status line).
+    /// Commits a fold-edge drag to <paramref name="newEdge"/> s: outward reveals that much of the fold (fully = restore), inward folds
+    /// more of the clip. Clip id preserved. One undo step; false when unchanged (no fold, under half a frame, or refused with reason).
     /// </summary>
     public bool TrimIntoSeam(Layer clip, bool startEdge, double newEdge)
     {
@@ -128,7 +122,7 @@ public partial class MainViewModel
             return true;
         }
 
-        // Less than half a frame is no change (a clip too short to fold more of is a refusal, which Edit has said).
+        // Under half a frame is a no-op (a too-short clip is an Edit refusal, already reported).
         var changed = after.Length - length;
         if (Math.Abs(changed) < 1e-6)
         {
@@ -142,7 +136,7 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>A length on the frames of the document at or after it (as it is while the document does not quantize).</summary>
+    /// <summary>Rounds a length up to the document frame grid (unchanged when not quantizing).</summary>
     private double OnFrameAtLeast(double seconds)
     {
         if (!Document.QuantizeToFrames)
@@ -152,7 +146,7 @@ public partial class MainViewModel
         return rate.Quantize(rate.SecondsFromFrame((long)Math.Ceiling(seconds * rate.Fps - 1e-6)));
     }
 
-    /// <summary>Whether a track lies under another (by id), through the tracks it lies under.</summary>
+    /// <summary>Whether a track (by id) is nested under another at any depth.</summary>
     private bool LiesUnder(TimelineTrackModel track, Guid ancestorId)
     {
         var (up, steps) = (track, 0);

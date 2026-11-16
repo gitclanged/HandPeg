@@ -6,15 +6,14 @@ using Microsoft.Win32;
 
 namespace HandPegApp;
 
-// Captions and Remove Dead Air from the main window (4.4): what the Subtitles tab held, now reached from the timeline's
-// caption row and track menus, the Add Layer menu and the commands: generating captions (the Auto-Captions dialog),
-// importing and editing them, their style and their box, and Remove Dead Air by the sound or by the captions.
+// Captions and Remove Dead Air entry points, reached from the timeline caption row and track menus, the Add Track menu and commands:
+// Auto-Captions generation, subtitle import and editing, caption style and box, and Remove Dead Air by audio or by caption gaps.
 public partial class MainWindow
 {
     /// <summary>
-    /// Remove Dead Air on what is given: a clip with sound of its own, a video (its file's clips, by its first stream), or (null) the
-    /// sound marked as the voice, else the video at the playhead (5.2-AuditB). The dialog asks how (by the sound's silences, or the
-    /// gaps between captioned words, 4.4) and whether to mark or delete.
+    /// Remove Dead Air on <paramref name="target"/>: a clip with its own audio, a video (its file's clips, via the first stream), or null for
+    /// the Voice-marked audio, else the video at the playhead. The dialog chooses the source (audio silences or gaps between captioned
+    /// words) and mode (mark or delete).
     /// </summary>
     internal void RunDeadAir(object? target)
     {
@@ -24,9 +23,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Generate Auto-Captions, from wherever it is asked (a track's or a clip's menu, the caption row, the Add Layer menu):
-    /// the Auto-Captions dialog opens on the sound given (one of the video's own tracks, a sound clip), or with none on what
-    /// is set (the voice clip, the Voice track); what is chosen there is applied and the captions are made at once.
+    /// Generate Auto-Captions from any entry point (track or clip menu, caption row, Add Track menu): opens the Auto-Captions dialog on
+    /// the given audio (a source track or audio clip), or with null on the configured voice clip or Voice track; applies the chosen
+    /// source, model and language and generates captions immediately.
     /// </summary>
     internal void GenerateCaptionsFrom(object? target)
     {
@@ -54,10 +53,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The captions' menu, for the caption row, the subtitle track's header and its mini-stack: making, editing, styling,
-    /// placing, importing and deleting the captions, and whether they are drawn into the export.
+    /// Builds the captions menu for the caption row, the subtitle track header and its mini-stack: generate, edit, style, position,
+    /// import and delete captions, and toggle burn-in for export.
     /// </summary>
-    /// <param name="target">What the menu belongs to (a track of the video, a clip with sound), for Generate Auto-Captions; null for what is set.</param>
+    /// <param name="target">Menu owner (a source track or audio clip) for Generate Auto-Captions; null for the configured source.</param>
     internal void FillCaptionMenu(ItemsControl menu, object? target)
     {
         var hasSource = _viewModel.HasSource;
@@ -85,8 +84,7 @@ public partial class MainWindow
         Add("Restore Caption Position", () => _viewModel.ResetCaptionLayerCommand.Execute(null), true,
             "Puts the caption box back where it starts: across the lower part of the frame.");
 
-        // Where the captions are in the stack (5.1-Polish, the user's Q2): under a track, or over everything. The 3D view's lift
-        // (Shift + drag their plane) does the same.
+        // Caption stacking: below a given track or above everything. The 3D view's plane lift (Shift + drag) does the same.
         var onTop = _viewModel.CaptionsOnTop;
         Add("Bring Captions Forward", () => _viewModel.MoveCaptionsInStack(1), hasSource && !onTop,
             $"Puts the captions over the next track up (over everything from the top one). {_viewModel.CaptionsPlaceText()}");
@@ -110,8 +108,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Splits the caption under a moment in two at its word there (5.1-Polish: Split at Playhead with the captions selected,
-    /// the razor on a caption block, the captions' menu), and lays the rows out again.
+    /// Splits the caption at <paramref name="seconds"/> on the word boundary there (Split at Playhead with captions selected, the razor
+    /// on a caption block, the captions menu), then schedules a row redraw.
     /// </summary>
     private void SplitCaptionAt(double seconds)
     {
@@ -120,7 +118,7 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    /// <summary>Import Subtitles: reads a subtitle file in as the subtitle track.</summary>
+    /// <summary>Import Subtitles: loads a subtitle file as the subtitle track.</summary>
     internal void ImportSubtitles()
     {
         var dialog = new OpenFileDialog { Title = "Select subtitles to import", Filter = Services.SubtitleFiles.ImportFilter };
@@ -128,10 +126,10 @@ public partial class MainWindow
             _viewModel.ImportSubtitles(dialog.FileName);
     }
 
-    /// <summary>Edit Captions: the Subtitle Studio on the subtitle track.</summary>
+    /// <summary>Edit Captions: opens the Subtitle Studio on the subtitle track.</summary>
     internal void EditCaptions() => _ = OpenSubtitleStudioAsync();
 
-    /// <summary>Caption Style: the style's dialog; what is changed there is one step of Undo.</summary>
+    /// <summary>Caption Style: opens the style dialog; an accepted change is one Undo step.</summary>
     internal void OpenCaptionStyle()
     {
         var dialog = new CaptionStyleDialog(_viewModel.CaptionStyle) { Owner = this };
@@ -143,9 +141,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Opens the Subtitle Studio pane on the subtitle track (5.4C: a dock pane, not a modal window). With no track yet and captions on,
-    /// the track is first made from them, so that what was transcribed is what is edited. The main player goes on drawing the captions
-    /// and the main Undo goes on working while it is open: the studio commits each gesture as a step (MainViewModel.CommitSubtitleEdits).
+    /// Opens the Subtitle Studio dock pane on the subtitle track. With no track yet and captions on, the track is first built from the
+    /// captions so the transcription is what gets edited. The main player keeps rendering captions and the main Undo keeps working:
+    /// the studio commits each gesture as a step (MainViewModel.CommitSubtitleEdits).
     /// </summary>
     private async Task OpenSubtitleStudioAsync()
     {

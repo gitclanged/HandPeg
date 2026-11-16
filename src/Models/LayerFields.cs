@@ -5,10 +5,10 @@ namespace HandPegApp.Models;
 /// <summary>Who owns a value of a clip's view (<see cref="Layer"/>).</summary>
 public enum FieldOwner
 {
-    /// <summary>The clip's look (its LayerState): changed on the view, then written into the clip (FlushLooks); undoable as a look.</summary>
+    /// <summary>Look value (LayerState): edited on the view, flushed to the clip (FlushLooks), undoable as a look step.</summary>
     Look,
 
-    /// <summary>The clip's own timing and switches (the TimelineClip): a change on the view is a request, made an edit of the document.</summary>
+    /// <summary>Clip-owned timing/switches (TimelineClip): view changes become document edits.</summary>
     Clip,
 
     /// <summary>The view's own state (what it shows, what is being done with it): never the clip's.</summary>
@@ -17,15 +17,13 @@ public enum FieldOwner
     /// <summary>What probing the file found (its kind, picture size, audio): never set by hand.</summary>
     Probe,
 
-    /// <summary>Another name for a value owned elsewhere (a box's percent, an Audio-tab row's name): setting it sets that value, whose own
-    /// change is the one that counts.</summary>
+    /// <summary>Alias of a value owned elsewhere (box percent, Audio-tab row name); setting it sets the owner, whose change is authoritative.</summary>
     Alias,
 }
 
 /// <summary>
-/// The single table of which values of a view are its clip's own, its look, its view-only state or what probing found. The view model's
-/// sync (NoteViewChange) and its undo looks (the look names a view's PropertyChanging takes a step for) both read it, and the
-/// layer-field-ownership golden checks every Layer property against it, so a new property is classified once, here.
+/// Single ownership table classifying each view property as clip-owned, look, view-only or probe-derived. Read by NoteViewChange and
+/// look-undo step selection; golden layer-field-ownership verifies every Layer property is classified here.
 /// </summary>
 public static class LayerFields
 {
@@ -45,7 +43,7 @@ public static class LayerFields
         nameof(Layer.PictureFadeInOff), nameof(Layer.PictureFadeOutOff),
     }.ToFrozenSet(StringComparer.Ordinal);
 
-    /// <summary>Other names for values owned elsewhere: the boxes' percent editors and the Audio tab's row names (see <see cref="FieldOwner.Alias"/>).</summary>
+    /// <summary>Alias properties (box percent editors, Audio tab row names; <see cref="FieldOwner.Alias"/>).</summary>
     public static readonly FrozenSet<string> Alias = new[]
     {
         nameof(Layer.AnchorXPercent), nameof(Layer.AnchorYPercent), nameof(Layer.PositionXPercent), nameof(Layer.PositionYPercent),
@@ -67,8 +65,8 @@ public static class LayerFields
         : Alias.Contains(name) ? FieldOwner.Alias : FieldOwner.Look;
 
     /// <summary>
-    /// The look values a view's undo steps follow: LayerState's writable properties that are the clip's look. A view's property of the
-    /// same name takes a step before it changes; a Layer look property must therefore have a LayerState property of its name (the golden).
+    /// Look properties tracked for undo (writable LayerState look properties). Same-named view properties record a step before changing,
+    /// so each Layer look property needs a matching LayerState property (golden-enforced).
     /// </summary>
     public static FrozenSet<string> UndoableLooks => Looks.Value;
 

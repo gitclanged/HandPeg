@@ -16,14 +16,11 @@ public enum ProcessClass
 }
 
 /// <summary>
-/// Windows Job Objects for the tools HandPeg starts (FFmpeg, ffprobe, yt-dlp, whisper): one for foreground work,
-/// one for background work. A tool put in one keeps its children there too (yt-dlp's own FFmpeg), and they all
-/// die with HandPeg, even after a crash (KILL_ON_JOB_CLOSE: the jobs close when the process does). Both keep off
-/// the processors reserved for the interface and the player; the background one runs at Below Normal (or Idle)
-/// priority, and its tools are put in Efficiency mode (EcoQoS) when that is switched on.
+/// Foreground and background Job Objects for child tools (FFmpeg, ffprobe, yt-dlp, whisper). Children inherit the job (yt-dlp's
+/// FFmpeg) and die with HandPeg even after a crash (KILL_ON_JOB_CLOSE). Both exclude cores reserved for UI and playback; background
+/// runs Below Normal (or Idle) with EcoQoS when Efficiency mode is on.
 ///
-/// Where a tool cannot be put in a job (HandPeg itself runs in a job that forbids it), its priority is set on it
-/// directly instead, as 2.6 did.
+/// When job assignment is forbidden (HandPeg already in a restrictive job), priority is set on the process directly.
 /// </summary>
 public static partial class JobObjects
 {
@@ -33,8 +30,7 @@ public static partial class JobObjects
     private static bool _idle;
 
     /// <summary>
-    /// Sets the limits of both jobs: the processors left out (the first <paramref name="reservedCores"/>), and
-    /// the background job's priority. Applied to the tools running in them as well as to those started later.
+    /// Configures both jobs: exclude the first <paramref name="reservedCores"/> and set background priority; applies to running and future tools.
     /// </summary>
     public static void Configure(int reservedCores, bool idlePriority)
     {
@@ -49,7 +45,7 @@ public static partial class JobObjects
         }
     }
 
-    /// <summary>The processors every tool may use: all but the reserved ones; 0 (no limit) when that would leave fewer than two.</summary>
+    /// <summary>Tool affinity mask excluding reserved cores; 0 (unrestricted) if fewer than two would remain.</summary>
     public static ulong ToolAffinity
     {
         get
@@ -116,7 +112,7 @@ public static partial class JobObjects
         }
     }
 
-    /// <summary>Makes the job (when it is not there yet) and sets its limits; the handle, or zero when Windows would not.</summary>
+    /// <summary>Creates the job if needed and applies limits; returns the handle or zero on failure.</summary>
     private static IntPtr Apply(IntPtr job, uint priorityClass)
     {
         if (job == IntPtr.Zero)
@@ -141,8 +137,8 @@ public static partial class JobObjects
     }
 
     /// <summary>
-    /// Stops a tool where it is (all of its threads), or lets it go on: a proxy being made while the player plays.
-    /// Windows has no documented call for a whole process; ntdll's, which every process explorer uses, is used.
+    /// Suspends or resumes a whole process (e.g. proxy builds during playback) via ntdll NtSuspendProcess/NtResumeProcess (undocumented
+    /// but universally used).
     /// </summary>
     public static void Suspend(int processId, bool suspended)
     {
@@ -158,8 +154,7 @@ public static partial class JobObjects
     // ----- The interface thread -----
 
     /// <summary>
-    /// The UI thread prefers the first processor (one of the reserved ones), and runs a step above normal: the tools
-    /// are kept off those processors, so the window answers however busy they are. Nothing is pinned to it.
+    /// Sets the UI thread's ideal processor to reserved core 0 and priority AboveNormal so it stays responsive under tool load (no hard pin).
     /// </summary>
     public static void FavourInterfaceThread()
     {

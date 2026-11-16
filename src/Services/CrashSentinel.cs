@@ -8,16 +8,13 @@ using static HandPegApp.Native.Kernel32;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// HandPeg.exe --crash-sentinel &lt;pid&gt; &lt;shared memory&gt; &lt;crashes folder&gt;: a second copy of HandPeg that does
-/// one thing. It waits, using no processor time, for the HandPeg it was started by to end, and when that HandPeg died
-/// of a fault and wrote nothing itself (a native crash in a graphics driver or a system library leaves nothing standing in the
-/// process to write with), it writes the report from the shared memory HandPeg kept for it (<see cref="CrashSharedMemory"/>).
+/// HandPeg.exe --crash-sentinel &lt;pid&gt; &lt;shared memory&gt; &lt;crashes folder&gt;: a watcher process that idles (zero CPU) until its
+/// parent exits; if the parent died of a fault without reporting (native driver/system crashes leave nothing to write with), it writes
+/// the report from <see cref="CrashSharedMemory"/>.
 ///
-/// Handled at the very top of Program.Main, before the updater, the settings, the presets or anything of WPF, and
-/// kept that way: this class and what it calls never touch <see cref="AppPaths"/>, <see cref="AppSettings"/> or a
-/// window. It leaves without a word when the process it should watch is already gone, when the process id has been
-/// reused (the process's creation time is compared with the one in the shared memory), or when the shared memory is not
-/// there. It runs in the lowest priority class, with its memory given back while it waits.
+/// Dispatched at the top of Program.Main before the updater, settings, presets or WPF; this class never touches <see cref="AppPaths"/>,
+/// <see cref="AppSettings"/> or windows. Exits silently if the target is gone, the PID was reused (creation time mismatch) or the
+/// shared memory is missing. Runs at the lowest priority class with its working set released while waiting.
 /// </summary>
 public static partial class CrashSentinel
 {
@@ -80,13 +77,10 @@ public static partial class CrashSentinel
                 if (!Times(process, out var created, out _) || created != CrashSharedMemory.CreationTime(block))
                     return 0;
 
-                    // HandPeg is told it is seen from now on, and the sentinel gets out of everyone's way until it is
-                    // needed: its memory is given back, and it waits, using no processor time, in the lowest priority
-                    // class there is (it starts at HandPeg's own, so that a busy computer does not hold its start up for
-                    // seconds). Its one thread is made time-critical within that class (15), which costs
-                    // nothing while it waits and means that when the fault filter wakes it, it answers at once, even
-                    // with every core busy with an export: the filter holds the process for it at most two seconds, and
-                    // a sentinel woken at idle priority behind an export could miss them.
+                    // Signal "watching", release memory and drop to the idle priority class (startup ran at HandPeg's priority to
+                    // avoid multi-second delays on busy systems). The single thread is time-critical (15) within that class: free
+                    // while waiting, yet it responds instantly when the fault filter wakes it, even under full export load (the
+                    // filter holds the process at most 2 s).
                 CrashSharedMemory.SetFlag(block, CrashSharedMemory.FlagSentinelWatching);
                 _ = SetPriorityClass(GetCurrentProcess(), 0x40); // IDLE_PRIORITY_CLASS
                 _ = SetThreadPriority(GetCurrentThread(), 15); // THREAD_PRIORITY_TIME_CRITICAL
@@ -94,8 +88,7 @@ public static partial class CrashSentinel
 
                 if (!Watch(process, pid, args[2], block))
                 {
-                        // A fault was recorded and the process has not ended since: it is stuck on its way out (a
-                        // dialog, a lock in a broken process). The report is written now, while it hangs, and only once.
+                        // Fault recorded but the process has not exited (stuck on a dialog or lock): write the report once now.
                     var written = TryWrite(Report(block, null, created, 0), folder);
                     _ = WaitForSingleObject(process, Infinite);
                     return written ? 1 : 0;
@@ -109,8 +102,7 @@ public static partial class CrashSentinel
                 if ((flags & (CrashSharedMemory.FlagCleanExit | CrashSharedMemory.FlagManagedReportWritten)) != 0 || exitCode == 0)
                     return 0;
 
-                    // Ended while the user was closing it (the save prompt up, then closed from the taskbar or Task
-                    // Manager): no fault, so no crash to report.
+                    // Terminated during an intentional close (save prompt, then taskbar/Task Manager): not a crash.
                 if ((flags & (CrashSharedMemory.FlagUserClosing | CrashSharedMemory.FlagNativeFault)) == CrashSharedMemory.FlagUserClosing)
                     return 0;
 
@@ -123,7 +115,7 @@ public static partial class CrashSentinel
         }
     }
 
-    /// <summary>Writes a report into the folder; false when the folder cannot be written to (there is no one left to tell).</summary>
+    /// <summary>Writes a report to the folder; false when unwritable (nothing else can be done).</summary>
     private static bool TryWrite(CrashReport report, string folder)
     {
         try
@@ -137,14 +129,12 @@ public static partial class CrashSentinel
         }
     }
 
-    // How long a process that recorded a fault may take to end before it is taken to be stuck: Windows Error Reporting
-    // can hold a crashed process for a while (writing a dump), so this is generous.
+    // Grace period before a faulted process is considered stuck; generous because WER may hold it while writing a dump.
     private const uint StuckAfterFaultMs = 60_000;
 
     /// <summary>
-    /// Waits for the process to end. If its fault filter signals first, the process is still there, held in the filter:
-    /// the module the faulting address is in is looked up in its module list and written into the shared memory, and
-    /// the filter is told, so it can let the process go. False when the process did that and then did not end.
+    /// Waits for exit. If the fault filter signals first (process held), resolves the faulting module into shared memory and releases
+    /// the filter. False when the process then fails to exit.
     /// </summary>
     private static unsafe bool Watch(nint process, int pid, string sharedName, byte* block)
     {
@@ -185,7 +175,7 @@ public static partial class CrashSentinel
         }
     }
 
-    /// <summary>Finds the module the faulting address is in, by the live process's module list, and writes its file name (never its path).</summary>
+    /// <summary>Resolves the faulting module from the live module list and records its file name (never a path).</summary>
     private static unsafe void NameFaultingModule(int pid, byte* block)
     {
         var address = CrashSharedMemory.FaultAddress(block);
@@ -220,17 +210,15 @@ public static partial class CrashSentinel
     }
 
     /// <summary>
-    /// The report of a death HandPeg could not write up itself, from what it left in the shared memory. No exit code: the
-    /// process recorded a fault and is stuck on its way out.
+    /// Builds a report from shared memory for a death HandPeg could not report. No exit code means a faulted process stuck on exit.
     /// </summary>
     private static unsafe CrashReport Report(byte* block, uint? exitCode, long created, long exited)
     {
-        // The names of the files HandPeg had in use are kept out of everything below, as HandPeg keeps them out of its own reports.
+        // Redact in-use file names throughout, as in-process reports do.
         foreach (var name in CrashSharedMemory.FileNames(block))
             _ = CrashSanitizer.KeepOutFileName(name);
 
-        // The filter records a CLR exception as well (it sees every fault that reaches the top); that one is a managed
-        // exception whose own report could not be written, not a native fault.
+        // The filter also records CLR exceptions; those are unreported managed exceptions, not native faults.
         var native = (CrashSharedMemory.Flags(block) & CrashSharedMemory.FlagNativeFault) != 0 && CrashSharedMemory.ExceptionCode(block) != 0xE0434352;
         var code = native || exitCode is null ? CrashSharedMemory.ExceptionCode(block) : exitCode.Value;
         var type = CrashReports.DescribeCode(code);
@@ -318,7 +306,7 @@ public static partial class CrashSentinel
         // The computer, as HandPeg packed it (the cards with it: env.adapters stands for the old env.gpus).
         CrashHardware.Unpack(context, report.Environment);
 
-        // On a developer's PC, what the flight recorder last wrote (4.4.0).
+        // Developer flight recorder output, when enabled.
         report.DevVerbose = DevFlightRecorder.FromDisk();
         return report;
     }

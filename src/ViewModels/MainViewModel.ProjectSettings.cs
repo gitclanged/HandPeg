@@ -5,29 +5,24 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Project Settings (5.4A) -----
-// Every project has explicit settings (Models/Timeline/ProjectSettings.cs): its natural frame and whether it stands on its side,
-// its frame rate, colour space, pixel aspect and sample rate. The first video opened onto an empty Sequence sets them
-// (TakeProjectSettingsFrom), unless the New Project studio chose them first (ApplyProjectSettings, which marks the frame and the
-// rate as chosen on purpose so the first file keeps them). Export's "Match Project Settings" follows them.
+// ----- Project Settings -----
+// Explicit per-project settings (Models/Timeline/ProjectSettings.cs): natural frame and orientation, frame rate, colour space,
+// pixel aspect, sample rate. The first video on an empty Sequence sets them (TakeProjectSettingsFrom) unless the New Project studio
+// set them first (ApplyProjectSettings marks frame/rate explicit). Export's Match Project Settings follows them.
 public partial class MainViewModel
 {
-    /// <summary>The open project's settings: the document's, with the frame's turn to tall as the view model holds it (Use Vertical Resolution).</summary>
+    /// <summary>Current project settings: the document's, with orientation from Use Vertical Resolution.</summary>
     public ProjectSettings CurrentProjectSettings => Document.ProjectSettings with { Vertical = UseVerticalResolution };
 
-    /// <summary>Whether any clip lies on the Sequence (then its frame rate is fixed: its edges lie on that rate's frames).</summary>
+    /// <summary>Whether the Sequence has clips (frame rate is then locked: clip edges sit on that rate's frames).</summary>
     public bool SequenceHasClips => Document.Tracks.Exists(t => t.Clips.Count > 0);
 
     /// <summary>
-    /// Gives the project its settings (the New Project studio, the Project Manager's Project Settings). <paramref name="frameWidth"/> x
-    /// <paramref name="frameHeight"/> is the output frame wanted (1080 x 1920 for 9:16): a taller than wide frame is a natural size
-    /// turned on its side with Use Vertical Resolution, and Export's Resolution goes back to "Match Project Settings"; 0 leaves the
-    /// size as it is (to the first clip on an empty Sequence), and Export's Resolution boxes with it. A null <paramref name="frameRate"/>
-    /// leaves the rate as it is (the first clip's own on an empty Sequence). A frame or rate given is kept by the first file opened onto
-    /// the empty Sequence (<see cref="TimelineDocument.ExplicitFrame"/>); one not given leaves that mark as it was. One undo step when
-    /// <paramref name="undoable"/> and the Sequence has clips, which puts back the frame as the view model holds it too (its turn to
-    /// tall and the Resolution boxes, <see cref="ProjectSettingsFrame"/>). False (and a status line) when refused: a frame-rate change
-    /// on a Sequence that has clips, whose edges lie on the old rate's frames (there is no requantize).
+    /// Applies project settings (New Project studio, Project Settings). <paramref name="frameWidth"/> x <paramref name="frameHeight"/> is
+    /// the output frame (portrait = transposed natural size with Use Vertical Resolution; Export Resolution resets to Match Project
+    /// Settings); 0 leaves size unchanged. Null <paramref name="frameRate"/> leaves the rate unchanged. Given values are marked explicit
+    /// (<see cref="TimelineDocument.ExplicitFrame"/>) so the first file keeps them. One undo step when <paramref name="undoable"/> and clips
+    /// exist, including <see cref="ProjectSettingsFrame"/>. Returns false (status line) for a rate change with clips (no requantize).
     /// </summary>
     public bool ApplyProjectSettings(int frameWidth, int frameHeight, FrameRate? frameRate, ProjectColorSpace colorSpace,
         ProjectPixelAspect pixelAspect, int sampleRate, bool undoable = true)
@@ -55,17 +50,16 @@ public partial class MainViewModel
         var rateChanges = frameRate is { } rate && rate != Document.FrameRate;
         var settingsChange = colorSpace != Document.ColorSpace || pixelAspect != Document.PixelAspect
                              || (sampleRate is 44100 or 48000 or 96000 ? sampleRate : TimelineDocument.DefaultSampleRate) != Document.SampleRate;
-        // A frame or rate not given leaves its "chosen on purpose" mark as it was (5.4A: Project Settings sends only what was changed).
+        // Omitted frame/rate keep their explicit marks (Project Settings sends only changed values).
         var (explicitFrame, explicitRate) = (framed || Document.ExplicitFrame, frameRate.HasValue || Document.ExplicitFrameRate);
         if (!frameChanges && !rateChanges && !settingsChange && Document.ExplicitFrame == explicitFrame && Document.ExplicitFrameRate == explicitRate)
             return true;
 
-        // The step is of the timeline before any of it (the frame and rate are the document's own values, set outside the transaction),
-        // with the frame as the view model holds it, which no other step carries: Undo and Redo put the turn and the boxes back too.
+        // Snapshot before any change (frame/rate are set outside the transaction), including the VM frame state so undo/redo restore
+        // orientation and Resolution boxes too.
         var before = undoable && hasClips && _restoring == 0 ? CaptureSnapshot() with { Frame = CaptureProjectFrame() } : null;
 
-        // The frame, the rate and the colour space, pixel aspect and sample rate through one transaction (no step of its own: the one
-        // taken above is the step).
+        // Frame, rate, colour space, pixel aspect and sample rate in one transaction (non-undoable; the snapshot above is the step).
         var (frameWidthNow, frameHeightNow) = framed ? (naturalWidth, naturalHeight) : (Document.NaturalWidth, Document.NaturalHeight);
         Edit("change the Project Settings", edit =>
         {
@@ -77,7 +71,7 @@ public partial class MainViewModel
         if (framed)
         {
 
-            // Turned without the boxes swapping on the way, then blank: "Match Project Settings", the Sequence's own size.
+            // Toggle orientation without swapping boxes, then blank them (Match Project Settings).
             _syncingDimensions = true;
             try
             {
@@ -103,9 +97,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Clears what chose the frame or the rate on purpose while the Sequence is empty (Project Settings: the frame boxes emptied, or Auto
-    /// from First Clip chosen again), so the first file opened gives its own. Nothing once the Sequence has clips. No undo step: an empty
-    /// Sequence takes none (as <see cref="ApplyProjectSettings"/>).
+    /// Clears explicit frame/rate marks on an empty Sequence (frame boxes cleared, or Auto from First Clip re-selected) so the first file
+    /// sets them. No-op with clips; no undo step (as <see cref="ApplyProjectSettings"/> on an empty Sequence).
     /// </summary>
     public void LeaveToFirstClip(bool frame, bool rate)
     {
@@ -119,15 +112,12 @@ public partial class MainViewModel
         }, undoable: false);
     }
 
-    // ----- The frame as the view model holds it, in a Project Settings step (5.4A) -----
+    // ----- VM frame state in Project Settings undo steps -----
 
-    /// <summary>The turn to tall and Export's Resolution boxes as they are now: what a Project Settings step puts back with the document.</summary>
+    /// <summary>Current orientation and Export Resolution boxes, captured in Project Settings steps.</summary>
     private ProjectSettingsFrame CaptureProjectFrame() => new(UseVerticalResolution, OutputWidth, OutputHeight);
 
-    /// <summary>
-    /// Puts a Project Settings step's frame back (RestoreTimeline): the turn to tall without the boxes swapping on the way, then the
-    /// boxes exactly as they were.
-    /// </summary>
+    /// <summary>Restores a Project Settings step's frame state (RestoreTimeline): orientation without box swap, then exact box values.</summary>
     private void RestoreProjectFrame(ProjectSettingsFrame frame)
     {
         _syncingDimensions = true;
@@ -144,9 +134,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A line about how an HDR project exports under "Match Project Settings": kept HDR, 10-bit BT.2020 with its transfer (5.4B, the
-    /// passthrough rule), or tone-mapped to BT.709 SDR and why (<see cref="HdrPassthroughBlocker"/>); "" for an SDR project, or while
-    /// Colorspace asks for something else.
+    /// HDR export note under Match Project Settings: kept HDR (10-bit BT.2020 with its transfer) or tone-mapped to BT.709 with the reason
+    /// (<see cref="HdrPassthroughBlocker"/>); "" for SDR projects or a non-matching Colorspace choice.
     /// </summary>
     public string ProjectColorNote => Colorspace == MatchProject && ProjectSettings.IsHdr(Document.ColorSpace)
         ? HdrPassthroughBlocker is { } why
@@ -155,14 +144,13 @@ public partial class MainViewModel
               + "No mastering display or MaxCLL metadata is written."
         : "";
 
-    // ----- HDR passthrough (5.4B, Q1: map-export D6) -----
-    // An HDR project (PQ or HLG) keeps its HDR when it is exported under "Match Project Settings" with 10-bit ticked on an encoder that
-    // can write it (HEVC or AV1: x265, SVT-AV1, a hardware HEVC/AV1 encoder that does 10-bit on this card), and every picture on the
-    // Sequence is HDR of the project's own transfer: the compositor then reads the frames back as 10-bit P010 (BT.2020nc, limited range)
-    // and the encode is tagged BT.2020 with that transfer (EncoderCommand). Anything else is tone-mapped to BT.709 SDR as before, and the
-    // colour note says why: an SDR clip, an image, text or captions drawn into a PQ canvas would be wrong (SDR white is not PQ's 1.0).
+    // ----- HDR passthrough -----
+    // An HDR project (PQ/HLG) stays HDR under Match Project Settings when 10-bit is enabled on a capable HEVC/AV1 encoder (x265,
+    // SVT-AV1, or 10-bit hardware HEVC/AV1) and every picture is HDR with the project transfer: frames read back as P010 (BT.2020nc,
+    // limited) and the encode is tagged BT.2020 + transfer (EncoderCommand). Otherwise tone-map to BT.709 and explain why: SDR
+    // clips, images, text or captions in a PQ canvas would be wrong (SDR white is not PQ 1.0).
 
-    /// <summary>The transfer an HDR export is tagged with: "smpte2084" (PQ) or "arib-std-b67" (HLG); null for SDR.</summary>
+    /// <summary>HDR transfer tag: "smpte2084" (PQ) or "arib-std-b67" (HLG); null for SDR.</summary>
     internal static string? HdrTransferOf(ProjectColorSpace colorSpace) => colorSpace switch
     {
         ProjectColorSpace.HdrPq => "smpte2084",
@@ -170,13 +158,13 @@ public partial class MainViewModel
         _ => null,
     };
 
-    /// <summary>Whether an encoder writes HDR's 10-bit codecs: HEVC or AV1 (x265, SVT-AV1, hevc_* and av1_* hardware).</summary>
+    /// <summary>Whether an encoder produces HDR-capable 10-bit HEVC/AV1 (x265, SVT-AV1, hevc_*/av1_* hardware).</summary>
     internal static bool IsTenBitHdrCodec(EncoderOption encoder) =>
         encoder.Name is "libx265" or "libsvtav1" || encoder.Name.StartsWith("hevc_", StringComparison.Ordinal) || encoder.Name.StartsWith("av1_", StringComparison.Ordinal);
 
     /// <summary>
-    /// Why an HDR project's export cannot keep HDR, in words for the colour note, or null when it can (the rule above, in order: the
-    /// project and Colorspace, an animated output, Copy, the codec, 10-bit, the card, Extra Options' own pixel format, then the pictures).
+    /// First reason HDR passthrough is blocked, for the colour note; null when allowed. Checks in order: project/Colorspace, animated
+    /// output, Copy, codec, 10-bit, GPU support, Extra Options pixel format, then pictures.
     /// </summary>
     internal static string? HdrBlocker(ProjectColorSpace project, bool matchProject, bool animated, EncoderOption encoder, bool tenBit, bool canTenBit,
         bool ownPixelFormat, string? sdrPicture)
@@ -200,20 +188,20 @@ public partial class MainViewModel
         return sdrPicture is { } picture ? $"{picture}, which an HDR export would show too bright" : null;
     }
 
-    /// <summary>Why this export cannot keep the project's HDR (<see cref="HdrBlocker"/>), or null when it does.</summary>
+    /// <summary>HDR passthrough blocker for this export (<see cref="HdrBlocker"/>), or null.</summary>
     public string? HdrPassthroughBlocker => HdrBlocker(Document.ColorSpace, Colorspace == MatchProject, IsAnimatedOutput, VideoEncoder, TenBit,
         CanTenBit, ExtraVideoArguments.Contains("-pix_fmt", StringComparison.Ordinal), ProjectSettings.IsHdr(Document.ColorSpace) ? SdrPicture() : null);
 
-    /// <summary>The export keeps the project's HDR: 10-bit BT.2020, tagged with its transfer (CompileExportState: HdrTransfer).</summary>
+    /// <summary>Whether the export keeps HDR (10-bit BT.2020 with transfer; CompileExportState.HdrTransfer).</summary>
     public bool IsHdrPassthrough => HdrPassthroughBlocker is null;
 
     /// <summary>
-    /// The first picture on the Sequence (a shown picture track) that is not HDR of the project's transfer, in words: an image, text,
-    /// the captions or burned subtitles, or a video file of another transfer (or not inspected yet); null when every picture is.
+    /// Describes the first visible picture that is not HDR in the project transfer (image, text, captions, burned subtitles, or a video
+    /// of another or unprobed transfer); null when all match.
     /// </summary>
     private string? SdrPicture()
     {
-        // Auto-Captions are drawn whether they come from text cues or are transcribed at export (CommandUsesCaptions).
+        // Auto-Captions render from text cues or export-time transcription alike (CommandUsesCaptions).
         if (AutoCaptions)
             return "the captions are SDR";
         if (SubtitleTracks.Any(t => t.Action == SubtitleTrack.HardSub))
@@ -245,7 +233,7 @@ public partial class MainViewModel
         return null;
     }
 
-    /// <summary>A project's settings in a line: "1920 x 1080, 60 fps, BT.709 SDR, Square Pixels (1:1), 48 kHz".</summary>
+    /// <summary>One-line summary: "1920 x 1080, 60 fps, BT.709 SDR, Square Pixels (1:1), 48 kHz".</summary>
     public static string Describe(ProjectSettings settings)
     {
         var size = settings.NaturalWidth > 0 && settings.NaturalHeight > 0
@@ -257,11 +245,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The first video opened onto an empty Sequence gives the project its colour space (its transfer: PQ, HLG, else BT.709 SDR), unless
-    /// the frame was chosen on purpose (<see cref="TimelineDocument.ExplicitFrame"/>): outside any transaction, as the rate and the
-    /// natural size are. The pixel aspect and sample rate are never the clip's: a new project starts at square pixels and 48 kHz, and
-    /// what Project Settings chose before the first clip stays. (The user's decision, 5.4A: an HDR first clip makes the project HDR, and
-    /// "Match Project Settings" then exports it tone-mapped to BT.709 SDR, the only output the pipeline writes.)
+    /// Sets the colour space from the first video on an empty Sequence (PQ, HLG, else BT.709 SDR) unless the frame is explicit
+    /// (<see cref="TimelineDocument.ExplicitFrame"/>); outside any transaction, like rate and natural size. Pixel aspect and sample rate
+    /// never come from clips (defaults: square, 48 kHz). An HDR first clip makes the project HDR; export then follows the passthrough rule.
     /// </summary>
     private void TakeProjectSettingsFrom(MediaInfo info)
     {
@@ -275,10 +261,8 @@ public partial class MainViewModel
     // ----- A New Project from the studio (MainWindow.CreateProjectAsync) -----
 
     /// <summary>
-    /// Gives the fresh, empty project the New Project studio's settings: its name and folder kept for the first save, the Game Preset
-    /// chosen (when no file is to be opened, its layout then waits for the first one), then the frame, rate and colour space, which
-    /// win over the preset's own turn to tall or wide. No undo step and nothing to save: a project made is not an edit. False (and a
-    /// status line) when the settings were refused.
+    /// Applies New Project studio choices to a fresh project: name and folder for the first save, Game Preset (pending if no file),
+    /// then frame, rate and colour space (overriding the preset's orientation). No undo step, not dirty. False (status line) if refused.
     /// </summary>
     public bool TakeNewProject(NewProjectRequest request)
     {
@@ -293,10 +277,7 @@ public partial class MainViewModel
         return applied;
     }
 
-    /// <summary>
-    /// After the New Project's files are open: the frame chosen in the studio again, where opening them (a Game Preset's layout turning
-    /// the frame tall or wide) changed it. No undo step.
-    /// </summary>
+    /// <summary>Re-applies the studio frame after New Project files open (a preset layout may have changed orientation). No undo step.</summary>
     public void KeepNewProjectFrame(NewProjectRequest request)
     {
         if (request.FrameWidth < SmallestFrameSide || request.FrameHeight < SmallestFrameSide)
@@ -311,8 +292,7 @@ public partial class MainViewModel
     // ----- The name a New Project was given, kept for its first save -----
 
     /// <summary>
-    /// The name the New Project studio gave the project, which its first save offers ("" for none, or once it is saved). Told when it
-    /// changes (Pass 5.4D-TabPerf: the project tab in front takes its name from it at once).
+    /// Studio-given project name offered by the first save ("" when none or after saving); change notification renames the active tab.
     /// </summary>
     public string NewProjectName
     {
@@ -326,17 +306,17 @@ public partial class MainViewModel
         }
     } = "";
 
-    /// <summary>The folder the New Project studio chose for it (null: the Projects folder, where every save goes).</summary>
+    /// <summary>Studio-chosen folder (null = the Projects folder).</summary>
     public string? NewProjectFolder { get; private set; }
 
-    /// <summary>Keeps the name and folder a New Project was given, for its first save (cleared by the next New Project or a save).</summary>
+    /// <summary>Stores the studio name and folder for the first save (cleared by the next New Project or a save).</summary>
     public void KeepNewProjectName(string name, string? folder)
     {
         NewProjectName = name.Trim();
         NewProjectFolder = string.IsNullOrWhiteSpace(folder) || SamePath(folder, AppPaths.Projects) ? null : folder;
     }
 
-    /// <summary>Whether two paths name the same file or folder (as full paths, case aside, a trailing separator aside); false for a path that is none.</summary>
+    /// <summary>Whether two paths are the same (full-path, case-insensitive, trailing separator ignored); false for invalid paths.</summary>
     private static bool SamePath(string one, string other)
     {
         if (one.Length == 0 || other.Length == 0)
@@ -352,26 +332,26 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>A project's name as a file name, as ProjectStore.Save makes it: the characters a file name cannot hold as "_", "Project" for none.</summary>
+    /// <summary>Project name as a file name (as ProjectStore.Save): invalid characters become "_", empty becomes "Project".</summary>
     private static string SafeFileName(string name)
     {
         var fileName = string.Concat(name.Trim().Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim();
         return fileName.Length == 0 ? "Project" : fileName;
     }
 
-    /// <summary>Where the first save of a project named in the New Project studio goes when it chose a folder of its own; null otherwise.</summary>
+    /// <summary>First-save path in the studio-chosen folder; null when no folder was chosen.</summary>
     private string? NewProjectPathFor(string name) =>
         CurrentProjectPath.Length > 0 || NewProjectFolder is not { } folder ? null : Path.Combine(folder, SafeFileName(name) + ProjectStore.Extension);
 
-    /// <summary>The file <see cref="SaveProject"/> writes for a name: a portable project's in its folder, the New Project's own folder's, or Projects'.</summary>
+    /// <summary>Target file for <see cref="SaveProject"/>: portable folder, studio folder, or Projects.</summary>
     private string SavedProjectPathFor(string name) =>
         AppSettings.Current.FullyPortableProjectSave
             ? PortableProject.PathFor(name.Trim())
             : NewProjectPathFor(name) ?? Path.Combine(ProjectStore.Folder, SafeFileName(name) + ProjectStore.Extension);
 
     /// <summary>
-    /// The name the New Project studio offers (5.4A): "New Project", or the first of "New Project 2", "New Project 3"... that no project in
-    /// the folder (blank: Projects) has yet, as a file or as a portable project's folder.
+    /// Default studio name: "New Project", or the first unused "New Project N" in the folder (blank = Projects), checking files and
+    /// portable project folders.
     /// </summary>
     public static string FreeProjectName(string? folder)
     {
@@ -401,7 +381,7 @@ public partial class MainViewModel
 }
 
 /// <summary>
-/// The frame as the view model holds it (5.4A): Use Vertical Resolution and Export's Resolution boxes, which are not the document's.
-/// Carried by a Project Settings undo step alone (<see cref="TimelineSnapshot.Frame"/>), so its Undo and Redo put them back.
+/// VM-held frame state (Use Vertical Resolution and Export Resolution boxes, not in the document), carried only by Project Settings
+/// undo steps (<see cref="TimelineSnapshot.Frame"/>).
 /// </summary>
 public sealed record ProjectSettingsFrame(bool Vertical, string OutputWidth, string OutputHeight);

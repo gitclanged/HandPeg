@@ -8,33 +8,31 @@ using HandPegApp.Models;
 
 namespace HandPegApp;
 
-// ----- The timeline's view: which stretch of the sequence it shows -----
-// The timeline (its surface and its ruler) and the Keyframes pane show the same stretch of the sequence: from _viewStart
-// seconds, ViewSpan seconds across. The timeline reaches a little past the end of the sequence, so that there is room to
-// drop a clip after the last one, or drag one there, and the sequence grows to hold it. Fitted (the default), it shows
-// all of that and follows the sequence as it grows; zoomed, a second keeps its width, and the ruler, the scroll bar under
-// the tracks, Shift + wheel or a middle-button drag move along. Ctrl + wheel over the tracks, or the wheel over the ruler,
-// zoom about the pointer; the buttons and the slider about the playhead. The Sequence Overview Scrubber follows when "Sync
-// Sequence Overview Scrubber Stretch" is on in the Views menu. A flick or a fast wheel coasts on (5.4C, MomentumScroller): a press
-// on the surface, the ruler or the scroll bar, the playhead turning the page, or a zoom stops it.
+// ----- Timeline view range -----
+// Timeline surface, ruler and Keyframes pane share one view: _viewStart seconds, ViewSpan seconds wide. TimelineExtent runs past the
+// sequence end so clips can be dropped or dragged after the last one (the sequence grows to fit). Fitted (default) shows the whole
+// extent and tracks growth; zoomed keeps seconds-per-pixel while ruler, scroll bar, Shift+wheel or middle-drag pan. Ctrl+wheel over
+// tracks or wheel over the ruler zooms about the pointer; buttons and slider zoom about the playhead. The Overview Scrubber follows
+// when "Sync Sequence Overview Scrubber Stretch" is on (Views menu). Flicks and fast wheels coast (MomentumScroller); a press on the
+// surface, ruler or scroll bar, a playhead page turn, or a zoom stops the coast.
 public partial class MainWindow
 {
-    /// <summary>The least the time bars can show across, in seconds: a few frames each wide enough to grab.</summary>
+    /// <summary>Minimum view span in seconds (a few frames, each wide enough to grab).</summary>
     private const double MinViewSpan = 0.5;
 
-    /// <summary>What the rulers show across while the timeline is empty, in seconds (4.3E: a ruler is always shown, with its ticks).</summary>
+    /// <summary>Ruler span in seconds for an empty timeline (rulers always show ticks).</summary>
     private const double EmptyRulerSeconds = 60;
 
     private double _viewStart, _viewSpan;
     private bool _viewFit = true;
 
-    // The rulers, scroll bars and zoom sliders that show the view (the timeline pane's: RegisterTimelineChrome).
+    // View chrome registered by the timeline pane (RegisterTimelineChrome): rulers, scroll bars, zoom sliders.
     private readonly List<TimelineRuler> _rulers = [];
     private readonly List<ScrollBar> _timelineScrollBars = [];
     private readonly List<ExpandablePillSlider> _zoomSliders = [];
     private bool _showingView;
 
-    /// <summary>How far the time bars reach, in seconds: the sequence, and room after it to drop and drag clips into.</summary>
+    /// <summary>Scrollable extent in seconds: sequence duration plus max(12%, 5 s) drop room; 0 when empty.</summary>
     private double TimelineExtent
     {
         get
@@ -44,7 +42,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>How many seconds the time bars show across.</summary>
+    /// <summary>Visible span in seconds (the full extent when fitted).</summary>
     private double ViewSpan
     {
         get
@@ -54,7 +52,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>How far along the zoom is, 0 (the whole timeline) to 1 (the closest): what the sliders show.</summary>
+    /// <summary>Log-scaled zoom 0 (fitted) to 1 (MinViewSpan), shown by the zoom sliders.</summary>
     private double ZoomLevel
     {
         get
@@ -64,7 +62,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Shows a stretch of the timeline: from <paramref name="start"/>, <paramref name="span"/> seconds across (all of it, at its longest).</summary>
+    /// <summary>Sets the view to <paramref name="start"/> + <paramref name="span"/> seconds (clamped; a full-extent span means fitted).</summary>
     private void SetView(double start, double span)
     {
         var extent = TimelineExtent;
@@ -77,12 +75,11 @@ public partial class MainWindow
         ApplyTimelineView();
     }
 
-    /// <summary>Zooms by a factor (above 1 is closer) about a point of the bars, given as a fraction of their width: what is there stays there.</summary>
+    /// <summary>Zooms by <paramref name="factor"/> (> 1 = in) keeping the time at <paramref name="atFraction"/> of the width fixed.</summary>
     private void ZoomTimeline(double factor, double atFraction)
     {
-        // Never while something is dragged on the timeline (the wheel, the keys, the buttons): the drag goes on at the scale
-        // it began at, and lands where it is drawn (a clip's commit works in the pixels of the rows it was dragged on). What is
-        // asked for meanwhile is done as it is let go (Timeline_DragEnded).
+        // Deferred during timeline drags (wheel, keys, buttons): a drag commits in the pixel scale it started with, so the zoom is
+        // accumulated and applied on drag end (Timeline_DragEnded).
         var span = ViewSpan;
         if (span <= 0)
             return;
@@ -98,10 +95,10 @@ public partial class MainWindow
         SetView(under - atFraction * next, next);
     }
 
-    // A zoom asked for under a drag, done when it is let go.
+    // Zoom accumulated during a drag, applied on release.
     private (double Factor, double AtFraction)? _zoomOwed;
 
-    /// <summary>The zoom a drag held back, now that it is over.</summary>
+    /// <summary>Applies the zoom deferred by a drag.</summary>
     private void TakeOwedZoom()
     {
         if (_zoomOwed is { } owed)
@@ -111,7 +108,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Zooms about the playhead while it is in view, and about the middle otherwise.</summary>
+    /// <summary>Zooms about the playhead when visible, else about the view centre.</summary>
     private void ZoomAboutPlayhead(double factor)
     {
         var span = ViewSpan;
@@ -122,10 +119,10 @@ public partial class MainWindow
         ZoomTimeline(factor, fraction is >= 0 and <= 1 ? fraction : 0.5);
     }
 
-    /// <summary>Moves the view along by so many seconds (later, positive), while it is zoomed; nothing said in the status bar.</summary>
+    /// <summary>Pans a zoomed view by <paramref name="seconds"/> (positive = later) without a status message.</summary>
     private void PanTimeline(double seconds) => PanTimeline(seconds, announce: false);
 
-    /// <summary>Moves the view along by so many seconds (later, positive), while it is zoomed; <paramref name="announce"/> says where it is now.</summary>
+    /// <summary>Pans a zoomed view by <paramref name="seconds"/> (positive = later); <paramref name="announce"/> posts the new range.</summary>
     private void PanTimeline(double seconds, bool announce)
     {
         if (_viewFit || Math.Abs(seconds) < 1e-9)
@@ -135,11 +132,10 @@ public partial class MainWindow
         ApplyTimelineView(announce);
     }
 
-    /// <summary>Back to the whole timeline, as a newly loaded video starts.</summary>
+    /// <summary>Fits the whole timeline (also the state after loading a video).</summary>
     private void FitTimeline(bool announce = true)
     {
-        // The user's fit (announced) is not made while something is dragged on the timeline, as a zoom is not; a newly
-        // loaded video's always is.
+        // Interactive (announced) fits are ignored during drags like zooms; load-time fits always apply.
         if (announce && UnifiedTimeline.Surface.IsDragging)
             return;
 
@@ -147,7 +143,7 @@ public partial class MainWindow
         ApplyTimelineView(announce);
     }
 
-    /// <summary>Keeps the view inside the timeline, and shows it: the tracks (laid out again only when the scale changed), the ruler, the scroll bar, the zoom, the Keyframes pane.</summary>
+    /// <summary>Clamps and applies the view to tracks (relaid only on scale change), rulers, scroll bars, zoom and the Keyframes pane.</summary>
     private void ApplyTimelineView(bool announce = true)
     {
         UpdateTimelineChrome();
@@ -176,8 +172,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Brings the surface, the rulers, the scrollbars and the zoom sliders up to date with the view, all from one view: a sequence that got
-    /// shorter (a crossfade, a ripple) moves the view, and the ruler moved without the tracks until the next scroll (5.1-DogfoodPolish).
+    /// Updates surface, rulers, scroll bars and zoom sliders from a single clamped view, so a shortened sequence (crossfade, ripple) moves
+    /// all of them together (never the ruler alone until the next scroll).
     /// </summary>
     private void UpdateTimelineChrome()
     {
@@ -187,7 +183,7 @@ public partial class MainWindow
         _showingView = true;
         try
         {
-            // With nothing on the timeline yet the rulers still read as rulers (4.3E): a minute's ticks, all of it shaded as room to drop clips into.
+            // Empty timeline: rulers still show a minute of ticks, all shaded as drop room.
             var markers = _viewModel.Markers.Select(m => m.Seconds).ToList();
             var highlights = _viewModel.Markers.Where(m => m.Highlight).Select(m => m.Seconds).ToList();
             foreach (var ruler in _rulers)
@@ -214,7 +210,7 @@ public partial class MainWindow
         }
     }
 
-    // The ruler's playhead at the playhead, or at a scrub's moment (seconds) ahead of it (5.4.2B, MainWindow.Scrub.cs).
+    // Ruler playhead x at the playhead, or at a leading scrub time in seconds (MainWindow.Scrub.cs).
     private void PlaceRulerPlayhead(TimelineRuler ruler, double? seconds = null)
     {
         var span = ViewSpan;
@@ -223,9 +219,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// While a video plays with the bars zoomed in, the view turns the page when the playhead reaches its right
-    /// edge, so that what is playing stays in sight; never with Follow Playhead During Playback switched off (5.3,
-    /// AppSettings.TimelineFollowsPlayhead: the view stays where the user put it).
+    /// During zoomed playback, pages the view when the playhead leaves it so playback stays visible; disabled when
+    /// AppSettings.TimelineFollowsPlayhead (Follow Playhead During Playback) is off.
     /// </summary>
     private void FollowPlayhead()
     {
@@ -235,14 +230,14 @@ public partial class MainWindow
         var (at, span) = (_viewModel.PositionMs / 1000, ViewSpan);
         if (at > _viewStart + span || at < _viewStart)
         {
-            // The page turns: a coast along the view stops, so the two never pull the view between them (5.4C).
+            // Page turn: stop any coast so the two never fight over the view.
             StopTimelineMomentum();
             _viewStart = at - span * 0.05;
             ApplyTimelineView(announce: false);
         }
     }
 
-    /// <summary>Stops any coast of the timeline's view where it is: the surface's (its rows too) and the rulers' (5.4C).</summary>
+    /// <summary>Stops all view coasts in place: the surface (rows included) and every ruler.</summary>
     private void StopTimelineMomentum()
     {
         UnifiedTimeline.Surface.StopMomentum();
@@ -250,11 +245,11 @@ public partial class MainWindow
             ruler.StopMomentum();
     }
 
-    // ----- The ruler, the scroll bar and the zoom slider -----
+    // ----- Ruler, scroll bar and zoom slider -----
 
     /// <summary>
-    /// Has a ruler, a scroll bar and a zoom slider show the view and move it (the timeline pane's, once, as the window is
-    /// made): the ruler seeks, zooms, pans and opens a marker's menu; the bar moves along; the slider zooms about the playhead.
+    /// Registers the timeline pane's ruler, scroll bar and zoom slider (once, at window creation): the ruler seeks, zooms, pans and opens
+    /// marker menus; the bar pans; the slider zooms about the playhead.
     /// </summary>
     private void RegisterTimelineChrome(TimelineRuler ruler, ScrollBar bar, ExpandablePillSlider zoom)
     {
@@ -275,27 +270,26 @@ public partial class MainWindow
         _zoomSliders.Add(zoom);
         zoom.ValueChanged += TimelineZoomSlider_ValueChanged;
 
-        // The open pill reads the zoom as the status line does ("2.4x"), not its own 0 to 1 (5.4.4).
+        // Pill readout shows the zoom factor like the status line ("2.4x"), not the 0..1 slider value.
         zoom.ReadoutFor = _ => ZoomReadout(TimelineExtent, ViewSpan);
 
-        // Touch-to-stop across the pane (5.4C): each stops its own coast on a press; a press on the one stops the other's, and a press on
-        // the scroll bar stops both (handled presses too: the bar's thumb and buttons answer theirs).
+        // Touch-to-stop: each control stops its own coast on press; ruler and surface stop each other's; the scroll bar stops both
+        // (handledEventsToo, since its thumb and buttons handle their presses).
         ruler.PreviewMouseDown += (_, _) => UnifiedTimeline.Surface.StopMomentum();
         UnifiedTimeline.Surface.PreviewMouseDown += (_, _) => ruler.StopMomentum();
         bar.AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler((_, _) => StopTimelineMomentum()), handledEventsToo: true);
         HookTimelineSidewaysWheel();
     }
 
-    // ----- The sideways wheel over the timeline (5.4C) -----
+    // ----- Horizontal wheel (WM_MOUSEHWHEEL) -----
 
     private bool _sidewaysWheelHooked;
 
     /// <summary>
-    /// A touchpad's two-finger sideways scroll (or a tilting wheel) moves the timeline's view along, with momentum: WPF raises nothing for
-    /// WM_MOUSEHWHEEL, so a hook of its own on the main window reads it (never TitleBarHook or FrameHook, whose answers are pinned), added
-    /// once the window's handle is made, and only while the pointer is over the timeline's tracks or ruler does it take the message for the
-    /// timeline. Elsewhere (5.4.1A) it goes to the first visible strip under the pointer that scrolls in time (ISidewaysWheel: the Subtitle
-    /// Studio's strip, the Media Browser's filmstrip cutter), docked or in a side window (each has this same hook); else it is left alone.
+    /// Touchpad two-finger horizontal scroll or tilt wheel pans with momentum. WPF does not surface WM_MOUSEHWHEEL, so a dedicated hook
+    /// (not TitleBarHook or FrameHook, whose results are pinned) is added after SourceInitialized. Over timeline tracks or ruler it pans the
+    /// timeline; elsewhere it goes to the first visible ISidewaysWheel under the pointer (Subtitle Studio strip, Media Browser filmstrip
+    /// cutter), docked or in a side window (which has the same hook); otherwise unhandled.
     /// </summary>
     private void HookTimelineSidewaysWheel()
     {
@@ -311,7 +305,7 @@ public partial class MainWindow
         if (msg != WmMouseHWheel)
             return IntPtr.Zero;
 
-        // Positive is to the right: later. Answered TRUE, or Windows sends it on as clicks of an old tilt wheel.
+        // Positive = right (later). Return TRUE, or Windows re-sends it as legacy tilt-wheel scroll clicks.
         var delta = (short)((wParam.ToInt64() >> 16) & 0xFFFF);
         var now = MomentumScroller.Now();
         if (TimelineUnderPointer() is { } surface)
@@ -326,8 +320,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The first visible control that scrolls in time on a sideways swipe (<see cref="ISidewaysWheel"/>) from the element under the pointer
-    /// up: its visual parents, its logical ones where the visual tree ends (a popup, a content element). Null for none. Allocates nothing.
+    /// First visible <see cref="ISidewaysWheel"/> walking up from Mouse.DirectlyOver (visual parents, then logical where the visual tree
+    /// ends: popups, content elements). Null for none; allocation-free.
     /// </summary>
     internal static ISidewaysWheel? SidewaysWheelUnderPointer()
     {
@@ -341,7 +335,7 @@ public partial class MainWindow
         return null;
     }
 
-    // The timeline's surface while the pointer is over it or its ruler (and it is shown); null otherwise.
+    // Visible timeline surface when the pointer is over it or a ruler; else null.
     private UnifiedTimelineControl? TimelineUnderPointer()
     {
         var surface = UnifiedTimeline.Surface;
@@ -381,11 +375,11 @@ public partial class MainWindow
         ZoomAboutPlayhead(ViewSpan / span);
     }
 
-    /// <summary>The zoom pill's readout (5.4.4): how many times closer than the whole timeline the view is ("2.4x"); "1x" while there is none.</summary>
+    /// <summary>Zoom pill readout: extent / span ("2.4x"); "1x" when undefined.</summary>
     internal static string ZoomReadout(double extent, double span) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{(extent > 0 && span > 0 ? extent / span : 1):0.#}x");
 
-    /// <summary>Stretches the Sequence Overview Scrubber to the time bars' view and slides it to their place, while that is switched on; otherwise it fills its place as it always did.</summary>
+    /// <summary>When SyncMasterTimeline is on and zoomed, stretches and offsets the Overview Scrubber to match the view; else it fills its viewport.</summary>
     private void UpdateMasterStretch()
     {
         var (seconds, span) = (_viewModel.DurationMs / 1000, ViewSpan);
@@ -406,10 +400,8 @@ public partial class MainWindow
     // ----- Snapping -----
 
     /// <summary>
-    /// What a dragged or dropped clip snaps to, in seconds: the start and the end of every clip on the timeline (the
-    /// videos', the pictures', the sound clips'), the start and end of the sequence, the playhead and the markers, and the
-    /// beats found in clips' sound, less those of the clips whose blocks a drag takes along (<paramref name="moving"/>: a
-    /// move's or a slip's, whose beats go with it). Nothing while snapping is off.
+    /// Snap targets in seconds: every timed clip's start/end, sequence start/end, playhead, markers, and detected audio beats excluding
+    /// those of clips carried by the drag (<paramref name="moving"/>: move or slip). Empty when snapping is off.
     /// </summary>
     private IReadOnlyList<double> SnapTimes(IReadOnlyList<TimelineBlock> moving)
     {
@@ -426,8 +418,8 @@ public partial class MainWindow
 
         times.AddRange(_viewModel.Markers.Select(m => m.Seconds));
 
-        // The beats found in clips' sound (5.2B, Detect & Snap to Audio Beats), where they fall on the Sequence: never those of a
-        // clip the drag moves or slips (its picture's block or its unlinked sound's), which would catch on where they were.
+        // Audio beats (Detect & Snap to Audio Beats) in sequence time, skipping clips being moved or slipped (video or unlinked audio
+        // block), whose stale beat positions would otherwise snap.
         if (_viewModel.SnapToBeats)
         {
             HashSet<Guid>? going = null;
@@ -451,7 +443,7 @@ public partial class MainWindow
         return times;
     }
 
-    /// <summary>A moment moved onto the nearest one to snap to, when that is within a few pixels (<paramref name="perPixel"/> seconds each); as it was otherwise.</summary>
+    /// <summary>Snaps <paramref name="seconds"/> to the nearest target within 1.5x SnapPixels (<paramref name="perPixel"/> s/px), else unchanged.</summary>
     private double SnapTime(double seconds, double perPixel)
     {
         if (perPixel <= 0)
@@ -467,14 +459,12 @@ public partial class MainWindow
         return best;
     }
 
-    // ----- Dropping files on the timeline -----
+    // ----- File drops on the timeline -----
 
     /// <summary>
-    /// Where files dragged over the timeline would land, or null when they are not over its tracks (or nothing is open):
-    /// the row under them (null below every row) and the moment, snapped. Over a row's header, the moment is the end of
-    /// that track's last clip, so files dropped on a name follow what is already there (the playhead, on a row with none).
-    /// Inside a clip of the row the moment stays where they were let go: a new clip goes on a track of its own there
-    /// (MainViewModel.PlaceClip), never over the clip; snapping gives the clip's end, for clips end to end.
+    /// Drop target for files over the timeline, or null when off the tracks or nothing is open: row (null below all rows) and snapped
+    /// time. On a header, time is the track's last clip end (playhead for an empty track) so drops append. Inside a clip the drop time is
+    /// kept and MainViewModel.PlaceClip puts the new clip on its own track (never over the clip); snapping offers the clip end.
     /// </summary>
     private (TimelineRow? Row, double Seconds, bool OnHeader)? FindDropPlace(DragEventArgs e)
     {
@@ -499,8 +489,7 @@ public partial class MainWindow
             seconds = SnapTime(seconds, 1 / surface.PixelsPerSecond);
         }
 
-        // The captions are drawn from the voice's words, no track media can be put on: what is let go there goes on a new
-        // track of its own, as below every row (4.4.0, the user's B8; it once replaced the main video, then was refused).
+        // The captions row is generated from speech and accepts no media: treat a drop there as below all rows (new track).
         if (row is { Kind: TimelineRowKind.Captions })
             (row, onHeader) = (null, false);
 
@@ -508,20 +497,19 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Several files let go on a row's header, or with Alt held, are a Stack Drop: each on a track of its own, all at the
-    /// same moment. Otherwise they are a Sequence Drop: one after another on one track, from the moment let go on.
+    /// Multiple files on a header or with Alt = Stack Drop (one track each, same start); otherwise Sequence Drop (end to end on one track).
     /// </summary>
     private static bool IsStackDrop(DragEventArgs e, bool onHeader, int count) =>
         count > 1 && (onHeader || e.KeyStates.HasFlag(DragDropKeyStates.AltKey));
 
     /// <summary>
-    /// The track a file dropped on a row goes beside (or onto): a track's row; null (a new track) for the background and
-    /// below every row (FindDropPlace puts the captions, their strip in a collapsed stack too, there).
+    /// Track a dropped file targets: the row's track; null (new track) for background, captions (remapped by FindDropPlace, including
+    /// collapsed-stack strips) and below all rows.
     /// </summary>
     private static Layer? DropTrackOf(TimelineRow? row) =>
         row is { Kind: not TimelineRowKind.Captions, Data: Layer { IsCaptions: false, IsBackground: false } track } ? track : null;
 
-    /// <summary>Marks, on the timeline, where files dragged over it would land: the row, the moment, how many, stacked or one after another.</summary>
+    /// <summary>Shows the drop indicator: row, time, file count and stack vs sequence mode.</summary>
     private void ShowDropMark(DragEventArgs e)
     {
         if (!e.Data.GetDataPresent(DataFormats.FileDrop) || FindDropPlace(e) is not { } place)
@@ -547,7 +535,7 @@ public partial class MainWindow
         return brush;
     }
 
-    /// <summary>The markers on the Sequence Overview Scrubber: a flag at the top and a faint line down, each answering a click (go there) and a right-click (its menu).</summary>
+    /// <summary>Draws Overview Scrubber markers: flag plus faint line; click seeks, right-click opens the marker menu.</summary>
     private void DrawTimelineMarkers()
     {
         MarkerCanvas.Children.Clear();
@@ -583,14 +571,14 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>A marker's menu: its name (typed in place), go to it, delete it, delete them all.</summary>
+    /// <summary>Marker menu: inline rename, Go To, Delete, Delete All.</summary>
     private void ShowMarkerMenu(FrameworkElement target, TimelineMarker marker)
     {
         var menu = new ContextMenu { PlacementTarget = target };
         var renaming = false;
         AddRenameItem(menu, marker.Name, name =>
         {
-            // One step of Undo for the whole rename, taken at its first keystroke.
+            // One Undo step per rename session, opened at the first keystroke.
             if (!renaming)
             {
                 _viewModel.RenameMarkerStarted(marker);

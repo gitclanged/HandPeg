@@ -10,16 +10,16 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// The Color Studio's curves (Pass 5.6A): Master, Red, Green and Blue, chosen by the pills over a square graph. Each curve is the monotone
-/// cubic Hermite the GPU table is baked from (GpuColorTables.CurveSamples: drawn exactly as baked), through its points: a click adds a point
-/// (and drags it), a drag moves one (the ends up and down only; Shift holds it to one axis), dragged off the graph or double-clicked it goes.
-/// Behind it, the picture's luma histogram before the grade (<see cref="SetHistogram"/>). A gesture is <see cref="EditStarted"/> ..
-/// <see cref="EditEnded"/>, each change of a curve's points said by <see cref="CurveChanged"/> as its text ("x/y x/y ...", empty for the
-/// identity). The pointer logic is in point methods the goldens drive (<see cref="CurveSurface"/>).
+/// Color Studio curves: Master, Red, Green and Blue, selected by pills above a square graph. Each curve is the monotone cubic Hermite the
+/// GPU table is baked from (GpuColorTables.CurveSamples, so the drawing matches the bake exactly). Click adds a point and drags it; drag
+/// moves a point (end points vertically only; Shift locks an axis); dragging off the graph or double-clicking removes it. The pre-grade
+/// luma histogram renders underneath (<see cref="SetHistogram"/>). A gesture spans <see cref="EditStarted"/> .. <see cref="EditEnded"/>;
+/// each point change raises <see cref="CurveChanged"/> with the curve text ("x/y x/y ...", empty for identity). Pointer logic lives in
+/// point methods driven by goldens (<see cref="CurveSurface"/>).
 /// </summary>
 public sealed class ColorCurvesControl : Grid
 {
-    /// <summary>The pills' names, in the curves' order (ColorGradeKeys.Curves: Master, Red, Green, Blue).</summary>
+    /// <summary>Pill labels in curve order (matches ColorGradeKeys.Curves: Master, Red, Green, Blue).</summary>
     internal static readonly string[] ChannelNames = ["Master", "Red", "Green", "Blue"];
 
     private readonly ToggleButton[] _pills = new ToggleButton[4];
@@ -57,10 +57,10 @@ public sealed class ColorCurvesControl : Grid
         Surface.EditEnded += () => EditEnded?.Invoke();
     }
 
-    /// <summary>The graph itself (its point methods for the goldens).</summary>
+    /// <summary>The graph surface (exposes point methods for goldens).</summary>
     internal CurveSurface Surface { get; }
 
-    /// <summary>The curve shown and edited: 0 Master, 1 Red, 2 Green, 3 Blue.</summary>
+    /// <summary>Active curve: 0 Master, 1 Red, 2 Green, 3 Blue.</summary>
     public int Channel
     {
         get => Surface.Channel;
@@ -72,25 +72,25 @@ public sealed class ColorCurvesControl : Grid
         }
     }
 
-    /// <summary>Whether a gesture is under way (the pane leaves the curves alone meanwhile).</summary>
+    /// <summary>True during a gesture (the pane does not overwrite the curves meanwhile).</summary>
     public bool IsDragging => Surface.IsDragging;
 
-    /// <summary>A curve's points changed (its index, its text).</summary>
+    /// <summary>Raised when a curve's points change (channel index, curve text).</summary>
     public event Action<int, string>? CurveChanged;
 
-    /// <summary>A gesture began: what it changes until it ends is one step.</summary>
+    /// <summary>Raised when a gesture begins; changes until EditEnded form one step.</summary>
     public event Action? EditStarted;
 
-    /// <summary>The gesture ended.</summary>
+    /// <summary>Raised when the gesture ends.</summary>
     public event Action? EditEnded;
 
-    /// <summary>The four curves' texts from the card (Master, Red, Green, Blue): drawn, nothing raised.</summary>
+    /// <summary>Sets all four curve texts from the card (Master, Red, Green, Blue); redraws without raising events.</summary>
     public void SetCurves(string master, string red, string green, string blue) => Surface.SetCurves([master, red, green, blue]);
 
-    /// <summary>The picture's luma histogram before the grade (256 counts), drawn behind the curves; null for none.</summary>
+    /// <summary>Sets the pre-grade luma histogram (256 bins) drawn beneath the curves; null clears it.</summary>
     public void SetHistogram(int[]? luma) => Surface.SetHistogram(luma);
 
-    /// <summary>The graph: the curves, their points and the histogram, drawn in one OnRender.</summary>
+    /// <summary>Curve graph: curves, control points and histogram rendered in a single OnRender.</summary>
     internal sealed class CurveSurface : FrameworkElement
     {
         private const double Pad = 6, PointRadius = 4, PointReach = 9, RemoveBeyond = 24, LeastGap = 0.01, AxisLockDip = 3;
@@ -109,7 +109,7 @@ public sealed class ColorCurvesControl : Grid
         private StreamGeometry? _histogramShape;
         private Size _histogramSize;
 
-        // The gesture: the points being moved (the curve's own, ends included), which one, where it began, its axis, whether it is off the graph.
+        // Gesture state: working point list (ends included), held index, press point and origin, axis lock, off-graph flag.
         private List<(double X, double Y)>? _points;
         private int _held = -1, _axis;
         private Point _from;
@@ -157,14 +157,14 @@ public sealed class ColorCurvesControl : Grid
 
         public event Action? EditEnded;
 
-        /// <summary>A curve's text now (its index).</summary>
+        /// <summary>Current text of the curve at <paramref name="channel"/>.</summary>
         public string TextOf(int channel) => _texts[channel];
 
         public void SetCurves(string[] texts)
         {
             for (var i = 0; i < 4; i++)
             {
-                // The curve under a gesture keeps what the gesture made (the card catches up as it is written).
+                // The curve being dragged keeps its gesture state (the card catches up as writes land).
                 if (i == _channel && IsDragging)
                     continue;
                 _texts[i] = texts[i] ?? "";
@@ -180,7 +180,7 @@ public sealed class ColorCurvesControl : Grid
             InvalidateVisual();
         }
 
-        // ----- Where things are -----
+        // ----- Geometry -----
 
         private Rect Graph() => new(Pad, Pad, Math.Max(ActualWidth - 2 * Pad, 8), Math.Max(ActualHeight - 2 * Pad, 8));
 
@@ -215,9 +215,9 @@ public sealed class ColorCurvesControl : Grid
             return best;
         }
 
-        // ----- The gesture (point methods: the mouse, the pen and touch call them; the goldens too) -----
+        // ----- Gesture (point methods shared by mouse, pen, touch and goldens) -----
 
-        /// <summary>A press at <paramref name="p"/>: the point under it is held, or a new one is put there and held. False off the graph.</summary>
+        /// <summary>Press at <paramref name="p"/>: grabs the nearby point or inserts and grabs a new one; false off the graph or too close.</summary>
         public bool BeginDrag(Point p)
         {
             var graph = Graph();
@@ -246,7 +246,7 @@ public sealed class ColorCurvesControl : Grid
             return true;
         }
 
-        /// <summary>The held point moved with the pointer (an end up and down only, an inner point between its neighbours; Shift: one axis).</summary>
+        /// <summary>Moves the held point with the pointer (end points vertical only, inner points between neighbours; optional axis lock).</summary>
         public void DragTo(Point p, bool lockAxis = false)
         {
             if (_points is not { } points || _held < 0)
@@ -268,7 +268,7 @@ public sealed class ColorCurvesControl : Grid
             var end = _held == 0 || _held == points.Count - 1;
             var target = new Point(At(_heldFrom).X + dx, At(_heldFrom).Y + dy);
 
-            // An inner point dragged well off the graph is shown gone (and goes when let go there); brought back, it comes back.
+            // Inner points dragged beyond RemoveBeyond preview as removed (deleted on release there); dragging back restores them.
             var outside = target.X < graph.Left - RemoveBeyond || target.X > graph.Right + RemoveBeyond || target.Y < graph.Top - RemoveBeyond || target.Y > graph.Bottom + RemoveBeyond;
             var off = !end && outside;
             var (x, y) = ValueAt(target);
@@ -284,7 +284,7 @@ public sealed class ColorCurvesControl : Grid
             Changed();
         }
 
-        /// <summary>The gesture ends: a point let go off the graph goes.</summary>
+        /// <summary>Ends the gesture; a point released off the graph is removed.</summary>
         public void EndDrag()
         {
             if (_points is not { } points || _held < 0)
@@ -303,7 +303,7 @@ public sealed class ColorCurvesControl : Grid
             InvalidateVisual();
         }
 
-        /// <summary>A double-click at <paramref name="p"/>: the inner point there goes (one gesture). False when there is none.</summary>
+        /// <summary>Double-click at <paramref name="p"/>: removes the inner point there as one gesture; false when none.</summary>
         public bool RemoveAt(Point p)
         {
             var points = PointsOf(_channel);
@@ -321,7 +321,7 @@ public sealed class ColorCurvesControl : Grid
             return true;
         }
 
-        /// <summary>The curve shown back to the identity (one gesture).</summary>
+        /// <summary>Resets the active curve to identity as one gesture.</summary>
         public void ResetChannel()
         {
             if (_texts[_channel].Length == 0)
@@ -334,7 +334,7 @@ public sealed class ColorCurvesControl : Grid
             InvalidateVisual();
         }
 
-        // The held curve's text from its points (a point off the graph left out), said.
+        // Recomputes the active curve text from the working points (excluding an off-graph point) and raises CurveChanged.
         private void Changed()
         {
             if (_points is not { } points)
@@ -345,7 +345,7 @@ public sealed class ColorCurvesControl : Grid
             CurveChanged?.Invoke(_channel, _texts[_channel]);
         }
 
-        /// <summary>A curve's text: empty for the identity (its two ends on the diagonal alone), else its points.</summary>
+        /// <summary>Curve text: empty for identity (only the two diagonal end points), else the formatted points.</summary>
         internal static string TextFor(IReadOnlyList<(double X, double Y)> points) =>
             points.Count == 2 && points[0] == (0, 0) && points[1] == (1, 1) ? "" : GpuColorTables.FormatCurve(points);
 
@@ -429,7 +429,7 @@ public sealed class ColorCurvesControl : Grid
             EndDrag();
         }
 
-        // ----- Drawing -----
+        // ----- Rendering -----
 
         protected override Size MeasureOverride(Size availableSize)
         {
@@ -472,7 +472,7 @@ public sealed class ColorCurvesControl : Grid
             }
         }
 
-        // The curve as the GPU's table has it: 128 samples of the same Hermite (GpuColorTables.CurveSamples), frozen.
+        // Frozen polyline of 128 samples from the same Hermite the GPU table uses (GpuColorTables.CurveSamples).
         private static StreamGeometry Curve(string text, Rect graph)
         {
             var samples = GpuColorTables.CurveSamples(text, 128);
@@ -493,7 +493,7 @@ public sealed class ColorCurvesControl : Grid
             return shape;
         }
 
-        // The histogram as a filled shape over the graph's width (heights by the square root of the counts, so the shadows' few pixels show), kept until it or the size changes.
+        // Filled histogram across the graph (sqrt-scaled heights so sparse shadow bins stay visible); cached until data or size changes.
         private StreamGeometry? Histogram(Rect graph)
         {
             if (_histogram is not { } counts)

@@ -8,19 +8,18 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// What is known about the loaded source: its tracks, the Properties tab, and the size estimate.
+// Loaded source info: tracks, Properties tab, defaults application and output size estimate.
 public partial class MainViewModel
 {
-    // ----- HEVC on the processor (5.2A, the user's Q5: a hint, never a dialog) -----
+    // ----- Software HEVC decode hint (status bar only, never a dialog) -----
 
-    // Whether Windows has an HEVC decoder of its own (Media Foundation's: the Store's HEVC Video Extensions), asked once a session off this
-    // thread; and whether the hint has been given this session.
+    // Whether an MF HEVC decoder (Store HEVC Video Extensions) exists, queried once per session off-thread; and whether the hint was shown.
     private static Task<bool>? _hevcInWindows;
     private bool _hevcHinted;
 
     /// <summary>
-    /// A video of HEVC opened where Windows has no HEVC decoder: it plays at once, through the compositor's processor decoder (FFmpeg, 5.2-Arm64AndNpu),
-    /// and the status bar says so once a session, with what would put its decoding on the graphics card. No dialog, nothing to answer.
+    /// HEVC without an MF decoder plays via the compositor's software (FFmpeg) decoder; once per session the status bar notes it and how
+    /// to enable GPU decoding. No dialog.
     /// </summary>
     private void NoteHevcDecoder(VideoStreamInfo? video)
     {
@@ -39,7 +38,7 @@ public partial class MainViewModel
             if (await _hevcInWindows)
                 return;
 
-            // After what the opening itself says (its own line comes first, then this one).
+            // Post after the open's own status line.
             await Task.Delay(1500);
             StatusText = "HEVC plays here through HandPeg's processor decoder, at full speed. Tip: Windows' \"HEVC Video Extensions\" (Microsoft Store) let the graphics card decode it instead.";
         }
@@ -72,18 +71,17 @@ public partial class MainViewModel
     /// <summary>False for stream copy and for editing codecs, which have no quality or bitrate setting.</summary>
     public bool HasRateControl => IsVideoReencoded && VideoEncoder.Family != EncoderFamily.Intermediate;
 
-    // The "All tracks" codec and bitrate (the Audio tab, the Export tab's Audio Export) are pushed to every track that
-    // still follows them (4.1.1): a track given a codec or bitrate of its own keeps it, and a dropped track stays dropped;
-    // its gain, offset, filters and ducking are never touched here.
+    // "All tracks" codec/bitrate push to tracks still following them; per-track overrides and dropped state are kept, and gain,
+    // offset, filters and ducking are untouched.
     partial void OnAudioEncoderChanged(string value) => ApplyAudioDefaultsToTracks(followersOnly: true);
     partial void OnAudioBitrateChanged(string value) => ApplyAudioDefaultsToTracks(followersOnly: true);
 
-    // The codec and bitrate last pushed to the tracks: a track still on them follows the next change.
+    // Last pushed codec/bitrate; tracks still matching follow the next push.
     private (string Encoder, string Bitrate)? _trackDefaults;
 
     /// <summary>
-    /// Puts the "All tracks" codec and bitrate on the tracks: on every one (a preset, the default settings, a source
-    /// loaded), or, with <paramref name="followersOnly"/>, on those still as the last push left them.
+    /// Applies "All tracks" codec/bitrate to every track (preset, defaults, new source) or, with <paramref name="followersOnly"/>, only to
+    /// tracks unchanged since the last push.
     /// </summary>
     private void ApplyAudioDefaultsToTracks(bool followersOnly = false)
     {
@@ -132,20 +130,19 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts the default encoding settings (Settings, Export &amp; Hardware) in place: at launch, on + New Project, and after a style
-    /// preset when they are set to override styles. Each blank one is left as it is. An encoding preset is never overridden:
-    /// with one selected, its settings stay.
+    /// Applies default encoding settings (Settings, Export &amp; Hardware) at launch, on + New Project, and after a style preset when
+    /// set to override styles. Blank defaults are skipped; a selected encoding preset is never overridden.
     /// </summary>
     private void ApplyEncodingDefaults()
     {
         var settings = AppSettings.Current;
         using var whole = DeferCommand();
 
-        // The defaults are the slowest step (CLAUDE.md 8): a speed-first preset's state ends here (5.4D review), even where no setting
-        // below changes the encoder or its step (a blank default, or Media Foundation, whose fastest step is only in the command).
+        // Defaults use the slowest step, so end speed-first state here even if no setting below changes the encoder or step (blank
+        // default, or MF whose fastest step exists only in the command).
         _speedFirst = false;
 
-        // The encoder first: which preset steps and rate-control names exist depends on it.
+        // Encoder first: available steps and rate-control names depend on it.
         if (settings.DefaultVideoEncoder.Length > 0 && VideoEncoders.FirstOrDefault(e => e.Name == settings.DefaultVideoEncoder) is { } encoder)
             VideoEncoder = encoder;
         if (EncoderPresets.Contains(settings.DefaultEncoderPreset))
@@ -163,7 +160,7 @@ public partial class MainViewModel
             Container = settings.DefaultContainer;
         WebOptimized = settings.DefaultWebOptimized;
 
-        // The size asked for, as typed, without one side being worked out from the other on the way.
+        // Set the typed size without aspect recalculation.
         if (settings.DefaultOutputWidth.Trim().Length > 0 || settings.DefaultOutputHeight.Trim().Length > 0)
         {
             _syncingDimensions = true;
@@ -192,7 +189,7 @@ public partial class MainViewModel
         ApplyAudioDefaultsToTracks();
     }
 
-    /// <summary>After a style preset: the default encoding settings again, when they override styles and no encoding preset is in use.</summary>
+    /// <summary>Re-applies defaults after a style preset when they override styles and no encoding preset is selected.</summary>
     private void ApplyEncodingDefaultsOverStyle()
     {
         var settings = AppSettings.Current;
@@ -201,14 +198,14 @@ public partial class MainViewModel
 
         ApplyEncodingDefaults();
 
-        // The style may have turned the frame tall or wide: the setting that says what every video starts as says otherwise.
+        // Restore the default orientation the style may have changed.
         if (UseVerticalResolution != settings.DefaultVerticalVideo)
             UseVerticalResolution = settings.DefaultVerticalVideo;
     }
 
     /// <summary>
-    /// Takes over the result of inspecting a newly opened file (null when it could not be inspected): what the Info, Streams and
-    /// Download panels show, and its streams as the output audio tracks' choices (5.2-AuditB: its sound plays through its clips).
+    /// Applies a new file's probe result (null if probing failed): Info/Streams/Download panels and output audio track choices from its
+    /// streams (its audio plays through its clips).
     /// </summary>
     private void SetMediaInfo(MediaInfo? info)
     {
@@ -235,7 +232,7 @@ public partial class MainViewModel
             AudioTracks.Add(track);
         }
 
-        // A caption preview is of the video it was made for.
+        // Caption previews belong to their source video; discard.
         PreviewSubtitles = false;
 
         foreach (var stream in info?.Subtitles ?? [])
@@ -260,15 +257,15 @@ public partial class MainViewModel
 
     private void OnTrackChanged(object? sender, PropertyChangedEventArgs e)
     {
-        // A track dropped or taken back changes what the mix sounds like, and so what the timeline should show.
+        // Dropping/restoring a track changes the mix, so redraw the timeline waveform.
         if (e.PropertyName == nameof(AudioTrack.Action) && sender is AudioTrack && HasSource && !_isBackgroundWorker)
             _ = RefreshTimelineWaveformAsync(LocalMediaPath);
 
-        // Dropped, or taken back, while dropped tracks are hidden: its row goes, or comes back.
+        // With dropped tracks hidden, toggle the row's visibility.
         if (e.PropertyName == nameof(AudioTrack.Action) && HideDroppedTracks)
             RefreshAudioRows();
 
-        // A picture arriving is not a change of settings.
+        // Display-only track properties (description, source name, own-format flag) do not affect the command.
         if (e.PropertyName is not (nameof(AudioTrack.Description) or nameof(AudioTrack.SourceFileName) or nameof(AudioTrack.HasOwnFormat)))
             GenerateCommand();
     }
@@ -324,8 +321,7 @@ public partial class MainViewModel
         var tracks = animated ? [] : GetOutputAudioTracks();
         var mixAudio = MergeAudioTracks && tracks.Count > 1;
 
-        // The length or the audio may just have changed: bring Target File Size and Target Bitrate back in step (and the automatic
-        // bitrate, which follows the size and rate, 5.4B).
+        // Duration or audio may have changed: resync Target File Size, Target Bitrate and the automatic bitrate.
         SyncSizeAndBitrate();
         OnPropertyChanged(nameof(EffectiveBitrateKbps));
         OnPropertyChanged(nameof(AutoBitrateText));
@@ -355,8 +351,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The Projected Output card for an Audio Only file (5.4C): no picture, one track (every sound mixed, ExportSoundPlan.For), its
-    /// codec the file's, normalized as asked, and a size from its bitrate (MP3) or 16-bit PCM's (WAV; FLAC about 60 % of it).
+    /// Projected Output for Audio Only: one mixed track (ExportSoundPlan.For) in the container's codec, normalization per settings, size
+    /// from bitrate (MP3) or 16-bit PCM (WAV; FLAC ~60 % of that).
     /// </summary>
     private void UpdateProjectedAudioOnly()
     {
@@ -384,10 +380,7 @@ public partial class MainViewModel
             : "Load a source for an estimate"));
     }
 
-    /// <summary>
-    /// Projected size of the output. With a bitrate target this is simple arithmetic; for constant
-    /// quality it is a bits-per-pixel rule of thumb, and is labelled as an estimate.
-    /// </summary>
+    /// <summary>Projected output size: exact arithmetic for bitrate targets, a bits-per-pixel heuristic (labelled estimate) for constant quality.</summary>
     private string EstimateOutputSize((int Width, int Height)? size, double frameRate, double duration, List<AudioTrack> tracks, bool mixAudio)
     {
         if (duration <= 0)
@@ -401,7 +394,7 @@ public partial class MainViewModel
         string basis;
         if (VideoEncoder.Family == EncoderFamily.Copy)
         {
-            // Copied video keeps its bitrate; when the stream does not state one, it is what the audio leaves over.
+            // Copied video keeps its bitrate; if unstated, use the container rate minus audio.
             var video = _mediaInfo?.Video;
             var sourceAudio = _mediaInfo?.Audio.Sum(a => a.BitRate) ?? 0;
             var bits = video?.BitRate > 0 ? video.BitRate : Math.Max((_mediaInfo?.BitRate ?? 0) - sourceAudio, 0);
@@ -413,7 +406,7 @@ public partial class MainViewModel
         }
         else if (HasRateControl && IsBitrateMode && EffectiveBitrateKbps is > 0 and var target)
         {
-            // The bitrate typed, else the automatic one: what the encoder is given, and the Target File Size box shows.
+            // Typed bitrate, else automatic (what the encoder receives and Target File Size shows).
             // Size (MB) = (video + audio bitrates in kbps) x seconds / (8 x 1024)
             return FormatSize((target + audioKbps) * duration / (8 * 1024));
         }
@@ -425,13 +418,13 @@ public partial class MainViewModel
             double bitsPerPixel;
             if (VideoEncoder.Family == EncoderFamily.Intermediate)
             {
-                // Proxy-grade editing codecs spend roughly this much whatever the content.
+                // Editing codecs have roughly content-independent bitrates.
                 bitsPerPixel = 0.7;
                 basis = "Estimate for an editing codec";
             }
             else
             {
-                // Typical bits per pixel at quality 23, halving for every 6 steps up the scale.
+                // Typical bits/pixel at quality 23, halving every +6 steps.
                 var name = VideoEncoder.Name;
                 var atReference = name.Contains("264") ? 0.10
                     : name.Contains("av1") ? 0.05
@@ -457,7 +450,7 @@ public partial class MainViewModel
         if (mixAudio)
             return GetEncodedAudioKbps(MixedAudioCodec, AudioBitrate, tracks[0].Stream);
 
-        // A copied track keeps its own bitrate; when the stream does not state one, a typical value stands in.
+        // Copied tracks keep their bitrate; use a typical value when unstated.
         return tracks.Sum(t => t.IsPassthrough
             ? (t.Stream.BitRate > 0 ? t.Stream.BitRate / 1000.0 : 128)
             : GetEncodedAudioKbps(t.Codec, t.Bitrate, t.Stream));
@@ -477,8 +470,8 @@ public partial class MainViewModel
     private bool IsAnimatedOutput => OutputExtension is "gif" or "webp";
 
     /// <summary>
-    /// FLAC, WAV and MP3 (5.4C): an Audio Only export, the Sequence's sound alone. The Export tab folds its video parts away and the
-    /// Export Quality Preview is off; raised as the container or the destination changes.
+    /// Audio Only export (FLAC, WAV, MP3): Sequence audio only; hides Export video sections and disables Export Quality Preview.
+    /// Raised on container or destination change.
     /// </summary>
     public bool IsAudioOnlyExport => EncoderCommand.IsAudioOnlyExtension(OutputExtension);
 
@@ -487,7 +480,7 @@ public partial class MainViewModel
 
     private static double GetEncodedAudioKbps(string codec, string bitrate, AudioStreamInfo stream)
     {
-        // Uncompressed 16-bit PCM: sample rate x 16 bits x channels. FLAC (5.4B), lossless: about 60 % of that for most sound.
+        // 16-bit PCM: sample rate x 16 x channels; lossless FLAC is ~60 % of that for typical audio.
         if (AudioTrack.IsLossless(codec))
             return (stream.SampleRate > 0 ? stream.SampleRate : 48000) * 16.0 * Math.Max(stream.Channels, 1) / 1000 * (codec == "flac" ? 0.6 : 1);
 
@@ -495,8 +488,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Frame size of the output: the frame the compositor draws (Resolution &amp; Cropping, else the Sequence's own), or for a Copy
-    /// export the copied file's own picture (SequenceSpans.CopyCutOf); null when that is not known.
+    /// Output frame size: the compositor frame (Resolution &amp; Cropping, else Sequence), or for Copy the copied file's picture
+    /// (SequenceSpans.CopyCutOf); null when unknown.
     /// </summary>
     private (int Width, int Height)? GetOutputSize()
     {
@@ -519,14 +512,13 @@ public partial class MainViewModel
             return fps;
         }
 
-        // "Match Project Settings" (5.4A): the Sequence's own rate; a Copy export keeps its file's.
+        // Match Project Settings: Sequence rate; Copy keeps the file's.
         return VideoEncoder.Family == EncoderFamily.Copy ? _mediaInfo?.Video?.FrameRate ?? 0 : Document.FrameRate.Fps;
     }
 
     /// <summary>
-    /// Length of the output in seconds: the timeline's to its last picture (4.3C: nothing is cut out of it on the way; 5.4A: an audio
-    /// tail past the last picture is not exported, a standalone sound placed past it is: SequenceSpans.ProgramSeconds), or, for a Copy
-    /// export of a file's clips (joined end to end from its file: EncoderCommand.BuildCutsList, SequenceSpans.CopyCutOf), those clips end to end.
+    /// Output duration (s): timeline length to the last picture (audio tails past it are dropped, standalone audio past it is kept:
+    /// SequenceSpans.ProgramSeconds), or for Copy the concatenated clip lengths (EncoderCommand.BuildCutsList, SequenceSpans.CopyCutOf).
     /// </summary>
     private double GetOutputDuration() =>
         VideoEncoder.Family == EncoderFamily.Copy && !IsAnimatedOutput && !IsAudioOnlyExport && SequenceSpans.CopyCutOf(Document) is { IsCut: true, Pieces.Count: > 0 } copy

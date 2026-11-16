@@ -6,42 +6,37 @@ using HandPegApp.Services.Gpu;
 namespace HandPegApp.Services.Audio;
 
 /// <summary>
-/// One sound the lowering hears (SequenceLowering.LayerAudio) with what it is on the Sequence (5.2-AuditB): its clip and its track,
-/// found by the layer's ClipId (null for a layer that is no clip of the document), and its stream place: the
-/// <see cref="TimelineTrackModel.StreamOrdinal"/> of the Sub-Lane it is on, or -1 for a sound on none (a clip's own sound, an Audio
-/// track's clip, a lane a stream was moved to on its own), which goes to the first output.
+/// One sound heard by the lowering (SequenceLowering.LayerAudio) with its sequence context: its clip and track (by the layer's ClipId;
+/// null when the layer is not a document clip) and its stream slot: the Sub-Lane's <see cref="TimelineTrackModel.StreamOrdinal"/>, or -1
+/// when not on a Sub-Lane (a clip's own sound, an Audio-track clip, a separately moved stream), which goes to the first output.
 /// </summary>
-/// <param name="Path">Its file, cleaned of spaces and quotes.</param>
+/// <param name="Path">File path, trimmed of spaces and quotes.</param>
 internal readonly record struct HeardSound(Layer Layer, string Path, TimelineClip? Clip, TimelineTrackModel? Track, int Ordinal)
 {
-    /// <summary>A voice: what the ducked sounds make room for.</summary>
+    /// <summary>Voice: the side chain that ducked sounds make room for.</summary>
     public bool IsVoice => Layer.IsVoice;
 
-    /// <summary>Turned down while a voice speaks: its own Auto-Duck, or its track's Duck Against Voice.</summary>
+    /// <summary>Attenuated while a voice is active: its own Auto-Duck or its track's Duck Against Voice.</summary>
     public bool Ducked => (Layer.AutoDuck || Track?.DuckAgainstVoice == true) && !Layer.IsVoice;
 }
 
 /// <summary>
-/// A SequenceExportState read into an <see cref="AudioProgram"/> with the FFmpeg path's semantics, from the very lowering
-/// the GPU scene is made from (TimelineLowering.Lowering, cached by document, so this costs little on every edit):
+/// Builds an <see cref="AudioProgram"/> from a SequenceExportState using the same lowering as the GPU scene (TimelineLowering.Lowering,
+/// cached per document, so it is cheap on every edit):
 /// <list type="bullet">
-/// <item>Every clip that is heard (Lowered.LayerAudio): its own file and stream, read on the file's own clock (the cut of
-/// BuildLayerAudio: origin + MediaOffset), at its speed, its slip moving where it starts (LayerAudioStart), its J or L cut as the
-/// lowering laid it, its fades. One clock for every clip: no file is the "main" one (5.2-AuditB).</item>
-/// <item>A track's clips (a Sub-Lane's streams, an Audio track's sounds, a video track's own sound) are one <see cref="AudioStripKind.Track"/>
-/// strip for each part they play in the ducking (5.2-AuditB, as each of the main file's streams was): each clip's gain and fades on its
-/// sound, summed, ducked when Auto-Duck (a voice is the side chain), then the track's gain and processing
-/// (<see cref="AudioChainBuilder.From"/> of its filters), whose state runs on across the cuts. As the export ordered a stream: the
-/// processing after the ducking.</item>
-/// <item>A clip with processing of its own (its filters, on a track with none): a <see cref="AudioStripKind.Clip"/> strip of its own,
-/// its processing and gain (the clip's with its track's), then its fades, then ducked.</item>
-/// <item>The session's voiceover (IncludeVoiceover): as a clip, a voice for the ducking, as the export has it.</item>
-/// <item>The sequence's fades (FadeIn, FadeOut: a second each) over the whole; nothing past the sequence's end.</item>
+/// <item>Every heard clip (Lowered.LayerAudio): its own file and stream on the file's clock (origin + MediaOffset, as BuildLayerAudio
+/// cuts), at its speed, shifted by its slip (LayerAudioStart), with its J/L cut and fades. One clock for all clips; no file is "main".</item>
+/// <item>A track's clips (Sub-Lane streams, Audio-track sounds, a video track's own sound) form one <see cref="AudioStripKind.Track"/>
+/// strip per ducking role: clip gain and fades per sound, summed, ducked when Auto-Duck (voices are the side chain), then the track's gain
+/// and processing (<see cref="AudioChainBuilder.From"/>), whose state carries across cuts.</item>
+/// <item>A clip with its own processing (on a track without filters) gets its own <see cref="AudioStripKind.Clip"/> strip: processing
+/// and gain (clip plus track), then fades, then ducking.</item>
+/// <item>The session voiceover (IncludeVoiceover): processed like a clip and acting as a voice for ducking.</item>
+/// <item>Sequence fades (FadeIn, FadeOut: one second each) over the mix; nothing past the sequence end.</item>
 /// </list>
-/// While a track is soloed (TimelineTrackModel.IsSoloed), only the soloed tracks and the Sub-Lanes under them are heard
-/// (AudioBuildOptions.IgnoresSolo: an export hears everything). Not here: loudness normalization (it needs the whole sound first:
-/// an export's is ExportSoundPlan's, measured on the render). An export's output tracks are laid on buses by stream place
-/// (AudioBuildOptions.Buses).
+/// While any track is soloed (TimelineTrackModel.IsSoloed) only soloed tracks and their Sub-Lanes are heard (exports set
+/// AudioBuildOptions.IgnoresSolo). Loudness normalization is not here (it needs the full render: ExportSoundPlan). Export output tracks
+/// map to buses by stream slot (AudioBuildOptions.Buses).
 /// </summary>
 internal static class AudioProgramBuilder
 {
@@ -70,13 +65,13 @@ internal static class AudioProgramBuilder
         return new AudioProgram(lowering.SequenceSeconds, [.. voices], [.. strips], state.FadeIn, state.FadeOut, duck) { MasterGain = MasterFactor(state.MasterGainDb) };
     }
 
-    /// <summary>The master fader's decibels as a factor (5.2B): exactly 1 within a hundredth of a decibel of 0, so 0 dB multiplies nothing.</summary>
+    /// <summary>Master fader dB as a factor: exactly 1 within 0.005 dB of 0; clamped to -40..+12 dB.</summary>
     internal static float MasterFactor(double decibels) =>
         !double.IsFinite(decibels) || Math.Abs(decibels) < 0.005 ? 1f : (float)Math.Pow(10, Math.Clamp(decibels, -40, 12) / 20);
 
     /// <summary>
-    /// The sounds the lowering hears, in its order (the tracks bottom first), each with its clip, its track and its stream place;
-    /// with <paramref name="solo"/>, only those of the soloed tracks and of the tracks that lie under them.
+    /// Sounds heard by the lowering in its order (tracks bottom first), each with clip, track and stream slot; with <paramref name="solo"/>,
+    /// only those on soloed tracks and their Sub-Lanes.
     /// </summary>
     internal static List<HeardSound> Heard(SequenceExportState state, SequenceLowering lowering, bool solo)
     {
@@ -109,7 +104,7 @@ internal static class AudioProgramBuilder
         return heard;
     }
 
-    // The tracks heard while some are soloed: each soloed track, and every track that lies under one (its Sub-Lanes).
+    // Tracks audible under solo: each soloed track and every track nested beneath one (its Sub-Lanes).
     private static HashSet<Guid> Soloed(TimelineDocument document)
     {
         var byId = new Dictionary<Guid, TimelineTrackModel>();
@@ -135,9 +130,9 @@ internal static class AudioProgramBuilder
         return heard;
     }
 
-    // Every sound heard, on the buses the layout gives its stream place (an export's surround output: a strip for each pair of its
-    // channels; none, a place the export copies or leaves out): on its track's strip, one for each track, pair and part in the ducking;
-    // or, a clip with processing of its own (or a layer that is no clip of the Sequence), on a strip of its own.
+    // Adds every heard sound on the buses its stream slot maps to (surround export: one strip per channel pair; no buses = copied or
+    // omitted by the export): on its track's strip (one per track, pair and ducking role), or on its own strip for a clip with its own
+    // processing (or a layer that is not a sequence clip).
     private static void AddSounds(SequenceExportState state, List<HeardSound> sounds, AudioBusLayout layout, List<AudioVoice> voices, List<AudioStrip> strips)
     {
         var trackStrips = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -152,11 +147,10 @@ internal static class AudioProgramBuilder
             var own = track is { AudioFilters: null } && layer.AudioFilters is { Processes: true } filters ? filters : null;
             if (clip is null || track is null || own is not null)
             {
-                // Its processing and gain, its fades after them (BuildLayerAudio's order). A strip's key is its clip's line on the
-                // timeline and its track: its processing keeps its state while its settings change; a clip moved is a new strip, as
-                // FFmpeg's chain for it was new.
+                // Processing and gain, then fades (BuildLayerAudio order). The key is the clip's timeline line plus track, so processing
+                // keeps its state while settings change; a moved clip gets a new strip.
                 var gainDb = clip is not null && track is not null ? clip.GainDb + track.GainDb : layer.AudioGainDb;
-                // (Its filters' keyframes count from the clip's start on the Sequence, 5.2B: a track's from the Sequence's.)
+                // Clip filter keyframes are relative to the clip's sequence start (track filters to the sequence start).
                 var chain = AudioChainBuilder.From(own ?? layer.AudioFilters, Math.Clamp(gainDb, -40, 24), clip?.Start ?? layer.StartTime);
                 var (speed, startsAt) = Placed(layer);
                 var line = string.Create(CultureInfo.InvariantCulture, $"clip:{sound.Path}|{layer.TrackId}|{Math.Round((startsAt - layer.MediaOffset / speed) * 1e6):0}");
@@ -182,14 +176,14 @@ internal static class AudioProgramBuilder
                 continue;
             }
 
-            // Its track's strip: the clip's gain and fades on its sound, the track's gain and processing after the sum.
+            // Track strip: clip gain and fades per sound; track gain and processing after summing.
             if (!trackChains.TryGetValue(track.Id, out var trackChain))
                 trackChains[track.Id] = trackChain = AudioChainBuilder.From(track.AudioFilters, Math.Clamp(track.GainDb, -40, 24));
             var gain = Math.Abs(clip.GainDb) >= 0.05 ? (float)Math.Pow(10, Math.Clamp(clip.GainDb, -40, 24) / 20) : 1f;
             var role = sound.IsVoice ? ":voice" : sound.Ducked ? ":ducked" : "";
 
-            // The clip's own Pitch and Tempo (its Pitch Shift) are heard on its track's strip too (5.6.0: until now only a clip strip,
-            // on a track with no filters of its own, heard them): the lowered layer carries the track's filters, the clip's are its State's.
+            // The clip's own Pitch/Tempo (Pitch Shift) also applies on track strips: the lowered layer carries the track's filters, the
+            // clip's come from its State.
             var mine = clip.State.AudioFilters is { PitchTempo: true } clipFilters ? AudioChainBuilder.From(clipFilters, 0) : null;
             for (var pair = 0; pair < buses.Length; pair++)
             {
@@ -214,18 +208,17 @@ internal static class AudioProgramBuilder
         }
     }
 
-    // A strip's pair of a surround output's channels, in its key ("" for a strip that is the whole sound).
+    // Channel-pair suffix for a strip key ("" when the strip carries the whole stream).
     private static string PairKey(int pair, int pairs) => pairs > 1 ? string.Create(CultureInfo.InvariantCulture, $":pair{pair}") : "";
 
-    // A layer's speed (1 for one without a running time of its own) and where its sound starts on the sequence: its slip moves it.
+    // Layer speed (1 without its own timing) and its sound's sequence start, shifted by its slip.
     private static (double Speed, double StartsAt) Placed(Layer layer) =>
         (layer.HasSpeed && double.IsFinite(layer.Speed) ? Math.Clamp(layer.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1,
          layer.StartTime + (layer.IsAudio ? 0 : layer.AudioOffset));
 
-    // A clip's sound as a voice of a strip: its file and stream (a surround stream's pair of channels, or -1 for the whole), at its
-    // speed and its strip's tempo and pitch (times the clip's own, <paramref name="own"/>, on a track's strip), with its fades; its own
-    // gain (a track strip's voice: its clip's, else 1). 5.6.0: the clip's Keep Pitch off plays it as tape (its pitch moves with its
-    // speed), and its Spectral Audio stretches it with the phase vocoder; both are the layer's, whatever strip it is on.
+    // A clip's sound as a strip voice: file and stream (a surround pair, or -1 for the whole stream) at its speed times the strip's
+    // tempo and pitch (times the clip's own <paramref name="own"/> on a track strip), with fades and its own gain (track strip: the
+    // clip's, else 1). Keep Pitch off plays it as tape (pitch follows speed); Spectral Audio uses the phase vocoder; both follow the layer.
     private static AudioVoice VoiceOf(SequenceExportState state, HeardSound sound, AudioChain chain, AudioChain? own, int pair, float gain, int strip)
     {
         var (layer, path) = (sound.Layer, sound.Path);
@@ -233,15 +226,13 @@ internal static class AudioProgramBuilder
         var timed = layer.Duration > 0.001;
         var (pitch, tempo) = (chain.Pitch * (own?.Pitch ?? 1), chain.Tempo * (own?.Tempo ?? 1));
 
-        // The rate is the speed times what the Pitch and Tempo filter nets: FFmpeg's asetrate (pitch and tempo up by the pitch) then
-        // atempo (the chain's Tempo, the tempo over the pitch) net its Tempo alone. The engine takes the pitch back out of the rate
-        // itself (VoiceProducer: its stretch is the rate over the pitch), so the rate carries the pitch's share too (5.6.0, golden
-        // audio-engine-pitch-timing: until then +12 semitones played at half speed and -12 at double).
+        // Rate = speed x net Pitch/Tempo: FFmpeg's asetrate (scales pitch and tempo) then atempo (tempo / pitch) nets the Tempo alone.
+        // The engine divides the pitch back out (VoiceProducer stretch = rate / pitch), so the rate also carries the pitch factor
+        // (golden audio-engine-pitch-timing).
         var net = Math.Clamp(tempo * pitch, 0.25, 4);
 
-        // A sound clip's file is read on its own clock from 0, as the graph read it (a sound clip is not in MediaStarts); a video's
-        // from its first frame (MediaStarts, else what the decoder finds), as its picture is. A stream unpacked from a video is on
-        // the video's clock: its file is in MediaStarts.
+        // Audio-only clips read on their own clock from 0 (not in MediaStarts); videos from their first frame (MediaStarts, else
+        // decoder discovery), matching the picture. Streams extracted from a video use the video clock (their file is in MediaStarts).
         var source = new AudioSource(path, Math.Max(layer.AudioStream, 0))
         {
             VideoStart = layer.IsAudio && !state.MediaStarts.ContainsKey(path) ? 0 : VideoStart(state, path),
@@ -275,7 +266,7 @@ internal static class AudioProgramBuilder
         if (!state.IncludeVoiceover || path.Length == 0)
             return;
 
-        // As BuildVoiceoverChain: cut to its handles when trimmed, moved to where it starts, at its gain.
+        // Mirrors BuildVoiceoverChain: trimmed to its handles, placed at its start, at its gain.
         var trimmed = state.VoiceoverTrimStart > 0.05
                       || (state.VoiceoverDuration > 0 && state.VoiceoverTrimEnd < state.VoiceoverDuration - 0.05 && state.VoiceoverTrimEnd > state.VoiceoverTrimStart);
         var mediaStart = trimmed ? Math.Max(state.VoiceoverTrimStart, 0) : 0;
@@ -305,8 +296,8 @@ internal static class AudioProgramBuilder
 
     internal static string Clean(string path) => path.Trim().Trim('"');
 
-    // Where FFmpeg found a file's picture to start, as the GPU scene looks it up: the state's, else what MediaProbe learnt this
-    // session; NaN when neither knows (the decoder then reads the file itself).
+    // Video start found by FFmpeg, resolved as the GPU scene does: the state's, else MediaProbe's session cache; NaN when unknown
+    // (the decoder then reads the file itself).
     private static double VideoStart(SequenceExportState state, string path) =>
         state.MediaStarts.TryGetValue(path, out var start) ? start : MediaProbe.KnownVideoStart(path) ?? double.NaN;
 }

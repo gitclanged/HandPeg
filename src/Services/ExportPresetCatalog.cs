@@ -2,35 +2,31 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
-// ----- Export Presets: the built-in ones (Pass 5.4B) -----
-// One preset model (EncodingPreset) and one list: the built-ins here, in code, grouped by Category ("Platform & Social", "Studio &
-// Archive"), then the user's own from presets.json ("My Presets"). Picking one applies its export fields only (MainViewModel.ApplyExportPreset):
-// size, rate, encoder, quality, sound, container. Game Presets own the layout, the looks and the captions. Built-ins are never written
-// to presets.json (PresetStore.Save leaves them out), so an update changes them for everyone; a user's preset of the same name is
-// renamed as it is read (PresetStore.Load).
+// ----- Built-in Export Presets -----
+// One model (EncodingPreset), one list: built-ins in code grouped by Category ("Platform & Social", "Studio & Archive"), then custom
+// presets from presets.json ("My Presets"). Applying one sets export fields only (MainViewModel.ApplyExportPreset): size, rate,
+// encoder, quality, audio, container; Game Presets own layout, looks and captions. Built-ins are never persisted (PresetStore.Save),
+// so updates reach everyone; colliding custom names are renamed on load (PresetStore.Load).
 //
-// An empty EncoderPreset is the encoder's best step (MainViewModel.BestStepOf: veryslow for x264 and x265, p7 NVENC, high_quality AMF,
-// veryslow QuickSync; Media Foundation's -compression_level 100, 5.4C; none for SVT-AV1 and VP9): every built-in names none since 5.4C
-// (the slowest step everywhere, Small File 720p too). 5.4D: Fast Proxy is SpeedFirst instead, the encoder's fastest step whichever it
-// resolves to (MainViewModel.FastestStepOf), a flag rather than a step name. PreferredCodec names the codec(s) a hardware encoder is looked
-// for first ("hevc,h264": HEVC, then H.264), VideoEncoder the software one when this PC has none of them. An empty TargetBitrate is the
-// automatic one (MainViewModel.AutoBitrateKbps: from the output's size and rate). A FLAC, WAV or MP3 Container is an Audio Only export
-// (5.4C, EncoderCommand.IsAudioOnly): the Sequence's sound alone, no picture drawn.
+// Empty EncoderPreset = slowest/best step (MainViewModel.BestStepOf: x264/x265 veryslow, NVENC p7, AMF high_quality, QSV veryslow,
+// MF -compression_level 100; none for SVT-AV1/VP9). Fast Proxy uses SpeedFirst (MainViewModel.FastestStepOf) instead. PreferredCodec
+// lists hardware codecs to try ("hevc,h264"); VideoEncoder is the software fallback. Empty TargetBitrate = automatic
+// (MainViewModel.AutoBitrateKbps). FLAC/WAV/MP3 containers are Audio Only exports (EncoderCommand.IsAudioOnly).
 
-/// <summary>The Export Presets HandPeg comes with, and the names the built-ins of 5.4A and before had.</summary>
+/// <summary>Built-in Export Presets and the legacy built-in name map.</summary>
 public static class ExportPresetCatalog
 {
     private const string Vbr = "Average Bitrate (ABR)", Cq = "Constant Quality (CQ)", Match = "Match Project Settings";
 
-    /// <summary>The prefix of the three Master Quality presets (the user's words: "Match Project — Master Quality").</summary>
+    /// <summary>Name prefix of the three Master Quality presets.</summary>
     public const string MasterQuality = "Match Project — Master Quality";
 
     /// <summary>The built-in Export Presets, in the order the selector lists them (each group's own order).</summary>
     public static IReadOnlyList<EncodingPreset> BuiltIns { get; } = Make();
 
     /// <summary>
-    /// What a built-in of 5.4A and before is called now, by its old name (a Smart Rule or the default preset naming one is renamed
-    /// as it is read, PresetStore.Load). The built-ins whose names stayed (Fast Proxy, the editing codecs) are not here.
+    /// Legacy built-in name to current name (references are migrated by PresetStore.Load); unchanged names (Fast Proxy, editing codecs)
+    /// are omitted.
     /// </summary>
     public static IReadOnlyDictionary<string, string> RenamedBuiltIns { get; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -57,7 +53,7 @@ public static class ExportPresetCatalog
             Container = "mp4", WebOptimized = true, Profile = "high",
         };
 
-        // A chat's size limit: the bitrate worked out from the output's length to land a little under it (the container's own bytes).
+        // Size-limited target: bitrate derived from duration to land just under the cap (allowing container overhead).
         static EncodingPreset Chat(int limitMb, int shortSide, string framerate, string audioBitrate) => new()
         {
             Name = $"Discord ({limitMb} MB)", Category = EncodingPreset.PlatformCategory,
@@ -71,7 +67,7 @@ public static class ExportPresetCatalog
         return
         [
             // ----- Platform & Social -----
-            // TikTok by upload client (D-Q3): the web uploader keeps a high bitrate, the phone apps re-encode and want less; iOS takes HEVC.
+            // TikTok per upload client: web keeps high bitrates, mobile apps re-encode and want less; iOS accepts HEVC.
             With(Vertical("TikTok (PC Web)", "9:16, 1080 x 1920, the project's rate (60 at most). H.264, VBR 16 Mbps, AAC 192k."), p =>
             {
                 (p.PreferredCodec, p.VideoEncoder, p.RateControl, p.TargetBitrate, p.FramerateCap) = ("h264", "libx264", Vbr, "16000", 60);
@@ -133,9 +129,9 @@ public static class ExportPresetCatalog
             },
 
             // ----- Studio & Archive -----
-            // The project's own size and rate, on this PC's hardware encoder of the codec at its slowest step (5.4C: NVENC p7, QuickSync
-            // veryslow, AMF high_quality, Media Foundation -compression_level 100), else the software encoder at its best (x264 and x265
-            // veryslow). HEVC and AV1 in 10 bits: an HDR project exported with them keeps its HDR (MainViewModel.HdrPassthroughBlocker).
+            // Project size and rate on the local hardware encoder at its slowest step (NVENC p7, QSV veryslow, AMF high_quality, MF
+            // -compression_level 100), else software at best (x264/x265 veryslow). HEVC/AV1 are 10-bit so HDR survives
+            // (MainViewModel.HdrPassthroughBlocker).
             new()
             {
                 Name = MasterQuality + " (H.264)", Category = studio,
@@ -175,9 +171,8 @@ public static class ExportPresetCatalog
                 VideoEncoder = "prores_ks", ExtraVideoArguments = "-profile:v 3", AudioEncoder = "pcm_s16le", Container = "mov",
             },
 
-            // The sound alone (5.4C, the user's Q5): rendered by the sound engine, every track mixed into one, encoded by FFmpeg; no picture
-            // is drawn and no compositor started (GpuExport.RunAudioOnlyAsync). The podcast's -16 LUFS is a linear gain held by the peaks
-            // (ExportSoundPlan.NormalizingGain): very peaky sound can land a little under it, which the log says.
+            // Audio Only: the audio engine mixes all tracks and FFmpeg encodes; no compositor (GpuExport.RunAudioOnlyAsync). Podcast -16
+            // LUFS is a peak-limited linear gain (ExportSoundPlan.NormalizingGain); very peaky audio may land slightly under (logged).
             new()
             {
                 Name = "Audio Only (FLAC)", Category = studio, Detail = "The Sequence's sound alone, every track mixed into one: lossless FLAC (16-bit) at the project's rate. No picture is drawn.",
@@ -210,8 +205,8 @@ public static class ExportPresetCatalog
                 Name = "H.264 ALL-I Intra-Frame", Category = studio, Detail = "Every frame an I-frame: instant seeking in any editor. Constant quality 18, the sound copied.",
                 VideoEncoder = "libx264", Tune = "fastdecode", RateControl = Cq, Quality = 18, ExtraVideoArguments = "-g 1 -keyint_min 1", AudioEncoder = "Copy (Stream Copy)",
             },
-            // 5.4C: a hardware encoder of the codec first. 5.4D (Q2 b): the proxy at the encoder's fastest step (SpeedFirst, the one
-            // exception to the slowest step everywhere: a proxy is for speed); the small file stays at the slowest, smaller for it.
+            // Hardware encoder first. Fast Proxy uses the fastest step (SpeedFirst, the sole speed-first exception); Small File stays slowest
+            // for size.
             new()
             {
                 Name = "Fast Proxy", Category = studio, Detail = "720p, H.264 on this PC's hardware encoder (else x264), at the encoder's fastest step, constant quality 28: small and quick, to look at or send for a check.",

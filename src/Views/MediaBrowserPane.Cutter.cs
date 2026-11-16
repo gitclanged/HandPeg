@@ -11,27 +11,26 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Views;
 
-// ----- The preview and the sub-clip cutter (5.4C: the Filmstrip view, and the List view once the pane is wide) -----
-// The file chosen in the list, shown large (MediaSourcePreview) over a compact strip of its frames (MediaFilmstripCutter). Scrubbing shows
-// the strip's frame at once (the browser's cached strip), then the frame itself from the thumbnail compositor through a latest-wins
-// SourceFrames: a key frame while the strip is dragged or coasting, the exact frame once it has rested ExactAfterMs. Space steps through
-// the file at a few stills a second with no sound, and says so (a true playback with sound would need a second swapchain: not this pass).
-// I and O mark a sub-clip (seconds of the file, its clips' MediaOffset clock); Insert or Enter puts it on the timeline at the playhead,
-// and dragging the marked band carries it there as a sub-clip (SubClipFormat). Made at first need after the first frame (Law 1); holds
-// one frame and the strip's frames, let go when the view hides it or the pane is released (Law 2).
+// ----- Source preview and sub-clip cutter (Filmstrip view, and List view when the pane is wide) -----
+// The selected file shown large (MediaSourcePreview) above a compact frame strip (MediaFilmstripCutter). Scrubbing shows the cached strip
+// frame immediately, then a frame from the thumbnail compositor via latest-wins SourceFrames: a keyframe while dragging or coasting, the
+// exact frame after ExactAfterMs at rest. Space steps through the file at a few silent stills per second and labels it as such (true
+// playback with audio would need a second swapchain). I and O mark a sub-clip in file seconds (the clip MediaOffset clock); Insert or
+// Enter places it at the playhead, and dragging the marked band carries it as a sub-clip (SubClipFormat). Created lazily after Frame 1
+// (Law 1); holds one frame plus the strip frames, released when hidden or when the pane is released (Law 2).
 public partial class MediaBrowserPane
 {
-    /// <summary>The drag format of a sub-clip dragged out of the cutter (beside the file itself and <see cref="DragFormat"/>): "in|out", invariant seconds.</summary>
+    /// <summary>Drag format for a cutter sub-clip (alongside FileDrop and <see cref="DragFormat"/>): "in|out" in invariant seconds.</summary>
     public const string SubClipFormat = "HandPeg.MediaBrowserSubClip";
 
-    /// <summary>The stepping preview's rate, stills a second at most.</summary>
+    /// <summary>Maximum stepping-preview rate in stills per second.</summary>
     private const double SteppingFps = 12;
 
-    /// <summary>A sub-clip as its drag carries it: "12.5|31.25" (invariant seconds, In then Out).</summary>
+    /// <summary>Formats a sub-clip drag payload, e.g. "12.5|31.25" (invariant seconds, In then Out).</summary>
     public static string FormatSubClip(double inSeconds, double outSeconds) =>
         string.Create(CultureInfo.InvariantCulture, $"{inSeconds:0.######}|{outSeconds:0.######}");
 
-    /// <summary>A sub-clip read from its drag's text; null for none, or text that is not two finite times with Out after In.</summary>
+    /// <summary>Parses a sub-clip drag payload; null unless it holds two finite, non-negative times with Out after In.</summary>
     public static (double In, double Out)? ParseSubClip(object? data)
     {
         if (data is not string text)
@@ -46,7 +45,7 @@ public partial class MediaBrowserPane
             : null;
     }
 
-    /// <summary>A sub-clip was asked to be put on the timeline at the playhead (Insert, Enter): the file, In, Out, and whether it is a sound.</summary>
+    /// <summary>Insert/Enter requested placing a sub-clip at the playhead: path, In, Out, and whether it is audio.</summary>
     public event Action<string, double, double, bool>? AddRangeRequested;
 
     private MediaSourcePreview? _preview;
@@ -60,21 +59,21 @@ public partial class MediaBrowserPane
     private double _stepFrom;
     private int _stepDirection, _frameAsked, _frameShown;
 
-    // When a still last came back and was shown: while they keep coming, a scrub shows them rather than the strip's coarse frames.
+    // Time since the last decoded still was shown; while stills arrive promptly, scrubs skip the coarse strip frames.
     private readonly Stopwatch _sinceStill = new();
 
     /// <summary>
-    /// Whether a file is the one shown (by its path: Project Media listed again makes new entries for the same files, and what was
-    /// being read for the old entry still belongs to the file shown).
+    /// True when the item is the shown file, compared by path (re-listing Project Media creates new entries for the same files, and
+    /// in-flight reads for the old entry still apply).
     /// </summary>
     private bool IsShown(MediaBrowserItem item) => _shown is { } shown && string.Equals(shown.Path, item.Path, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>The preview's part was shown or hidden by the view: made (after the first frame) and given the file chosen, or let go.</summary>
+    /// <summary>View toggled the preview area: create it (after Frame 1) and show the selection, or release it.</summary>
     private void PreviewShownChanged(bool shown)
     {
         if (!shown)
         {
-            // Its frames let go, and the memory they took given back once idle.
+            // Release the frames and return their memory once idle.
             if (_shown is not null)
             {
                 ReleasePreview();
@@ -94,7 +93,7 @@ public partial class MediaBrowserPane
         ShowChosen();
     }
 
-    /// <summary>Makes the preview, its buttons and the cutter (once), and shows the file chosen.</summary>
+    /// <summary>Creates the preview, its buttons and the cutter once, then shows the selected file.</summary>
     private void EnsurePreview()
     {
         if (_preview is not null || PickerMode)
@@ -123,8 +122,8 @@ public partial class MediaBrowserPane
             return button;
         }
 
-        // In, Out, Clear and Step at the left, Insert at the right; in a narrow preview (5.4D: the Media pane at its least in the Filmstrip
-        // view leaves it 120 DIPs) the four wrap and Insert goes under them, said shorter if need be (FitPreviewBar), never cut off.
+        // In, Out, Clear, Step left; Insert right. In narrow previews (down to 120 DIPs at minimum Filmstrip width) the four wrap and
+        // Insert moves below, shortened if needed (FitPreviewBar), never clipped.
         var bar = new DockPanel { Margin = new Thickness(0, 4, 0, 0), LastChildFill = false };
         var marks = new WrapPanel();
         marks.Children.Add(Action("In", "Mark In at the playhead (I).", "Mark In", () => _cutter?.MarkIn()));
@@ -152,18 +151,18 @@ public partial class MediaBrowserPane
         panel.Children.Add(_cutter);
         panel.Children.Add(_preview);
 
-        // A click on the picture gives the cutter the keyboard, so I, O and Space work at once.
+        // Clicking the picture focuses the cutter so I, O and Space work immediately.
         _preview.MouseLeftButtonDown += (_, _) => _cutter?.Focus();
         PreviewHost.Content = panel;
         ShowChosen();
     }
 
-    // The Insert button's words, and the shorter ones it takes on a line of its own too narrow for them (FitPreviewBar).
+    // Insert button labels: full, and short for a too-narrow own line (FitPreviewBar).
     private const string InsertWords = "Insert at Playhead", InsertWordsShort = "Insert";
 
     /// <summary>
-    /// The preview's buttons laid out for its width (5.4D): on one line while they fit (In, Out, Clear and Step at the left, Insert at the
-    /// right); else the four at the top, wrapping, and Insert on a line under them, "Insert" alone where "Insert at Playhead" would not fit.
+    /// Lays out the preview buttons for the bar width: one line when they fit (marks left, Insert right); otherwise marks wrap on top and
+    /// Insert sits below, labelled "Insert" when "Insert at Playhead" does not fit.
     /// </summary>
     private void FitPreviewBar(DockPanel bar, Panel marks)
     {
@@ -193,7 +192,7 @@ public partial class MediaBrowserPane
             ShowChosen();
     }
 
-    /// <summary>The file chosen in the list (the first chosen file), shown; the same file again keeps its playhead and sub-clip.</summary>
+    /// <summary>Shows the first selected file; reselecting the same file keeps its playhead and sub-clip.</summary>
     private void ShowChosen()
     {
         var item = Items.SelectedItem is MediaBrowserItem { IsFile: true } first ? first : Selected().FirstOrDefault(i => i.IsFile);
@@ -208,7 +207,7 @@ public partial class MediaBrowserPane
         _ = ShowAsync(item);
     }
 
-    /// <summary>Takes up a file: its poster at once, then its details, the strip's frames for the cutter, and its frame at the start.</summary>
+    /// <summary>Loads a file: poster immediately, then details, the frame at 0 and the cutter's strip frames.</summary>
     private async Task ShowAsync(MediaBrowserItem? item)
     {
         if (_preview is not { } preview || _cutter is not { } cutter)
@@ -270,7 +269,7 @@ public partial class MediaBrowserPane
 
             AskFrame(0, fast: false);
 
-            // The cutter's frames: the browser's strip of the file (kept, or made now in the Interactive lane), cut at the row's height.
+            // Cutter frames: the browser's cached strip (or built now on the Interactive lane), sliced at the row height.
             var settings = AppSettings.Current;
             var (frames, frameHeight) = (Math.Clamp(settings.BrowserPreviewFrames, 2, 40), Math.Clamp(settings.BrowserPreviewHeight, 90, 1080));
             var strip = item.StripPath ?? await MediaBrowserFrames.StripAsync(item.Path, details.Seconds, details.Width, details.Height, frames, frameHeight, token, WorkLane.Interactive);
@@ -296,11 +295,11 @@ public partial class MediaBrowserPane
         }
     }
 
-    // The preview's height in real pixels, for the stills asked for: as tall as it is shown, at most 1080 (Law 2: one frame held).
+    // Requested still height in device pixels: the displayed height, clamped 90..1080 (Law 2: one frame held).
     private int PreviewPixelHeight() =>
         (int)Math.Clamp(Math.Ceiling((_preview?.ActualHeight ?? 270) * VisualTreeHelper.GetDpi(this).DpiScaleY), 90, 1080);
 
-    /// <summary>The strip's frame nearest a moment: the coarse picture shown at once while the still is made.</summary>
+    /// <summary>Nearest strip frame to a time: the coarse image shown while the decoded still is pending.</summary>
     private ImageSource? StripFrameAt(double seconds) =>
         _cutter is { Frames: { Count: > 0 } frames, DurationSeconds: > 0 } cutter
             ? frames[Math.Clamp((int)(seconds / cutter.DurationSeconds * frames.Count), 0, frames.Count - 1)]
@@ -315,8 +314,8 @@ public partial class MediaBrowserPane
         if (item.Kind != MediaBrowserKind.Video)
             return;
 
-        // The strip's frame at once (unless stills are coming back quickly); the still behind it: a key frame while moving, the exact
-        // one once it rests.
+        // Show the strip frame immediately (unless stills are arriving within 300 ms), then request a keyframe while moving and the
+        // exact frame once settled.
         if (!settled && StripFrameAt(seconds) is { } coarse && (!_sinceStill.IsRunning || _sinceStill.ElapsedMilliseconds > 300))
             preview.Frame = coarse;
         if (settled)
@@ -343,8 +342,8 @@ public partial class MediaBrowserPane
     }
 
     /// <summary>
-    /// Asks for the shown file's frame at a moment. It is shown when it comes unless a later one was shown first (SourceFrames makes one
-    /// at a time and lets the waiting ones be replaced, so while the strip is dragged each still that comes is the newest there is).
+    /// Requests the shown file's frame at a time; displayed on arrival unless a newer request already displayed. SourceFrames decodes
+    /// one at a time and replaces queued requests, so each still arriving mid-drag is the latest.
     /// </summary>
     private void AskFrame(double seconds, bool fast) => Faults.Forget(AskFrameAsync(seconds, fast), nameof(AskFrame));
 
@@ -364,7 +363,7 @@ public partial class MediaBrowserPane
         _sinceStill.Restart();
     }
 
-    // ----- Stepping through the file (Space; J, K, L) -----
+    // ----- Stepping preview (Space; J, K, L) -----
 
     private void Shuttle(int direction)
     {
@@ -376,7 +375,7 @@ public partial class MediaBrowserPane
             return;
         }
 
-        // From the start again when it stood at the end (going forward), or at the start (going back).
+        // Wrap: forward from the end restarts at In (or 0); backward from the start restarts at the end.
         if (direction > 0 && cutter.PositionSeconds >= cutter.DurationSeconds - 0.001)
             cutter.PositionSeconds = cutter.HasRange ? cutter.InSeconds : 0;
         else if (direction < 0 && cutter.PositionSeconds <= 0.001)
@@ -434,9 +433,9 @@ public partial class MediaBrowserPane
             _playButton.Content = "Step";
     }
 
-    // ----- The sub-clip onto the timeline -----
+    // ----- Sub-clip to timeline -----
 
-    /// <summary>The marked part (the whole file when nothing is marked: NaN for both ends) asked to be put on the timeline at its playhead.</summary>
+    /// <summary>Requests placing the marked range at the timeline playhead (whole file when unmarked: NaN for both ends).</summary>
     private void InsertRange()
     {
         if (_shown is not { IsFile: true, Kind: not MediaBrowserKind.Image } item || _cutter is not { DurationSeconds: > 0 } cutter)
@@ -447,15 +446,15 @@ public partial class MediaBrowserPane
             return;
         }
 
-        // Nothing marked: the whole file, as a drop places it (NaN: no range), never stretched to the container's length (5.4A's
-        // no-trailing-black-frame rule; the cutter's whole span is the container's).
+        // Unmarked: the whole file as a drop places it (NaN = no range), never stretched to the container duration (the cutter span),
+        // which would add trailing black frames.
         var (start, end) = cutter.HasRange ? (cutter.InSeconds, cutter.OutSeconds) : (double.NaN, double.NaN);
         AddRangeRequested?.Invoke(item.Path, start, end, item.Kind == MediaBrowserKind.Audio);
     }
 
     /// <summary>
-    /// The marked band dragged out of the cutter: the file as Explorer drags it (so whatever takes files takes it), marked as the browser's,
-    /// with the sub-clip (<see cref="SubClipFormat"/>), which the timeline places as the part marked. Background work is held meanwhile.
+    /// Drags the marked band out as FileDrop (so any file target accepts it), tagged with <see cref="DragFormat"/> and, when marked, the
+    /// sub-clip (<see cref="SubClipFormat"/>) the timeline places as that range. Background work is held during the drag.
     /// </summary>
     private void DragRangeOut()
     {
@@ -467,13 +466,13 @@ public partial class MediaBrowserPane
         data.SetData(DragFormat, true);
         if (cutter.HasRange)
             data.SetData(SubClipFormat, FormatSubClip(cutter.InSeconds, cutter.OutSeconds));
-        // (5.4.4: an internal drag makes nothing ready ahead of its drop: the drop opens what it needs, MainWindow.IsInternalDrag.)
+        // Internal drags pre-warm nothing before the drop; the drop opens what it needs (MainWindow.IsInternalDrag).
         StopStripOnDemand();
         using (WorkScheduler.HoldBackground())
             DragDrop.DoDragDrop(cutter, data, DragDropEffects.Copy);
     }
 
-    /// <summary>Lets go of the preview's frame, the cutter's frames and any still on its way (the view hid it, or the pane is released).</summary>
+    /// <summary>Releases the preview frame, cutter frames and any pending still (view hidden or pane released).</summary>
     private void ReleasePreview()
     {
         StopStepping();

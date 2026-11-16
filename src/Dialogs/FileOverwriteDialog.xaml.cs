@@ -5,9 +5,7 @@ using HandPegApp.Models;
 
 namespace HandPegApp;
 
-/// <summary>
-/// Asked when the file an encode would write already exists: replace it, pick another name, or back out.
-/// </summary>
+/// <summary>Prompt when the encode target exists: replace, rename or cancel.</summary>
 public partial class FileOverwriteDialog : Window
 {
     private readonly string _folder;
@@ -21,22 +19,22 @@ public partial class FileOverwriteDialog : Window
         ExistingPathText.Text = existingPath;
         NewNameBox.Text = SuggestName(existingPath);
 
-        // Ready to type over the name, leaving the extension alone.
+        // Preselect the base name, excluding the extension.
         NewNameBox.Focus();
         NewNameBox.Select(0, Path.GetFileNameWithoutExtension(NewNameBox.Text).Length);
     }
 
-    /// <summary>Cancel unless one of the two action buttons was pressed.</summary>
+    /// <summary>Cancel unless an action button was pressed.</summary>
     public OverwriteDecision Decision { get; private set; } = new(OverwriteChoice.Cancel);
 
-    /// <summary>"clip.mp4" becomes "clip (1).mp4", or the first number after that which is free.</summary>
+    /// <summary>Next free numbered name: "clip.mp4" -> "clip (1).mp4", incrementing as needed.</summary>
     private static string SuggestName(string existingPath)
     {
         var folder = Path.GetDirectoryName(existingPath) ?? "";
         var name = Path.GetFileNameWithoutExtension(existingPath);
         var extension = Path.GetExtension(existingPath);
 
-        // A name that already carries a number counts on from it: "clip (1)" leads to "clip (2)", not "clip (1) (1)".
+        // Continue an existing suffix: "clip (1)" -> "clip (2)", not "clip (1) (1)".
         var first = 1;
         var numbered = System.Text.RegularExpressions.Regex.Match(name, @"^(?<stem>.*) \((?<n>\d{1,6})\)$");
         if (numbered.Success)
@@ -74,7 +72,7 @@ public partial class FileOverwriteDialog : Window
             return;
         }
 
-        // An extension is what tells FFmpeg which format to write.
+        // FFmpeg infers the container from the extension: reuse the original's when omitted.
         if (Path.GetExtension(name).Length == 0)
             name += Path.GetExtension(ExistingPathText.Text);
 

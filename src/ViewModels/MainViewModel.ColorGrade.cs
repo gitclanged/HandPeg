@@ -4,22 +4,21 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.ViewModels;
 
-// ----- 5.6.0: the Color Grade card (EffectRegistry.ColorStudio), as the Color Studio, the Effects pane's card and Color Match edit it -----
-// Stateless (no fields: the tab-perf field audit lists every MainViewModel field). A clip's card is the clip's own (Layer.Echo, as the
-// Effects pane's edits are); every write is one step of Undo (Checkpoint), taken before anything changes.
+// ----- Color Grade card (EffectRegistry.ColorStudio): shared access for Color Studio, Effects pane and Color Match -----
+// Stateless (no fields; the tab-perf field audit lists every MainViewModel field). Writes go through Layer.Echo like Effects pane
+// edits, each preceded by one undo Checkpoint.
 public partial class MainViewModel
 {
-    /// <summary>The stack a target's Color Grade card lives in: the clip's (or the blur fill's), the Sequence Output's; null for none.</summary>
+    /// <summary>Effect stack holding the target's Color Grade card (clip, blur fill or Sequence Output); null when none.</summary>
     public ObservableCollection<EffectInstance>? ColorGradeStack(ColorGradeTarget target) =>
         target.Layer is { } layer ? layer.Effects : target.Sequence ? SequenceEffects : null;
 
-    /// <summary>Whether the target can hold a Color Grade card (a clip that takes Look effects, the blur fill, the Sequence Output).</summary>
+    /// <summary>Whether the target accepts a Color Grade card (Look-capable clip, blur fill, Sequence Output).</summary>
     public bool CanColorGrade(ColorGradeTarget target) =>
         target.Sequence || target.Layer is { } layer && EffectRegistry.Find(EffectRegistry.ColorStudio) is { } definition && layer.CanTake(definition, ignorePresent: true);
 
     /// <summary>
-    /// The target's Color Grade card; null when it has none. Allocates nothing (5.6.0: Color Match asks on every pointer move while
-    /// picking, so no boxed enumerator).
+    /// Target's Color Grade card, or null. Allocation-free (no boxed enumerator) since Color Match queries it on every pointer move.
     /// </summary>
     public EffectInstance? FindColorGrade(ColorGradeTarget target)
     {
@@ -36,8 +35,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The target's Color Grade card, put on it first when it has none (one step of Undo named <paramref name="label"/>, at the bottom of
-    /// its Look zone, a new card's starting values); null when the target cannot take one.
+    /// Gets or adds the target's Color Grade card (add = one undo step named <paramref name="label"/>, appended to the Look zone with
+    /// defaults); null when the target cannot hold one.
     /// </summary>
     public EffectInstance? EnsureColorGrade(ColorGradeTarget target, string label)
     {
@@ -56,9 +55,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Writes a whole set of values into the target's Color Grade card (Color Match, Reset): one step of Undo named <paramref name="label"/>,
-    /// the card put on first when there is none. Values a keyframed parameter holds are written as its static value (its keys still win).
-    /// Returns false when the target cannot take a card.
+    /// Writes a full value set into the Color Grade card (Color Match, Reset) in one undo step named <paramref name="label"/>, adding the
+    /// card if needed. Keyframed parameters get static values (keys still override). False when the target cannot hold a card.
     /// </summary>
     public bool ApplyColorGrade(ColorGradeTarget target, in ColorGradeValues values, string label)
     {

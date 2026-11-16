@@ -7,10 +7,9 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// Asked for at the moment it is needed: a tool or a speech model that something just pressed cannot do
-/// without, and that was never downloaded (the first-run window fetches only the essentials unless told
-/// otherwise). It says what is missing and how large it is, fetches exactly that, and closes; what was pressed
-/// then carries on. Built in code: a heading, a list, one bar and two buttons.
+/// Just-in-time dependency download for a missing tool or speech model (first run installs only essentials by default). Lists
+/// items and sizes, downloads exactly those, then closes so the triggering action continues. Built in code: heading, list, one
+/// progress bar, two buttons.
 /// </summary>
 public sealed class DependencyPromptWindow : Window
 {
@@ -63,7 +62,7 @@ public sealed class DependencyPromptWindow : Window
 
         _download.Click += async (_, _) => await DownloadAsync();
 
-        // Closed while it runs, by Cancel or the title bar: the download stops, and what was not finished is left as it was.
+        // Closing mid-download (Cancel or title bar) stops it; incomplete items are left untouched.
         Closed += (_, _) => _cancellation?.Cancel();
     }
 
@@ -83,7 +82,7 @@ public sealed class DependencyPromptWindow : Window
 
         try
         {
-            // What there is to fetch, and how much each part weighs, so that the one bar counts bytes and not parts.
+            // Per-item sizes so the single progress bar tracks bytes, not item count.
             var work = new List<(string Id, string Name, bool IsModel, RemoteAsset? Asset, double Size)>();
             foreach (var tool in _request.Tools.Where(t => DependencyUpdater.GetLocalState(t) == DependencyState.Missing))
             {
@@ -107,7 +106,7 @@ public sealed class DependencyPromptWindow : Window
 
                 _status.Text = $"Downloading {item.Name}...";
 
-                // On the thread pool: the bytes are hashed as they arrive, which is not work for the UI thread.
+                // Thread pool: streaming hash verification stays off the UI thread.
                 if (item.IsModel)
                     await Task.Run(() => DependencyUpdater.InstallModelAsync(item.Id, progress, token), token);
                 else
@@ -121,7 +120,7 @@ public sealed class DependencyPromptWindow : Window
         }
         catch (OperationCanceledException)
         {
-            // Closed: nothing to say, and nothing to close.
+            // Window already closed: nothing to report or close.
         }
         catch (Exception ex) when (DependencyUpdater.IsInstallFailure(ex) || ex is IOException or UnauthorizedAccessException)
         {

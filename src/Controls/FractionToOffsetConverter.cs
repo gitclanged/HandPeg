@@ -4,11 +4,7 @@ using System.Windows.Data;
 
 namespace HandPegApp;
 
-/// <summary>
-/// Turns a position along something (0 to 1) and that thing's width into a pixel offset.
-/// Used to place the I-frame lines on the timeline.
-/// </summary>
-/// <summary>Shows something while a condition does not hold: visible for false, collapsed for true.</summary>
+/// <summary>Inverse bool-to-Visibility: Visible for false, Collapsed for true.</summary>
 public sealed class InverseBoolToVisibilityConverter : System.Windows.Data.IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) =>
@@ -17,7 +13,7 @@ public sealed class InverseBoolToVisibilityConverter : System.Windows.Data.IValu
     public object ConvertBack(object value, Type targetType, object parameter, System.Globalization.CultureInfo culture) => throw new NotSupportedException();
 }
 
-/// <summary>Visible only while every value bound is true: for a control that is shown in one mode, and only when chosen.</summary>
+/// <summary>Visible only when all bound values are true (e.g. a control shown in one mode and only when enabled).</summary>
 public sealed class AllTrueToVisibilityConverter : IMultiValueConverter
 {
     public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture) =>
@@ -26,6 +22,9 @@ public sealed class AllTrueToVisibilityConverter : IMultiValueConverter
     public object[] ConvertBack(object value, Type[] targetTypes, object parameter, CultureInfo culture) => throw new NotSupportedException();
 }
 
+/// <summary>
+/// Converts (fraction 0..1, width) to a pixel offset; positions the I-frame marks and similar Canvas.Left bindings.
+/// </summary>
 public sealed class FractionToOffsetConverter : IMultiValueConverter
 {
     public object Convert(object[] values, Type targetType, object parameter, CultureInfo culture) =>

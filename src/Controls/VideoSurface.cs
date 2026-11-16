@@ -11,14 +11,12 @@ using static HandPegApp.Native.Kernel32;
 namespace HandPegApp;
 
 /// <summary>
-/// Where the video is drawn: a native child window for the player (the GPU preview's swap chain) to draw into, and, lying exactly over
-/// it, a transparent window of its own for WPF content. A native window always covers the WPF content of the
-/// window it is in, so anything that has to appear on top of the video (the crop rectangle, the drop hint)
-/// cannot simply be placed over it; it is the content of this layer instead, and is shown in that second
-/// window, which follows the first wherever it goes.
+/// Video host: a native child HWND for the GPU preview swap chain, plus a transparent owned overlay window exactly over it for WPF
+/// content. Airspace rules mean a native child always covers its parent's WPF content, so overlays (crop rectangle, drop hint) live
+/// in the overlay window, which tracks the child wherever it goes.
 ///
-/// The second window never takes the focus: a click on it reaches its content, and the keyboard stays with
-/// the main window. Where it is fully transparent, clicks fall through to what is underneath.
+/// The overlay is non-activating: clicks reach its content while keyboard focus stays with the main window. Fully transparent
+/// pixels pass clicks through.
 /// </summary>
 [ContentProperty(nameof(Overlay))]
 public sealed partial class VideoSurface : HwndHost
@@ -52,17 +50,17 @@ public sealed partial class VideoSurface : HwndHost
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool TrackMouseEvent(ref TrackMouse track);
 
-    // Whether a leave is asked for on the surface's window, until it comes (TrackMouseEvent: once per entry).
+    // TrackMouseEvent(TME_LEAVE) armed on the surface HWND until WM_MOUSELEAVE arrives (one-shot per entry).
     private bool _trackingLeave;
 
     private Window? _owner;
     private Window? _overlayWindow;
     private Int32Rect _placed;
 
-    // The part of the second window that is shown (its own pixels), when it is cut to the window it lies on; empty: all of it.
+    // Visible region of the overlay in its own pixels when clipped to the owner; empty = unclipped.
     private Int32Rect _clip;
 
-    // A placement queued by a move of the native window (one per dispatcher turn, however many moves a resize drag makes).
+    // Overlay placement queued by WM_WINDOWPOSCHANGED (coalesced to one per dispatcher turn during resize drags).
     private bool _placeQueued;
 
     public VideoSurface()
@@ -73,47 +71,45 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// Whether the pointer passes through the native window to the WPF content under it (5.4C: a side window's Live Video Preview, whose
-    /// picture is double-clicked for full screen). The player's own surface keeps the pointer.
+    /// Native window returns HTTRANSPARENT so the pointer reaches WPF content beneath (side window Live Video Preview, double-click for
+    /// full screen). The main player surface keeps the pointer.
     /// </summary>
     public bool PassesPointer { get; init; }
 
-    /// <summary>What is shown on top of the video. Set once, in XAML, as this layer's content.</summary>
+    /// <summary>Overlay content above the video; set once in XAML.</summary>
     public UIElement? Overlay { get; set; }
 
     /// <summary>
-    /// The window that carries <see cref="Overlay"/> above the video (null until it is made): input that lands on it is
-    /// the player's, which the keybinds tell apart by it (W, A, S and D steering what is under the pointer, the Lightning Dial, 4.4).
+    /// Window hosting <see cref="Overlay"/> (null until created). Keybinds use it to identify player input (WASD steering, Lightning Dial).
     /// </summary>
     public Window? OverlayWindow => _overlayWindow;
 
     /// <summary>
-    /// The messages of the window over the video, whichever is made (5.3-Stage3: the 3D view's horizontal wheel, which WPF raises
-    /// no event for, and its wheel's own modifier keys), before WPF's input sees them.
+    /// Raw message hook on the current overlay window, ahead of WPF input (3D view horizontal wheel, which WPF does not surface, and its
+    /// wheel modifier flags).
     /// </summary>
     public event HwndSourceHook? OverlayMessageHook;
 
     /// <summary>
-    /// The pointer over the player (5.4D, the Live Encoded Preview's Magnifier): where it is, in this element's DIPs, whether over the
-    /// bare picture (the native window) or over the layer above it (the wipe's handle, the clips' boxes); null once it has left both.
-    /// Raised only while something listens: nothing is asked of Windows (no leave tracking) without a handler.
+    /// Pointer position over the player in element DIPs, from either the native window or the overlay (wipe handle, clip boxes); null after
+    /// leaving both. Used by the Live Encoded Preview Magnifier. Leave tracking is armed only while a handler is attached.
     /// </summary>
     public event Action<Point?>? PointerMoved;
 
-    /// <summary>The native window the player draws into; zero until it has been created.</summary>
+    /// <summary>Native render HWND; zero until created.</summary>
     public IntPtr SurfaceHandle { get; private set; }
 
     /// <summary>Raised when <see cref="SurfaceHandle"/> has been created.</summary>
     public event Action? SurfaceReady;
 
     /// <summary>
-    /// Raised when the native window has really changed size (5.4.1A: its WM_SIZE, inside the host's move of it, after its client
-    /// rectangle changed). SizeChanged comes before the host moves the window, so a player woken by it alone can read the old size.
+    /// Raised on the native window's WM_SIZE (inside the host's move, after the client rect changed). SizeChanged fires before the host
+    /// moves the window, so a consumer relying on it alone may read the old size.
     /// </summary>
     public event Action? SurfaceResized;
 
-    // The window class of the surface: Windows' own window procedure, painting black. (A "static" black rectangle is
-    // painted in the window frame colour, which is grey on Windows 10 and 11: that was the grey box at launch.)
+    // Surface window class: DefWindowProcW with a black background brush. A "static" class paints COLOR_WINDOWFRAME (grey on
+    // Windows 10/11), which showed as a grey box at launch.
     private static readonly Lazy<string> SurfaceClass = new(() =>
     {
         const string name = "HandPegVideoSurface";
@@ -124,14 +120,14 @@ public sealed partial class VideoSurface : HwndHost
             Background = GetStockObject(BlackBrush), ClassName = Marshal.StringToHGlobalUni(name),
         };
 
-        // Kept for the life of the process, as the class is; "static" if it cannot be had.
+        // Class name string lives for the process (as the class does); falls back to "static" if registration fails.
         return windowClass.Procedure != IntPtr.Zero && RegisterClassEx(windowClass) != 0 ? name : "static";
     });
 
     protected override HandleRef BuildWindowCore(HandleRef hwndParent)
     {
-        // Black until a player draws in it. Made hidden: the host shows it once it is laid out and meant to be seen, so
-        // it never stands in the window, at the size the window was first measured at, before anything else is drawn.
+        // Created hidden (no WS_VISIBLE) and black: the host shows it after layout, so it never flashes at the first-measure size before
+        // other content draws.
         SurfaceHandle = CreateWindowEx(
             0, SurfaceClass.Value, "", WsChild | WsClipChildren | WsClipSiblings, 0, 0, 0, 0, hwndParent.Handle, IntPtr.Zero, GetModuleHandle(null), IntPtr.Zero);
         Dispatcher.BeginInvoke(() => SurfaceReady?.Invoke());
@@ -145,13 +141,12 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// The window drawn edge to edge (5.3-Stage2): over a restored window's resize band the pointer is its frame's, the player at
-    /// its edge or not. There the native window lets the pointer through (HTTRANSPARENT), so the window under it answers as its
-    /// frame (WindowFrame.FrameHitTest: HTLEFT and the rest) and is resized from there.
+    /// The window is edge-to-edge, so in a restored window's resize band the native child returns HTTRANSPARENT and the parent answers as
+    /// frame (WindowFrame.FrameHitTest: HTLEFT etc.), keeping resize available even when the player touches the edge.
     /// </summary>
     protected override IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        // A surface that is only a picture (5.4C: a Live Video Preview's mirror) lets the pointer through to what lies under it.
+        // Picture-only surfaces (Live Video Preview mirrors) pass the pointer through.
         if (msg == WmNcHitTest && PassesPointer)
         {
             handled = true;
@@ -169,7 +164,7 @@ public sealed partial class VideoSurface : HwndHost
             }
         }
 
-        // (A leave asked for is used up, listened to or not: the next move asks again.)
+        // WM_MOUSELEAVE consumes the TME_LEAVE request whether handled or not; the next move re-arms it.
         if (msg == WmMouseLeave)
             _trackingLeave = false;
         if (msg is WmMouseMove or WmMouseLeave && PointerMoved is not null)
@@ -177,8 +172,7 @@ public sealed partial class VideoSurface : HwndHost
         if (msg == WmSize && hwnd == SurfaceHandle)
             SurfaceResized?.Invoke();
 
-        // The host has moved, sized, shown or hidden the native window (after its own layout pass): the overlay follows the window's
-        // real rectangle, read after the move.
+        // Host moved/sized/showed/hid the native window after layout: re-place the overlay from the real rect, read after the move.
         if (msg == WmWindowPosChanged && hwnd == SurfaceHandle)
             QueuePlaceOverlay();
 
@@ -186,15 +180,14 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// A move or a leave of either window (the native one, or the layer over it, which lies at the same place in the same pixels) told
-    /// as <see cref="PointerMoved"/>: a move as its point in DIPs (asking Windows for the leave that ends it); a leave only once the
-    /// pointer is off the player altogether, as a move from the picture onto the layer's handle leaves one window for the other.
+    /// Forwards moves/leaves from the native window or the coincident overlay as <see cref="PointerMoved"/>: moves as DIP points (arming
+    /// TME_LEAVE); leave only when the pointer is off both windows, since crossing from picture to overlay handle leaves one for the other.
     /// </summary>
     private void TellPointer(IntPtr window, int msg, IntPtr lParam)
     {
         if (msg == WmMouseMove)
         {
-            // (WPF asks for the layer's own leave, as it raises MouseLeave from it.)
+            // WPF arms the overlay's own leave tracking for its MouseLeave.
             if (!_trackingLeave && window == SurfaceHandle)
             {
                 var track = new TrackMouse { Size = Marshal.SizeOf<TrackMouse>(), Flags = TmeLeave, Window = window };
@@ -212,8 +205,8 @@ public sealed partial class VideoSurface : HwndHost
             PointerMoved?.Invoke(null);
     }
 
-    // Whether the pointer is still over the player: the window under it (as Windows hit-tests it: the layer's see-through pixels are the
-    // native window's, a side window or a popup over the player is not the player) is either of the two.
+    // True if WindowFromPoint at the cursor is the surface or overlay (transparent overlay pixels resolve to the surface; side windows or
+    // popups over the player do not count).
     private bool PointerOverPlayer()
     {
         if (SurfaceHandle == IntPtr.Zero || !GetCursorPos(out var at))
@@ -224,10 +217,9 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// The part of a window that draws its own frame (WindowChrome) inside its resize band, on the screen in real pixels: while it is
-    /// restored and can be resized, the whole window (its client area: it has no frame outside it) less the band Windows sizes it from,
-    /// its ResizeBorderThickness at its monitor's scale, counted as WindowFrame.FrameHitTest counts it. Null when it has no such band
-    /// (maximized or minimized, not to be resized, no WindowChrome, or no handle yet; 5.4C: the side windows draw their own frame too).
+    /// Screen-pixel rect of a restored, resizable WindowChrome window minus its resize band (ResizeBorderThickness at monitor scale, matching
+    /// WindowFrame.FrameHitTest). Null when maximized/minimized, not resizable, without WindowChrome, or without a handle (side windows
+    /// included).
     /// </summary>
     private static Int32Rect? InsideResizeBand(Window? owner)
     {
@@ -239,7 +231,7 @@ public sealed partial class VideoSurface : HwndHost
         if (handle == IntPtr.Zero || !GetWindowRect(handle, out var frame))
             return null;
 
-        // The band is x < left + border (so up to the pixel that reaches past it) and x >= right - border, as FrameHitTest compares.
+        // Band is x < left + border (ceil) and x >= right - border (floor), matching FrameHitTest's comparisons.
         var scale = Services.UiScale.MonitorScale(owner);
         var border = chrome.ResizeBorderThickness;
         var (left, top) = (frame.Left + (int)Math.Ceiling(border.Left * scale), frame.Top + (int)Math.Ceiling(border.Top * scale));
@@ -248,8 +240,8 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// Makes the second window, or, when the player has been moved into another window (the side window), hands it
-    /// to that one: it follows whichever window the player is in.
+    /// Creates the overlay window, or re-owns it when the player moves to another window (side window), so it always follows the
+    /// player's host window.
     /// </summary>
     private void CreateOverlay()
     {
@@ -282,7 +274,7 @@ public sealed partial class VideoSurface : HwndHost
             };
             var made = _overlayWindow;
 
-            // Laid over the video at its size: its content takes HandPeg's UI scale, its size never. A new window is cut to nothing yet.
+            // Sized to the video in physical pixels: content gets UI scale, window size does not. A new window starts unclipped.
             Services.UiScale.SetKeepsItsSize(made, true);
             _clip = Int32Rect.Empty;
             made.SourceInitialized += (_, _) =>
@@ -292,15 +284,14 @@ public sealed partial class VideoSurface : HwndHost
                 HwndSource.FromHwnd(handle)?.AddHook(OverlayMessage);
             };
 
-            // A DPI change resizes a WPF window to Windows' suggested rectangle (the old size times the DPI ratio): the overlay's
-            // rectangle is the video's alone, so it is placed again once WPF has applied the new DPI.
+            // WPF applies WM_DPICHANGED's suggested rect (old size x DPI ratio); re-place from the video rect after the new DPI applies.
             made.DpiChanged += (_, _) =>
             {
                 _placed = default;
                 QueuePlaceOverlay();
             };
 
-            // Closed some other way than by this layer (with a window that owned it): the next one is made afresh.
+            // Closed externally (e.g. with its owner): recreate on next CreateOverlay.
             made.Closed += (_, _) =>
             {
                 made.Content = null;
@@ -309,8 +300,8 @@ public sealed partial class VideoSurface : HwndHost
             };
         }
 
-        // Owned by the window the player is in, so it stays above that one (and goes when the app goes); drawn at that window's pixels
-        // per DIP, whatever monitor Windows first reports the overlay on.
+        // Owned by the player's host window (stays above it, closes with the app); scale sourced from the owner regardless of the monitor
+        // Windows first reports for the overlay.
         _overlayWindow.Owner = owner;
         Services.UiScale.SetScaleSource(_overlayWindow, owner);
         Services.UiScale.Apply(_overlayWindow);
@@ -326,7 +317,7 @@ public sealed partial class VideoSurface : HwndHost
 
     private IntPtr OverlayMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        // The layer lies over the native window in the same pixels: its moves are the player's too (5.4D, the Magnifier over the wipe's handle).
+        // Overlay is pixel-coincident with the surface, so its moves are player moves too (Magnifier over the wipe handle).
         if (msg is WmMouseMove or WmMouseLeave && PointerMoved is not null)
             TellPointer(hwnd, msg, lParam);
         return OverlayMessageHook is { } hook ? hook(hwnd, msg, wParam, lParam, ref handled) : IntPtr.Zero;
@@ -334,7 +325,7 @@ public sealed partial class VideoSurface : HwndHost
 
     private void Owner_Moved(object? sender, EventArgs e) => PlaceOverlay();
 
-    // A window closes the windows it owns: the side window lets go of this one first, as the player is handed back.
+    // Owners close owned windows: a closing side window first detaches the overlay as the player returns to the main window.
     private void Owner_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
         if (e.Cancel || _overlayWindow is not { } overlay || !ReferenceEquals(sender, _owner) || ReferenceEquals(sender, Application.Current?.MainWindow))
@@ -344,7 +335,7 @@ public sealed partial class VideoSurface : HwndHost
         overlay.Owner = null;
     }
 
-    // The side window closing with the player in it only hands the player back; the main window closing ends the app.
+    // Side window closed: detach only (player returns). Main window closed: close the overlay (app exit).
     private void Owner_Closed(object? sender, EventArgs e)
     {
         if (!ReferenceEquals(sender, _owner))
@@ -364,10 +355,8 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// The second window and the side windows are all owned by the main window (while the player is in the main window), and
-    /// between two windows with one owner the one shown or raised last is on top: shown again (after any rearrangement of the
-    /// panes), this one would cover the side windows wherever they are. It is put back directly under the lowest visible side
-    /// window each time (5.4C: any number of them; the lowest by the screen's order, Docking.WindowOrder), so it covers none.
+    /// The overlay and side windows share the main window as owner, and among siblings the last shown/raised is topmost, so a re-shown
+    /// overlay would cover side windows. Re-inserts it directly below the lowest visible side window (Docking.WindowOrder) every time.
     /// </summary>
     private void KeepUnderSideWindow()
     {
@@ -399,13 +388,10 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// Puts the second window exactly over the native one, or hides it when that one cannot be seen. Its rectangle is the native
-    /// window's own client rectangle on the screen, in physical pixels (GetClientRect + ClientToScreen), never one computed from WPF
-    /// layout: an element's size times a DPI goes wrong wherever the element's DPI and its window's root scale disagree (a high-DPI
-    /// panel under HandPeg's UI scale, where the overlay then overhung the transport row and the pane beside the player). It is cut
-    /// to the client area of the window it lies on: a pane laid out larger than its window never has it reach out past that
-    /// window's edge, nor (maximized) over the strip kept clear of a taskbar that hides itself (MainWindow.TitleBar.cs), where
-    /// the pointer brings the taskbar up and the Show Desktop corner is.
+    /// Places the overlay exactly over the native surface, or hides it when not visible. Uses the surface's physical client rect
+    /// (GetClientRect + ClientToScreen), never WPF layout x DPI, which is wrong where element DPI and root UI scale differ (overlay
+    /// overhung adjacent panes). Clipped via SetWindowRgn to the owner's client area (and resize band when restored), so it never
+    /// extends past the window edge or, maximized, over the auto-hide taskbar strip (MainWindow.TitleBar.cs).
     /// </summary>
     internal void PlaceOverlay()
     {
@@ -419,8 +405,8 @@ public sealed partial class VideoSurface : HwndHost
             return;
         }
 
-        // The part of it inside the owner's client area; none of it there, it is not shown. Restored, not over the owner's resize band
-        // either (5.3-Stage2: the window is drawn edge to edge), where the pointer is the frame's (WndProc).
+        // Visible part = intersection with the owner's client area (hide if empty); when restored, also exclude the resize band, which
+        // belongs to the frame (WndProc).
         var shown = ClientAreaOf(owner) is { } client ? Intersection(place, client) : place;
         if (InsideResizeBand(owner) is { } inside)
             shown = Intersection(shown, inside);
@@ -464,7 +450,7 @@ public sealed partial class VideoSurface : HwndHost
         _placed = default;
     }
 
-    /// <summary>The native window's client rectangle on the screen, in physical pixels; null while it is not created, hidden or empty.</summary>
+    /// <summary>Surface client rect in physical screen pixels; null if not created, hidden or empty.</summary>
     internal Int32Rect? SurfaceRectangle()
     {
         var corner = new NativePoint();
@@ -474,7 +460,7 @@ public sealed partial class VideoSurface : HwndHost
         return width > 0 && height > 0 ? new Int32Rect(corner.X, corner.Y, width, height) : null;
     }
 
-    /// <summary>A window's client area on the screen, in real pixels; null when it has no handle yet.</summary>
+    /// <summary>Window client area in physical screen pixels; null without a handle.</summary>
     private static Int32Rect? ClientAreaOf(Window window)
     {
         var handle = new WindowInteropHelper(window).Handle;
@@ -491,7 +477,7 @@ public sealed partial class VideoSurface : HwndHost
         return right > left && bottom > top ? new Int32Rect(left, top, right - left, bottom - top) : new Int32Rect(left, top, 0, 0);
     }
 
-    /// <summary>Shows only <paramref name="clip"/> of a window (its own pixels; empty: all of it), and takes the pointer only there.</summary>
+    /// <summary>Sets the window region to <paramref name="clip"/> (window pixels; empty = none), limiting both drawing and hit-testing.</summary>
     private static void CutTo(IntPtr window, Int32Rect clip)
     {
         if (window == IntPtr.Zero)
@@ -504,7 +490,7 @@ public sealed partial class VideoSurface : HwndHost
             return;
         }
 
-        // Windows owns the region once it is the window's; not taken, it is let go here.
+        // SetWindowRgn takes ownership on success; delete the region only if the call fails.
         var region = CreateRectRgn(clip.X, clip.Y, clip.X + clip.Width, clip.Y + clip.Height);
         if (region != IntPtr.Zero && SetWindowRgn(window, region, true) == 0)
             DeleteObject(region);

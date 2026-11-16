@@ -36,6 +36,7 @@ public static class AudioSuiteTests
             yield return Case("audio-suite-master-gain", "# The Sequence's master gain (5.2B): +6 dB multiplies every sample by 10^(6/20), 0 dB multiplies nothing.", (t, p) => MasterGain(folder, t, p));
             yield return Case("audio-suite-model", "# The model's new parts (5.2B): the filters' new members, the master gain and beats as undoable steps, the settings' defaults.", Model);
             yield return Case("audio-suite-reactive", "# The audio-reactive shader bus (5.2B): the bands of three tones, a Glow lifted by a beat on a real worker and not without one, and the export's frames' bands.", (t, p) => Reactive(folder, t, p));
+            yield return Case("audio-suite-wsola-slow-tail", "# WSOLA at the slowest tempos (5.6J): a short tail fed in small reads plays to its end, its search window never past the input's start.", WsolaSlowTail);
         }
         finally
         {
@@ -559,6 +560,56 @@ public static class AudioSuiteTests
         Line(text, $"held to +12 dB");
         if (document.MasterGainDb != 12)
             Problem(problems, $"50 dB was held to {document.MasterGainDb} dB");
+    }
+
+    // ----- WSOLA at slow tempos -----
+
+    private static void WsolaSlowTail(StringBuilder text, List<string> problems)
+    {
+        foreach (var (tempo, frames) in new[] { (0.10, 4000), (0.10, 1920), (0.05, 2500), (0.25, 3000), (0.50, 2200) })
+        {
+            var tone = new float[frames];
+            for (var n = 0; n < frames; n++)
+                tone[n] = (float)(0.5 * Math.Sin(2 * Math.PI * 440 * n / Rate));
+            var stretcher = new WsolaStretcher();
+            stretcher.Reset(new ChunkedTail(tone, 256), tempo, Rate);
+            var (left, right) = (new float[1024], new float[1024]);
+            var (produced, finite) = (0, true);
+            try
+            {
+                for (int got; (got = stretcher.Read(left, right)) > 0;)
+                {
+                    produced += got;
+                    for (var n = 0; n < got; n++)
+                        finite &= float.IsFinite(left[n]) && float.IsFinite(right[n]);
+                }
+            }
+            catch (ArgumentException ex)
+            {
+                Problem(problems, $"{tempo:0.00}x over {frames} samples threw: {ex.Message}");
+                continue;
+            }
+
+            Console.WriteLine($"  wsola {tempo:0.00}x, {frames}-sample tail: {produced} samples out");
+            if (produced == 0 || !finite)
+                Problem(problems, $"{tempo:0.00}x over {frames} samples: {produced} samples out, finite {finite}");
+            text.AppendLine(CultureInfo.InvariantCulture, $"{tempo:0.00}x, a {frames}-sample tail in 256-sample reads: played to its end, every sample finite");
+        }
+    }
+
+    // A finite stereo source that hands out at most `chunk` samples a read, as the voice's feeder does.
+    private sealed class ChunkedTail(float[] mono, int chunk) : IStereoSource
+    {
+        private int _at;
+
+        public int Read(Span<float> left, Span<float> right)
+        {
+            var take = Math.Min(Math.Min(chunk, left.Length), mono.Length - _at);
+            mono.AsSpan(_at, take).CopyTo(left);
+            mono.AsSpan(_at, take).CopyTo(right);
+            _at += take;
+            return take;
+        }
     }
 
     // ----- The model -----

@@ -1,8 +1,7 @@
 namespace HandPegApp.Models;
 
 /// <summary>
-/// Everything needed to bring the main window back to a given state: the source, the timeline and all
-/// settings. Saved as a project file (format 6), and kept with each queued job so the job can be edited later.
+/// Complete restorable editor state (source, timeline, settings); serialized as a project file (format 6) and stored with queued jobs.
 /// </summary>
 public sealed class ProjectState
 {
@@ -13,8 +12,8 @@ public sealed class ProjectState
     public string SourcePath { get; set; } = "";
 
     /// <summary>
-    /// The file last opened, as it lies on the disk. Differs from the source for a URL, where it is the temporary download.
-    /// Its Info, Streams and default output name; since 5.2-AuditB it is heard and seen only through clips of it on the timeline.
+    /// Last opened local file (the download for a URL source), supplying Info, Streams and default output name; rendered only via its
+    /// timeline clips.
     /// </summary>
     public string LocalMediaPath { get; set; } = "";
 
@@ -23,9 +22,8 @@ public sealed class ProjectState
     public bool DownloadSubtitles { get; set; }
 
     /// <summary>
-    /// The timeline (4.3C): every track and clip, the main video's included, its markers and the Sequence Output's
-    /// effects. Always a copy of its own (<see cref="Timeline.TimelineDocument.Clone"/>): what holds a state (a queued
-    /// job, an autosave being written) is never reached by later edits.
+    /// Timeline: all tracks, clips, markers and Sequence Output effects. Always an independent clone
+    /// (<see cref="Timeline.TimelineDocument.Clone"/>) so queued jobs and in-flight autosaves are isolated from later edits.
     /// </summary>
     public Timeline.TimelineDocument Timeline { get; set; } = new();
 
@@ -47,7 +45,7 @@ public sealed class ProjectState
     /// <summary>The Dimensions, Filters, Video and Audio tabs, in the same shape as a preset.</summary>
     public EncodingPreset Settings { get; set; } = new();
 
-    /// <summary>The output's audio tracks by stream place (and, from before 5.2-AuditB, the main video's streams as they were mixed: <see cref="AudioTrackState"/>).</summary>
+    /// <summary>Output audio tracks by stream index (legacy files also carry main-video mix data, see <see cref="AudioTrackState"/>).</summary>
     public List<AudioTrackState> AudioTracks { get; set; } = [];
 
     public List<SubtitleTrackState> SubtitleTracks { get; set; } = [];
@@ -56,29 +54,27 @@ public sealed class ProjectState
     public string CaptionAudioPath { get; set; } = "";
 
     /// <summary>
-    /// Whether captions listen to that file rather than to one of the video's tracks. Null in projects saved
-    /// before there was a choice: those used the file whenever one was named.
+    /// True when captions transcribe that file instead of a video track. Null in legacy projects (file used whenever named).
     /// </summary>
     public bool? CaptionUseExternalAudio { get; set; }
 
     /// <summary>Which of the video's audio tracks captions listen to.</summary>
     public int CaptionAudioTrackIndex { get; set; }
 
-    /// <summary>The recycle bin: clips deleted from the timeline, kept so that they can be put back.</summary>
+    /// <summary>Recycle bin of deleted timeline clips for restoration.</summary>
     public List<DeletedClip> Deleted { get; set; } = [];
 
     /// <summary>The command text when it had been edited by hand; null when it was the generated one.</summary>
     public string? ManualCommand { get; set; }
 
     /// <summary>
-    /// The undo history (4.4-BugHunt): its steps oldest first, at most twenty, each as Undo keeps it (packed). Only a save
-    /// sets it (MainViewModel.CaptureStateForSave) and only opening a project reads one back; null for a queued job, the
-    /// unsaved-changes fingerprint and a project listed, and never written but into the project file (so never compared).
+    /// Undo history, oldest first, max 20 packed steps. Set only on save (MainViewModel.CaptureStateForSave) and read only on open; null
+    /// for queued jobs, the unsaved-changes fingerprint and project listings, so never compared.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public List<UndoStepState>? UndoHistory { get; set; }
 
-    /// <summary>A copy sharing every value (its timeline and lists the same objects): for a copy whose parts are replaced, not changed (VodTrim.Remap).</summary>
+    /// <summary>Shallow copy sharing timeline and lists, for replacing (not mutating) parts (VodTrim.Remap).</summary>
     internal ProjectState ShallowCopy() => (ProjectState)MemberwiseClone();
 
     /// <summary>The redo history, as <see cref="UndoHistory"/> is kept: the step Redo puts back first is the last.</summary>
@@ -86,23 +82,21 @@ public sealed class ProjectState
     public List<UndoStepState>? RedoHistory { get; set; }
 
     /// <summary>
-    /// The project's thumbnail (Pass 5.2D): a small JPEG of the Sequence at the playhead as a save drew it, which the
-    /// Project Manager, the launch window and Windows Explorer show (ProjectThumbnail). Only a save sets it (MainViewModel.CaptureStateForSave),
-    /// and opening a project reads it back; null for a queued job and the unsaved-changes fingerprint, which never compare it (JsonIgnore).
+    /// Small JPEG of the Sequence at the playhead captured on save, shown by Project Manager, the launch window and Explorer
+    /// (ProjectThumbnail). Set only on save (MainViewModel.CaptureStateForSave); null for queued jobs and the fingerprint (JsonIgnore).
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public byte[]? ThumbnailJpeg { get; set; }
 
     /// <summary>
-    /// How the project's window was arranged at the save (Pass 5.4.1-M5): its dock layout, Media Browser view and 3D pose. Only a
-    /// save sets it (the window's MainViewModel.WorkspaceForSave), and opening reads it back; never part of the unsaved-changes
-    /// fingerprint (JsonIgnore), so rearranging the window never makes a project dirty.
+    /// Window arrangement at save: dock layout, Media Browser view, 3D pose. Set on save (MainViewModel.WorkspaceForSave), read on open;
+    /// excluded from the fingerprint (JsonIgnore) so rearranging never dirties the project.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public ProjectWorkspace? Workspace { get; set; }
 }
 
-/// <summary>The "workspace" section of a project file: how its window looked, taken up on opening when <c>AppSettings.RestoreProjectWorkspaceOnOpen</c> is on.</summary>
+/// <summary>Project "workspace" section, applied on open when <c>AppSettings.RestoreProjectWorkspaceOnOpen</c> is on.</summary>
 public sealed class ProjectWorkspace
 {
     /// <summary>The dock layout (DockManager's JSON); null for none.</summary>
@@ -118,15 +112,13 @@ public sealed class ProjectWorkspace
     public double ExplodedSpacing { get; set; }
 }
 
-/// <summary>One step of the undo (or redo) history as a project carries it: what it was ("delete Logo"), and the timeline it puts back, packed as Undo keeps it.</summary>
+/// <summary>Serialized undo/redo step: label (e.g. "delete Logo") and packed timeline snapshot.</summary>
 public sealed record UndoStepState(string What, byte[] State);
 
 /// <summary>
-/// One output audio track as a project or a preset keeps it (5.2-AuditB: an output choice, <see cref="AudioTrack"/>): its
-/// stream place, what is done with it, its codec, bitrate and title. The rest (gain, filters, slip, silenced pieces,
-/// ducking, voice) is how the main video's stream was mixed before 5.2-AuditB: the input of the conversion that put it on
-/// Sub-Lanes as a 5.1 project is opened (LegacyMainVideo), neutral in anything written since. Still read and written as it stands, so
-/// that a file keeps everything it says; nothing else reads it.
+/// Serialized output audio track (<see cref="AudioTrack"/>): stream index, action, codec, bitrate, title. Remaining fields (gain,
+/// filters, slip, silenced ranges, ducking, voice) are legacy main-video mix data, consumed only by the LegacyMainVideo Sub-Lane
+/// migration and neutral in newer files; round-tripped unchanged.
 /// </summary>
 public sealed record AudioTrackState(
     int Index, string Action, string Codec, string Bitrate, string? Title = null, double GainDb = 0, TrackAudioFilters? Filters = null,

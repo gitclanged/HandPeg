@@ -2,8 +2,7 @@ namespace HandPegApp.Models;
 
 /// <param name="Index">Position among the audio streams, as used in "0:a:N".</param>
 /// <param name="HandlerName">
-/// The name an MP4 or MOV recorder gives the track instead of a title (4.3.0: read by the voice track scanner alone, since
-/// most are a tool's generic "SoundHandler").
+/// MP4/MOV handler name used in place of a title; read only by the voice track scanner (most are a generic "SoundHandler").
 /// </param>
 public sealed record AudioStreamInfo(
     int Index, string Codec, int Channels, string ChannelLayout, int SampleRate, long BitRate, string Title, string Language, string HandlerName = "");

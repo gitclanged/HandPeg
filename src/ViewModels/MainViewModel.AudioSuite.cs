@@ -8,26 +8,25 @@ using HandPegApp.Services.Audio;
 
 namespace HandPegApp.ViewModels;
 
-// ----- The Studio Audio Suite (Pass 5.2B): the master fader, the beats, the meter's pane -----
+// ----- Studio Audio Suite: master fader, beat detection, Master Meter pane -----
 public partial class MainViewModel
 {
-    // ----- The Sequence's master gain -----
-    // The master fader (the meter's, in the Audio tab and its own pane) writes the document's MasterGainDb through the transaction's
-    // SetMasterGain step: one step of Undo for a value set by itself (a double-click back to 0 dB), and one for a whole gesture (a drag, a
-    // burst of wheel notches: BeginMasterGainChange .. EndMasterGainChange), which follows live meanwhile. The sound program is made again
-    // as every edit of the document makes it (OnDocumentCommitted: the live state dropped, the engine given the Sequence anew).
+    // ----- Sequence master gain -----
+    // The master fader (Audio tab and Master Meter pane) writes MasterGainDb via the SetMasterGain transaction step: one undo step per
+    // discrete set (double-click to 0 dB) or per gesture (drag or wheel burst, BeginMasterGainChange..EndMasterGainChange), applied
+    // live meanwhile. The audio program rebuilds on commit like any edit (OnDocumentCommitted resets live state and reloads the engine).
 
     private const double MasterGainLeast = -40, MasterGainMost = 12;
 
-    // The value the fader was last told (NoteMasterGain), and a gesture under way: the timeline as it was when it began, its gain then, and
-    // the undo history then (how many steps, and the newest step's own bytes): Undo, Redo or another edit's step in the middle of a gesture
-    // moves it, and the gesture's step is not taken then (it would bring back a timeline older than theirs, and clear Redo).
+    // Last value pushed to the fader (NoteMasterGain) and gesture state: start snapshot, start gain, and undo history fingerprint (count
+    // plus newest step bytes). If Undo/Redo/another edit changes history mid-gesture, no gesture step is committed (it would restore an
+    // older timeline and clear Redo).
     private double _masterGainShown;
     private (TimelineSnapshot? Before, double From, int Steps, byte[]? Newest)? _masterGainGesture;
 
     /// <summary>
-    /// The Sequence's master output fader, dB from -40 to +12 (5.2B): a gain on the whole mix after every track, before the Sequence's fades,
-    /// in the player and the export alike. Set by itself it is one step of Undo; inside a gesture of the fader, the gesture is.
+    /// Sequence master gain in dB (-40..+12), applied post-tracks and pre-Sequence-fades in playback and export. One undo step per
+    /// discrete set, or per fader gesture.
     /// </summary>
     public double MasterGainDb
     {
@@ -44,8 +43,8 @@ public partial class MainViewModel
             return;
         }
 
-        // The history moved in the middle of a gesture (Ctrl+Z between two wheel notches): what the gesture set before it is let be, and the
-        // gesture goes on as a new one from here, so what it sets from now on is still one step of Undo.
+        // History changed mid-gesture (e.g. Ctrl+Z between wheel notches): keep prior values and restart the gesture here so later
+        // changes still form one undo step.
         if (_masterGainGesture is { } gesture && HistoryMovedSince(gesture.Steps, gesture.Newest))
         {
             _masterGainGesture = null;
@@ -57,7 +56,7 @@ public partial class MainViewModel
         NoteMasterGain();
     }
 
-    /// <summary>A gesture of the master fader begins (a drag, a burst of wheel notches): what it sets until it ends is one step of Undo.</summary>
+    /// <summary>Starts a master fader gesture (drag or wheel burst); changes until End form one undo step.</summary>
     public void BeginMasterGainChange()
     {
         if (_masterGainGesture is not null || _isBackgroundWorker)
@@ -68,8 +67,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The gesture ended: the step it makes, taken when it changed the gain, and only while the undo history is as it was when the gesture
-    /// began. Undo, Redo or another edit meanwhile own the history from there: the gesture is let go with no step.
+    /// Ends a fader gesture: commits one undo step if the gain changed and history is unchanged since Begin; otherwise discards it
+    /// (Undo/Redo/another edit took ownership).
     /// </summary>
     public void EndMasterGainChange()
     {
@@ -87,11 +86,11 @@ public partial class MainViewModel
             Checkpoint("change the master gain", before);
     }
 
-    // Whether the undo history is other than it was (its count, or its newest step: a new step's bytes are always a new array).
+    // History changed check: count or newest step reference (each step's bytes are a fresh array).
     private bool HistoryMovedSince(int steps, byte[]? newest) =>
         _undo.Count != steps || !ReferenceEquals(_undo.Count > 0 ? _undo[^1].State : null, newest);
 
-    /// <summary>The fader follows the document's gain (an edit, an undo, a project opened): told only when it is another value.</summary>
+    /// <summary>Syncs the fader to the document gain (edit, undo, open); notifies only on change.</summary>
     private void NoteMasterGain()
     {
         if (Document.MasterGainDb.Equals(_masterGainShown))
@@ -103,39 +102,37 @@ public partial class MainViewModel
 
     // ----- The master meter's pane -----
 
-    /// <summary>The Master Meter pane (5.2B: the meter and the master fader upright, a pane of its own). Off to start with. Remembered.</summary>
+    /// <summary>Master Meter pane visibility (vertical meter + master fader). Default off; persisted.</summary>
     [ObservableProperty] private bool _showMasterMeter = AppSettings.Current.ShowMasterMeter;
 
     partial void OnShowMasterMeterChanged(bool value) => SaveView(s => s.ShowMasterMeter = value);
 
     // ----- Beats (Detect & Snap to Audio Beats) -----
-    // A clip's sound is read in the background (BeatDetector: onsets found by spectral flux, in the file's own seconds) and the beats are kept
-    // with the clip (TimelineClip.BeatTimes, one step of Undo), so trims, moves, splits and speed keep each on its moment of the sound. Where
-    // they fall on the Sequence (BeatsOnSequence) is what the clips' edges snap to (Snap to Audio Beats) and what the beat grid draws.
+    // Background onset detection (BeatDetector, spectral flux, file seconds) stores beats on the clip (TimelineClip.BeatTimes, one undo
+    // step) so trims, moves, splits and speed keep them aligned. BeatsOnSequence maps them for edge snapping and the beat grid.
 
-    /// <summary>Whether a dragged clip's edges also catch on the beats found in clips' sound (5.2B). Remembered.</summary>
+    /// <summary>Snap dragged clip edges to detected audio beats. Persisted.</summary>
     [ObservableProperty] private bool _snapToBeats = AppSettings.Current.SnapToBeats;
 
     partial void OnSnapToBeatsChanged(bool value) => SaveView(s => s.SnapToBeats = value);
 
-    /// <summary>Whether a clip with beats shows them as small ticks along its block (the beat grid, 5.2B). Remembered.</summary>
+    /// <summary>Draw beat ticks along clip blocks (beat grid). Persisted.</summary>
     [ObservableProperty] private bool _showBeatGrid = AppSettings.Current.ShowBeatGrid;
 
     partial void OnShowBeatGridChanged(bool value) => SaveView(s => s.ShowBeatGrid = value);
 
-    // The clips whose beats are being found (by id): a second ask while one is under way waits for it.
+    // Clip ids with detection in flight; a repeat request awaits the running one.
     private readonly HashSet<Guid> _findingBeats = [];
 
-    /// <summary>Whether a clip's sound can be searched for beats: a clip of a file with sound.</summary>
+    /// <summary>Whether beat detection applies (file clip with audio).</summary>
     public bool CanDetectBeats(Layer? clip) => ClipOf(clip) is { HasSound: true, SourcePath.Length: > 0 } && !_findingBeats.Contains(ClipOf(clip)!.Id);
 
-    /// <summary>Whether a clip has beats found in its sound.</summary>
+    /// <summary>Whether a clip has detected beats.</summary>
     public bool HasBeats(Layer? clip) => ClipOf(clip) is { BeatTimes.Length: > 0 };
 
     /// <summary>
-    /// Finds the beats of a clip's sound (Detect &amp; Snap to Audio Beats): its file's sound read and searched off the interface's thread (the
-    /// status bar says so meanwhile), then kept with the clip in one step of Undo. False when nothing was kept (no sound, the clip gone
-    /// meanwhile, the file unreadable: the status bar says why).
+    /// Detects a clip's audio beats off the UI thread (status shown) and stores them in one undo step. False when nothing was stored
+    /// (no audio, clip removed meanwhile, unreadable file; reason in status bar).
     /// </summary>
     public async Task<bool> DetectClipBeatsAsync(Layer clip)
     {
@@ -150,7 +147,7 @@ public partial class MainViewModel
 
         var (id, name, stream, generation) = (model.Id, clip.Name, model.AudioStreamIndex, _projectGeneration);
         StatusText = $"Finding the beats of {name}...";
-        // An add to the clip under way meanwhile (HasPendingAdds: the tabs do not change until its beats are in).
+        // Mark a pending add (HasPendingAdds blocks tab switches until the beats land).
         double[] beats;
         using var adding = BeginAdd();
         try
@@ -173,15 +170,14 @@ public partial class MainViewModel
             _findingBeats.Remove(id);
         }
 
-        // Its project tab gone behind while its sound was read (5.4D-TabPerf review, P1): the beats are kept on no clip, never on the
-        // tab in front (a duplicate shares its clip ids).
+        // Project tab was backgrounded during detection: discard, never apply to the active tab (duplicates share clip ids).
         if (generation != _projectGeneration)
         {
             StatusText = $"The beats of {name} were not kept: its project tab went behind first. Detect them again there.";
             return false;
         }
 
-        // The clip may have gone, or been made another, while its sound was read: the beats go on the clip that is there now, by its id.
+        // The clip may have been removed or replaced meanwhile: resolve the current clip by id.
         if (Document.FindClip(id) is not { } now)
             return false;
         if (beats.Length == 0)
@@ -197,7 +193,7 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>Takes a clip's beats away (Clear Audio Beats): one step of Undo.</summary>
+    /// <summary>Clear Audio Beats: removes a clip's beats in one undo step.</summary>
     public void ClearClipBeats(Layer clip)
     {
         if (ClipOf(clip) is not { BeatTimes: not null } model)
@@ -208,11 +204,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Where a clip's beats (its file's own seconds, <see cref="TimelineClip.BeatTimes"/>) fall on the Sequence, added to
-    /// <paramref name="into"/> in order: a beat at file second m is at Start + slip + (m - MediaOffset) / Speed, the slip its unlinked sound's,
-    /// and only while its sound plays there (from its J cut's lead-in before the clip's start to its L cut's tail-out after its end; an
-    /// unlinked clip's J/L cut is kept but not heard, as the model has it, so its sound plays just its own length from Start + slip).
-    /// Nothing for a clip with none. Allocates nothing.
+    /// Appends a clip's beats (<see cref="TimelineClip.BeatTimes"/>, file seconds) to <paramref name="into"/> in Sequence time:
+    /// Start + slip + (m - MediaOffset) / Speed, with slip from unlinked audio, only where audio plays (J lead-in to L tail; unlinked clips
+    /// keep J/L inaudible, so only Start + slip over their own length). Allocation-free.
     /// </summary>
     public static void BeatsOnSequence(TimelineClip clip, List<double> into)
     {

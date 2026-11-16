@@ -7,17 +7,17 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// Draws a sample caption in a given style: the font, the three colours, the outline, and the moment of
-/// the animation where one word is being spoken. An imitation of what FFmpeg will draw, for choosing by eye.
+/// Sample caption preview for a style: font, primary/highlight/outline colours, outline width, and the animation state with one
+/// word being spoken. An approximation of the exported captions for visual selection.
 /// </summary>
 public sealed class CaptionPreview : FrameworkElement
 {
     private static readonly string[] Sample = ["NO", "WAY", "HE", "MISSED"];
 
-    // Which sample word is "being spoken" in the picture.
+    // Index of the sample word currently "spoken".
     private int _spokenWord = 2;
 
-    /// <summary>Which sample word is being spoken (0 to 3): the Settings window's preview stage steps it along, as captions play (4.3-0B).</summary>
+    /// <summary>Spoken sample word index (0 to 3); the Settings preview stage advances it to simulate playback.</summary>
     public int SpokenWord
     {
         get => _spokenWord;
@@ -30,7 +30,7 @@ public sealed class CaptionPreview : FrameworkElement
 
     private CaptionStyle _style = new();
 
-    /// <summary>Redraws with a style. The style is read at once; later changes to it need another call.</summary>
+    /// <summary>Redraws with a snapshot of the style; later style mutations require another call.</summary>
     public void Show(CaptionStyle style)
     {
         _style = style.Clone();
@@ -46,7 +46,7 @@ public sealed class CaptionPreview : FrameworkElement
         var primary = Brush(_style.PrimaryColor, Colors.White);
         var highlight = Brush(_style.HighlightColor, Colors.Yellow);
 
-        // Sized so that the largest style still fits the box; smaller styles are shown in proportion.
+        // Fixed 0.42 scale so the largest style fits; smaller styles stay proportional.
         var size = Math.Clamp(_style.FontSize, 8, 400) * 0.42;
         var outline = new Pen(Brush(_style.OutlineColor, Colors.Black), Math.Clamp(_style.OutlineThickness, 0, 40) * 0.42 * 2) { LineJoin = PenLineJoin.Round };
         var typeface = new Typeface(new FontFamily(string.IsNullOrWhiteSpace(_style.FontName) ? "Arial" : _style.FontName),
@@ -60,14 +60,14 @@ public sealed class CaptionPreview : FrameworkElement
         var texts = words.Select((word, index) => Text(word, isPop && index == SpokenWord ? 1.15 : 1)).ToList();
         var total = texts.Sum(t => t.Width) + space * (texts.Count - 1);
 
-        // Shrunk to fit when the line is wider than the box.
+        // Scale down to fit when the line exceeds the width.
         var fit = Math.Min(1, (ActualWidth - 16) / Math.Max(total, 1));
         drawing.PushTransform(new ScaleTransform(fit, fit, ActualWidth / 2, ActualHeight / 2));
 
         var x = (ActualWidth - total) / 2;
         for (var i = 0; i < texts.Count; i++)
         {
-            // Karaoke: the words up to the one being spoken have already turned. Pop: only the spoken one.
+            // Karaoke: words before the spoken one are highlighted. Pop: only the spoken word.
             var isLit = isPop ? i == SpokenWord : i < SpokenWord;
             var geometry = texts[i].BuildGeometry(new Point(x, (ActualHeight - texts[i].Height) / 2));
             if (outline.Thickness > 0)
@@ -83,7 +83,7 @@ public sealed class CaptionPreview : FrameworkElement
 
     private static SolidColorBrush Brush(string color, Color fallback) => Frozen(TryParse(color, out var parsed) ? parsed : fallback);
 
-    /// <summary>Reads #RRGGBB.</summary>
+    /// <summary>Parses #RRGGBB.</summary>
     public static bool TryParse(string? text, out Color color)
     {
         color = default;

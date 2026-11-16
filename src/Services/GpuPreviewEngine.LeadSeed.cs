@@ -1,16 +1,16 @@
 namespace HandPegApp.Services;
 
-// ----- The saved display lead seeding a player's first play (5.6.0) -----
-// A player engine's swap chain knows no lead until five of its playing frames were seen on the screen: its first play drew those for one
-// refresh where the 500 Hz Desktop shows them ~6 ms after their turn (frames 5-6 ms late after a cold play's stall). The Playback & A/V Sync
-// Test measured this monitor's lead (AppSettings.LastPlaybackSyncTest): a player's first play starts from it when the refresh matches.
+// ----- Display lead seeding for first play -----
+// A new swap chain has no measured lead until five playing frames are displayed, so the first play assumed one refresh while high-refresh
+// monitors may show frames several ms later (late frames after a cold start). If the Playback & A/V Sync Test measured this monitor's
+// lead (AppSettings.LastPlaybackSyncTest) at the same refresh, the first play is seeded with it.
 public sealed partial class GpuPreviewEngine
 {
-    // The player's engine (not the Playback & A/V Sync Test's own, nor a strip's or an export's): only it is seeded.
+    // Only the main player engine is seeded (not the sync test, strip or export engines).
     private readonly bool _player;
     private bool _leadSeedTried;
 
-    /// <summary>Seeds the viewport's lead once per engine, at its first play (the pump's thread, the monitor's refresh known).</summary>
+    /// <summary>Seeds the viewport lead once per engine at first play (pump thread, refresh period known).</summary>
     private void SeedLeadOnce(double monitorPeriod)
     {
         if (!_player || _leadSeedTried)

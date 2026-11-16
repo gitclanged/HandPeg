@@ -7,36 +7,35 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Services;
 
-// ----- The v5.0 compositor's control plane (Pass 5.0-Core, ARCHITECTURE_CONTRACTS.md section 6) -----
+// ----- Compositor control plane -----
 //
-// One named memory-mapped file, made by HandPeg (the client) and opened by the compositor worker
-// (HandPeg.exe --compositor-worker). Everything in it is fixed-size, blittable and append-only: a field is never moved
-// or renumbered, new ones take reserved room. Nothing is serialized: the client writes structs in place and the worker
-// reads them in place.
+// One named memory-mapped file created by the client (HandPeg) and opened by the worker (HandPeg.exe --compositor-worker).
+// Layout is fixed-size, blittable and append-only: fields are never moved or renumbered; new fields use reserved space.
+// No serialization: both sides read and write structs in place.
 //
 //   Control block       4 KB    who is running, the frame shown last, commands, timings, the last error
 //   Scene slots     3 x 64 KB   FrameScene, a lock-free triple buffer (CompositorSharedMemory.Publish / TakeLatest)
 //   Source table   64 x 1 KB    media files the layers draw from (path, stream, generation)
 //   Resource table 64 x 128 B   textures the client hands over (masks, LUTs, curves, stills), each in its own section
 
-/// <summary>The fixed numbers of the control plane: sizes, offsets and the names derived from one base name.</summary>
+/// <summary>Control-plane constants: sizes, offsets and kernel object names derived from one base name.</summary>
 public static class CompositorProtocol
 {
     /// <summary>"HPGC": a mapping that is not a compositor's control plane is refused.</summary>
     public const uint Magic = 0x43475048;
 
     /// <summary>
-    /// Raised only by an incompatible change; a worker of another version refuses the mapping. History: 2 seek hints and counters;
+    /// Bumped only on an incompatible change; a worker of another version refuses the mapping. History: 2 seek hints and counters;
     /// 3 hints of 32 bytes with a stretch and a moment, at 3584; 4 NV12 readbacks; 6 a layer's shutter; 7 a layer's 3D tilt, 784 bytes
     /// a layer; 8 an output ring that can be larger than its frames, each slot's content size at 3176; 9 a source entry exactly
     /// <see cref="SourceEntryBytes"/> (paths of up to <see cref="MaxPathChars"/> - 1 characters).
     /// </summary>
     public const int Version = 9;
 
-    /// <summary>The bytes of a frame in NV12: its Y plane, then its interleaved UV plane, half the size each way (rounded up), rows packed.</summary>
+    /// <summary>NV12 frame size in bytes: Y plane then interleaved UV at half resolution (rounded up), rows packed.</summary>
     public static long Nv12Bytes(int width, int height) => (long)width * height + 2L * ((width + 1) / 2) * ((height + 1) / 2);
 
-    /// <summary>One P010 frame: NV12's layout with two bytes a sample (5.4B).</summary>
+    /// <summary>P010 frame size: NV12 layout with two bytes per sample.</summary>
     public static long P010Bytes(int width, int height) => 2 * Nv12Bytes(width, height);
 
     public const int MaxLayers = 64;
@@ -48,9 +47,8 @@ public static class CompositorProtocol
     public const int OutputRing = 3;
 
     /// <summary>
-    /// The UTF-16 characters of a source entry's path field, its terminator included: 32 bytes of header + 496 x 2 = 1024 =
-    /// <see cref="SourceEntryBytes"/>, so the entry is exactly its stride. A longer path is refused (CompositorClient.SetSource),
-    /// never truncated into another file's name.
+    /// UTF-16 chars in a source entry's path field including the terminator: 32-byte header + 496 x 2 = 1024 =
+    /// <see cref="SourceEntryBytes"/>. Longer paths are rejected (CompositorClient.SetSource), never truncated.
     /// </summary>
     public const int MaxPathChars = 496;
 
@@ -66,7 +64,7 @@ public static class CompositorProtocol
     public const int ResourceTableOffset = SourceTableOffset + MaxSources * SourceEntryBytes;
     public const int TotalBytes = ResourceTableOffset + MaxResources * ResourceEntryBytes;
 
-    /// <summary>The worker's exit code after the graphics card was removed or reset (a TDR): respawn, it is not a bug.</summary>
+    /// <summary>Worker exit code after device removal/reset (TDR): respawn; not a fault.</summary>
     public const int DeviceLostExitCode = 0x0D3D;
 
     /// <summary>The worker's exit code when the control plane could not be opened or is of another version.</summary>
@@ -78,19 +76,19 @@ public static class CompositorProtocol
 
     public static string TakeOverEvent(string baseName, int standby) => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{baseName}.TakeOver{standby}");
 
-    /// <summary>An output texture's name (ID3D11Device1::OpenSharedResourceByName): new names for every worker generation.</summary>
+    /// <summary>Output texture name for ID3D11Device1::OpenSharedResourceByName; unique per worker generation.</summary>
     public static string OutputTexture(string baseName, int generation, int index) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{baseName}.Out{generation}.{index}");
 
-    /// <summary>The section a resource's pixels are in (made by the client, read once by the worker per generation).</summary>
+    /// <summary>Resource pixel section (created by the client, read once per generation by the worker).</summary>
     public static string ResourceSection(string baseName, int id, int generation) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{baseName}.Res{id}.{generation}");
 
-    /// <summary>The section a frame is read back into (FlagReadback): BGRA8, rows packed, made by the client.</summary>
+    /// <summary>Readback section for FlagReadback frames: BGRA8, rows packed, created by the client.</summary>
     public static string ReadbackSection(string baseName, int generation) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{baseName}.Readback{generation}");
 
-    /// <summary>The section a source's I-frame times are in (doubles, seconds in the file's own time), when the client knows them.</summary>
+    /// <summary>Section with a source's I-frame times (double seconds, file time base), when known to the client.</summary>
     public static string IFrameSection(string baseName, int id, int generation) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{baseName}.IFrames{id}.{generation}");
 }
@@ -106,40 +104,40 @@ public enum CompositorWorkerState
     /// <summary>A standby process, waiting to take over.</summary>
     Standby = 5,
 
-    /// <summary>Written by the client's supervisor when it stopped bringing the engine back (it failed too often in a row).</summary>
+    /// <summary>Set by the client supervisor after it stops respawning (too many consecutive failures).</summary>
     GaveUp = 6,
 }
 
-/// <summary>A command the client leaves for the worker (<see cref="ControlBlock.Command"/>), taken with Interlocked.Exchange.</summary>
+/// <summary>Client-to-worker command (<see cref="ControlBlock.Command"/>), consumed with Interlocked.Exchange.</summary>
 public enum CompositorCommand
 {
     None = 0,
-    /// <summary>Behave as after a TDR: report the device lost and exit with <see cref="CompositorProtocol.DeviceLostExitCode"/>.</summary>
+    /// <summary>Simulates a TDR: reports device lost and exits with <see cref="CompositorProtocol.DeviceLostExitCode"/>.</summary>
     SimulateDeviceLost = 1,
     /// <summary>Fall over (tests of the respawn).</summary>
     SimulateCrash = 2,
     Shutdown = 3,
-    /// <summary>Render the latest scene again even though nothing changed (after a respawn, or a resource arrived).</summary>
+    /// <summary>Re-renders the latest scene unchanged (after a respawn or a resource upload).</summary>
     Redraw = 4,
 
     /// <summary>
-    /// Let go of every frame Instant Seek's cache holds: the video memory goes back at once. Kept for tools and old callers; the client
-    /// asks through <see cref="ControlBlock.ClearRequests"/> since 5.4D-TabPerf (a count, which a later command cannot overwrite).
+    /// Releases every frame in the Instant Seek cache. Legacy path for tools; the client uses <see cref="ControlBlock.ClearRequests"/>
+    /// (a counter that a later command cannot overwrite).
     /// </summary>
     ClearCache = 5,
 }
 
-/// <summary>Where a layer's picture comes from (<see cref="GpuLayerDescriptor.SourceKind"/>).</summary>
+/// <summary>Layer pixel source (<see cref="GpuLayerDescriptor.SourceKind"/>).</summary>
 public enum GpuSourceKind
 {
     None = 0,
-    /// <summary>A video file of the source table, decoded on the graphics card at <see cref="GpuLayerDescriptor.MediaSeconds"/>.</summary>
+    /// <summary>Source-table video, GPU-decoded at <see cref="GpuLayerDescriptor.MediaSeconds"/>.</summary>
     Media = 1,
     /// <summary>A flat colour (<see cref="GpuLayerDescriptor.SolidR"/>…).</summary>
     SolidColor = 2,
-    /// <summary>A picture drawn by a shader (<see cref="GpuLayerDescriptor.PatternKind"/>): tests and the benchmark.</summary>
+    /// <summary>Shader-generated test pattern (<see cref="GpuLayerDescriptor.PatternKind"/>) for tests and benchmarks.</summary>
     TestPattern = 3,
-    /// <summary>A still picture of the resource table (<see cref="GpuLayerDescriptor.StillResourceId"/>).</summary>
+    /// <summary>Resource-table still (<see cref="GpuLayerDescriptor.StillResourceId"/>).</summary>
     Still = 4,
 }
 
@@ -158,8 +156,8 @@ public enum GpuResourceKind
 }
 
 /// <summary>
-/// The control block at offset 0 (4 KB). The client writes <see cref="ClientPid"/>, <see cref="Command"/> and the
-/// scene state; the worker the rest. Fields shared across processes are read and written with Volatile / Interlocked.
+/// Control block at offset 0 (4 KB). The client writes <see cref="ClientPid"/>, <see cref="Command"/> and scene state; the worker
+/// writes the rest. Cross-process fields use Volatile / Interlocked access.
 /// </summary>
 [StructLayout(LayoutKind.Explicit, Size = CompositorProtocol.ControlBytes)]
 public struct ControlBlock
@@ -169,16 +167,16 @@ public struct ControlBlock
     [FieldOffset(8)] public int ClientPid;
     [FieldOffset(12)] public int WorkerPid;
 
-    /// <summary>The triple buffer's word: bits 0-1 the slot published last, bit 2 set while it has not been taken.</summary>
+    /// <summary>Triple-buffer state word: bits 0-1 last published slot, bit 2 set until it is taken.</summary>
     [FieldOffset(16)] public int SceneState;
 
-    /// <summary>The slot the worker holds (the scene it rendered last): a worker that takes over starts from it.</summary>
+    /// <summary>Slot held by the worker (last rendered scene); a takeover worker resumes from it.</summary>
     [FieldOffset(20)] public int ReaderSlot;
 
     [FieldOffset(24)] public int WorkerState;
     [FieldOffset(28)] public int Command;
 
-    /// <summary>Raised by the worker on every turn of its loop (at least every 100 ms): a worker that stops raising it is hung.</summary>
+    /// <summary>Worker heartbeat, incremented each loop iteration (at least every 100 ms); a stalled value means hung.</summary>
     [FieldOffset(32)] public long Heartbeat;
 
     /// <summary>The <see cref="FrameSceneHeader.FrameSequenceNumber"/> of the frame presented last.</summary>
@@ -187,17 +185,17 @@ public struct ControlBlock
     /// <summary>Which output texture holds it (0 to <see cref="CompositorProtocol.OutputRing"/> - 1).</summary>
     [FieldOffset(48)] public int PresentedIndex;
 
-    /// <summary>The output textures' generation: a new worker makes new ones (<see cref="CompositorProtocol.OutputTexture"/>).</summary>
+    /// <summary>Output ring generation; each new worker creates new textures (<see cref="CompositorProtocol.OutputTexture"/>).</summary>
     [FieldOffset(52)] public int OutputGeneration;
 
     /// <summary>
-    /// The size of the output textures (the ring), announced with their generation. Since 5.4.1A a frame can be smaller than its texture
-    /// (a resized player keeps its ring while it fits): the frame in a slot is its top-left <see cref="OutputContentSize"/>.
+    /// Output ring texture size, published with its generation. A frame may be smaller than its texture (a resized player keeps the
+    /// ring while it fits); the slot's frame is its top-left <see cref="OutputContentSize"/>.
     /// </summary>
     [FieldOffset(56)] public int OutputWidth;
     [FieldOffset(60)] public int OutputHeight;
 
-    /// <summary>The LUID of the graphics card the worker renders on: a reader opens the output on the same card.</summary>
+    /// <summary>Render adapter LUID; readers must open the output on the same adapter.</summary>
     [FieldOffset(64)] public long AdapterLuid;
 
     /// <summary>The HRESULT behind the last failure, 0 if none.</summary>
@@ -227,140 +225,134 @@ public struct ControlBlock
     [FieldOffset(116)] public int IsSoftwareDevice;
 
     /// <summary>
-    /// How often a decoded frame was made to stand for a moment just before it that nothing covered (a frame the decoder
-    /// dropped), how often a seek landed after its moment and was made again from further back, and how many moments no
-    /// frame will ever cover (a hole in the stream: shown with the nearest frame, which an export counts as a failure).
-    /// Diagnostics for tools and GoldenTests (Pass 5.0-Verify).
+    /// Diagnostics for tools and goldens: frames back-filled over a decoder-dropped gap, seeks that overshot and restarted earlier,
+    /// and stream holes no frame covers (shown with the nearest frame; an export counts these as failures).
     /// </summary>
     [FieldOffset(120)] public int Stretches;
     [FieldOffset(124)] public int LateLandings;
     [FieldOffset(128)] public int MissingFrames;
 
-    /// <summary>Set by the client: 1 decodes on the processor even where the card could (Settings' hardware video decoding off: a driver that shows broken frames).</summary>
+    /// <summary>Client flag: 1 forces CPU decode (hardware decoding disabled for drivers with corrupt output).</summary>
     [FieldOffset(132)] public int SoftwareDecodeRequest;
 
-    // ----- 136..287: the Export Quality Preview (5.4B, ExportLoopbackPreview): written by the worker while a scene asks for it -----
+    // ----- 136..287: Export Quality Preview (ExportLoopbackPreview), worker-written while a scene requests it -----
 
-    /// <summary>What the encode loopback is doing (<see cref="ExportLoopbackState"/>); Off while no scene asks for it.</summary>
+    /// <summary>Encode loopback state (<see cref="ExportLoopbackState"/>); Off while no scene requests it.</summary>
     [FieldOffset(136)] public int LoopbackState;
 
     /// <summary>The HRESULT behind <see cref="ExportLoopbackState.Failed"/> (or a missing transform's step), 0 if none.</summary>
     [FieldOffset(140)] public int LoopbackHResult;
 
-    /// <summary>The last frame's round trip, ms: from its picture handed to the encoder to its decoded picture back.</summary>
+    /// <summary>Last frame's encode-to-decode round trip (ms).</summary>
     [FieldOffset(144)] public float LoopbackRoundTripMs;
 
-    /// <summary>Frames encoded and decoded since the loopback started, and how many came back too late for their own turn.</summary>
+    /// <summary>Frames round-tripped since the loopback started, and how many returned too late for their slot.</summary>
     [FieldOffset(148)] public int LoopbackFramesEncoded;
     [FieldOffset(152)] public int LoopbackLateFrames;
 
-    /// <summary>The codec asked for when it was found with both an encoder and a decoder: bit 1 H.264, 2 HEVC, 4 AV1.</summary>
+    /// <summary>Requested codec once both encoder and decoder were found: bit 1 H.264, 2 HEVC, 4 AV1.</summary>
     [FieldOffset(156)] public int LoopbackCodecsAvailable;
 
-    /// <summary>The encoder transform's friendly name (UTF-16, NUL-terminated): what the preview is an approximation by.</summary>
+    /// <summary>Encoder MFT friendly name (UTF-16, NUL-terminated) shown on the preview.</summary>
     [FieldOffset(160)] public LoopbackNameChars LoopbackEncoderName;
 
     /// <summary>
-    /// 5.4.4-Final: 1 when the encoder running is on the card the export's encoder family names (QuickSync on the Intel card...) or is the
-    /// software encoder asked for; 0 when it is a stand-in found on another card. And 1 when it encodes paused frames only (a software
-    /// encoder through FFmpeg: the player shows the plain picture while playing).
+    /// 1 when the running encoder matches the export's encoder family and adapter (QSV on Intel, ...) or the requested software encoder;
+    /// 0 for a substitute on another adapter. Second flag: 1 when only paused frames are encoded (software encoder via FFmpeg).
     /// </summary>
     [FieldOffset(288)] public int LoopbackOnAskedCard;
     [FieldOffset(292)] public int LoopbackPausedOnly;
 
     // 296..511: free.
 
-    // 512..1023: the GPU time of the last frame's passes per shader slot (ms), when the scene asks for timing.
+    // 512..1023: per-shader-slot GPU time of the last frame (ms), when the scene requests timing.
     [FieldOffset(512)] public SlotTimings SlotGpuMs;
 
-    // 1024..1535: how many times each slot ran in that frame.
+    // 1024..1535: per-slot invocation count for that frame.
     [FieldOffset(1024)] public SlotCounts SlotRuns;
 
-    // 2048..3071: the worker's last message (UTF-16, NUL-terminated).
+    // 2048..3071: last worker message (UTF-16, NUL-terminated).
     [FieldOffset(2048)] public MessageChars Message;
 
     // ----- 3072..4095: Instant Seek (protocol 2) -----
 
-    /// <summary>Raised by the client after it rewrote <see cref="Hints"/> (the worker reads them again; no frame is drawn for it).</summary>
+    /// <summary>Incremented by the client after rewriting <see cref="Hints"/>; the worker re-reads them without rendering.</summary>
     [FieldOffset(3072)] public int HintsVersion;
     [FieldOffset(3076)] public int HintCount;
 
     /// <summary>
-    /// The most the frame cache may hold that the client asks for, in bytes: 0 automatic (the hardware's ceiling: the cache starts at
-    /// its baseline and grows on demand up to it, 5.4D-TabPerf, Compositor.MemoryTier), N bytes the lower of N and that ceiling, -1 no
-    /// cache (every frame decoded when it is shown). The worker also keeps under the budget Windows gives it.
+    /// Client-requested frame cache cap (bytes): 0 automatic (grow on demand from baseline to the hardware ceiling, Compositor.MemoryTier),
+    /// N = min(N, ceiling), -1 disables caching. The worker also stays within the OS-granted video memory budget.
     /// </summary>
     [FieldOffset(3080)] public long CacheBudgetRequest;
 
     /// <summary>Decode threads the client asks for: 0 automatic (two on a card, one on WARP), at most 4.</summary>
     [FieldOffset(3088)] public int DecodeThreadsRequest;
 
-    /// <summary>1 when every media layer of the frame presented last showed its exact frame; 0 when one showed the nearest it had.</summary>
+    /// <summary>1 when every media layer of the last presented frame was exact; 0 when any used the nearest available frame.</summary>
     [FieldOffset(3092)] public int PresentedExact;
 
-    /// <summary>1 when, besides that, the next frames of every video of that picture are decoded (DecoderPool.NextFramesReady); written on every turn of the worker.</summary>
+    /// <summary>1 when, additionally, the next frames of every video are decoded (DecoderPool.NextFramesReady); updated every loop.</summary>
     [FieldOffset(3096)] public int PresentedAhead;
 
     /// <summary>
-    /// Where the last frame's time went (diagnostics, tools\AvSync's trace; 5.2-Release): taking its output texture (the keyed mutex), its
-    /// layers drawn (SceneRenderer.Render), and the flush after it, ms. <see cref="LastFrameCpuMs"/> is all of the worker's frame.
+    /// Last-frame timing breakdown in ms (AvSync trace): keyed-mutex acquire, SceneRenderer.Render, flush. <see cref="LastFrameCpuMs"/>
+    /// is the whole worker frame.
     /// </summary>
     [FieldOffset(3100)] public float LastAcquireMs;
     [FieldOffset(3104)] public float LastDrawMs;
     [FieldOffset(3108)] public float LastFlushMs;
 
-    /// <summary>Frames the decode lanes finished while the last frame was drawn (diagnostics: a preview frame's draw holds them back).</summary>
+    /// <summary>Decode-lane frames completed during the last draw (diagnostic for draw/decode contention).</summary>
     [FieldOffset(3112)] public int LastDrawDecodes;
 
-    /// <summary>Textures the worker's device has made since it started (GpuDevice.TexturesMade; diagnostics, the goldens: 5.3-Stage3).</summary>
+    /// <summary>Textures created by the worker device since start (GpuDevice.TexturesMade; diagnostics and goldens).</summary>
     [FieldOffset(3116)] public int TexturesMade;
 
-    // ----- 3120..3175: the worker giving memory back, and the adaptive cache (5.4D-TabPerf) -----
-    // Requests are counts the client raises (Interlocked) and the worker echoes once served: unlike the one Command slot, which a later
-    // command (a supervisor's Redraw) overwrites, a count is never lost. A worker that starts (a respawn, a standby taking over) echoes
-    // what is asked already: it holds nothing yet.
+    // ----- 3120..3175: worker memory trim and adaptive cache -----
+    // Requests are counters the client increments (Interlocked) and the worker echoes once served; unlike the single Command slot,
+    // a counter is never overwritten. A starting worker (respawn, standby takeover) echoes pending counts immediately: it holds nothing.
 
     /// <summary>
-    /// Raised by the client to have the worker give back what it holds (CompositorClient.TrimWorker, a tab put behind): the cache's free
-    /// list, the pool's free textures, the renderer's idle textures, the readback's staging, the driver's kept allocations
-    /// (IDXGIDevice3::Trim) and its own heap. On unified memory or a card of 4 GB or less the frames themselves go too
-    /// (CompositorWorker.TrimEmptiesCache); a big card keeps them for the tab switched back to.
+    /// Client trim request (CompositorClient.TrimWorker, on tab deactivation): frees the cache free list, pooled and idle renderer
+    /// textures, readback staging, driver allocations (IDXGIDevice3::Trim) and heap. On unified memory or cards of 4 GB or less the
+    /// cached frames are freed too (CompositorWorker.TrimEmptiesCache).
     /// </summary>
     [FieldOffset(3120)] public int TrimRequests;
 
     /// <summary>
-    /// The <see cref="TrimRequests"/> count the worker has served: written once its give-back is done (the driver's Trim and the
-    /// collection wait for 250 ms of quiet with nothing playing, so quick tab switches pay for it once), and as it starts.
+    /// <see cref="TrimRequests"/> count served, written after the trim completes and on start. Driver Trim and GC wait for 250 ms of
+    /// idle with nothing playing, so rapid tab switches coalesce into one trim.
     /// </summary>
     [FieldOffset(3124)] public int TrimsDone;
 
-    /// <summary>The worker's private bytes (PrivateUsage: its commit, video memory included), written every 2 s and after a trim.</summary>
+    /// <summary>Worker private bytes (PrivateUsage, commit including video memory), updated every 2 s and after a trim.</summary>
     [FieldOffset(3128)] public long WorkerPrivateBytes;
 
-    /// <summary>What the cache's free list holds (bytes): retired frames kept for reuse, which <see cref="CacheBytes"/> leaves out.</summary>
+    /// <summary>Cache free-list bytes (retired frames kept for reuse; excluded from <see cref="CacheBytes"/>).</summary>
     [FieldOffset(3136)] public long CacheFreeBytes;
 
-    /// <summary>Raised by the client to empty the frame cache (CompositorClient.ClearFrameCache): every frame, and the budget back at its baseline.</summary>
+    /// <summary>Client clear request (CompositorClient.ClearFrameCache): drops every frame and resets the budget to baseline.</summary>
     [FieldOffset(3144)] public int ClearRequests;
 
     /// <summary>The <see cref="ClearRequests"/> count the worker has served.</summary>
     [FieldOffset(3148)] public int ClearsDone;
 
-    /// <summary>The most the cache's budget may grow to now (bytes): the hardware's ceiling, or the client's maximum when lower.</summary>
+    /// <summary>Current budget ceiling (bytes): hardware ceiling or the client maximum, whichever is lower.</summary>
     [FieldOffset(3152)] public long CacheMaximumBytes;
 
     /// <summary>The hardware's ceiling now (bytes): what Auto grows to at most.</summary>
     [FieldOffset(3160)] public long CacheCeilingBytes;
 
-    /// <summary>The steps (a gigabyte each) the budget has grown above its baseline since the cache was last emptied.</summary>
+    /// <summary>1 GB growth steps above baseline since the cache was last cleared.</summary>
     [FieldOffset(3168)] public int CacheGrowSteps;
 
-    /// <summary>How many times the worker trimmed itself after standing idle (paused, 30 s with nothing asked of it).</summary>
+    /// <summary>Self-trims after 30 s idle while paused.</summary>
     [FieldOffset(3172)] public int IdleTrims;
 
-    // ----- 3176..3199: each output slot's content size (5.4.1A) -----
-    // The frame drawn into a slot (its top-left corner), written by the worker under that slot's keyed mutex before letting it go, so
-    // a reader that holds the slot always reads the size of the frame in it. 0 (a slot not drawn into yet): the whole texture.
+    // ----- 3176..3199: per-output-slot content size -----
+    // Size of the frame in a slot's top-left corner, written under the slot's keyed mutex before release, so a reader holding the
+    // mutex always sees the matching size. 0 (never drawn) means the whole texture.
     [FieldOffset(3176)] public int OutputContentWidth0;
     [FieldOffset(3180)] public int OutputContentHeight0;
     [FieldOffset(3184)] public int OutputContentWidth1;
@@ -369,8 +361,8 @@ public struct ControlBlock
     [FieldOffset(3196)] public int OutputContentHeight2;
 
     /// <summary>
-    /// The size of the frame in output slot <paramref name="index"/> (read under its keyed mutex): what the worker wrote, never larger
-    /// than the ring (<see cref="OutputWidth"/> x <see cref="OutputHeight"/>), the whole ring when nothing was written (0).
+    /// Frame size in output slot <paramref name="index"/> (read under its keyed mutex), clamped to the ring
+    /// (<see cref="OutputWidth"/> x <see cref="OutputHeight"/>); the whole ring when unwritten.
     /// </summary>
     public readonly (int Width, int Height) OutputContentSize(int index)
     {
@@ -384,8 +376,8 @@ public struct ControlBlock
     }
 
     /// <summary>
-    /// The worker's half of <see cref="OutputContentSize"/> and <see cref="OutputContentTag"/>: written under the slot's keyed mutex,
-    /// before it is let go, with the generation of the ring drawn into and whether the frame was read back (a capture's).
+    /// Worker side of <see cref="OutputContentSize"/> and <see cref="OutputContentTag"/>: written under the slot's keyed mutex before
+    /// release, with the ring generation and whether the frame was a readback.
     /// </summary>
     public void SetOutputContentSize(int index, int width, int height, int generation, bool readback)
     {
@@ -398,15 +390,14 @@ public struct ControlBlock
         }
     }
 
-    // ----- 3200..3211: each output slot's tag (5.4.1A) -----
-    // The generation of the ring the slot's frame was drawn into, times two, plus one for a frame read back (a capture, a thumbnail,
-    // the scopes' picture: never the player's to show). Written with the content size: a reader still on an older ring that finds
-    // another generation here knows the size is not its frame's.
+    // ----- 3200..3211: per-output-slot tag -----
+    // Ring generation * 2, + 1 for a readback frame (capture, thumbnail, scopes; never presented). Written with the content size, so a
+    // reader on an older ring can detect that the size belongs to another generation.
     [FieldOffset(3200)] public int OutputContentTag0;
     [FieldOffset(3204)] public int OutputContentTag1;
     [FieldOffset(3208)] public int OutputContentTag2;
 
-    /// <summary>What the worker wrote for output slot <paramref name="index"/> (read under its keyed mutex), unclamped; 0 x 0 if nothing.</summary>
+    /// <summary>Raw size written for output slot <paramref name="index"/> (read under its keyed mutex); 0 x 0 if unwritten.</summary>
     public readonly (int Width, int Height) OutputContentWritten(int index) => index switch
     {
         0 => (OutputContentWidth0, OutputContentHeight0),
@@ -414,7 +405,7 @@ public struct ControlBlock
         _ => (OutputContentWidth2, OutputContentHeight2),
     };
 
-    /// <summary>The tag of output slot <paramref name="index"/> (read under its keyed mutex): its ring's generation * 2, + 1 for a readback.</summary>
+    /// <summary>Tag of output slot <paramref name="index"/> (read under its keyed mutex): generation * 2, + 1 for a readback.</summary>
     public readonly int OutputContentTag(int index) => index switch
     {
         0 => OutputContentTag0,
@@ -422,31 +413,28 @@ public struct ControlBlock
         _ => OutputContentTag2,
     };
 
-    // ----- 3212..3219: what the worker's card is, and how the client wants a parked tab's sources kept (5.4.4) -----
+    // ----- 3212..3219: worker adapter memory model and parked-tab source policy -----
     /// <summary>
-    /// Written by the worker once its device is made: 1 when its card shares the PC's memory (GpuDevice.UnifiedMemory: an integrated
-    /// or ARM64 GPU), else 0. The editor never loads DXCore itself: this is how it knows (GpuPreviewEngine.UnifiedMemory).
+    /// Worker-written after device creation: 1 for unified memory (GpuDevice.UnifiedMemory: integrated or ARM64 GPU), else 0.
+    /// The editor process never loads DXCore; it reads this (GpuPreviewEngine.UnifiedMemory).
     /// </summary>
     [FieldOffset(3212)] public int UnifiedMemory;
 
     /// <summary>
-    /// Written by the client (CompositorClient.TabParking): how the sources of a tab put behind are kept. 0: as always (the strip,
-    /// export, bench and test clients). 1: the player's: on unified memory or on battery only the frames at the tab's playhead stay
-    /// (lean parking). 2: lean always (the golden tests).
+    /// Client-written parked-tab policy (CompositorClient.TabParking): 0 keep everything (strip, export, bench, test clients);
+    /// 1 player: lean parking (playhead frame only) on unified memory or battery; 2 always lean (goldens).
     /// </summary>
     [FieldOffset(3216)] public int TabParkingRequest;
 
     /// <summary>
-    /// Written by the client (5.4.4-Final, the Live Encoded Preview of a software encoder): the export's own FFmpeg video arguments
-    /// ("-c:v libx264 -preset veryslow -crf 22"), UTF-8, NUL-terminated, at most 255 bytes; read by the worker between two even values of
-    /// <see cref="LoopbackArgumentsVersion"/> (odd while the client writes it), so a half-written string is never taken.
+    /// Client-written FFmpeg video arguments for a software-encoder Live Encoded Preview ("-c:v libx264 -preset veryslow -crf 22"),
+    /// UTF-8, NUL-terminated, max 255 bytes. Seqlock: the worker reads only between equal even <see cref="LoopbackArgumentsVersion"/> values.
     /// </summary>
     [FieldOffset(3220)] public int LoopbackArgumentsVersion;
     [FieldOffset(3224)] public LoopbackArgumentBytes LoopbackSoftwareArguments;
 
-    // 3480..: the cache's counters (diagnostics, tools\SeekBench): exact frames found, frames not there yet, presents
-    // made with a stand-in, frames and bytes held, the budget in force, how long the last exact frame took after it was
-    // first asked for, how many of the exact frames found had been decoded ahead (hints, pre-roll, play-ahead).
+    // 3480..: cache counters for SeekBench: exact hits, misses, stand-in presents, frames/bytes held, active budget, last exact-frame
+    // latency, and exact hits that were decoded ahead (hints, pre-roll, play-ahead).
     [FieldOffset(3480)] public long CacheHits;
     [FieldOffset(3488)] public long CacheMisses;
     [FieldOffset(3496)] public long ApproximatePresents;
@@ -459,7 +447,7 @@ public struct ControlBlock
     [FieldOffset(3536)] public long PredictedHits;
     [FieldOffset(3544)] public long Evictions;
 
-    // ----- 3552..3583: the frame read back for the client (FlagReadback: GPU exports, filmstrips) -----
+    // ----- 3552..3583: client readback frame (FlagReadback: GPU exports, filmstrips) -----
 
     /// <summary>The <see cref="FrameSceneHeader.FrameSequenceNumber"/> of the frame last written into the readback section.</summary>
     [FieldOffset(3552)] public long ReadbackSequence;
@@ -467,7 +455,7 @@ public struct ControlBlock
     /// <summary>The readback section's size in bytes (set by the client with <see cref="ReadbackGeneration"/>).</summary>
     [FieldOffset(3560)] public long ReadbackCapacity;
 
-    /// <summary>Raised by the client whenever it makes the section anew (<see cref="CompositorProtocol.ReadbackSection"/>).</summary>
+    /// <summary>Incremented by the client whenever it recreates the section (<see cref="CompositorProtocol.ReadbackSection"/>).</summary>
     [FieldOffset(3568)] public int ReadbackGeneration;
 
     /// <summary>The frame written: its size, and the bytes of one row (BGRA8, rows packed).</summary>
@@ -475,16 +463,16 @@ public struct ControlBlock
     [FieldOffset(3576)] public int ReadbackHeight;
     [FieldOffset(3580)] public int ReadbackRowBytes;
 
-    // ----- 3584..4095: the seek hints (protocol 3) -----
+    // ----- 3584..4095: seek hints (protocol 3) -----
 
     /// <summary>
-    /// Up to 16 moments and stretches the client expects to be asked for soon (where a scrub is heading, the cuts ahead of
-    /// the playhead, the pointer over the timeline): <see cref="HintCount"/> of them, read again when <see cref="HintsVersion"/> changes.
+    /// Up to 16 predicted times/ranges (scrub target, upcoming cuts, timeline hover); <see cref="HintCount"/> valid, re-read when
+    /// <see cref="HintsVersion"/> changes.
     /// </summary>
     [FieldOffset(3584)] public SeekHints Hints;
 }
 
-/// <summary>What a seek hint stands for (<see cref="GpuSeekHint.Kind"/>): the order is the order of urgency.</summary>
+/// <summary>Seek hint kind (<see cref="GpuSeekHint.Kind"/>), declared in urgency order.</summary>
 public enum GpuSeekHintKind
 {
     None = 0,
@@ -493,25 +481,23 @@ public enum GpuSeekHintKind
     /// <summary>The moment under the pointer while it rests on the timeline: a click there is likely.</summary>
     Pointer = 2,
     /// <summary>
-    /// A cut ahead of the playhead (5.0-Release: every one within the lookahead horizon): the first frames of the clip it
-    /// starts (<see cref="GpuSeekHint.Span"/> of the file at most, its clip's length), wanted at <see cref="GpuSeekHint.At"/>;
-    /// kept in the cache until the hint goes (the playhead passed it, or it left the horizon).
+    /// Upcoming cut within the lookahead horizon: pre-decode the first <see cref="GpuSeekHint.Span"/> (capped at clip length) of the
+    /// clip starting at <see cref="GpuSeekHint.At"/>; pinned in cache until the hint is withdrawn.
     /// </summary>
     CutEntry = 3,
     /// <summary>The playhead itself: its neighbourhood decoded in idle time (frame steps, J/K/L).</summary>
     Playhead = 4,
-    /// <summary>The pointer resting on the timeline (5.0-Release): a short play-ahead from its moment (<see cref="GpuSeekHint.Span"/> of the file), so a click and Space there start at once.</summary>
+    /// <summary>Timeline hover: short play-ahead (<see cref="GpuSeekHint.Span"/>) from the hovered time so click-and-play starts instantly.</summary>
     HoverRoll = 5,
     /// <summary>
-    /// A tab likely next, or a file about to be dropped (5.4.4): a short play-ahead as <see cref="HoverRoll"/>'s, decoded only in idle
-    /// time: never while the front tab plays, scrubs or still waits for a frame of its own.
+    /// Likely next tab or pending drop: <see cref="HoverRoll"/>-style play-ahead decoded only when idle (never while the active tab
+    /// plays, scrubs or awaits a frame).
     /// </summary>
     TabRoll = 6,
 }
 
 /// <summary>
-/// One seek hint: a source of the source table and a moment of it, in the file's own time, and for a stretch how far it
-/// goes on (32 bytes, protocol 3).
+/// Seek hint (32 bytes, protocol 3): source-table entry, file time, and optional range length.
 /// </summary>
 [StructLayout(LayoutKind.Explicit, Size = 32)]
 public struct GpuSeekHint
@@ -520,13 +506,13 @@ public struct GpuSeekHint
     [FieldOffset(4)] public int Kind;
     [FieldOffset(8)] public double MediaSeconds;
 
-    /// <summary>Path hash of the source (<see cref="SourceEntry.PathHash"/>): a hint for a table entry that changed since is dropped.</summary>
+    /// <summary>Source path hash (<see cref="SourceEntry.PathHash"/>); hints for a since-changed entry are dropped.</summary>
     [FieldOffset(16)] public long PathHash;
 
-    /// <summary>How far past <see cref="MediaSeconds"/> the frames are wanted, seconds of the file (0: that frame alone).</summary>
+    /// <summary>Range length past <see cref="MediaSeconds"/> in file seconds (0: single frame).</summary>
     [FieldOffset(24)] public float Span;
 
-    /// <summary>The moment of the sequence it is wanted at (a cut's): the earlier, the sooner it is decoded among hints of its kind.</summary>
+    /// <summary>Sequence time the frames are needed (e.g. a cut); earlier hints of the same kind decode first.</summary>
     [FieldOffset(28)] public float At;
 }
 
@@ -562,19 +548,19 @@ public struct LoopbackNameChars
     private char _first;
 }
 
-/// <summary>A software encoder's FFmpeg video arguments in the control block (5.4.4-Final): 256 bytes of UTF-8, NUL-terminated.</summary>
+/// <summary>Software-encoder FFmpeg video arguments in the control block: 256 bytes UTF-8, NUL-terminated.</summary>
 [InlineArray(256)]
 public struct LoopbackArgumentBytes
 {
     private byte _first;
 }
 
-/// <summary>What the Export Quality Preview's encode loopback is doing (<see cref="ControlBlock.LoopbackState"/>, 5.4B).</summary>
+/// <summary>Export Quality Preview loopback state (<see cref="ControlBlock.LoopbackState"/>).</summary>
 public enum ExportLoopbackState
 {
     Off = 0,
 
-    /// <summary>Its encoder and decoder are being made (the first frame after it was turned on, or after a setting changed).</summary>
+    /// <summary>Encoder and decoder being created (first frame after enable or a settings change).</summary>
     Starting = 1,
 
     /// <summary>Frames go through the encoder and the decoder and the player shows them.</summary>
@@ -583,13 +569,13 @@ public enum ExportLoopbackState
     /// <summary>No hardware encoder of the codec on this PC: the plain picture is shown.</summary>
     NoEncoder = 3,
 
-    /// <summary>An encoder but no decoder of the codec (HEVC and AV1 need their Store extensions): the plain picture is shown.</summary>
+    /// <summary>Encoder found but no decoder (HEVC/AV1 need Store extensions); the source picture is shown.</summary>
     NoDecoder = 4,
 
     /// <summary>The export's codec has no Media Foundation loopback (VP9, ProRes, DNxHR, GIF, a stream copy).</summary>
     Unsupported = 5,
 
-    /// <summary>The encoder or the decoder failed (<see cref="ControlBlock.LoopbackHResult"/>): the plain picture is shown.</summary>
+    /// <summary>Encoder or decoder failed (<see cref="ControlBlock.LoopbackHResult"/>); the source picture is shown.</summary>
     Failed = 6,
 
     /// <summary>Not in this view (the 3D exploded view, a clip's source shown alone).</summary>
@@ -597,22 +583,21 @@ public enum ExportLoopbackState
 }
 
 /// <summary>
-/// The scene for one frame (the header of a 64 KB scene slot): the canvas, the clock and the camera. The layers follow it,
-/// bottom first, at <see cref="FrameScene.LayersOffset"/>.
+/// Per-frame scene header of a 64 KB slot: canvas, clock, camera. Layers follow bottom-first at <see cref="FrameScene.LayersOffset"/>.
 /// </summary>
 [StructLayout(LayoutKind.Explicit, Size = FrameScene.HeaderBytes)]
 public struct FrameSceneHeader
 {
-    /// <summary>Raised by the client for every scene it publishes; the worker presents it back (<see cref="ControlBlock.PresentedSequence"/>).</summary>
+    /// <summary>Incremented per published scene; echoed by the worker in <see cref="ControlBlock.PresentedSequence"/>.</summary>
     [FieldOffset(0)] public long FrameSequenceNumber;
     [FieldOffset(8)] public double PlayheadSeconds;
     [FieldOffset(16)] public int IsPlaying;
 
-    /// <summary>The sequence's frame in its own pixels (1920 x 1080, 1080 x 1920 ...): the layers' boxes are in these.</summary>
+    /// <summary>Canvas size in pixels (1920 x 1080, 1080 x 1920, ...); layer boxes use this space.</summary>
     [FieldOffset(20)] public int CanvasWidth;
     [FieldOffset(24)] public int CanvasHeight;
 
-    /// <summary>0 the flat picture; 1 the 3D exploded layer stack (5.0D).</summary>
+    /// <summary>0 flat composite; 1 3D Exploded View layer stack.</summary>
     [FieldOffset(28)] public int ViewMode;
     [FieldOffset(32)] public float CameraYaw;
     [FieldOffset(36)] public float CameraPitch;
@@ -621,8 +606,8 @@ public struct FrameSceneHeader
     [FieldOffset(48)] public int ActiveLayerCount;
 
     /// <summary>
-    /// Bit 0: time every pass (<see cref="ControlBlock.SlotGpuMs"/>); bit 1: wait for the timings before presenting; bit 2:
-    /// present the canvas as it is (premultiplied, its alpha kept, no background: the golden tests read it).
+    /// Bit 0: time every pass (<see cref="ControlBlock.SlotGpuMs"/>); bit 1: wait for timings before presenting; bit 2: present the
+    /// raw premultiplied canvas with alpha and no background (goldens).
     /// </summary>
     [FieldOffset(52)] public int Flags;
 
@@ -636,45 +621,38 @@ public struct FrameSceneHeader
     [FieldOffset(76)] public int OutputHeight;
 
     /// <summary>
-    /// With <see cref="FlagLetterbox"/>: the player's zoom (1 fitted, 2 twice as large ...) and pan (fractions of the fitted
-    /// picture, as MainWindow's player navigation keeps them: the picture's middle moved by pan x its size x zoom).
+    /// With <see cref="FlagLetterbox"/>: player zoom (1 = fit) and pan as fractions of the fitted picture (centre offset = pan x size x zoom).
     /// </summary>
     [FieldOffset(80)] public float ViewScale;
     [FieldOffset(84)] public float ViewPanX;
     [FieldOffset(88)] public float ViewPanY;
 
     /// <summary>
-    /// The magnifier loupe (5.0-Verify, the user's bug 6): while a slider shaping a layer's edge is held, the layer of this
-    /// clip (<see cref="GpuLayerDescriptor.ClipKey"/>; 0 none) is drawn again alone at <see cref="LoupeZoom"/> times the
-    /// player's scale round a point of its edge (found on the card), over a checkerboard, in a corner of the picture.
-    /// <see cref="LoupeKind"/>: 1 a feather (the corner is looked at when nothing else is soft), 2 a mask, 3 a matte, 4 a key.
+    /// Edge loupe: while an edge slider is held, the clip's layer (<see cref="GpuLayerDescriptor.ClipKey"/>; 0 none) is redrawn alone
+    /// at <see cref="LoupeZoom"/> x player scale around a GPU-found edge point, over a checkerboard, in a corner inset.
+    /// <see cref="LoupeKind"/>: 1 feather, 2 mask, 3 matte, 4 key.
     /// </summary>
     [FieldOffset(96)] public long LoupeClipKey;
     [FieldOffset(104)] public int LoupeKind;
     [FieldOffset(108)] public float LoupeZoom;
 
     /// <summary>
-    /// The 3D exploded view's stack depth in places (5.0-Release): how many places its plan has, whatever is on at the
-    /// moment (each track has its own, GpuScenePlan.PlaceLayers), so the camera's middle (ExplodedCamera) stays still while
-    /// layers come and go. 0: the stack is the layers drawn (<see cref="ActiveLayerCount"/>), as tests write it.
+    /// 3D Exploded View depth in plan slots (one per track, GpuScenePlan.PlaceLayers), independent of active layers so the camera
+    /// centre (ExplodedCamera) stays fixed. 0 uses <see cref="ActiveLayerCount"/> (tests).
     /// </summary>
     [FieldOffset(112)] public int ExplodedDepth;
 
     /// <summary>
-    /// The Sequence's sound around this frame's moment in three bands (5.2B, the audio-reactive shader bus: Services/Audio/AudioReactive.cs),
-    /// each 0 to 1: Bass 20-160 Hz, Mid 160 Hz-2 kHz, High 2-10 kHz, followed fast up (5 ms) and slowly down (120 ms). The GPU effects with an
-    /// Audio Reactive Pulse lift their strength by them (SceneRenderer.Fx.cs); 0, as a cleared scene has them, lifts nothing. In bytes the
-    /// header left free, so the layout and the protocol's version are as they were.
+    /// Audio-reactive bus (AudioReactive.cs): band envelopes 0-1 at this frame (Bass 20-160 Hz, Mid 160 Hz-2 kHz, High 2-10 kHz;
+    /// 5 ms attack, 120 ms release) driving Audio Reactive Pulse effects (SceneRenderer.Fx.cs). Uses reserved header bytes.
     /// </summary>
     [FieldOffset(116)] public float AudioBass;
     [FieldOffset(120)] public float AudioMid;
     [FieldOffset(124)] public float AudioHigh;
 
     /// <summary>
-    /// The Export Quality Preview (5.4B, <see cref="FlagLoopback"/>): the export's codec (1 H.264, 2 HEVC, 3 AV1), its rate control
-    /// (eAVEncCommonRateControlMode: 0 CBR, 2 unconstrained VBR, 3 quality), bitrate in kbps, quality 1..100 (the quality mode's), and
-    /// quality against speed 0..100 (its preset's nearest). In bytes the header left free: the layout and the protocol's version are as
-    /// they were, and a scene without the flag never reads them.
+    /// Export Quality Preview (<see cref="FlagLoopback"/>): codec (1 H.264, 2 HEVC, 3 AV1), rate control (eAVEncCommonRateControlMode:
+    /// 0 CBR, 2 unconstrained VBR, 3 quality), bitrate (kbps), quality 1-100, and quality-vs-speed 0-100. Reserved header bytes; read only with the flag.
     /// </summary>
     [FieldOffset(128)] public int LoopbackCodec;
     [FieldOffset(132)] public int LoopbackRateControl;
@@ -682,7 +660,7 @@ public struct FrameSceneHeader
     [FieldOffset(140)] public int LoopbackQuality;
     [FieldOffset(144)] public int LoopbackQualityVsSpeed;
 
-    /// <summary>What the player shows: 0 the encoded picture, 1 a split wipe (source left of <see cref="LoopbackWipeX"/>, encoded right), 2 the difference x <see cref="LoopbackHeatGain"/>.</summary>
+    /// <summary>Display mode: 0 encoded, 1 split wipe (source left of <see cref="LoopbackWipeX"/>), 2 difference x <see cref="LoopbackHeatGain"/>.</summary>
     [FieldOffset(148)] public int LoopbackMode;
 
     /// <summary>Where the wipe stands, 0..1 of the picture's width.</summary>
@@ -691,35 +669,32 @@ public struct FrameSceneHeader
     /// <summary>The export's frame rate: the rate control's budget per frame, and the samples' clock.</summary>
     [FieldOffset(156)] public float LoopbackFrameRate;
 
-    /// <summary>Raised by the client when the picture may have changed; a wipe or mode move alone keeps it, and the paused frame is not encoded again.</summary>
+    /// <summary>Incremented when the picture may have changed; wipe/mode changes alone do not re-encode the paused frame.</summary>
     [FieldOffset(160)] public long LoopbackContentStamp;
 
     /// <summary>How much the difference is magnified (10 by default).</summary>
     [FieldOffset(168)] public float LoopbackHeatGain;
 
-    /// <summary>Bit 0: the codec bypassed (the decoded picture is the source's NV12): the golden test of the compare pass on any machine.</summary>
+    /// <summary>Bit 0: bypass the codec (decoded = source NV12) so goldens can test the compare pass on any machine.</summary>
     [FieldOffset(172)] public int LoopbackTestFlags;
 
     /// <summary>
-    /// The Export Quality Preview's Magnifier (5.4D, <see cref="FlagLoopbackLoupe"/>): the point under the pointer, as fractions of the
-    /// output's width and height (so DIPs and pixels never mix: the worker multiplies by its own output's size). A loupe at
-    /// <see cref="LoupeZoom"/> magnifies the compare round it; an edge being tuned (<see cref="LoupeClipKey"/>) comes first.
+    /// Export Quality Preview magnifier point (<see cref="FlagLoopbackLoupe"/>) as output fractions, so DIPs and pixels never mix.
+    /// The loupe magnifies the compare at <see cref="LoupeZoom"/>; an active edge loupe (<see cref="LoupeClipKey"/>) takes precedence.
     /// </summary>
     [FieldOffset(176)] public float LoopbackLoupeX;
     [FieldOffset(180)] public float LoopbackLoupeY;
 
     /// <summary>
-    /// Dynamic Preview Scaling (5.4.3): the fraction of the output a flat player frame is drawn at, stretched over the output by the final
-    /// pass (0 or 1 the whole output). The worker ignores it for a readback, an exact frame, the 3D view and the loupe (SceneRenderer.DrawScale).
+    /// Dynamic Preview Scaling: fraction of the output a flat player frame renders at, upscaled by the final pass (0 or 1 = full).
+    /// Ignored for readbacks, exact frames, 3D view and the loupe (SceneRenderer.DrawScale).
     /// </summary>
     [FieldOffset(184)] public float PreviewScale;
 
     /// <summary>
-    /// The Export Quality Preview's encoder (5.4.4-Final, <see cref="FlagLoopback"/>): its family (ExportLoopbackSettings.Family: 0 Media
-    /// Foundation on the compositor's card first, 1 QuickSync on the Intel card, 2 AMF on the AMD card, 3 NVENC on the NVIDIA card, 4 the
-    /// software encoder through FFmpeg with <see cref="ControlBlock.LoopbackSoftwareArguments"/>), the export's frame size (0: the canvas's;
-    /// the canvas's shape kept), 10-bit (1: P010 into the encoder, Main10), the CRF as typed, and a stamp raised by every change of these
-    /// settings (a paused frame is encoded again from the scene already drawn: no layer is drawn again for it).
+    /// Loopback encoder (<see cref="FlagLoopback"/>): family (ExportLoopbackSettings.Family: 0 MF on the compositor GPU, 1 QSV on Intel,
+    /// 2 AMF on AMD, 3 NVENC on NVIDIA, 4 FFmpeg software via <see cref="ControlBlock.LoopbackSoftwareArguments"/>), export frame size
+    /// (0 = canvas), 10-bit (P010/Main10), CRF, and a settings stamp; a stamp change re-encodes the paused frame without redrawing layers.
     /// </summary>
     [FieldOffset(188)] public int LoopbackFamily;
     [FieldOffset(192)] public int LoopbackEncodedWidth;
@@ -731,47 +706,39 @@ public struct FrameSceneHeader
     // 216..255: free.
 
     /// <summary>
-    /// Bit 3 (<see cref="FlagExactFrames"/>): draw only once every media layer has its exact frame (exports, filmstrips,
-    /// tests); without it a layer whose frame is not decoded yet shows the nearest one there is and the frame is drawn
-    /// again when the exact one arrives (Instant Seek).
+    /// Bit 3 (<see cref="FlagExactFrames"/>): render only when every media layer has its exact frame (exports, filmstrips, tests);
+    /// otherwise the nearest frame is shown and the frame re-renders when the exact one arrives (Instant Seek).
     /// </summary>
     /// <summary>
-    /// Bit 4 (<see cref="FlagLetterbox"/>): the canvas fitted into the output as the player shows it (centred, black bars,
-    /// <see cref="ViewScale"/> and <see cref="ViewPanX"/> / <see cref="ViewPanY"/> applied, nothing drawn outside the picture); without it the canvas
-    /// is stretched over the whole output (tests, exports, filmstrips).
+    /// Bit 4 (<see cref="FlagLetterbox"/>): fit the canvas into the output as the player does (centred, black bars, <see cref="ViewScale"/>,
+    /// <see cref="ViewPanX"/> / <see cref="ViewPanY"/>, clipped to the picture); otherwise stretch to the output (tests, exports, filmstrips).
     /// </summary>
     /// <summary>
-    /// Bit 5 (<see cref="FlagReadback"/>): the frame drawn is also written into the client's readback section (BGRA8, its
-    /// output's size) and <see cref="ControlBlock.ReadbackSequence"/> set: GPU exports and filmstrips. A readback, never on
-    /// the player's path.
-    /// Bit 6 (<see cref="FlagReadbackNv12"/>, with bit 5): the frame is read back as NV12, converted on the card (exports: 62 % fewer bytes
-    /// to read back and to pipe); <see cref="ControlBlock.ReadbackRowBytes"/> is then its width, which says so.
+    /// Bit 5 (<see cref="FlagReadback"/>): also copy the frame to the client readback section (BGRA8, output size) and set
+    /// <see cref="ControlBlock.ReadbackSequence"/> (GPU exports, filmstrips; never on the player path).
+    /// Bit 6 (<see cref="FlagReadbackNv12"/>, with bit 5): read back GPU-converted NV12 (62 % fewer bytes); <see cref="ControlBlock.ReadbackRowBytes"/>
+    /// then equals the width.
     /// </summary>
     /// <summary>
-    /// Bit 8 (<see cref="FlagLoopback"/>, 5.4B): the player's Export Quality Preview. The worker renders the frame once at the canvas's size,
-    /// passes it through a hardware encoder and a decoder of the export's codec (<see cref="LoopbackCodec"/>...) and letterboxes the compare
-    /// of the two into the output (ExportLoopbackPreview); <see cref="ControlBlock.LoopbackState"/> says how it went. Only with
-    /// <see cref="FlagLetterbox"/> and the flat view; never with a readback.
-    /// Bit 9 (<see cref="FlagReadbackP010"/>, 5.4B, with bit 5): the frame is read back as 10-bit P010 (an HDR project exported as HDR):
-    /// drawn into a 16-bit float target, converted with BT.2020's non-constant-luminance matrix in limited range, each sample's 10 bits in
-    /// the top of its 16; <see cref="ControlBlock.ReadbackRowBytes"/> is then twice its width.
-    /// Bit 10 (<see cref="FlagLoopbackLoupe"/>, 5.4D, with bit 8): the preview's Magnifier follows the pointer, at
-    /// <see cref="LoopbackLoupeX"/> / <see cref="LoopbackLoupeY"/> of the output.
+    /// Bit 8 (<see cref="FlagLoopback"/>): Export Quality Preview. Render once at canvas size, round-trip through the export codec's
+    /// encoder and decoder (<see cref="LoopbackCodec"/>, ...), letterbox the compare (ExportLoopbackPreview); status in
+    /// <see cref="ControlBlock.LoopbackState"/>. Requires <see cref="FlagLetterbox"/> and the flat view; never with a readback.
+    /// Bit 9 (<see cref="FlagReadbackP010"/>, with bit 5): HDR readback as P010: 16-bit float target, BT.2020 NCL limited range, 10 bits
+    /// MSB-aligned in 16; <see cref="ControlBlock.ReadbackRowBytes"/> is then twice the width.
+    /// Bit 10 (<see cref="FlagLoopbackLoupe"/>, with bit 8): magnifier at <see cref="LoopbackLoupeX"/> / <see cref="LoopbackLoupeY"/>.
     /// </summary>
     /// <summary>
-    /// Bit 7 (<see cref="FlagDepthRails"/>, 5.2): the 3D exploded view draws its depth rails, four hairlines back through the stack
-    /// from the canvas's corners (the editor's view always; a test's scene without it is the planes alone). Until 5.2 this bit was
-    /// the Studio Stage's mirror floor and gathered light, removed as UI bloat.
+    /// Bit 7 (<see cref="FlagDepthRails"/>): draw 3D depth rails (four hairlines from the canvas corners back through the stack);
+    /// always set by the editor, omitted by plane-only tests.
     /// </summary>
     public const int FlagTimePasses = 1, FlagWaitForTimings = 2, FlagRawOutput = 4, FlagExactFrames = 8, FlagLetterbox = 16, FlagReadback = 32, FlagReadbackNv12 = 64,
         FlagDepthRails = 128, FlagLoopback = 256, FlagReadbackP010 = 512, FlagLoopbackLoupe = 1024;
 }
 
 /// <summary>
-/// One layer of a frame: where its picture comes from, which part of it, where it goes on the canvas, how it is laid on,
-/// and up to 16 effect packets (<see cref="GpuEffectPacket"/>, from <c>EffectInstance.EvaluateGpuPacket</c> and
-/// <c>TransitionStyles.GpuPacket</c>) in the order they apply. Composite-stage packets (TransformComposite, DropShadow,
-/// BlendMode, the transitions 64-68) act when the layer is laid on, wherever they stand in the list.
+/// One layer: source, source crop, canvas box, blend, and up to 16 ordered effect packets (<see cref="GpuEffectPacket"/>, from
+/// <c>EffectInstance.EvaluateGpuPacket</c> and <c>TransitionStyles.GpuPacket</c>). Composite-stage packets (TransformComposite,
+/// DropShadow, BlendMode, transitions 64-68) apply at composite time regardless of list position.
 /// </summary>
 [StructLayout(LayoutKind.Explicit, Size = FrameScene.LayerBytes)]
 public struct GpuLayerDescriptor
@@ -779,12 +746,12 @@ public struct GpuLayerDescriptor
     /// <summary>A hash of the clip's id (diagnostics and per-clip history such as decode position).</summary>
     [FieldOffset(0)] public long ClipKey;
 
-    /// <summary>A hash of the source's path (<see cref="SourceEntry.PathHash"/>), a check that the source table was not changed under it.</summary>
+    /// <summary>Source path hash (<see cref="SourceEntry.PathHash"/>), guarding against a changed source-table entry.</summary>
     [FieldOffset(8)] public long SourcePathHash;
     [FieldOffset(16)] public int SourceId;
     [FieldOffset(20)] public int SourceKind;
 
-    /// <summary>The moment of the source to show, in seconds of the file's own time (its first frame's time is 0).</summary>
+    /// <summary>Source time to show, in file seconds (first frame = 0).</summary>
     [FieldOffset(24)] public double MediaSeconds;
 
     /// <summary>The part of the source shown, as fractions of its width and height: left, top, right and bottom edges.</summary>
@@ -812,7 +779,7 @@ public struct GpuLayerDescriptor
     /// <summary>0 normal, 1 multiply, 2 screen, 3 add, 4 overlay, 5 soft light, 6 hard light, 7 difference (the Blend Mode card's choices).</summary>
     [FieldOffset(80)] public int BlendMode;
 
-    /// <summary>The blurred background made of this layer's picture under it: the blur's radius in canvas pixels (0 off).</summary>
+    /// <summary>Blur-fill background radius in canvas pixels (0 off).</summary>
     [FieldOffset(84)] public float BlurFillRadius;
     [FieldOffset(88)] public int BlurFillPasses;
 
@@ -840,17 +807,17 @@ public struct GpuLayerDescriptor
     /// <summary>A <see cref="GpuSourceKind.TestPattern"/>: 0 colour bars, 1 gradient ramp, 2 checkerboard, 3 radial target.</summary>
     [FieldOffset(128)] public int PatternKind;
 
-    /// <summary>Bit 0 shown (a layer without it is skipped); bit 1 an adjustment layer (its effects work on the canvas under its box); see the constants for the rest.</summary>
+    /// <summary>Bit 0 visible (else skipped); bit 1 adjustment layer (effects apply to the canvas under its box); other bits below.</summary>
     [FieldOffset(132)] public int Flags;
 
-    /// <summary>Its depth in the 3D exploded view (5.0D): its place in the stack.</summary>
+    /// <summary>3D Exploded View stack slot.</summary>
     [FieldOffset(136)] public float ZDepth;
     [FieldOffset(140)] public int EffectCount;
     [FieldOffset(144)] public EffectPackets Effects;
 
-    // ----- The shutter (5.1-GpuFx, the Motion Blur card): where the layer is as the shutter opens and closes, and the moment of its source a frame ago -----
+    // ----- Motion Blur shutter: layer placement at shutter open/close and the previous source time -----
 
-    /// <summary>The box and turn as the shutter opens (<see cref="FlagShutterPlace"/>): sub-frames of the layer are laid along the way to the closing one.</summary>
+    /// <summary>Box and rotation at shutter open (<see cref="FlagShutterPlace"/>); sub-frames interpolate toward the closing placement.</summary>
     [FieldOffset(720)] public float ShutterFromX;
     [FieldOffset(724)] public float ShutterFromY;
     [FieldOffset(728)] public float ShutterFromWidth;
@@ -863,44 +830,37 @@ public struct GpuLayerDescriptor
     [FieldOffset(756)] public float ShutterToRotation;
 
     /// <summary>
-    /// With <see cref="FlagPreviousMoment"/>: a media layer's moment of its file one sequence frame ago (so a speed ramp's motion is its own), or an adjustment
-    /// layer's moment of the sequence one frame ago (what tells its next frame from a jump).
+    /// With <see cref="FlagPreviousMoment"/>: file time one sequence frame earlier (media layers, so speed ramps blur correctly), or
+    /// sequence time one frame earlier (adjustment layers, to detect jumps).
     /// </summary>
     [FieldOffset(760)] public double PreviousMoment;
 
     /// <summary>
-    /// True 3D (5.2A): degrees the layer is tilted about the horizontal axis through its anchor (Pitch: its top away from the viewer) and
-    /// swung about the upright one (Yaw: its right edge away), after its <see cref="Rotation"/> (its Roll) in its own plane, and drawn in
-    /// perspective: a quad whose far side is smaller (Matrix4.Box). Both 0 for a flat layer, drawn exactly as before.
+    /// True 3D tilt in degrees about the anchor: Pitch (top away) and Yaw (right edge away), applied after <see cref="Rotation"/> (Roll)
+    /// and drawn in perspective (Matrix4.Box). Both 0 renders flat.
     /// </summary>
     [FieldOffset(768)] public float TiltX;
     [FieldOffset(772)] public float TiltY;
 
     /// <summary>
-    /// Bit 2 (<see cref="FlagBlurFillOnly"/>): only the layer's blurred background is drawn, over the whole frame (the
-    /// primary chain's background and the blur twins, at their own place in the stack, as FFmpeg makes them). Bit 3
-    /// (<see cref="FlagSelected"/>): the clip selected in the editor (outlined in the 3D exploded view). Bit 4
-    /// (<see cref="FlagSelectedTrack"/>, 5.0-Release): another clip of the selected clip's track, playing while it is not
-    /// (its plane keeps a fainter outline, so the selected layer's plane never blinks across its cuts). Bits 5 and 6 (5.1-GpuFx): the shutter's lanes
-    /// above are set (<see cref="FlagShutterPlace"/>, <see cref="FlagPreviousMoment"/>).
+    /// Bit 2 (<see cref="FlagBlurFillOnly"/>): draw only the full-frame blurred background. Bit 3 (<see cref="FlagSelected"/>): selected
+    /// clip (outlined in 3D view). Bit 4 (<see cref="FlagSelectedTrack"/>): another clip on the selected track (fainter outline so the
+    /// plane never blinks across cuts). Bits 5-6: shutter fields valid (<see cref="FlagShutterPlace"/>, <see cref="FlagPreviousMoment"/>).
     /// </summary>
     public const int FlagVisible = 1, FlagAdjustment = 2, FlagBlurFillOnly = 4, FlagSelected = 8, FlagSelectedTrack = 16, FlagShutterPlace = 32, FlagPreviousMoment = 64;
 
     /// <summary>
-    /// The video is interlaced and is shown deinterlaced (5.2-Audit: the sequence's Deinterlace, drawn by the compositor): its top
-    /// field alone, line-doubled, so no combing shows (PSYuvSource).
+    /// Deinterlace: top field only, line-doubled, to remove combing (PSYuvSource).
     /// </summary>
     public const int FlagDeinterlace = 128;
 
     /// <summary>
-    /// A PQ or HLG video is tone-mapped to SDR (5.2-Audit: the sequence's Tone Map to SDR, drawn by the compositor): its light
-    /// brought down to BT.709 with the Hable curve, as FFmpeg's zscale and tonemap did (PSYuvSource). An SDR video is left alone.
+    /// Tone-map PQ/HLG to BT.709 SDR with the Hable curve, matching FFmpeg zscale+tonemap (PSYuvSource); SDR sources pass through.
     /// </summary>
     public const int FlagToneMapSdr = 256;
 
     /// <summary>
-    /// Smooth Slow-Mo (5.6.0): a clip slower than 1x is drawn as an in-between of the frame at its moment and the next, by optical flow
-    /// (SceneRenderer.Interpolate.cs), instead of the frame repeated.
+    /// Smooth Slow-Mo: below 1x speed, synthesize in-between frames by optical flow (SceneRenderer.Interpolate.cs) instead of repeating.
     /// </summary>
     public const int FlagInterpolate = 512;
 }
@@ -931,7 +891,7 @@ public struct SourceEntry
     /// <summary>Which video stream of the file (0 the first).</summary>
     [FieldOffset(8)] public int StreamIndex;
 
-    /// <summary>How many I-frame times the client put in the source's own section (<see cref="CompositorProtocol.IFrameSection"/>); 0 none.</summary>
+    /// <summary>I-frame time count in the source's section (<see cref="CompositorProtocol.IFrameSection"/>); 0 none.</summary>
     [FieldOffset(12)] public int IFrameCount;
     [FieldOffset(16)] public long PathHash;
 
@@ -947,7 +907,7 @@ public struct PathChars
     private char _first;
 }
 
-/// <summary>A texture the client hands over: an entry of the resource table (128 B). Its pixels are in their own section.</summary>
+/// <summary>Resource-table entry (128 B) for a client-supplied texture; pixels live in a separate section.</summary>
 [StructLayout(LayoutKind.Explicit, Size = CompositorProtocol.ResourceEntryBytes)]
 public struct ResourceEntry
 {
@@ -963,8 +923,8 @@ public struct ResourceEntry
 }
 
 /// <summary>
-/// The sizes the control plane's layout depends on, checked against the structs that are laid over it: a struct larger than its
-/// stride or slot (an inline array grown past an explicit Size, which is only a minimum) would write into its neighbour.
+/// Layout guard: verifies each shared struct fits its stride/slot (an inline array can grow past an explicit Size, which is only a
+/// minimum, and overwrite its neighbour).
 /// </summary>
 public static class SharedLayout
 {
@@ -996,8 +956,8 @@ public static class SharedLayout
 }
 
 /// <summary>
-/// The mapping itself, as either side holds it: typed references into the shared memory, and the triple buffer the
-/// scenes go through. The client owns the writer's slot, the worker the reader's; neither ever waits for the other.
+/// Shared mapping as held by either process: typed views plus the lock-free scene triple buffer. The client owns the writer slot,
+/// the worker the reader slot; neither side ever blocks.
 /// </summary>
 public sealed unsafe class CompositorSharedMemory : IDisposable
 {
@@ -1019,7 +979,7 @@ public sealed unsafe class CompositorSharedMemory : IDisposable
         _base = pointer + _view.PointerOffset;
     }
 
-    /// <summary>Makes a new control plane (the client), zeroed, with the triple buffer in its starting state.</summary>
+    /// <summary>Creates a zeroed control plane (client side) with the triple buffer initialized.</summary>
     public static CompositorSharedMemory Create(string baseName)
     {
         var memory = new CompositorSharedMemory(baseName, MemoryMappedFile.CreateNew(baseName, CompositorProtocol.TotalBytes, MemoryMappedFileAccess.ReadWrite));
@@ -1036,7 +996,7 @@ public sealed unsafe class CompositorSharedMemory : IDisposable
         return memory;
     }
 
-    /// <summary>Opens the client's control plane (the worker); null when it is not there or not of this version.</summary>
+    /// <summary>Opens the client's control plane (worker side); null when missing or of another protocol version.</summary>
     public static CompositorSharedMemory? Open(string baseName)
     {
         try
@@ -1071,12 +1031,12 @@ public sealed unsafe class CompositorSharedMemory : IDisposable
 
     private ref int State => ref Control.SceneState;
 
-    // ----- The writer (the client) -----
+    // ----- Writer (client) -----
 
     /// <summary>The slot the client writes its next scene into (its own until <see cref="Publish"/>).</summary>
     public int WriterSlot => _writerSlot;
 
-    /// <summary>Hands the scene in the writer's slot to the worker; the client gets the slot published before (or one the worker let go of).</summary>
+    /// <summary>Publishes the writer slot; the client receives the previously published or worker-released slot.</summary>
     public void Publish()
     {
         Thread.MemoryBarrier();
@@ -1084,11 +1044,11 @@ public sealed unsafe class CompositorSharedMemory : IDisposable
         _writerSlot = previous & 3;
     }
 
-    // ----- The reader (the worker) -----
+    // ----- Reader (worker) -----
 
     /// <summary>
-    /// The slot holding the newest scene: a newly published one when there is one (taken, so the client cannot write
-    /// into it), else the one taken last. <paramref name="isNew"/> says which.
+    /// Slot with the newest scene: a newly published one (taken so the client cannot overwrite it), else the last taken;
+    /// <paramref name="isNew"/> reports which.
     /// </summary>
     public int TakeLatest(out bool isNew)
     {

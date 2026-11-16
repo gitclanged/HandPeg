@@ -11,51 +11,42 @@ using HandPegApp.Services;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// The decoder <see cref="MfVideoDecoder"/> falls back to when Media Foundation cannot decode a stream (Pass 5.2-Arm64AndNpu):
-/// HEVC on a PC without the Store's HEVC Video Extensions (a clean Windows on ARM laptop), or any codec or container it lacks.
-/// FFmpeg decodes it on the processor and pipes the raw pictures, NV12 (P010 for 10 bits and more), one after the other; the
-/// decoder uploads each into the same luma and chroma planes as its own processor's decode (UploadSoftware), and the rest of
-/// it (the cache, held mode, the lanes' stepping, the key frames, the seeks' landings) is the same for both.
-/// <para><b>Exact times.</b> Every picture comes with its own time stamp, from FFmpeg itself: <c>-stats_enc_pre</c> writes one
-/// line per picture on the error pipe, before the picture is written on the output pipe, with the stream's own presentation
-/// time (<c>-copyts</c>, <c>-enc_time_base demux</c>, <c>-fps_mode passthrough</c>: one picture out for each picture decoded,
-/// its stamp untouched). A picture lasts until the next one starts (a stamp is there before its picture), so Matroska's
-/// millisecond clock (420 fps: 0, 2, 5, 7 ms) and B-frames are exact, and nothing depends on where a seek lands.</para>
-/// <para><b>Seeking.</b> FFmpeg is started again with <c>-ss</c> at the moment (<c>-seek_timestamp 1</c>: the file's own
-/// clock; <c>-noaccurate_seek</c>: every picture from the key frame it lands on). For a stream with B-frames FFmpeg seeks
-/// 3/23 s early unless the container seeks by presentation time (Matroska does not, MP4 does): the moment is moved that much
-/// later so it lands on the key frame at or before it; a landing after the moment shows the container was one that needs no
-/// such move, which is then not made for that file again.</para>
-/// <para><b>No filter graph.</b> Only <c>-pix_fmt nv12</c> or <c>p010le</c> (a plane interleave, measured lossless, the range
-/// kept); no rotation (<c>-noautorotate</c>: the frame as coded, as Media Foundation gives it). The colour (matrix, transfer,
-/// range) is the stream's, from ffprobe, in Media Foundation's numbers.</para>
-/// <para><b>On a card of its own</b> (5.2-Release, the user's Q2): where the worker's card has memory of its own (a discrete card: a
-/// GTX 1070 on a Windows without the HEVC Video Extensions), FFmpeg decodes on it (<c>-hwaccel d3d11va</c>, that card's
-/// index) and brings each picture down for the pipe itself, in the same planes. A run that fails there goes again on the processor, and
-/// that file is not tried on the card again. A card that shares the computer's memory decodes on the processor: on a Snapdragon X Elite's
-/// Adreno D3D11VA was slower than its processor (5.2-Arm64AndNpu).</para>
-/// <para>Processes: one FFmpeg at a time per decoder, in the worker's kill-on-close job (JobObjects: it dies with the worker
-/// whatever way the worker ends) and killed when the decoder seeks, ends or is disposed. Its pipes are read on the thread that
-/// drives the decoder (a decode lane), its error pipe on a pool thread.</para>
+/// Fallback decoder for <see cref="MfVideoDecoder"/> when Media Foundation cannot decode a stream (HEVC without the Store HEVC Video
+/// Extensions, e.g. a clean Windows on ARM laptop, or any missing codec or container). FFmpeg decodes and pipes raw NV12 (P010 for 10+ bit)
+/// pictures; the decoder uploads them into the same luma/chroma planes as its CPU decode (UploadSoftware), so the cache, held mode, lane
+/// stepping, key frames and seek landings are shared.
+/// <para><b>Exact times.</b> <c>-stats_enc_pre</c> writes one stamp line per picture on stderr before the picture reaches stdout, with the
+/// stream's own pts (<c>-copyts</c>, <c>-enc_time_base demux</c>, <c>-fps_mode passthrough</c>: one picture per decoded frame, stamps
+/// untouched). A picture lasts until the next stamp, so Matroska's millisecond clock and B-frames are exact regardless of seek landing.</para>
+/// <para><b>Seeking.</b> FFmpeg restarts with <c>-ss</c> (<c>-seek_timestamp 1</c>: file clock; <c>-noaccurate_seek</c>: every picture from
+/// the landing key frame). With B-frames FFmpeg seeks 3/23 s early unless the container seeks by pts (Matroska does not, MP4 does), so the
+/// target is moved that much later; a landing after the target shows the container needs no bias, and the bias is dropped for that file.</para>
+/// <para><b>No filter graph.</b> Only <c>-pix_fmt nv12</c>/<c>p010le</c> (plane interleave, lossless, range kept) and <c>-noautorotate</c>
+/// (frames as coded, like MF). Colour metadata (matrix, transfer, range) comes from ffprobe, mapped to MF enumerations.</para>
+/// <para><b>Discrete adapters</b> (dedicated VRAM, e.g. a GTX 1070 without the HEVC extensions): FFmpeg decodes with <c>-hwaccel d3d11va</c>
+/// on that adapter index and downloads each picture into the same planes. A failed GPU run retries on the CPU and the file is not tried on
+/// the GPU again. Unified-memory adapters decode on the CPU (Adreno D3D11VA measured slower than its CPU).</para>
+/// <para>Processes: one FFmpeg per decoder, in the worker's kill-on-close job (JobObjects: it dies with the worker however it ends), killed
+/// on seek, end or dispose. Stdout is read on the decoder's lane thread, stderr on a pool thread.</para>
 /// </summary>
 internal sealed partial class FfmpegVideoDecoder : IDisposable
 {
-    /// <summary>The FFmpeg and ffprobe the worker decodes with: the app's (DependencyUpdater), handed over on its command line.</summary>
+    /// <summary>FFmpeg and ffprobe paths the worker decodes with (the app's DependencyUpdater copies, passed on its command line).</summary>
     public static string FfmpegPath { get; set; } = "";
 
     public static string FfprobePath { get; set; } = "";
 
-    // FFmpeg's seek moves 3/23 s back for a container that does not seek by presentation time when a stream has B-frames
-    // (fftools' dts heuristic): 130 434 microseconds, so one more lands at the moment itself.
+    // FFmpeg seeks 3/23 s back when a stream has B-frames and the container does not seek by pts (fftools' dts heuristic): 130,434 us,
+    // plus one so the seek lands at the target itself.
     private const long BFrameSeekBias = 130_435;
 
-    /// <summary>How long a picture's stamp is waited for once its picture is read, ms (it is written first: a pipe's lag only).</summary>
+    /// <summary>Maximum wait for a picture's stamp after the picture is read, ms (stamps are written first; this only covers pipe lag).</summary>
     private const int StampWaitMs = 10_000;
 
-    // The prefix of FFmpeg's per-picture lines on the error pipe.
+    // Prefix of FFmpeg's per-picture stamp lines on stderr.
     private const string StampPrefix = "@hp ";
 
-    // How FFmpeg is asked for the stream's own time base: "demux" (7.0 and later), "-1" before; the second is tried when the first is refused.
+    // Keyword for the stream's own time base: "demux" (FFmpeg 7.0+), "-1" before; the second is tried when the first is rejected.
     private static string _timeBase = "demux";
 
     private readonly string _path;
@@ -64,7 +55,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
     private readonly int _card;
     private Run? _run;
 
-    // Where the next run starts: absolute stream time (100 ns); long.MinValue from the file's start.
+    // Start of the next run: absolute stream time (100 ns); long.MinValue = file start.
     private long _from = long.MinValue;
     private bool _ended;
     private long _first = long.MinValue;
@@ -75,28 +66,28 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         Picture = new byte[facts.FrameBytes];
     }
 
-    /// <summary>Why there is no FFmpeg to decode with; null when there is.</summary>
+    /// <summary>Why no FFmpeg is available; null when it is.</summary>
     public static string? Missing =>
         FfmpegPath.Length == 0 || FfprobePath.Length == 0 ? "no FFmpeg is installed"
         : !File.Exists(FfmpegPath) ? $"FFmpeg is not at {FfmpegPath}"
         : !File.Exists(FfprobePath) ? $"ffprobe is not at {FfprobePath}"
         : null;
 
-    /// <summary>What went wrong, without the " failed (0x...)" a <see cref="GpuException"/>'s message ends with (for a message that holds two).</summary>
+    /// <summary>Failure reason without the " failed (0x...)" suffix of a <see cref="GpuException"/> message (for messages combining two).</summary>
     public static string ReasonOf(GpuException ex)
     {
         var at = ex.Message.LastIndexOf(" failed (0x", StringComparison.Ordinal);
         return at > 0 ? ex.Message[..at] : ex.Message;
     }
 
-    /// <summary>The picture read last: luma rows (<see cref="LumaPitch"/> bytes each), then chroma rows from <see cref="ChromaOffset"/>.</summary>
+    /// <summary>Last picture read: luma rows (<see cref="LumaPitch"/> bytes each), then chroma rows from <see cref="ChromaOffset"/>.</summary>
     public byte[] Picture { get; }
 
     public int LumaPitch => _facts.LumaPitch;
     public int ChromaPitch => _facts.ChromaPitch;
     public int ChromaOffset => _facts.ChromaOffset;
 
-    /// <summary>The picture's size, even (as the chroma plane needs; an odd row or column of FFmpeg's picture is left out).</summary>
+    /// <summary>Picture size rounded down to even (as the chroma plane needs; an odd last row or column is dropped).</summary>
     public int Width => _facts.Width & ~1;
 
     public int Height => _facts.Height & ~1;
@@ -104,24 +95,23 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
     /// <summary>P010 (10 bits or more), else NV12.</summary>
     public bool TenBit => _facts.TenBit;
 
-    /// <summary>The stream's colour in Media Foundation's numbers (MFVideoTransferMatrix, MFVideoTransferFunction, MFNominalRange_0_255).</summary>
+    /// <summary>Stream colour in MF enumerations (MFVideoTransferMatrix, MFVideoTransferFunction, MFNominalRange_0_255).</summary>
     public int Matrix => _facts.Matrix;
 
     public int Transfer => _facts.Transfer;
     public bool FullRange => _facts.FullRange;
 
-    /// <summary>One frame's length by the stream's average rate, seconds; 0 when it gives none.</summary>
+    /// <summary>Frame duration from the stream's average rate, seconds; 0 when unknown.</summary>
     public double FrameDuration => _facts.FrameDuration;
 
     public double DurationSeconds => _facts.DurationSeconds;
 
-    /// <summary>The codec, as FFmpeg names it ("hevc"), for the worker's messages.</summary>
+    /// <summary>Codec name as FFmpeg reports it ("hevc"), for worker messages.</summary>
     public string Codec => _facts.Codec;
 
     /// <summary>
-    /// Probes the <paramref name="stream"/>-th video stream (cover pictures not counted, as Media Foundation does not count
-    /// them) of a file, to be decoded on the card of DXGI index <paramref name="card"/> (D3D11VA; -1: on the processor). Throws
-    /// <see cref="GpuException"/> with the reason when there is no FFmpeg or it cannot read it.
+    /// Probes the <paramref name="stream"/>-th video stream (cover art excluded, as MF excludes it) to decode on DXGI adapter
+    /// <paramref name="card"/> (D3D11VA; -1 = CPU). Throws <see cref="GpuException"/> with the reason when FFmpeg is missing or cannot read it.
     /// </summary>
     public static FfmpegVideoDecoder Open(string path, int stream, int card = -1)
     {
@@ -130,12 +120,12 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         return new FfmpegVideoDecoder(path, Math.Max(stream, 0), FactsOf(path, Math.Max(stream, 0)), card);
     }
 
-    /// <summary>The next run decodes on the card (D3D11VA): one was asked for, and this file has not failed there.</summary>
+    /// <summary>True when the next run decodes on the GPU (D3D11VA): an adapter was requested and this file has not failed there.</summary>
     public bool OnCard => _card >= 0 && !_facts.NotOnCard;
 
     /// <summary>
-    /// The next run starts at the key frame at or before <paramref name="ticks"/> (the stream's own time, 100 ns): FFmpeg is
-    /// stopped now and started again when the next picture is read. At or before the first picture, it starts from the file's start.
+    /// Positions the next run at the key frame at or before <paramref name="ticks"/> (stream time, 100 ns): FFmpeg stops now and restarts on
+    /// the next read. At or before the first picture it restarts from the file start.
     /// </summary>
     public void Seek(long ticks)
     {
@@ -145,8 +135,8 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
     }
 
     /// <summary>
-    /// Reads the next picture into <see cref="Picture"/>: its time (the stream's own, 100 ns) and how long it lasts (until the
-    /// next picture; 0 for the last one, or when it is not known). False at the end of the stream (until the next seek).
+    /// Reads the next picture into <see cref="Picture"/> with its stream time (100 ns) and duration (until the next picture; 0 for the last or
+    /// when unknown). False at end of stream (until the next seek).
     /// </summary>
     public bool Read(out long ticks, out long length)
     {
@@ -162,7 +152,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
                 Stop();
                 if (failed is not null && run.OnCard)
                 {
-                    // The card cannot (no D3D11VA there, a profile it lacks): this file on the processor from now on.
+                    // The GPU cannot decode it (no D3D11VA, unsupported profile): use the CPU for this file from now on.
                     _facts.NotOnCard = true;
                     attempt--;
                     continue;
@@ -170,15 +160,15 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
 
                 if (failed is not null && attempt == 0 && _timeBase == "demux" && failed.Contains("time base", StringComparison.OrdinalIgnoreCase))
                 {
-                    // An FFmpeg before 7.0 names the stream's time base -1.
+                    // FFmpeg before 7.0 names the stream time base -1.
                     _timeBase = "-1";
                     continue;
                 }
 
                 if (failed is null && run.Frames == 0 && run.Target != long.MinValue && attempt < 2)
                 {
-                    // A seek that found no picture after where it landed (a container longer than its video): from 2 s further
-                    // back, so the last picture is reached by reading forward to it, as Media Foundation's seek does.
+                    // The seek found no picture after its landing (container longer than its video): retry 2 s earlier so the last
+                    // picture is reached by reading forward, as MF's seek does.
                     var back = run.Target - 20_000_000;
                     _from = _first != long.MinValue && back <= _first ? long.MinValue : back;
                     continue;
@@ -198,7 +188,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
                 throw new GpuException(unchecked((int)0x80004005), "FFmpeg gave a picture without its time");
             }
 
-            // A seek moved later for B-frames that landed after the moment: this container seeks by presentation time; again, unmoved.
+            // A B-frame-biased seek landed after the target: this container seeks by pts; retry without the bias.
             if (number == 0 && run.Biased && ticks > run.Target)
             {
                 _facts.NoSeekBias = true;
@@ -215,13 +205,13 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         return false;
     }
 
-    /// <summary>Starts FFmpeg at <paramref name="from"/> (the stream's own time, 100 ns; long.MinValue for the file's start).</summary>
+    /// <summary>Starts FFmpeg at <paramref name="from"/> (stream time, 100 ns; long.MinValue = file start).</summary>
     private Run Start(long from)
     {
         var biased = from != long.MinValue && _facts.HasBFrames && !_facts.NoSeekBias;
         var arguments = new StringBuilder("-hide_banner -nostdin -nostats -loglevel error -noautorotate");
 
-        // On the card: one decoding thread (the card decodes; FFmpeg's frame threads are not safe with every hardware decoder).
+        // GPU decode: one thread (the GPU decodes; FFmpeg frame threading is unsafe with some hardware decoders).
         var onCard = OnCard;
         if (onCard)
             arguments.Append(CultureInfo.InvariantCulture, $" -hwaccel d3d11va -hwaccel_device {_card} -threads 1");
@@ -229,7 +219,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
             arguments.Append(CultureInfo.InvariantCulture, $" -threads {DecodeThreads}");
         if (from != long.MinValue)
         {
-            // Microseconds, rounded up: FFmpeg reads at most six decimals, and a key frame exactly at the moment must not be missed.
+            // Microseconds rounded up: FFmpeg parses at most six decimals, and a key frame exactly at the target must not be missed.
             var micro = (from + 9) / 10 + (biased ? BFrameSeekBias : 0);
             arguments.Append(CultureInfo.InvariantCulture, $" -seek_timestamp 1 -ss {micro / 1_000_000.0:0.000000} -noaccurate_seek");
         }
@@ -244,7 +234,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         return new Run(process, from, biased) { OnCard = onCard };
     }
 
-    /// <summary>Decode threads for one FFmpeg: a few (a source may have several decoders, each its own FFmpeg).</summary>
+    /// <summary>Decode threads per FFmpeg: a few (a source may run several decoders, each with its own FFmpeg).</summary>
     private static int DecodeThreads => Math.Clamp(Environment.ProcessorCount / 3, 2, 4);
 
     private void Stop()
@@ -255,7 +245,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
 
     public void Dispose() => Stop();
 
-    /// <summary>Starts a tool with its pipes redirected, in the worker's kill-on-close job before it has done much.</summary>
+    /// <summary>Starts a tool with redirected pipes and assigns it to the worker's kill-on-close job immediately.</summary>
     private static Process StartProcess(string program, string arguments, bool binaryOutput)
     {
         var info = new ProcessStartInfo(program, arguments)
@@ -280,14 +270,14 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
             throw new GpuException(unchecked((int)0x80004005), $"{Path.GetFileName(program)} would not start ({ex.Message})");
         }
 
-        // Dies with the worker (KILL_ON_JOB_CLOSE) however it ends; the worker's own job, nested in HandPeg's.
+        // Killed with the worker however it ends (KILL_ON_JOB_CLOSE); the worker's job is nested in HandPeg's.
         JobObjects.Assign(process.Id, ProcessClass.Foreground, efficiencyMode: false);
         return process;
     }
 
-    // ----- The stream's facts (ffprobe, once per file) -----
+    // ----- Stream facts (ffprobe, once per file) -----
 
-    /// <summary>What ffprobe says of a stream, and what seeking in its file has taught: kept for the files probed last.</summary>
+    /// <summary>ffprobe facts for a stream plus what seeking in the file has revealed; cached for recently probed files.</summary>
     private sealed class Facts
     {
         public string Codec = "";
@@ -298,10 +288,10 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         public double FrameDuration, DurationSeconds;
         public bool HasBFrames;
 
-        /// <summary>A seek moved later for B-frames landed after the moment: this file's container seeks by presentation time.</summary>
+        /// <summary>A B-frame-biased seek landed after the target: this file's container seeks by pts.</summary>
         public volatile bool NoSeekBias;
 
-        /// <summary>A run on the card failed for this file: it is decoded on the processor.</summary>
+        /// <summary>A GPU run failed for this file: decode it on the CPU.</summary>
         public volatile bool NotOnCard;
 
         public int LumaPitch => Width * (TenBit ? 2 : 1);
@@ -310,8 +300,8 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         public int FrameBytes => ChromaOffset + ChromaPitch * ((Height + 1) / 2);
     }
 
-    // The facts of the files probed last (path, size, time written, stream): a few numbers each, so a source's second decoder
-    // and every seek's restart need no ffprobe. At most eight files.
+    // Facts of the most recently probed files (path, size, write time, stream) so a source's second decoder and every seek restart skip
+    // ffprobe. At most eight entries.
     private static readonly List<(string Key, Facts Facts)> Known = [];
 
     private static Facts FactsOf(string path, int stream)
@@ -356,8 +346,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         using var process = StartProcess(FfprobePath, arguments, binaryOutput: false);
         var errors = process.StandardError.ReadToEndAsync();
 
-        // Its answer within 30 s, the read itself held to it: a file on a share that stalls (or one ffprobe spins on) must not
-        // keep the lane that opens it waiting for ever.
+        // Bound the answer (and the read itself) to 30 s: a stalled share or a spinning ffprobe must not block the opening lane forever.
         var answer = process.StandardOutput.ReadToEndAsync();
         string json;
         try
@@ -412,7 +401,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
             var range = Text(entry, "color_range");
             facts.FullRange = range == "pc" || range is not "tv" && format.StartsWith("yuvj", StringComparison.Ordinal);
 
-            // An RGB stream (a screen capture, FFV1 or PNG in RGB) is made YUV by FFmpeg's own conversion: BT.601, limited range.
+            // RGB streams (screen captures, FFV1/PNG in RGB) are converted to YUV by FFmpeg: BT.601, limited range.
             if (IsRgb(format))
                 (facts.Matrix, facts.FullRange) = (2, false);
 
@@ -435,7 +424,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
 
     private static string Cut(string text) => text.Length > 200 ? text[..200] + "..." : text;
 
-    // What a tool wrote on its error pipe (read to its end beside its output), or nothing when that could not be read.
+    // The tool's stderr (read to its end alongside stdout), or "" when it could not be read.
     private static string Said(Task<string> errors)
     {
         try
@@ -470,7 +459,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
             ? num / den : 0;
     }
 
-    // The bits of a pixel format's samples, as its name ends ("yuv420p10le", "p010le", "gray12le"); 8 for one that names none.
+    // Sample bit depth from a pixel format name suffix ("yuv420p10le", "p010le", "gray12le"); 8 when none.
     [GeneratedRegex(@"(\d+)(le|be)$")]
     private static partial Regex DepthSuffix();
 
@@ -482,7 +471,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         || format.StartsWith("argb", StringComparison.Ordinal) || format.StartsWith("abgr", StringComparison.Ordinal)
         || format.StartsWith("0rgb", StringComparison.Ordinal) || format.StartsWith("0bgr", StringComparison.Ordinal) || format == "pal8";
 
-    /// <summary>FFmpeg's colour space as MFVideoTransferMatrix: 1 BT.709 (also what a stream that says nothing gets, as Media Foundation's path keeps), 2 BT.601, 3 SMPTE 240M, 4 BT.2020.</summary>
+    /// <summary>FFmpeg colour space as MFVideoTransferMatrix: 1 BT.709 (also the default when unspecified, as on the MF path), 2 BT.601, 3 SMPTE 240M, 4 BT.2020.</summary>
     internal static int MatrixOf(string space) => space switch
     {
         "smpte170m" or "bt470bg" or "fcc" => 2,
@@ -491,7 +480,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         _ => 1,
     };
 
-    /// <summary>FFmpeg's transfer as MFVideoTransferFunction: 15 PQ and 16 HLG are what the renderer acts on; the rest as Media Foundation numbers them, 0 not said.</summary>
+    /// <summary>FFmpeg transfer as MFVideoTransferFunction: the renderer acts on 15 (PQ) and 16 (HLG); others per MF numbering; 0 unspecified.</summary>
     internal static int TransferOf(string transfer) => transfer switch
     {
         "linear" => 1,
@@ -508,16 +497,16 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         _ => 0,
     };
 
-    // ----- One run of FFmpeg -----
+    // ----- One FFmpeg run -----
 
-    /// <summary>One FFmpeg process: its output pipe read picture by picture, its error pipe's stamps kept as they come.</summary>
+    /// <summary>One FFmpeg process: stdout read picture by picture, stderr stamps collected as they arrive.</summary>
     private sealed class Run : IDisposable
     {
         private readonly Process _process;
         private readonly Stream _output;
         private readonly object _gate = new();
 
-        // The stamps of the pictures from _offset on (100 ns, the stream's own time); long.MinValue for one not read.
+        // Stamps of pictures from _offset on (100 ns, stream time); long.MinValue for an unparsable stamp.
         private readonly List<long> _stamps = [];
         private int _offset;
         private bool _errorsEnded;
@@ -533,15 +522,15 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
             process.BeginErrorReadLine();
         }
 
-        /// <summary>Where it was started (long.MinValue: the file's start), and whether the B-frame move was made.</summary>
+        /// <summary>Start position (long.MinValue = file start) and whether the B-frame seek bias was applied.</summary>
         public long Target { get; }
 
         public bool Biased { get; }
 
-        /// <summary>This run decodes on the card (D3D11VA).</summary>
+        /// <summary>True when this run decodes on the GPU (D3D11VA).</summary>
         public bool OnCard { get; init; }
 
-        /// <summary>The pictures read so far.</summary>
+        /// <summary>Pictures read so far.</summary>
         public int Frames { get; private set; }
 
         private void OnError(object sender, DataReceivedEventArgs e)
@@ -554,8 +543,8 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
                 }
                 else if (line.IndexOf(StampPrefix, StringComparison.Ordinal) is >= 0 and var at)
                 {
-                    // A stamp, wherever it is on the line: the encoder's thread writes it outside the log's lock, so it can land
-                    // after a log line's "[hevc @ ...]" prefix (and that line's message on the next line).
+                    // A stamp anywhere on the line: the encoder thread writes it outside the log lock, so it can land after a log
+                    // line's "[hevc @ ...]" prefix (with that line's message on the next line).
                     _stamps.Add(ParseStamp(line.AsSpan(at + StampPrefix.Length)));
                 }
                 else if (line.Trim() is { Length: > 0 } said)
@@ -569,7 +558,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
             }
         }
 
-        /// <summary>"pts num/den" as 100 ns; long.MinValue when it cannot be read (the picture's place in the list is kept).</summary>
+        /// <summary>Parses "pts num/den" into 100 ns; long.MinValue when unreadable (the picture keeps its slot in the list).</summary>
         private static long ParseStamp(ReadOnlySpan<char> text)
         {
             var space = text.IndexOf(' ');
@@ -583,13 +572,13 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
                 return long.MinValue;
             }
 
-            // pts x num / den seconds, in 100 ns, rounded to the nearest (128 bits: a 90 kHz clock hours in does not overflow).
+            // pts x num / den seconds in 100 ns, rounded to nearest (Int128: no overflow hours into a 90 kHz clock).
             var scaled = (Int128)pts * 10_000_000 * num;
             var half = (Int128)den / 2;
             return (long)((scaled >= 0 ? scaled + half : scaled - half) / den);
         }
 
-        /// <summary>Reads one whole picture; false when the pipe ended first (the end of the stream, or FFmpeg stopped).</summary>
+        /// <summary>Reads one whole picture; false when the pipe ended first (end of stream, or FFmpeg stopped).</summary>
         public bool ReadPicture(byte[] into)
         {
             var got = 0;
@@ -615,9 +604,9 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
         }
 
         /// <summary>
-        /// The stamp of picture <paramref name="number"/> (from 0 in this run), waited for while FFmpeg is still writing (the
-        /// stamp of a picture read is there already; the next one's comes as soon as that picture is decoded). False when FFmpeg
-        /// ended without it (the last picture's next), or it could not be read.
+        /// Stamp of picture <paramref name="number"/> (0-based in this run), waiting while FFmpeg is still writing (a read picture's stamp is
+        /// already there; the next arrives once that picture decodes). False when FFmpeg ended without it (after the last picture) or it was
+        /// unreadable.
         /// </summary>
         public bool Stamp(int number, out long ticks)
         {
@@ -633,7 +622,7 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
                     MfVideoDecoder.Beat?.Invoke();
                 }
 
-                // What is before the picture before this one is not asked for again.
+                // Stamps older than the previous picture are never requested again: trim them.
                 var behind = Math.Min(number - 1 - _offset, _stamps.Count);
                 if (behind > 1024)
                 {
@@ -647,13 +636,13 @@ internal sealed partial class FfmpegVideoDecoder : IDisposable
             }
         }
 
-        /// <summary>What FFmpeg said when it ended without a picture: its last lines, or its exit code; null when it said nothing wrong.</summary>
+        /// <summary>FFmpeg's failure when it ended without a picture: its last lines, or its exit code; null when it reported nothing wrong.</summary>
         public string? Failure()
         {
             var exited = _process.WaitForExit(2000);
             lock (_gate)
             {
-                // Its last words come down the error pipe after it ended: waited for, briefly.
+                // Its last stderr lines arrive after exit: wait briefly for them.
                 var deadline = Environment.TickCount64 + 1000;
                 while (exited && !_errorsEnded && Environment.TickCount64 < deadline)
                     Monitor.Wait(_gate, 50);

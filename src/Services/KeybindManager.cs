@@ -4,8 +4,7 @@ using System.Windows.Input;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// A key or a mouse button with the modifier keys held with it: what a shortcut is bound to. Compared by value, so it is
-/// its own dictionary key (a key press looks its action up without allocating).
+/// Shortcut chord: key or mouse button plus modifiers. Value equality, usable as an allocation-free dictionary key.
 /// </summary>
 public readonly record struct InputChord(ModifierKeys Mods, Key Key, MouseButton? Button = null)
 {
@@ -13,7 +12,7 @@ public readonly record struct InputChord(ModifierKeys Mods, Key Key, MouseButton
 
     public bool IsEmpty => Key == Key.None && Button is null;
 
-    /// <summary>The same chord without Shift: a held navigation key goes faster with it, and is looked up without it.</summary>
+    /// <summary>Chord without Shift (Shift accelerates held navigation keys and is ignored for lookup).</summary>
     public InputChord WithoutShift => this with { Mods = Mods & ~ModifierKeys.Shift };
 
     public override string ToString() => KeybindManager.Format(this);
@@ -28,32 +27,29 @@ public enum KeyActionFlags
     /// <summary>Runs even while a text box has the keyboard (saving).</summary>
     WorksInText = 1,
 
-    /// <summary>Its own chords cannot be taken from it or given to another action (undo and redo, 4.3E's rules).</summary>
+    /// <summary>Fixed chords that cannot be reassigned (undo, redo).</summary>
     Fixed = 2,
 
     /// <summary>Runs again while its key repeats (stepping, zooming); any other action runs once per press.</summary>
     Repeat = 4,
 
     /// <summary>
-    /// Runs every frame while its key is held (the zoom and pan of W, A, S and D, 4.4-BugHunt): the first press starts it, the
-    /// key's repeats are swallowed, and letting the key go stops it. Pressed alone (Shift goes faster).
+    /// Runs every frame while held (WASD zoom/pan): press starts, auto-repeats are swallowed, release stops. Unmodified (Shift accelerates).
     /// </summary>
     Continuous = 8,
 
-    /// <summary>Held, not pressed: shown while its key is down (X-Ray); a quick tap of Tab still moves the keyboard on.</summary>
+    /// <summary>Active while held (X-Ray); a quick Tap of Tab still moves focus.</summary>
     Hold = 16,
 
     /// <summary>
-    /// Changes the project, or opens something over it (a dialog, the dial): while a drag on the timeline is held its key is
-    /// taken and does nothing (4.4-BugHunt), so the drag never ends on a project changed under it.
+    /// Mutates the project or opens a dialog/dial: swallowed during a timeline drag so the drag never commits onto a changed project.
     /// </summary>
     ChangesProject = 32,
 }
 
 /// <summary>
-/// An action a shortcut or the Lightning Dial can run, as the keybind map and the dial show it. <paramref name="Also"/> are
-/// more default chords that are not fixed (Mouse 4 for Undo, whose Ctrl+Z is): a preset has them, and the user may take them
-/// off or give them to something else.
+/// Bindable action for shortcuts and the Lightning Dial. <paramref name="Also"/> lists extra non-fixed default chords (e.g. Mouse 4 for
+/// Undo) that presets include and users may remove or reassign.
 /// </summary>
 public sealed record KeyAction(string Id, string Label, string Category, string Glyph, string[] Defaults, KeyActionFlags Flags = KeyActionFlags.None,
     string[]? Also = null)
@@ -62,11 +58,9 @@ public sealed record KeyAction(string Id, string Label, string Category, string 
 }
 
 /// <summary>
-/// Every global shortcut of HandPeg (4.4): the actions, the presets, the user's own changes, and the lookup from a pressed
-/// chord to the action it runs. The main window's key handler asks <see cref="Resolve"/>; menus show
-/// <see cref="GestureText"/>. Nothing here touches the visual tree or the disk: the map is made from the settings in memory,
-/// the first time a key is looked up, never before the first frame. One layer of keys (4.4-BugHunt): the navigation keys
-/// are ordinary keys that act while held (<see cref="KeyActionFlags.Continuous"/>), not a layer of the right button's.
+/// Global shortcut map: actions, presets, user overrides, and chord-to-action lookup (<see cref="Resolve"/>; menus use
+/// <see cref="GestureText"/>). No visual tree or disk access; the map is built lazily from in-memory settings on first lookup, never
+/// before Frame 1. Single key layer: navigation keys act while held (<see cref="KeyActionFlags.Continuous"/>).
 /// </summary>
 public static class KeybindManager
 {
@@ -79,11 +73,9 @@ public static class KeybindManager
     public static IReadOnlyList<string> Categories { get; } = [Project, Transport, Editing, Markers, View, Navigation, Keyframes, Tools];
 
     /// <summary>
-    /// Every action, in the order the keybind list shows them (and the order that wins a hand-made conflict). The left hand's
-    /// cluster (4.4-BugHunt, the user's layout): 1 to 7 open the dial's categories, Tab holds X-Ray, Q and E step a frame, W
-    /// and S zoom, A and D pan, R ripple-deletes, T keys, Caps Lock snaps, F splits, G links, Z and X go to the edit points,
-    /// C marks, V sets the in point, B removes dead air; Space plays, Mouse 5 opens the dial and Mouse 4 undoes. A cluster
-    /// key is first in its action's list (menus and tooltips show the first); the keys it had before stay after it.
+    /// All actions in keybind-list order (earlier wins hand-edited conflicts). Left-hand cluster: 1-7 dial categories, Tab X-Ray, Q/E frame
+    /// step, W/S zoom, A/D pan, R ripple delete, T keyframe, Caps snap, F split, G link, Z/X edit points, C marker, V in point, B dead air;
+    /// Space play, Mouse 5 dial, Mouse 4 undo. The cluster key is listed first (shown in menus/tooltips), legacy keys after.
     /// </summary>
     public static IReadOnlyList<KeyAction> Actions { get; } =
     [
@@ -94,13 +86,12 @@ public static class KeybindManager
         new("edit.redo", "Redo", Project, "\uE7A6", ["Ctrl+Y", "Ctrl+Shift+Z"], KeyActionFlags.Fixed | KeyActionFlags.Repeat | KeyActionFlags.ChangesProject),
         new("file.addMedia", "Add Media", Project, "\uE710", [], KeyActionFlags.ChangesProject),
         new("ui.settings", "Settings", Project, "\uE713", [], KeyActionFlags.ChangesProject),
-        // The title bar's project tabs (5.4A, MainWindow.ProjectTabs.cs): a new one, the one in front closed, the next and the one before.
-        // Taken before a focused control (a text box, a tab strip's own Ctrl+Tab) as saving is.
+        // Project tabs (MainWindow.ProjectTabs.cs): new, close active, next, previous. Pre-empt focused controls, like Save.
         new("tab.new", "New Project Tab", Project, "\uE710", ["Ctrl+T"], KeyActionFlags.WorksInText),
         new("tab.close", "Close Project Tab", Project, "\uE8BB", ["Ctrl+W"], KeyActionFlags.WorksInText),
         new("tab.next", "Next Project Tab", Project, "\uE76C", ["Ctrl+Tab"], KeyActionFlags.WorksInText),
         new("tab.prev", "Previous Project Tab", Project, "\uE76B", ["Ctrl+Shift+Tab"], KeyActionFlags.WorksInText),
-        // The Auto-Captions dialog, from anywhere (5.1-Polish: the dial HandPeg comes with has it). Unbound.
+        // Auto-Captions dialog (on the default dial). Unbound.
         new("captions.generate", "Generate Auto-Captions...", Tools, "\uE7F0", [], KeyActionFlags.ChangesProject),
 
         new("transport.playPause", "Play / Pause", Transport, "\uE768", ["Space"]),
@@ -122,18 +113,18 @@ public static class KeybindManager
         new("clip.toggleLink", "Link / Unlink A/V", Editing, "\uE71B", ["G", "U"], KeyActionFlags.ChangesProject),
         new("edit.deadAir", "Remove Dead Air...", Editing, "\uE74F", ["B"], KeyActionFlags.ChangesProject),
         new("edit.bypassEffects", "Bypass Sequence Effects", Editing, "\uE711", [], KeyActionFlags.ChangesProject),
-        // The clip clipboard (5.2A): the selected clips with their Cutouts, pasted at the playhead; Duplicate right after them; Paste Attributes onto the selection.
+        // Clip clipboard: copy selection with Cutouts, paste at playhead, duplicate after, Paste Attributes onto selection.
         new("edit.copy", "Copy Clips", Editing, "\uE8C8", ["Ctrl+C"]),
         new("edit.cut", "Cut Clips", Editing, "\uE8C6", ["Ctrl+X"], KeyActionFlags.ChangesProject),
         new("edit.paste", "Paste Clips at Playhead", Editing, "\uE77F", ["Ctrl+V"], KeyActionFlags.ChangesProject),
         new("edit.duplicate", "Duplicate Clips", Editing, "\uF413", ["Ctrl+D"], KeyActionFlags.ChangesProject),
         new("edit.pasteAttributes", "Paste Attributes...", Editing, "\uE77F", ["Ctrl+Alt+V"], KeyActionFlags.ChangesProject),
-        // A clip onto a track above or below (5.4A): the next track that way where it is free, else a new track there; its family with it.
+        // Move clip (with family) to the next free track above/below, creating one if needed.
         new("clip.newTrackAbove", "Move Clip to Track Above", Editing, "\uE74A", ["Alt+Up"], KeyActionFlags.ChangesProject),
         new("clip.newTrackBelow", "Move Clip to Track Below", Editing, "\uE74B", ["Alt+Down"], KeyActionFlags.ChangesProject),
 
         new("marker.add", "Add Marker", Markers, "\uE7C1", ["C", "M"], KeyActionFlags.ChangesProject),
-        // Ping-to-Mark (5.2C): a highlight at the playhead; Alt + a click on the player's picture also marks where to look.
+        // Ping-to-Mark: highlight at the playhead; Alt+click on the player also marks a point.
         new("marker.ping", "Ping-to-Mark Highlight", Markers, "\uE735", ["Ctrl+J"], KeyActionFlags.ChangesProject),
         new("marker.next", "Next Marker", Markers, "\uE893", ["Shift+M"], KeyActionFlags.Repeat),
         new("marker.prev", "Previous Marker", Markers, "\uE892", ["Ctrl+Shift+M"], KeyActionFlags.Repeat),
@@ -142,14 +133,14 @@ public static class KeybindManager
 
         new("view.zoomIn", "Zoom Timeline In", View, "\uE8A3", ["="], KeyActionFlags.Repeat),
         new("view.zoomOut", "Zoom Timeline Out", View, "\uE71F", ["-"], KeyActionFlags.Repeat),
-        // 5.6.0: Shift+\ (\ alone is the grade's Before/After, held).
+        // Shift+\ (plain \ is the held grade Before/After).
         new("view.fit", "Fit Timeline", View, "\uE9A6", ["Shift+\\"]),
-        // The grade's Before/After (5.6.0, the Color Studio): the picture without its grade while \ is held.
+        // Color Studio Before/After: shows the ungraded picture while \ is held.
         new("view.compareGrade", "Before/After (Hold)", View, "\uE7B3", ["\\"], KeyActionFlags.Hold),
         new("view.toggleSnap", "Toggle Snap", View, "\uE80A", ["Caps"]),
-        // The player as the GPU engine's 3D exploded layer stack, and back (5.0D). Unbound: the left hand's keys are all taken.
+        // Toggle 3D Exploded View. Unbound by default (left-hand cluster is full).
         new("view.exploded3d", "3D Exploded View", View, "\uE81E", []),
-        // The player over its whole monitor, and back (5.4.4, MainWindow.Fullscreen.cs): F11, as in a browser or a video player. Esc also comes back.
+        // Toggle fullscreen player (MainWindow.Fullscreen.cs): F11; Esc also exits.
         new("view.fullscreen", "Fullscreen Preview", View, "\uE740", ["F11"]),
 
         new("nav.forward", "Zoom In Under the Pointer", Navigation, "\uE8A3", ["W"], KeyActionFlags.Continuous),
@@ -162,7 +153,7 @@ public static class KeybindManager
         new("key.next", "Next Keyframe", Keyframes, "\uE893", [], KeyActionFlags.Repeat),
 
         new("ui.dial", "Lightning Dial", Tools, "\uE945", ["Mouse5"], KeyActionFlags.ChangesProject),
-        // A slice's own key (5.1-AutoHud-Part1, the user's Q1: a slice that holds an action runs it, one that holds a category opens on it).
+        // Dial slice keys: run the slice's action or open its category.
         new("ui.dial1", "Lightning Dial: Slice 1", Tools, "\uE945", ["1"], KeyActionFlags.ChangesProject),
         new("ui.dial2", "Lightning Dial: Slice 2", Tools, "\uE945", ["2"], KeyActionFlags.ChangesProject),
         new("ui.dial3", "Lightning Dial: Slice 3", Tools, "\uE945", ["3"], KeyActionFlags.ChangesProject),
@@ -188,8 +179,8 @@ public static class KeybindManager
     /// <summary>The key maps to start from, HandPeg's own first (the settings' preset box lists these).</summary>
     public static IReadOnlyList<string> PresetNames { get; } = [AppSettings.DefaultKeybindPreset, BroadcastPreset, RazorPreset, ColorPreset];
 
-    // Each preset is a set of changes to WASD (Default): an action named here has these chords instead of its own (a fixed
-    // action keeps its own and gains these). No preset gives a chord to two actions (CheckPresets).
+    // Presets are overrides on WASD (Default): listed actions get these chords instead (fixed actions add them). No preset binds a chord
+    // twice (CheckPresets).
     private static readonly Dictionary<string, Dictionary<string, string[]>> PresetChanges = new()
     {
         [AppSettings.DefaultKeybindPreset] = [],
@@ -201,8 +192,7 @@ public static class KeybindManager
         },
         [RazorPreset] = new()
         {
-            // The razor keeps its blade on C and its trims on Q and W: the marker stays on M, a frame back on Left, and the
-            // timeline zooms with = and - (A and D still pan).
+            // Razor on C, trims on Q/W; marker on M, frame back on Left, zoom on =/- (A/D still pan).
             ["edit.split"] = ["C"],
             ["marker.add"] = ["M"],
             ["edit.trimStart"] = ["Q"],
@@ -217,19 +207,18 @@ public static class KeybindManager
             ["key.toggle"] = ["T", "Alt+K"],
             ["key.prev"] = ["["],
             ["key.next"] = ["]"],
-            // Ctrl+D duplicates clips everywhere since 5.2A: the bypass moved to Ctrl+Shift+D here.
+            // Ctrl+D is Duplicate globally, so bypass uses Ctrl+Shift+D.
             ["edit.bypassEffects"] = ["Ctrl+Shift+D"],
         },
     };
 
     /// <summary>
-    /// The preset of this name, or WASD (Default) for a name that is not (any more) one of them: the old "HandPeg Default" and
-    /// "FPS Gamer" (merged into it in 4.4.0, the NLE marker keys kept) both land there.
+    /// Preset by name; unknown or retired names ("HandPeg Default", "FPS Gamer") map to WASD (Default).
     /// </summary>
     public static string KnownPreset(string? name) =>
         name is not null && PresetChanges.ContainsKey(name) ? name : AppSettings.DefaultKeybindPreset;
 
-    /// <summary>Every action's chords as a preset has them (a new set of lists each time: the keybind page edits them).</summary>
+    /// <summary>All action chords for a preset (fresh lists; the Keybinds page mutates them).</summary>
     public static Dictionary<string, List<InputChord>> PresetChords(string preset)
     {
         var chords = new Dictionary<string, List<InputChord>>(Actions.Count);
@@ -250,8 +239,7 @@ public static class KeybindManager
     }
 
     /// <summary>
-    /// What is wrong with the presets: a chord one of them gives to two actions, or one that cannot be bound where it is.
-    /// Empty when all is well (for the test harnesses: HandPeg itself never asks).
+    /// Preset validation errors (duplicate or unbindable chords); empty when valid. Test-only.
     /// </summary>
     public static List<string> CheckPresets()
     {
@@ -285,16 +273,16 @@ public static class KeybindManager
 
     private static Map? _map;
 
-    // Made the first time a key is looked up (never while the settings themselves are being loaded: they are read here).
-    // (Nothing before the first frame may touch this class: its table of actions is made with it. KeyTip's stand-ins ask it nothing.)
+    // Built lazily on first lookup (never during settings load). Must not be touched before Frame 1: the action table is built with
+    // the class; KeyTip placeholders do not query it.
     private static Map Current => _map ??= Build(AppSettings.Current.KeybindPreset, AppSettings.Current.CustomKeybinds);
 
     private static List<DialCategoryState>? _dial;
 
-    /// <summary>Raised when the map or the dial was replaced (the settings were saved): menus and tooltips read the keys again.</summary>
+    /// <summary>Raised when the map or dial is replaced (settings saved) so menus and tooltips refresh.</summary>
     public static event Action? Changed;
 
-    /// <summary>Puts a saved set of settings into effect: their preset, the user's own keys and the dial.</summary>
+    /// <summary>Applies saved settings: preset, user overrides and dial.</summary>
     public static void Reload(AppSettings settings)
     {
         _map = Build(settings.KeybindPreset, settings.CustomKeybinds);
@@ -321,9 +309,8 @@ public static class KeybindManager
     }
 
     /// <summary>
-    /// A preset with the user's changes over it; a changed chord that cannot be bound is left out. A key the user gave an
-    /// action is that action's alone (4.4-BugHunt): another action's default (a newer HandPeg's, or the preset's) gives it up,
-    /// so a key of the user's never starts running something else after an update.
+    /// Preset plus user overrides (unbindable chords dropped). User-assigned keys are exclusive: conflicting defaults (preset or newer
+    /// versions) yield, so an update never rebinds a user's key.
     /// </summary>
     internal static Dictionary<string, List<InputChord>> Effective(string preset, Dictionary<string, List<string>>? custom)
     {
@@ -359,7 +346,7 @@ public static class KeybindManager
     public static IReadOnlyList<InputChord> ChordsOf(string actionId) =>
         Current.Chords.TryGetValue(actionId, out var chords) ? chords : [];
 
-    /// <summary>Whether a key of the action is held down now (a held navigation action's: its chords are keys alone).</summary>
+    /// <summary>True while any key of a held (navigation) action is down.</summary>
     public static bool IsHeld(string actionId)
     {
         if (!Current.Chords.TryGetValue(actionId, out var chords))
@@ -372,8 +359,7 @@ public static class KeybindManager
     }
 
     /// <summary>
-    /// The shortcut to show beside an action's name ("Ctrl+S", "Hold Tab"), for a menu item's InputGestureText or a tooltip;
-    /// "" while the action has no key. Never put into a header's text: it changes when the keys are rebound.
+    /// Display shortcut ("Ctrl+S", "Hold Tab") for InputGestureText or tooltips; "" when unbound. Not for static header text (changes on rebind).
     /// </summary>
     public static string GestureText(string actionId) => Current.Gestures.GetValueOrDefault(actionId, "");
 
@@ -381,7 +367,7 @@ public static class KeybindManager
     public static string WithGesture(string label, string actionId) =>
         GestureText(actionId) is { Length: > 0 } keys ? $"{label} ({keys})" : label;
 
-    // ----- Undo and redo stay fixed (4.3E) -----
+    // ----- Fixed undo/redo chords -----
 
     /// <summary>Ctrl+Z, wherever it is pressed (dialogs with an undo of their own use this too).</summary>
     public static bool IsUndo(KeyEventArgs e) => e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.Control;
@@ -392,7 +378,7 @@ public static class KeybindManager
 
     // ----- Chords from input -----
 
-    /// <summary>The chord a key press is: the key as typed (Alt's system key, an IME's key), with the modifiers held now.</summary>
+    /// <summary>Chord for a key event: effective key (resolving Alt system keys and IME keys) plus current modifiers.</summary>
     public static InputChord ChordOf(KeyEventArgs e) => new(Keyboard.Modifiers, Normalize(KeyOf(e)));
 
     /// <summary>The chord a mouse button press is, with the modifiers held now.</summary>
@@ -465,7 +451,7 @@ public static class KeybindManager
         _ => "Mouse5",
     };
 
-    /// <summary>The text form of a chord: its modifiers in the order Ctrl, Alt, Shift, Win, then the key or button.</summary>
+    /// <summary>Text form of a chord: modifiers (Ctrl, Alt, Shift, Win) then key or button.</summary>
     public static string Format(InputChord chord)
     {
         var mods = chord.Mods;
@@ -552,8 +538,8 @@ public static class KeybindManager
         if (chord.Key is Key.NumLock or Key.Scroll or Key.PrintScreen)
             return "That key belongs to the keyboard and to Windows.";
 
-        // Caps Lock may run an action (4.4-BugHunt: it toggles snapping), alone and once per press: HandPeg switches the
-        // capitals back as the key is let go, which a key held for an action, or one held with others, would not allow.
+        // Caps Lock may run an action (snap toggle) alone, once per press; its lock state is restored on release, which fails if held
+        // or combined.
         if (chord.Key == Key.CapsLock && mods != ModifierKeys.None)
             return "Caps Lock is pressed alone.";
         if (chord.Key == Key.CapsLock && action is not null && action.Has(KeyActionFlags.Hold | KeyActionFlags.Continuous))
@@ -569,8 +555,7 @@ public static class KeybindManager
         if (action is not null && action.Has(KeyActionFlags.Hold) && (chord.IsMouse || mods != ModifierKeys.None))
             return "A held action takes a key alone.";
 
-        // An action that runs even while a text box has the keyboard (Save, Save As) takes its key before the box does, so
-        // a key that types or edits text there would never reach it: it needs Ctrl or Alt held, or an F-key.
+        // Actions that pre-empt text boxes (Save, Save As) require Ctrl/Alt or an F-key so they never steal typing keys.
         if (action is not null && action.Has(KeyActionFlags.WorksInText) && !chord.IsMouse
             && (mods & (ModifierKeys.Control | ModifierKeys.Alt)) == 0 && chord.Key is not (>= Key.F1 and <= Key.F24))
             return $"{action.Label} works while typing in a text box: hold Ctrl or Alt with the key, or use an F-key.";
@@ -583,7 +568,7 @@ public static class KeybindManager
         return null;
     }
 
-    /// <summary>The load-time cleanup of the user's keys (AppSettings.Input.cs): chords that can never work are dropped and logged.</summary>
+    /// <summary>Load-time cleanup of user keys (AppSettings.Input.cs): drops and logs invalid chords.</summary>
     internal static void CleanUp(Dictionary<string, List<string>> custom)
     {
         foreach (var id in custom.Keys.ToList())
@@ -609,8 +594,7 @@ public static class KeybindManager
     // ----- The Lightning Dial -----
 
     /// <summary>
-    /// How many slices the dial's top level has (5.1-Polish: each an action run at once, or a category), and how many actions a
-    /// category holds.
+    /// Dial top-level slice count (each an action or category) and actions per category.
     /// </summary>
     public const int DialSlices = 8, DialSlots = 7;
 
@@ -618,9 +602,8 @@ public static class KeybindManager
     public static IReadOnlyList<DialCategoryState> Dial => _dial ??= Normalized(AppSettings.Current.LightningDial);
 
     /// <summary>
-    /// The dial HandPeg comes with (5.1-Polish, the user's directive: eight actions, each run with one flick, and no
-    /// categories): Play / Pause, Split, Ripple Delete, Remove Dead Air, Keyframe, Auto-Captions, the 3D view, Undo. New
-    /// lists each time.
+    /// Default dial: eight one-flick actions, no categories (Play/Pause, Split, Ripple Delete, Remove Dead Air, Keyframe, Auto-Captions,
+    /// 3D view, Undo). Fresh lists per call.
     /// </summary>
     public static List<DialCategoryState> DefaultDial() =>
     [
@@ -633,8 +616,8 @@ public static class KeybindManager
         new() { Action = id, Name = ById.TryGetValue(id, out var action) ? action.Label.TrimEnd('.') : id, Glyph = ById.TryGetValue(id, out var known) ? known.Glyph : "" };
 
     /// <summary>
-    /// The seven categories the dial came with before 5.1-Polish (its eighth slice opened Settings): what a slice made a
-    /// category in the settings starts as (<see cref="CategoryFor"/>), and how a dial saved then is told from one changed.
+    /// Legacy seven-category dial (eighth slice opened Settings): seeds new categories (<see cref="CategoryFor"/>) and detects untouched
+    /// legacy dials.
     /// </summary>
     private static List<DialCategoryState> LegacyCategories() =>
     [
@@ -647,7 +630,7 @@ public static class KeybindManager
         new() { Name = "Tools", Glyph = "\uE945", Actions = ["edit.deadAir", "edit.bypassEffects", "ui.xray", "view.fit", "file.addMedia", "ui.settings", "help.tour"] },
     ];
 
-    /// <summary>A category for slice <paramref name="slice"/> as the settings make one (the dial's old category of that slice, or the Tools one).</summary>
+    /// <summary>Initial category for slice <paramref name="slice"/> (its legacy category, else Tools).</summary>
     public static DialCategoryState CategoryFor(int slice)
     {
         var legacy = LegacyCategories();
@@ -655,9 +638,8 @@ public static class KeybindManager
     }
 
     /// <summary>
-    /// A dial with exactly eight slices, each an action HandPeg has (not a held one) or a category of seven slots, every slot
-    /// such an action or "". A dial saved before 5.1-Polish (seven categories, Settings in the eighth slice) keeps its
-    /// categories and Settings, unless it is the dial HandPeg came with then, untouched: that is the new one.
+    /// Normalizes to exactly eight slices, each a non-held action or a seven-slot category (slots: action or ""). Customized legacy dials
+    /// keep their categories and Settings slice; an untouched legacy default becomes the new default.
     /// </summary>
     public static List<DialCategoryState> Normalized(List<DialCategoryState>? dial)
     {
@@ -665,7 +647,7 @@ public static class KeybindManager
         if (dial is null || IsLegacyDefault(dial))
             return defaults;
 
-        // Seven categories (the shape before 5.1-Polish): Settings in the eighth slice, as it always was there.
+        // Legacy shape: seven categories with Settings in slice eight.
         List<DialCategoryState> given = dial.Count == DialSlices - 1 && dial.All(s => s is not null && string.IsNullOrEmpty(s.Action))
             ? [.. dial, Leaf("ui.settings")]
             : dial;
@@ -701,7 +683,7 @@ public static class KeybindManager
         static bool Runnable(string id) => ById.TryGetValue(id, out var known) && !known.Has(KeyActionFlags.Continuous);
     }
 
-    /// <summary>Whether a saved dial is the seven categories HandPeg came with before 5.1-Polish, untouched.</summary>
+    /// <summary>True for an unmodified legacy seven-category dial.</summary>
     private static bool IsLegacyDefault(List<DialCategoryState> dial)
     {
         var legacy = LegacyCategories();
@@ -720,8 +702,8 @@ public static class KeybindManager
 }
 
 /// <summary>
-/// The keys being edited on the settings' Keybinds page: a preset with the user's changes over it. Nothing is in effect until
-/// the settings are saved (<see cref="ToSettings"/>, then <see cref="KeybindManager.Reload"/>).
+/// Editable keymap for the Keybinds page (preset plus overrides); applied only on save (<see cref="ToSettings"/>, then
+/// <see cref="KeybindManager.Reload"/>).
 /// </summary>
 public sealed class KeybindDraft
 {
@@ -754,13 +736,12 @@ public sealed class KeybindDraft
     public bool IsConflicted(string actionId, InputChord chord) =>
         KeybindManager.Action(actionId) is not null && ActionsOn(chord).Count > 1;
 
-    /// <summary>A chord that cannot be taken off its action (undo's and redo's own; Mouse 4 is Undo's only by default).</summary>
+    /// <summary>True for fixed chords (undo/redo; Mouse 4 for Undo is only a default).</summary>
     public static bool IsFixed(string actionId, InputChord chord) =>
         KeybindManager.Action(actionId) is { } action && action.Has(KeyActionFlags.Fixed) && action.Defaults.Any(d => KeybindManager.Parse(d) == chord);
 
     /// <summary>
-    /// Changes the preset, keeping the user's own changes over it (what was changed from the old preset is changed from the
-    /// new one in the same way).
+    /// Switches preset, reapplying user overrides (diffs against the old preset) onto the new one.
     /// </summary>
     public void SetPreset(string preset)
     {
@@ -775,8 +756,7 @@ public sealed class KeybindDraft
     }
 
     /// <summary>
-    /// Gives an action a chord (also), taking it from any other action that has it. Returns why it cannot be, or null;
-    /// <paramref name="took"/> names the action it was taken from.
+    /// Adds a chord to an action, removing it from any other. Returns an error or null; <paramref name="took"/> names the previous owner.
     /// </summary>
     public string? Bind(string actionId, InputChord chord, out KeyAction? took)
     {

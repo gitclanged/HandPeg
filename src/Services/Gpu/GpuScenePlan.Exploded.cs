@@ -1,25 +1,20 @@
 namespace HandPegApp.Services.Gpu;
 
-// ----- The 3D exploded view's places (Pass 5.0-Release) -----
-// In the 3D view each layer is a plane at its place in the stack. A place is its track's (a blur fill's twin has one of its
-// own, behind every track's pictures, where the flat picture draws it: 5.4A, the twins at the bottom of the stack; 5.2.0 put it
-// behind its video's family, and until then it shared its video's plane), or, for what lies over every track, its own (the whole picture's look and fade, the
-// subtitle pictures, the captions), numbered in the order the compositor draws them, the same for the whole plan: a layer
-// that comes or goes (a caption between its cues, a karaoke line's sung half, a layer waiting for its texture) never moves
-// the planes above it, and the stack's depth (the camera orbits its middle) never changes while the plan is drawn. The
-// places are worked out once, the first time a plan is drawn in 3D, on the thread that evaluates it; reading them
-// allocates nothing.
+// ----- 3D exploded view depth planes -----
+// Each layer draws as a plane at its stack depth: its track's plane, a per-track plane for blur-fill twins (beneath every track, where
+// the flat render draws them), or one plane per overlay kind (sequence look/fade, subtitle pictures, captions), numbered in draw order.
+// Depths are fixed per plan, so layers appearing or disappearing never shift the planes above or the stack depth the camera orbits.
+// Built lazily on the evaluating thread the first time the plan draws in 3D; lookups are allocation-free.
 public sealed partial class GpuScenePlan
 {
-    /// <summary>Each clip's place by its key (its track's), each blur fill's (its twin's, by its video's key), and how many places there are.</summary>
+    /// <summary>Plane per clip key (its track's), per blur-fill twin (by its video's key), and the total plane count.</summary>
     private sealed record Places(Dictionary<long, int> ByKey, Dictionary<long, int> TwinByKey, int Depth);
 
     private Places? _places;
 
     /// <summary>
-    /// Sets each of the <paramref name="count"/> layers <see cref="Evaluate"/> wrote to its place in the plan's stack
-    /// (<see cref="GpuLayerDescriptor.ZDepth"/>), never lower than the layer under it, and returns how many places the stack
-    /// has (<see cref="FrameSceneHeader.ExplodedDepth"/>). Allocation-free once the plan's places are made.
+    /// Writes each of the first <paramref name="count"/> evaluated layers' plane (<see cref="GpuLayerDescriptor.ZDepth"/>), never below
+    /// the layer beneath it, and returns the stack depth (<see cref="FrameSceneHeader.ExplodedDepth"/>). Allocation-free once built.
     /// </summary>
     public int PlaceLayers(Span<GpuLayerDescriptor> layers, int count)
     {
@@ -30,7 +25,7 @@ public sealed partial class GpuScenePlan
         {
             ref var layer = ref layers[k];
 
-            // A layer the plan does not know (none should be) shares the place of the one under it.
+            // Unknown layers (none expected) share the plane of the layer beneath.
             var byKey = (layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0 ? places.TwinByKey : places.ByKey;
             var place = byKey.TryGetValue(layer.ClipKey, out var known) ? Math.Max(known, under) : under;
             layer.ZDepth = place;
@@ -40,14 +35,13 @@ public sealed partial class GpuScenePlan
         return Math.Max(places.Depth, count > 0 ? under + 1 : 0);
     }
 
-    /// <summary>A clip's place in the plan's stack (its track's), whether or not it is on now; -1 for a clip the plan does not draw.</summary>
+    /// <summary>Plane of a clip (its track's) whether or not it is visible now; -1 when the plan does not draw it.</summary>
     public int PlaceOf(long clipKey) => clipKey != 0 && (Volatile.Read(ref _places) ?? MakePlaces()).ByKey.TryGetValue(clipKey, out var place) ? place : -1;
 
     private Places MakePlaces()
     {
-        // Entries of one track share its place, and the blur fills of one track's clips theirs (numbered where they are drawn: under
-        // every track, 5.4A); the rest have one each of their kind (the whole picture's look and the Sequence Output's effects,
-        // both over the whole picture, share one).
+        // Track entries share their track's plane and blur-fill twins one plane per track (numbered where drawn, beneath all tracks);
+        // other entries get one plane per kind (the sequence look and Sequence Output effects share one).
         var groups = new Dictionary<(int Kind, int Track), int>();
         var (byKey, twinByKey) = (new Dictionary<long, int>(), new Dictionary<long, int>());
         foreach (var entry in _entries)

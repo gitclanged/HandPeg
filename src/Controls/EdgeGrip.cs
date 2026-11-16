@@ -6,11 +6,10 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// A thin grip along an edge (5.1-Polish, the user's directive: the Sequence Overview Scrubber's lower edge): see-through until
-/// the pointer is over it, then a 1 px line in the accent across its middle. Dragged, it tells how far the pointer has gone (DIPs,
-/// down positive) since it was pressed, measured in the window's content (the edge moves as what it sizes grows; the content's
-/// DIPs are those what it sizes is laid out in, which HandPeg's UI scale makes other than the window's own: UiScale);
-/// double-clicked, that the usual size is wanted. Drawn in OnRender.
+/// Thin resize grip along an edge (e.g. the Sequence Overview Scrubber's lower edge): transparent until hovered, then a 1 px accent line
+/// across its middle. While dragged it reports the pointer delta since press (DIPs, down positive) in window-content coordinates (the
+/// grip itself moves as its target grows, and content DIPs differ from window DIPs under the UI scale: UiScale). Double-click requests
+/// the default size. Rendered in OnRender.
 /// </summary>
 public sealed class EdgeGrip : FrameworkElement
 {
@@ -24,13 +23,13 @@ public sealed class EdgeGrip : FrameworkElement
         AutomationProperties.SetName(this, "Resize");
     }
 
-    /// <summary>A drag begins.</summary>
+    /// <summary>Raised when a drag begins.</summary>
     public event Action? DragStarted;
 
-    /// <summary>The pointer has moved this far down (negative: up) since the drag began.</summary>
+    /// <summary>Raised with the vertical delta since drag start (positive down).</summary>
     public event Action<double>? Dragged;
 
-    /// <summary>A double-click: the usual size.</summary>
+    /// <summary>Raised on double-click to request the default size.</summary>
     public event Action? ResetRequested;
 
     protected override void OnMouseEnter(MouseEventArgs e)
@@ -70,8 +69,8 @@ public sealed class EdgeGrip : FrameworkElement
     }
 
     /// <summary>
-    /// Where the pointer is, down the window's content: its root's own DIPs, inside the UI scale's LayoutTransform (the window's
-    /// own DIPs, GetPosition(null), are a third larger on a 2880 x 1800 screen at 200 %, and the edge lagged behind the pointer).
+    /// Pointer Y in window-content DIPs (inside the UI scale LayoutTransform). Window DIPs from GetPosition(null) differ by the scale
+    /// factor (about a third on a 2880 x 1800 panel at 200 %), which made the edge lag the pointer.
     /// </summary>
     private double PointerY(MouseEventArgs e) => e.GetPosition(Window.GetWindow(this)?.Content as IInputElement).Y;
 
@@ -93,7 +92,7 @@ public sealed class EdgeGrip : FrameworkElement
 
     protected override void OnRender(DrawingContext drawing)
     {
-        // See-through, but hit: the whole strip takes the pointer.
+        // Transparent fill keeps the whole strip hit-testable.
         var (width, height) = (ActualWidth, ActualHeight);
         drawing.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, width, height));
         if (!IsMouseOver && _fromY is null)
@@ -105,18 +104,17 @@ public sealed class EdgeGrip : FrameworkElement
 }
 
 /// <summary>
-/// The Timeline's track-height pill (5.1-Polish, the user's directive): a small up-and-down mark in the zoom corner, its
-/// <see cref="Value"/> the tracks' height (MainViewModel.LayerTrackHeight, 1 to 50). Dragged up the tracks grow (a step every
-/// <see cref="PixelsPerStep"/> DIPs), down they shrink; the wheel over it is two steps a notch; a double-click puts the
-/// usual height back. Drawn in OnRender (5.4A): three horizontal track bars and a vertical double-headed arrow in a rounded well,
-/// in the accent while it is held (the old pair of chevrons met at their feet and read as a Keyframe diamond).
+/// Timeline track-height pill in the zoom corner; <see cref="Value"/> is the track height (MainViewModel.LayerTrackHeight, 1 to 50).
+/// Drag up to grow (one step per <see cref="PixelsPerStep"/> DIPs), down to shrink; the wheel moves two steps per notch; double-click
+/// restores the default. Rendered in OnRender: three horizontal track bars and a vertical double-headed arrow in a rounded well, accent
+/// while held (a former chevron pair met at its feet and read as a Keyframe diamond).
 /// </summary>
 public sealed class TrackHeightPill : FrameworkElement
 {
     public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(nameof(Value), typeof(double), typeof(TrackHeightPill),
         new FrameworkPropertyMetadata(25.0, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
 
-    /// <summary>The tracks' height, 1 to 50.</summary>
+    /// <summary>Track height, 1 to 50.</summary>
     public double Value
     {
         get => (double)GetValue(ValueProperty);
@@ -232,8 +230,8 @@ public sealed class TrackHeightPill : FrameworkElement
     }
 
     /// <summary>
-    /// The mark's strokes in a well of this size (5.4A): three horizontal track bars on the left, a vertical shaft on the right with an
-    /// arrowhead at each end (the up-and-down of a height). No two slanted strokes meet at a foot, so it never closes into a diamond.
+    /// Icon strokes for a well of the given size: three horizontal track bars on the left and a vertical double-headed arrow on the right.
+    /// No two slanted strokes share an endpoint, so the mark never reads as a diamond.
     /// </summary>
     internal static (Point From, Point To)[] MarkStrokes(double width, double height)
     {

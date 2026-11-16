@@ -10,27 +10,23 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// Creator tools, continued: target size and bitrate, playback helpers (I-frames, frame steps, display settings), dead-air
-// removal and the chapters file.
+// Target size/bitrate linkage, playback helpers (I-frames, frame steps, display settings), dead-air removal and the chapters file.
 public partial class MainViewModel
 {
     // ----- Output -----
 
-    /// <summary>
-    /// Target size in MB, tied to the Target Bitrate box: either one can be typed and the other follows.
-    /// </summary>
+    /// <summary>Target size in MB, bidirectionally linked to Target Bitrate.</summary>
     [ObservableProperty] private string _targetFileSize = "";
 
     [ObservableProperty] private string _targetSizeHint = "";
 
     [ObservableProperty] private bool _chaptersAtCuts;
 
-    // Which of the two linked boxes the user typed in last. That one stays put when the length of the
-    // output changes; the other is recalculated.
+    // Last-typed linked box; it stays fixed when the output duration changes and the other is recomputed.
     private bool _sizeDrivesBitrate;
     private bool _syncingSizeAndBitrate;
 
-    // Below this the picture falls apart, so a target size never asks for less.
+    // Minimum video bitrate a target size may imply (quality floor).
     private const int LowestVideoKbps = 50;
 
     partial void OnTargetFileSizeChanged(string value)
@@ -42,7 +38,7 @@ public partial class MainViewModel
         if (!_sizeDrivesBitrate)
             return;
 
-        // A size can only be aimed at with a bitrate, so constant quality gives way.
+        // Size targeting requires a bitrate mode; leave constant quality.
         if (RateControl == ConstantQuality)
             RateControl = ConstantBitrate;
         SyncSizeAndBitrate();
@@ -57,10 +53,7 @@ public partial class MainViewModel
         SyncSizeAndBitrate();
     }
 
-    /// <summary>
-    /// Keeps Target File Size and Target Bitrate in step:
-    /// video kbps = (TargetMB x 8192) / output seconds - audio kbps, and the same sum the other way round.
-    /// </summary>
+    /// <summary>Syncs Target File Size and Target Bitrate: video kbps = (TargetMB x 8192) / seconds - audio kbps (and inverse).</summary>
     private void SyncSizeAndBitrate()
     {
         if (_syncingSizeAndBitrate)
@@ -71,7 +64,7 @@ public partial class MainViewModel
         _syncingSizeAndBitrate = true;
         try
         {
-            // Constant quality has no bitrate to tie a size to.
+            // Constant quality has no bitrate to derive a size from.
             if (!IsBitrateMode)
             {
                 _sizeDrivesBitrate = false;
@@ -102,7 +95,7 @@ public partial class MainViewModel
             }
             else if (EffectiveBitrateKbps is > 0 and var bitrate)
             {
-                // The bitrate typed, or the automatic one (5.4B): the size it gives, as a guide that a size typed takes over from.
+                // Show the size implied by the typed or automatic bitrate as a guide; a typed size overrides it.
                 TargetFileSize = ((bitrate + audioKbps) * duration / 8192).ToString("0.#", CultureInfo.InvariantCulture);
             }
         }
@@ -123,9 +116,8 @@ public partial class MainViewModel
         float.TryParse(PlaybackSpeed.TrimEnd('x'), NumberStyles.Float, CultureInfo.InvariantCulture, out var rate) ? rate : 1;
 
     /// <summary>
-    /// The speed as its place in <see cref="PlaybackSpeeds"/> (5.4.4, the transport row's speed pill): 0 for 0.25x to 6 for 2x; a speed
-    /// not in the list, the nearest one's. Set, it picks the nearest step's speed. <see cref="PlaybackSpeed"/> stays the one that counts
-    /// (<see cref="PlaybackRate"/> and the window read it): each follows the other, both ways.
+    /// Speed pill index into <see cref="PlaybackSpeeds"/> (0 = 0.25x .. 6 = 2x; off-list speeds map to nearest). Setting selects that
+    /// step's speed. <see cref="PlaybackSpeed"/> remains authoritative (read by <see cref="PlaybackRate"/> and the window); both sync.
     /// </summary>
     public double PlaybackSpeedStep
     {
@@ -139,7 +131,7 @@ public partial class MainViewModel
             var before = PlaybackSpeed;
             PlaybackSpeed = PlaybackSpeeds[step];
 
-            // A value between steps on the speed it already had: the binding is told the step it is on (a new speed told it already).
+            // Snap an in-between binding value back to the current step (a speed change already raised it).
             if (PlaybackSpeed == before && step != value)
                 OnPropertyChanged(nameof(PlaybackSpeedStep));
         }
@@ -147,7 +139,7 @@ public partial class MainViewModel
 
     partial void OnPlaybackSpeedChanged(string value) => OnPropertyChanged(nameof(PlaybackSpeedStep));
 
-    // A speed's place in the list: its own, else the nearest by rate ("3x": 2x's), else 1x's.
+    // Index of a speed: exact match, else nearest by rate ("3x" -> 2x), else 1x.
     private int StepOfSpeed(string? speed)
     {
         for (var i = 0; i < PlaybackSpeeds.Count; i++)
@@ -178,13 +170,10 @@ public partial class MainViewModel
     /// <summary>Just the play button beside the timeline.</summary>
     public bool ShowSimplePlayback => !ShowAdvancedPlayback;
 
-    /// <summary>Whether the player is running, for the play/pause button to show the right symbol. Set by the window.</summary>
+    /// <summary>Whether the player is playing (drives the play/pause glyph); set by the window.</summary>
     [ObservableProperty] private bool _isPlaying;
 
-    /// <summary>
-    /// Moves the playhead onto the I-frame before (-1) or after (+1) where it is, using the same I-frame
-    /// index that cut points snap to. Returns false when there is no such I-frame.
-    /// </summary>
+    /// <summary>Jumps to the previous (-1) or next (+1) I-frame from the cut-snap index; false when none.</summary>
     public bool SeekToIFrame(int direction)
     {
         if (IFrames.Count == 0)
@@ -193,8 +182,7 @@ public partial class MainViewModel
             return false;
         }
 
-        // A millisecond of slack either way: the playhead sitting on an I-frame counts as being on it,
-        // so the jump goes to the one beyond.
+        // 1 ms tolerance: a playhead on an I-frame counts as on it, so the jump goes to the next one.
         var seconds = PositionMs / 1000;
         var index = direction < 0
             ? IFrames.FindLastIndex(k => k < seconds - 0.001)
@@ -210,7 +198,7 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>Moves the playhead by whole frames: one frame is 1000 / frame rate milliseconds.</summary>
+    /// <summary>Steps the playhead by whole frames (1000 / fps ms each).</summary>
     public void StepFrames(int frames)
     {
         if (DurationMs <= 0)
@@ -223,7 +211,7 @@ public partial class MainViewModel
         PositionMs = Math.Clamp(seconds * 1000, 0, DurationMs);
     }
 
-    /// <summary>Where the I-frames fall along the timeline, each as a fraction (0 to 1) of its length.</summary>
+    /// <summary>I-frame positions as fractions (0..1) of the timeline length.</summary>
     public ObservableCollection<double> IFrameMarks { get; } = [];
 
     private void UpdateIFrameMarks()
@@ -251,7 +239,7 @@ public partial class MainViewModel
         return nearest * 1000;
     }
 
-    /// <summary>Times in frames (HH:MM:SS:FF) or milliseconds (HH:MM:SS.mmm), from the Timeline Settings menu (5.3.2): saved, and shown at once.</summary>
+    /// <summary>Timecode format, frames (HH:MM:SS:FF) or ms (HH:MM:SS.mmm), from the Timeline Settings menu; persisted and applied immediately.</summary>
     public void SetTimesAsFrames(bool on)
     {
         SetViewSetting(s => s.ShowTimesAsFrames = on);
@@ -261,7 +249,7 @@ public partial class MainViewModel
     /// <summary>Applies the display settings: time format, and which playback controls are shown.</summary>
     private void ApplyDisplaySettings()
     {
-        // A background view model (the export queue's) never sets the window's global time format.
+        // Background VMs (export queue) must not change the global time format.
         if (_isBackgroundWorker)
             return;
 
@@ -284,7 +272,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(CaptionHint));
     }
 
-    /// <summary>The timecode readouts count in the Sequence's rate: after the display settings, and whenever the Sequence's rate may have changed.</summary>
+    /// <summary>Sets timecode readouts to the Sequence rate (after display settings and on possible rate changes).</summary>
     private void ApplySequenceRate()
     {
         if (_isBackgroundWorker || TimeDisplay.FrameRate == SequenceFps)
@@ -298,18 +286,15 @@ public partial class MainViewModel
     // ----- Dead air -----
 
     /// <summary>
-    /// Finds the silent stretches of a sound and cuts them out of what plays it: the selected clip with sound of its own (it alone
-    /// is cut up, its time left empty, as in 4.2.0); or else (5.2-AuditB: no clip is privileged) the sound marked as the
-    /// voice, else the first stream of the video given or at the playhead (<see cref="ListenedSound"/>), and every clip of that
-    /// sound's file is cut where the silences it plays are (heard in the file's own time, each clip placing them where it shows
-    /// that time). Remove (and the classic way) takes them out and closes up what follows on every unlocked track, as a cut
-    /// list's left-out stretches did; Split &amp; Mark folds them out the same way and keeps each at its cut, to be put back
-    /// (4.3D). What counts as silence (how quiet, for how long) is in the settings, set from the Remove Dead Air dialog.
+    /// Remove Dead Air by silence: a selected clip with its own audio is cut alone (gaps left); otherwise the voice-marked audio, else
+    /// the first stream of the given/playhead video (<see cref="ListenedSound"/>), with every clip of that file cut at silences mapped
+    /// from file time. Remove ripples across unlocked tracks; Split &amp; Mark folds (restorable). Thresholds come from Settings
+    /// (Remove Dead Air dialog).
     /// </summary>
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
     private Task RemoveDeadAirAsync() => RunOperationAsync("Removing dead air", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
     {
-        // How, on what and by what: set by RunDeadAir; left alone, it is the classic way on the listened sound, by its silences.
+        // Mode, target and detection source from RunDeadAir; defaults to classic removal on the listened sound by silence.
         var (mode, target, by) = (_deadAirMode, _deadAirTarget, _deadAirSource);
         (_deadAirMode, _deadAirTarget, _deadAirSource) = (DeadAirMode.Classic, null, DeadAirSource.Audio);
 
@@ -325,7 +310,7 @@ public partial class MainViewModel
         var noiseDb = Math.Clamp(AppSettings.Current.DeadAirThresholdDb, -80, -10);
         var minimumSeconds = Math.Clamp(AppSettings.Current.DeadAirMinSeconds, 0.2, 30);
 
-        // A clip with sound of its own: its own sound is listened to, and the clip is what gets cut up (its time left empty, as in 4.2.0).
+        // Clip with its own audio: analyse and cut that clip only, leaving gaps.
         if (target is Layer { CarriesSound: true } layer && ClipOf(layer) is { } model)
         {
             var info = await MediaProbe.ProbeAsync(layer.ImagePath, cancellationToken);
@@ -338,8 +323,8 @@ public partial class MainViewModel
             return ApplyDeadAir([layer], own.Silences(noiseDb, minimumSeconds, info.DurationSeconds), mark, closeUp: false);
         }
 
-        // The sound marked as the voice (4.3E: a recording's first stream is usually the game, never silent), else the first stream
-        // of the video asked for or at the playhead: every clip of its file is cut where the silences it plays are.
+        // Voice-marked audio (a recording's first stream is usually never-silent game audio), else the first stream of the given/playhead
+        // video; cut every clip of that file at its silences.
         if (ListenedSound(target) is not var (path, stream))
             return "There is no sound to listen to: select a clip with sound, or put a video on the timeline.";
 
@@ -358,10 +343,8 @@ public partial class MainViewModel
     });
 
     /// <summary>
-    /// The sound Remove Dead Air and Auto-Captions listen to when no clip with sound of its own is chosen (5.2-AuditB: where the
-    /// main video's Voice track was): a sound clip marked as the voice, else the first audio stream of the video given (a row, a
-    /// clip whose streams are on Sub-Lanes), else of the video clip the Crop boxes stand for (the selected one, else the one at
-    /// the playhead). Its file and stream; null while there is none.
+    /// Default analysed audio for Remove Dead Air and Auto-Captions: a voice-marked clip, else the first audio stream of the given video
+    /// (row, or clip with Sub-Lane streams), else of CropTarget (selected, else playhead). Returns file and stream; null when none.
     /// </summary>
     private (string Path, int Stream)? ListenedSound(object? given = null)
     {
@@ -376,31 +359,28 @@ public partial class MainViewModel
         if (clip.AudioStreamIndex >= 0)
             return (path, clip.AudioStreamIndex);
 
-        // Its streams on Sub-Lanes: the first of them.
+        // Streams on Sub-Lanes: take the first.
         var lanes = Document.ChildrenOf(clip).Where(c => c.Clip is { ContentKind: LayerKind.Audio, AudioStreamIndex: >= 0 }).Select(c => c.Clip.AudioStreamIndex).ToList();
         return lanes.Count > 0 ? (path, lanes.Min()) : MediaProbe.KnownInfo(path) is { Audio.Count: > 0 } info ? (path, info.Audio[0].Index) : (path, 0);
     }
 
-    /// <summary>What Remove Dead Air cuts for what is given, in a few words (its dialog's title): a clip with sound of its own, or the clips of the listened sound's file.</summary>
+    /// <summary>Short Remove Dead Air target description (dialog title): the clip, or the listened file's clips.</summary>
     public string DeadAirTargetName(object? target) => target is Layer { CarriesSound: true } layer ? layer.Name
         : ListenedSound(target) is var (path, _) ? $"the clips of {Path.GetFileName(path)}"
         : "the video";
 
-    /// <summary>The views of the top-level clips that play a file (its pictures, or its sound on a track of its own): what its dead air is cut out of.</summary>
+    /// <summary>Top-level clip views playing a file (picture, or audio on its own track): the dead-air cut targets.</summary>
     private List<Layer> ClipsOfFile(string path) =>
         Document.Tracks.SelectMany(t => t.Clips).Where(c => c is { ParentClipId: null, ContentKind: LayerKind.VideoFile or LayerKind.Audio } && SameFile(c.SourcePath, path))
             .Select(ViewOf).OfType<Layer>().ToList();
 
     /// <summary>
-    /// Remove Dead Air by the captions (4.4): the gaps between the words heard in a sound, in its own time, at least the
-    /// minimum gap long less a little kept before and after each word, cut out of what plays it exactly as silences are
-    /// (ApplyDeadAir). The words are the anchored captions' when they were made from that sound; otherwise it is
-    /// transcribed (once: the words are kept) without putting any captions on the timeline.
+    /// Remove Dead Air by caption gaps: word gaps (source time) at least the minimum length, minus per-word padding, cut like silences
+    /// (ApplyDeadAir). Uses anchored captions from that source, else transcribes once (cached) without adding captions.
     /// </summary>
     private async Task<string?> RemoveCaptionGapsAsync(object? target, bool mark, CancellationToken cancellationToken)
     {
-        // A clip with sound of its own is cut itself; otherwise every clip of the listened sound's file, by the source asked for
-        // or the one Auto-Captions listen to when it is a clip's.
+        // Own-audio clip: cut itself; otherwise all clips of the listened file (requested source, or the Auto-Captions clip source).
         IReadOnlyList<Layer> views;
         bool closeUp;
         CaptionSource source;
@@ -444,19 +424,19 @@ public partial class MainViewModel
                 : string.Create(CultureInfo.InvariantCulture, $"No gap of {minimumGap:0.##} s or more was found between the words: nothing was cut.");
         }
 
-        // The gaps between words are many by nature: a clip may take far more of them than of silences.
+        // Word gaps are far more numerous than silences; raise the per-clip cut cap.
         return ApplyDeadAir(views, gaps, mark, closeUp, layerLimit: 2000);
     }
 
     // ----- Chapters at cut points -----
 
-    /// <summary>FFmpeg metadata file naming the chapters: one at each edge of a clip on a video track (Chapters at Cut Points), and the markers.</summary>
+    /// <summary>FFmpeg chapters metadata: video-track clip edges (Chapters at Cut Points) and markers.</summary>
     public string ChaptersFilePath => Path.Combine(_workFolder, "chapters.txt");
 
-    /// <param name="throughCuts">The export reads the cuts list (a Copy export of one file's clips end to end): its clock is the list's.</param>
+    /// <param name="throughCuts">Copy export via the cuts list: chapter times use the list's concatenated clock.</param>
     private void WriteChaptersFile(bool throughCuts = false)
     {
-        // Each chapter runs to the start of the next, the last to the end of the output (5.4A: its last picture's, not an audio tail's).
+        // Each chapter ends at the next; the last ends at the output end (last picture, not an audio tail).
         var lines = new List<string> { ";FFMETADATA1" };
         var chapters = BuildChapters(throughCuts);
         var total = throughCuts ? GetOutputDuration() : SequenceSpans.ProgramSeconds(Document);

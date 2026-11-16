@@ -7,10 +7,9 @@ namespace HandPegApp.Models;
 public enum LayerKind
 {
     /// <summary>
-    /// A rectangle cut out of "the video" (a minimap, an ammo counter): a Game Preset's or a template's Cutout piece, which becomes
-    /// a video-file clip of the clip it goes on, cut to the same part of its picture (MainViewModel.FileCutoutOf). No clip on the
-    /// timeline is of this kind since 5.2-AuditB: a project that holds one (a cut-out of the old main video) is of the shape before
-    /// then, and is converted as it is opened (LegacyMainVideo, MainViewModel.ConvertLegacy). Kinds are saved by name.
+    /// Legacy Cutout kind (a source rectangle such as a minimap). Presets still describe Cutouts this way, but placement turns them
+    /// into VideoFile clips of the host clip's file (MainViewModel.FileCutoutOf); timeline clips of this kind only occur in legacy
+    /// projects, converted on open (LegacyMainVideo). Kinds serialize by name.
     /// </summary>
     Video,
 
@@ -20,40 +19,36 @@ public enum LayerKind
     /// <summary>The box the auto-captions are drawn in. There is one, and it is always the top layer.</summary>
     Captions,
 
-    /// <summary>A video from a file, read at its own moments: every video clip of the Sequence, on any track (5.2-AuditB).</summary>
+    /// <summary>Video file clip with its own timebase; every video clip on any track.</summary>
     VideoFile,
 
     /// <summary>
-    /// Legacy: the main video, the primary file's chain of clips; nothing makes it any more (5.2-AuditB). Kept only so that a project
-    /// that holds it (a 5.1 project) is read and converted as it is opened (LegacyMainVideo, MainViewModel.ConvertLegacy), presets that
-    /// name it still read, and the golden tests' 4.2.0-shaped fixtures can still be made of it (converted the same way).
+    /// Legacy main-video kind; never created. Kept so legacy projects load and convert (LegacyMainVideo), presets referencing it
+    /// parse, and golden fixtures can still use it.
     /// </summary>
     MainVideo,
 
     /// <summary>
-    /// Legacy: the blurred copy of the main video that filled the frame behind everything. A clip's blur fill is its own now
-    /// (<see cref="Layer.BlurFill"/>, 5.2-AuditB); nothing draws this kind. Kept so old projects and presets still read, and
-    /// as the kind of the sequence's blur-fill settings row while the view model keeps one.
+    /// Legacy full-frame blur background kind; never rendered (blur fill is per clip, <see cref="Layer.BlurFill"/>). Kept for parsing
+    /// and as the kind of the blur-fill settings row.
     /// </summary>
     Background,
 
     /// <summary>A sound from a file, with no picture: it has a place in time and nothing else.</summary>
     Audio,
 
-    /// <summary>Words typed in HandPeg (a title, a label), drawn in a font of the computer's. Placed, sized, turned and animated like a picture.</summary>
+    /// <summary>Text clip rendered with a system font; transformed and animated like an image.</summary>
     Text,
 
-    /// <summary>A clip with no picture of its own: its effect stack works on everything under it while it lasts, within its rectangle.</summary>
+    /// <summary>Adjustment clip: no pixels; its effects apply to everything below within its rectangle for its duration.</summary>
     Adjustment,
 }
 
 /// <summary>
-/// One point of a motion: a value at a moment, counted in seconds from where its clip begins, and how the
-/// clip moves on from it to the next keyframe.
+/// Keyframe: value at a time (seconds from clip start) and the easing toward the next keyframe.
 /// </summary>
-/// <remarks>A value, not an object: a motion's keyframes lie side by side in their list, and none is a thing for the collector to follow.
-/// Read from JSON through its constructor, so that a keyframe saved without an easing gets the default one, as it always did.
-/// The four Bézier numbers are a Custom Bézier's handles (see <see cref="EasingCurves"/>); they are left out of JSON while 0.</remarks>
+/// <remarks>Value type, stored inline in lists (no GC references). Deserialized via its constructor so a missing easing gets the
+/// default. The four Bezier fields are Custom Bezier handles (<see cref="EasingCurves"/>), omitted from JSON while 0.</remarks>
 [method: System.Text.Json.Serialization.JsonConstructor]
 public readonly record struct Keyframe(
     double Time, double Value, EasingType Easing = EasingType.EaseInOut,
@@ -64,21 +59,21 @@ public readonly record struct Keyframe(
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double PartStart = 0,
     [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] double PartEnd = 0)
 {
-    /// <summary>The same keyframe leaving by another easing (a Custom Bézier with these handles), the whole of its curve.</summary>
+    /// <summary>Copy with a different easing (Custom Bezier handles), using the whole curve.</summary>
     public Keyframe WithEasing(EasingType easing, (double X1, double Y1, double X2, double Y2)? handles = null) => handles is { } h
         ? this with { Easing = easing, BezierX1 = h.X1, BezierY1 = h.Y1, BezierX2 = h.X2, BezierY2 = h.Y2, PartStart = 0, PartEnd = 0 }
         : this with { Easing = easing, PartStart = 0, PartEnd = 0 };
 
     /// <summary>
-    /// Whether the stretch this keyframe leaves is a part of its easing's curve (4.3D): what is left on one side of a split
-    /// made between two keyframes (EasingCurves.Cut), so the half moves exactly as the whole did.
+    /// True when the outgoing segment is a sub-range of its easing curve (left by a split between keyframes, EasingCurves.Cut), so
+    /// each half moves exactly as the whole did.
     /// </summary>
     public bool IsPart => PartEnd > PartStart && (PartStart > 0 || PartEnd < 1);
 
-    /// <summary>The part of the curve the stretch is, as fractions of the curve's time: (0, 1) for the whole of it.</summary>
+    /// <summary>Curve sub-range as time fractions; (0, 1) for the whole curve.</summary>
     public (double Start, double End) Part => IsPart ? (PartStart, PartEnd) : (0, 1);
 
-    /// <summary>The same keyframe leaving by the part of its curve between two fractions of its time (the whole curve: 0 to 1).</summary>
+    /// <summary>Copy using the curve sub-range between two time fractions (0 to 1 = whole curve).</summary>
     public Keyframe WithPart(double start, double end) => end - start >= 1 - 1e-12 || end <= start
         ? this with { PartStart = 0, PartEnd = 0 }
         : this with { PartStart = Math.Clamp(start, 0, 1), PartEnd = Math.Clamp(end, 0, 1) };
@@ -102,20 +97,17 @@ public enum KeyProperty
     /// <summary>How solid it is: 100 is solid, 0 is not there.</summary>
     Opacity,
 
-    /// <summary>Degrees it is tilted about its horizontal axis (5.2A, Pitch): its top away from the viewer, -60 to 60.</summary>
+    /// <summary>Pitch in degrees (top away from viewer), -60..60.</summary>
     TiltX,
 
-    /// <summary>Degrees it is swung about its upright axis (5.2A, Yaw): its right edge away from the viewer, -60 to 60.</summary>
+    /// <summary>Yaw in degrees (right edge away from viewer), -60..60.</summary>
     TiltY,
 }
 
 /// <summary>
-/// Something the Frame &amp; Layer Engine places on the output frame: a rectangle of the source video, or an
-/// image file. Both kinds are positioned, sized and styled in exactly the same way.
-///
-/// Everything is stored as a fraction, 0 to 1: the source rectangle relative to the source frame, and the
-/// position and size relative to the output frame. A layout made for one resolution therefore fits any
-/// other: switching the frame from 1080 to 720 wide moves and sizes every layer with it.
+/// Clip look and placement on the output frame (video, image, text, adjustment), all positioned and styled the same way.
+/// Geometry is stored as 0-1 fractions (source rect of the source frame; position/size of the output frame), so layouts are
+/// resolution-independent.
 /// </summary>
 public sealed partial class Layer : ObservableObject
 {
@@ -133,8 +125,7 @@ public sealed partial class Layer : ObservableObject
     public int ImageHeight { get; set; }
 
     /// <summary>
-    /// Dropped onto the timeline a moment ago, and still being looked at: its block is there, but its size,
-    /// its length and whether it has sound are not known yet, and nothing of it is rendered until they are.
+    /// Placeholder while a dropped file is being probed: size, duration and audio presence are unknown, so nothing renders yet.
     /// </summary>
     [ObservableProperty] private bool _isLoading;
 
@@ -146,8 +137,7 @@ public sealed partial class Layer : ObservableObject
     public bool IsStill => IsImage || IsText;
 
     // ----- Text -----
-    // A text layer's words and how they are drawn. Its box on the frame is the words' own: it is measured from
-    // them (see TextLayout), kept in ImageWidth and ImageHeight as a picture's size is, and gives the layer its shape.
+    // Text content and styling. The box is measured from the text (TextLayout) and stored in ImageWidth/ImageHeight like an image size.
 
     /// <summary>The words. A line break starts a new line.</summary>
     [ObservableProperty] private string _textContent = "";
@@ -167,7 +157,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>How thick that line is, in pixels at the font's set size; 0 for none.</summary>
     [ObservableProperty] private int _outlineThickness = 2;
 
-    /// <summary>What of a text layer decides the size of its box: when one of these changes, the box is measured again.</summary>
+    /// <summary>Text properties that affect box size; a change triggers re-measurement.</summary>
     public static bool IsTextShapeProperty(string? name) =>
         name is nameof(TextContent) or nameof(FontFamily) or nameof(FontSize) or nameof(OutlineThickness);
 
@@ -207,7 +197,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Can be moved up and down the stack: the captions stay on top and the background at the bottom.</summary>
     public bool CanReorder => !IsCaptions && !IsBackground;
 
-    /// <summary>Whether its track can be hidden (the eye on its row, Hide on its menu): the captions have their own switch.</summary>
+    /// <summary>True when the track supports Hide (captions use their own switch).</summary>
     public bool CanHide => IsRemovable || IsBackground;
 
     /// <summary>Can have a color keyed out of it: the pictures and videos.</summary>
@@ -219,21 +209,21 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Can be given filters of its own, and be turned: every picture but the caption box.</summary>
     public bool HasFilters => IsPicture && !IsCaptions;
 
-    // Tracks: a row of the timeline. A layer is one clip on its track; splitting it makes a second clip on the
-    // same track. Everything a clip looks like is its own (5.1-DogfoodPolish): place, mask, matte, key and effects alike.
+    // Track membership: a layer is one clip on its track; a split creates a second clip there. Each clip owns its full look
+    // (placement, mask, matte, key, effects).
 
     /// <summary>Which track the clip is on. Clips with the same number share a row.</summary>
     [ObservableProperty] private int _trackId;
 
     /// <summary>
-    /// The clip of the timeline document this layer is the view of (4.3C: MainViewModel.Document); empty for a layer that
-    /// is no clip (the caption box, the background, an empty track's row, a layer of a preset or of the graph builder).
+    /// Id of the document clip this layer views (MainViewModel.Document); empty for non-clip layers (caption box, background,
+    /// empty track row, preset or lowering layers).
     /// </summary>
     public Guid ClipId { get; set; }
 
     /// <summary>
-    /// What a speed set in a box (<see cref="ClipSpeed"/>) does to a layer that is a clip's view: an edit of the clip, which
-    /// the view then follows. Null for a layer that is no clip's, which changes its own speed (<see cref="SetSpeed"/>).
+    /// Routes <see cref="ClipSpeed"/> edits on a clip view to a document edit that the view then follows. Null for non-clip layers,
+    /// which set their own speed (<see cref="SetSpeed"/>).
     /// </summary>
     public Action<Layer, double>? SpeedEditor { get; set; }
 
@@ -245,13 +235,12 @@ public sealed partial class Layer : ObservableObject
     /// <summary>How long it stays; 0 for until the end of the video.</summary>
     [ObservableProperty] private double _duration;
 
-    /// <summary>For a video layer: how far into its own video it is when it appears. Set when a layer is split, so the second part carries on where the first left off.</summary>
+    /// <summary>Source offset at clip start (video); set on split so the second part continues from the first.</summary>
     [ObservableProperty] private double _mediaOffset;
 
-    // Speed: how fast the clip's own video or sound runs. Its length on the timeline is the length of what
-    // it plays divided by its speed, so a clip that is slowed down is longer and one that is sped up shorter.
+    // Speed: timeline length = source range / speed.
 
-    // 5.6.0: up to 16x (the Speed & Time card's top end).
+    // Max 16x (Speed & Time card upper bound).
     public const double SlowestSpeed = 0.1, FastestSpeed = 16;
 
     /// <summary>How many times as fast as recorded the clip runs: 1 as it is, 0.5 at half speed, 2 at double.</summary>
@@ -259,7 +248,7 @@ public sealed partial class Layer : ObservableObject
     [NotifyPropertyChangedFor(nameof(ClipSpeed))]
     private double _speed = 1;
 
-    /// <summary>Has a running time of its own that can be played faster or slower: a video from a file, or a sound.</summary>
+    /// <summary>True for time-based media (video file or audio) that supports speed changes.</summary>
     public bool HasSpeed => IsVideoFile || IsAudio;
 
     /// <summary>The speed, for the boxes that set it: setting it here changes how long the clip is with it.</summary>
@@ -275,13 +264,11 @@ public sealed partial class Layer : ObservableObject
         }
     }
 
-    /// <summary>Says again what the speed is, for a box that asked for one that could not be (its clip's edit was refused).</summary>
+    /// <summary>Re-raises the speed change so a bound box reverts after a refused edit.</summary>
     public void NotifySpeed() => OnPropertyChanged(nameof(ClipSpeed));
 
     /// <summary>
-    /// Changes the speed, and with it everything that is counted in the timeline's seconds: the clip plays the
-    /// same stretch of its file as before, so it is as much shorter or longer as it is faster or slower, and
-    /// its keyframes stay on the frames they were set on.
+    /// Sets speed over the same source range, rescaling timeline length and all timeline-relative times so keyframes stay on their frames.
     /// </summary>
     public void SetSpeed(double value)
     {
@@ -314,22 +301,21 @@ public sealed partial class Layer : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsMuted))]
     private bool _isHidden;
 
-    /// <summary>In the recycle bin: taken off the timeline, and kept so that it can be put back.</summary>
+    /// <summary>True while in the recycle bin (removed but restorable).</summary>
     [ObservableProperty] private bool _isDeleted;
 
-    /// <summary>Whether Live Preview plays this clip's file from a proxy: when it is heavy (Auto), always (Make Proxy), or never (Use Original).</summary>
+    /// <summary>Preview proxy policy: Auto (heavy files), Make Proxy (always) or Use Original (never).</summary>
     [ObservableProperty] private ProxyChoice _proxyChoice;
 
     /// <summary>
-    /// A track with nothing on it yet (Add Layer's click): it stands for the track in the list, takes the first clip dropped
-    /// onto it (which takes its place), and draws nothing and goes into no graph.
+    /// Empty-track placeholder (Add Layer): represents the track, is replaced by the first dropped clip, and never renders.
     /// </summary>
     [ObservableProperty] private bool _isEmptyTrack;
 
     /// <summary>A video layer whose file has sound, which goes into the output with it.</summary>
     [ObservableProperty] private bool _hasAudio;
 
-    /// <summary>How far that sound has been slipped against the layer's picture, in seconds. Only while audio and video are unlinked.</summary>
+    /// <summary>Audio slip versus video in seconds, while unlinked.</summary>
     [ObservableProperty] private double _audioOffset;
 
     /// <summary>How long the layer's own video or sound is, in seconds; 0 when not known.</summary>
@@ -341,13 +327,11 @@ public sealed partial class Layer : ObservableObject
     private double _audioGainDb;
 
     /// <summary>
-    /// How long the clip takes to come on at its start, in seconds of the timeline: its picture in its
-    /// <see cref="FadeInStyle"/> over whatever is under it, and its sound up from silence. The handle at the block's
-    /// top-left corner.
+    /// Fade-in length (timeline seconds): video per <see cref="FadeInStyle"/>, audio from silence. Top-left block handle.
     /// </summary>
     [ObservableProperty] private double _fadeInSeconds;
 
-    /// <summary>How long it takes to go before its end, picture and sound (the handle at the block's top-right corner).</summary>
+    /// <summary>Fade-out length, video and audio (top-right block handle).</summary>
     [ObservableProperty] private double _fadeOutSeconds;
 
     /// <summary>How the picture comes on over its fade in: a dissolve, a wipe, a slide, a zoom, a blur.</summary>
@@ -357,27 +341,22 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private TransitionStyle _fadeOutStyle;
 
     /// <summary>
-    /// On a copy a graph is built from only (never saved): the picture stays as it is through its fade in (or out), only
-    /// its sound fading, because the clip laid over it fades in (or out) across the same stretch and carries the
-    /// picture's side of that crossfade. Set by the lowering of the timeline (Services/Gpu/TimelineLowering.cs:
-    /// LayOverAcrossCut and PairLayerCrossfades).
+    /// Lowering-only flag (never saved): keep video opaque through the fade and fade only audio, because the overlapping clip
+    /// carries the video side of the crossfade (TimelineLowering.LayOverAcrossCut, PairLayerCrossfades).
     /// </summary>
     public bool PictureFadeInOff { get; set; }
 
     public bool PictureFadeOutOff { get; set; }
 
     /// <summary>
-    /// A crossfade from the clip just before it on its track (the one whose end meets its start), this many seconds long,
-    /// centred on the cut: both run on into what their files have beyond it, the picture dissolving from the one to the
-    /// other and the sound crossfading. 0 for a plain cut. Laid out by TimelineLowering (LayOverAcrossCut).
+    /// Crossfade length (s) from the abutting previous clip, centred on the cut using both clips' handles (video dissolve, audio
+    /// crossfade); 0 = cut. Expanded by TimelineLowering (LayOverAcrossCut).
     /// </summary>
     [ObservableProperty] private double _transitionIn;
 
-    // ----- As a row of the Audio tab -----
-    // A sound added from a file is listed there with the video's own audio tracks, in rows made from one
-    // template. These are the names that template binds to, which an audio track has too (see AudioTrack):
-    // some are this clip's own settings under the track's name for them, and the rest say that a clip has
-    // no such thing (a codec of its own, filters, a solo button), so that the row leaves the place empty.
+    // ----- Audio tab row binding -----
+    // Audio clips share the AudioTrack row template. These members mirror AudioTrack's binding names: some map to clip settings,
+    // the rest report unsupported features (own codec, filters, solo) so the row leaves them empty.
 
     /// <summary>What is done with a sound from a file: it is mixed into the output's first track, or left out.</summary>
     public const string MixIntoFirstTrack = "Mix into First Track";
@@ -409,8 +388,8 @@ public sealed partial class Layer : ObservableObject
     [NotifyPropertyChangedFor(nameof(IsMuted))]
     private bool _isSoundMuted;
 
-    /// <summary>Mixed in, or left out. For a sound clip that is the same as hiding it; a video layer keeps its picture.</summary>
-    /// <summary>Muted: left out of the mix. For the Mute button of its row; the same as its Action being Ignore / Drop.</summary>
+    /// <summary>Included in the mix; for audio clips equivalent to hiding, video keeps its picture.</summary>
+    /// <summary>Muted (row Mute button); equivalent to Action Ignore / Drop.</summary>
     public bool IsMuted
     {
         get => Action == AudioTrack.Drop;
@@ -429,8 +408,7 @@ public sealed partial class Layer : ObservableObject
         }
     }
 
-    // It has no stream of its own in the output: it goes into the first track, and is encoded as that is.
-    // The format boxes of its row say so, and cannot be changed.
+    // No output stream of its own: mixed into the first track and encoded with it; the row's format boxes are read-only.
     private static readonly IReadOnlyList<string> FirstTrackCodec = ["as first track"];
     private static readonly IReadOnlyList<string> FirstTrackBitrate = ["mixed"];
 
@@ -445,7 +423,7 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Always decoded and mixed, so its gain and filters always apply.</summary>
     public bool IsReencoded => true;
 
-    /// <summary>The sound's processing: compressor, gate, equalizer and so on, as an audio track has. Replaced as a whole by its dialog.</summary>
+    /// <summary>Audio processing chain (compressor, gate, EQ, ...); replaced wholesale by its dialog.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(FiltersCountText))]
     private TrackAudioFilters _audioFilters = new();
@@ -467,15 +445,15 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private double _rotation;
 
     /// <summary>
-    /// True 3D (5.2A): degrees the picture is tilted about its horizontal axis through the anchor point (Pitch: its top away from the viewer),
-    /// drawn in perspective by the compositor. With <see cref="TiltY"/> and <see cref="Rotation"/> (the Roll), its Yaw / Pitch / Roll.
+    /// Pitch in degrees about the anchor's horizontal axis (top away), rendered in perspective. With <see cref="TiltY"/> (Yaw) and
+    /// <see cref="Rotation"/> (Roll) forms the 3D orientation.
     /// </summary>
     [ObservableProperty] private double _tiltX;
 
-    /// <summary>True 3D (5.2A): degrees the picture is swung about its upright axis through the anchor point (Yaw: its right edge away from the viewer).</summary>
+    /// <summary>Yaw in degrees about the anchor's vertical axis (right edge away).</summary>
     [ObservableProperty] private double _tiltY;
 
-    /// <summary>How far a picture can be tilted either way (5.2A): past it, it is seen too nearly edge-on to read.</summary>
+    /// <summary>Tilt limit in degrees; beyond it the plane is too close to edge-on to read.</summary>
     public const double TiltLimit = 60;
 
     /// <summary>A saved or typed tilt, held to <see cref="TiltLimit"/> (0 when it is not a number).</summary>
@@ -493,8 +471,7 @@ public sealed partial class Layer : ObservableObject
             TiltY = Tilt(value);
     }
 
-    // Mirroring and the layer's own filters are cards of its effect stack (Layer.Effects.cs): FlipHorizontal,
-    // FilterContrast and the rest are views onto those cards.
+    // Mirroring and filters live as effect-stack cards (Layer.Effects.cs); FlipHorizontal, FilterContrast, etc. are views onto them.
 
     /// <summary>Whether any filter of the layer's own is set to something.</summary>
     public bool HasFilterChanges => Math.Abs(FilterContrast - 1) >= 0.005 || Math.Abs(FilterBrightness) >= 0.005 || Math.Abs(FilterSaturation - 1) >= 0.005
@@ -505,14 +482,13 @@ public sealed partial class Layer : ObservableObject
 
     public void ResetTransform() => (Rotation, TiltX, TiltY, FlipHorizontal, FlipVertical) = (0, 0, 0, false, false);
 
-    // Growing about the anchor point. A layer is kept by its top-left corner, but when its size is changed (by its
-    // slider, its number box, a dialog, the layout pane) it is its anchor point (its middle, unless it was moved) that
-    // stays where it is: the corner is moved to suit. It turns about the same point (the GPU scene plan, the layout pane).
+    // Anchor-relative sizing: position is stored as the top-left corner, but resizing keeps the anchor (default centre) fixed and
+    // moves the corner. Rotation uses the same anchor (GPU scene plan, layout pane).
 
-    /// <summary>Switched on once the layer is in use; while it is being built, sizes and corners are simply taken as given.</summary>
+    /// <summary>Enabled after construction; during initialization sizes and corners are taken verbatim.</summary>
     public bool AnchorCenter { get; set; }
 
-    /// <summary>Where in the layer it turns and grows about, as a fraction of its width from its left edge: 0.5 is its middle.</summary>
+    /// <summary>Anchor X as a fraction of width from the left edge (0.5 = centre).</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(AnchorXPercent))]
     private double _anchorX = 0.5;
@@ -527,9 +503,8 @@ public sealed partial class Layer : ObservableObject
     public double AnchorYPercent { get => Math.Round(AnchorY * 100, 1); set => AnchorY = Anchor(value / 100); }
 
     /// <summary>
-    /// How far a layer's middle moves when it is turned about its anchor point instead of its middle: the turn of the
-    /// line from the anchor to the middle (dx, dy, in pixels, y pointing down, degrees clockwise), less that line. The
-    /// rotate filter turns about the middle; the overlay then puts the middle where the turn about the anchor takes it.
+    /// Centre displacement when rotating about the anchor instead of the centre: rotated anchor-to-centre vector minus the original
+    /// (dx, dy pixels, y down, degrees clockwise). Rotation happens about the centre, then the centre is offset by this.
     /// </summary>
     public static (double X, double Y) Pivot(double degrees, double dx, double dy)
     {
@@ -539,8 +514,7 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// Moves the anchor point without moving the layer on the frame (the layout pane's anchor dot): a turned layer turns
-    /// about the new point from now on, so its corner is moved by as much as that would move it.
+    /// Moves the anchor without visually moving the layer: compensates the corner for the rotation-centre change.
     /// </summary>
     public void MoveAnchor(double x, double y, double widthPixels, double heightPixels, int frameWidth, int frameHeight)
     {
@@ -569,7 +543,7 @@ public sealed partial class Layer : ObservableObject
     // The layer's height for each unit of its width, both as fractions of the frame; learnt whenever it is laid out.
     private double _heightPerWidth;
 
-    /// <summary>The layer's height for each unit of its width, both as fractions of the frame, as last laid out (1 before).</summary>
+    /// <summary>Last laid-out height per unit width in frame fractions (1 before first layout).</summary>
     public double HeightPerWidth => _heightPerWidth > 0 ? _heightPerWidth : 1;
 
     partial void OnSizeWidthChanged(double oldValue, double newValue)
@@ -588,7 +562,7 @@ public sealed partial class Layer : ObservableObject
             PositionY -= (newValue - oldValue) * AnchorY;
     }
 
-    /// <summary>Changes the layer with its corner staying where it is: for a resize dragged by the opposite corner.</summary>
+    /// <summary>Resizes keeping the top-left corner fixed (opposite-corner drag).</summary>
     public void FromCorner(Action change)
     {
         var anchored = AnchorCenter;
@@ -607,16 +581,13 @@ public sealed partial class Layer : ObservableObject
     public bool HasTiming => IsRemovable;
 
     /// <summary>
-    /// The seconds of the timeline the clip covers, on a sequence of the given length. A layer with no length
-    /// of its own stays to the end.
+    /// Timeline span for a Sequence of the given length; layers without their own length extend to the end.
     /// </summary>
     public (double Start, double End) GetSpan(double totalSeconds) =>
         Duration > 0.001 ? (StartTime, StartTime + Duration) : (StartTime, Math.Max(totalSeconds, StartTime));
 
     // ----- Keyframes -----
-    // A property with keyframes moves between them in straight lines, and holds the first value before the
-    // first and the last after the last. Their times are counted from where the clip begins, so a clip that
-    // is moved along the timeline takes its motion with it.
+    // Interpolated between keys, held constant outside the first/last. Times are relative to clip start, so motion moves with the clip.
 
     /// <summary>Two keyframes closer together than this are the same one: about half a frame.</summary>
     public const double KeyTolerance = 0.02;
@@ -639,7 +610,7 @@ public sealed partial class Layer : ObservableObject
     public bool AnimatesTiltX => HasKeys(KeyProperty.TiltX);
     public bool AnimatesTiltY => HasKeys(KeyProperty.TiltY);
 
-    /// <summary>Whether it is tilted in 3D (5.2A) anywhere: a tilt set, or keyframes of one.</summary>
+    /// <summary>True when any 3D tilt is set or keyframed.</summary>
     public bool IsTilted => TiltX != 0 || TiltY != 0 || HasKeys(KeyProperty.TiltX) || HasKeys(KeyProperty.TiltY);
 
     /// <summary>Every moment that has a keyframe of any kind, for the marks on the clip's block.</summary>
@@ -688,7 +659,7 @@ public sealed partial class Layer : ObservableObject
     public double Evaluate(KeyProperty property, double time) =>
         _keys[(int)property] is { Count: > 0 } keys ? EasingCurves.ValueAt(keys, time) : GetValue(property);
 
-    /// <summary>The keyframe at a moment: of one property, or (null) the first of any; null when there is none there.</summary>
+    /// <summary>Keyframe at a time for one property, or (null) the first of any; null when none.</summary>
     public Keyframe? GetKeyAt(double time, KeyProperty? only = null)
     {
         foreach (var property in Enum.GetValues<KeyProperty>())
@@ -707,9 +678,8 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// Sets how the clip moves on from the keyframes at a moment: of one property (its lane in the Keyframes pane), or
-    /// (null) of all of them, place, size and turn leaving it the same way. A Custom Bezier takes its handles with it.
-    /// False when there is no keyframe there, or it already leaves that way.
+    /// Sets the outgoing easing of keyframes at a time for one property lane or (null) all of them, including Custom Bezier handles.
+    /// Returns false when no keyframe exists there or it already has that easing.
     /// </summary>
     public bool SetEasingAt(double time, EasingType easing, (double X1, double Y1, double X2, double Y2)? handles = null, KeyProperty? only = null)
     {
@@ -740,8 +710,8 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// Moves the keyframes at one moment to another (a diamond dragged along its lane): of one property, or (null) of
-    /// all of them. One already at the new moment is replaced. False when there was none to move.
+    /// Moves keyframes at one time to another (diamond drag) for one property or (null) all; replaces any at the target.
+    /// Returns false when none moved.
     /// </summary>
     public bool MoveKeys(double from, double to, KeyProperty? only = null)
     {
@@ -789,8 +759,8 @@ public sealed partial class Layer : ObservableObject
         NotifyKeys(property);
     }
 
-    /// <summary>Sets a property's keyframe at a moment to its value there, or takes the one there away: its lane's diamond button.</summary>
-    /// <returns>Whether there is a keyframe there now.</returns>
+    /// <summary>Toggles a property keyframe at a time using the current value (lane diamond button).</summary>
+    /// <returns>True when a keyframe exists there afterwards.</returns>
     public bool ToggleKey(KeyProperty property, double time)
     {
         if (RemoveKey(property, time))
@@ -800,10 +770,8 @@ public sealed partial class Layer : ObservableObject
         return true;
     }
 
-    // Writes a keyframe without announcing it. The first keyframe of the place while the size is animated: until then the
-    // place was the anchor's, held still as the size changed about it (the export's graph before 5.2-Audit); from then on it is the
-    // corner's, keyframe by keyframe. So that nothing jumps, the corner is first keyed where the anchor puts it at each of
-    // the size's keyframes, leaving them as the size does.
+    // Writes a keyframe silently. When position gets its first key while size is animated, position switches from anchor-held to
+    // per-key corner positions; to avoid a jump, the corner is first keyed at each size key where the anchor places it, with matching easing.
     private void PutKey(KeyProperty property, double time, double value)
     {
         var list = _keys[(int)property];
@@ -869,7 +837,7 @@ public sealed partial class Layer : ObservableObject
         return nearest;
     }
 
-    /// <summary>Sets a keyframe at a moment that holds the clip as it is now: where it is, how large, how far turned. Announced once.</summary>
+    /// <summary>Keys current position, size and rotation at a time; raises one change notification.</summary>
     public void SetMasterKey(double time)
     {
         foreach (var property in Enum.GetValues<KeyProperty>())
@@ -877,7 +845,7 @@ public sealed partial class Layer : ObservableObject
             if (property == KeyProperty.Rotation && !HasFilters || property == KeyProperty.Opacity && !IsPicture)
                 continue;
 
-            // A tilt (5.2A) only on a clip that is tilted: a master key does not give every clip two lanes more.
+            // Key tilt only on tilted clips, so a master key does not add two lanes to every clip.
             if (property is KeyProperty.TiltX or KeyProperty.TiltY && (!HasFilters || (GetValue(property) == 0 && !HasKeys(property))))
                 continue;
 
@@ -916,8 +884,7 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// Moves every keyframe in time, and its effects' keyframes and ranges with them: for a clip whose beginning moved
-    /// while what it shows stayed (the second half of a split, a trim of its start), so they stay on their frames.
+    /// Shifts all keyframes and effect keyframes/ranges in time when the clip start moves but content stays (split, head trim).
     /// </summary>
     public void ShiftKeys(double seconds)
     {
@@ -940,8 +907,7 @@ public sealed partial class Layer : ObservableObject
                 effect.SetRange((Math.Max(Math.Round(range.Start + seconds, 3), 0), Math.Max(Math.Round(range.End + seconds, 3), 0.01)));
         }
 
-        // Studio Voice's mix keys (5.2B) count from the clip's start as its motion does: moved with it, in filters of its own (the dialog
-        // replaces them as a whole, so nothing else holding the old ones sees them move).
+        // Studio Voice mix keys are clip-relative too: shift them in a new filter list (copy-on-write; the dialog replaces lists wholesale).
         if (AudioFilters.StudioVoiceMixKeys is { Count: > 0 } mix)
         {
             var filters = AudioFilters.Clone();
@@ -987,7 +953,7 @@ public sealed partial class Layer : ObservableObject
         ApplyKeys(state);
     }
 
-    /// <summary>A saved speed, made one that can be used: files from before clips had a speed have none, which is 1.</summary>
+    /// <summary>Normalizes a stored speed; missing (legacy) means 1.</summary>
     private static double ReadSpeed(double saved) => double.IsFinite(saved) && saved > 0 ? Math.Clamp(saved, SlowestSpeed, FastestSpeed) : 1;
 
     private void ApplyKeys(LayerState? state)
@@ -1026,9 +992,8 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private string _maskPath = "";
 
     /// <summary>
-    /// The mask picture is of the whole source frame, not of this layer: the layer takes the part of it that
-    /// lies under its own cut-out, as it takes the picture. One mask then serves every piece cut from the
-    /// video, and moving a piece's cut-out keeps the mask where it is on the frame. Pieces cut from the video only.
+    /// Mask is in source-frame space: the layer samples the region under its source rect, so one mask serves all Cutouts and moving
+    /// a Cutout keeps the mask fixed on the frame. Cutouts only.
     /// </summary>
     [ObservableProperty] private bool _maskFrame;
 
@@ -1039,9 +1004,8 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private bool _maskInvert;
 
     /// <summary>
-    /// Moves the mask picture across the layer, as a percentage of the layer's width (negative: to the left) and
-    /// height (negative: up), at most <see cref="MaskOffsetLimit"/> either way: one HUD mask nudged to fit a
-    /// variation of the HUD without being drawn again. What it uncovers at the far edge is hidden.
+    /// Mask offset in percent of layer width/height (negative = left/up), at most <see cref="MaskOffsetLimit"/>; nudges one HUD mask
+    /// to fit HUD variants. Uncovered edges are hidden.
     /// </summary>
     [ObservableProperty] private double _maskOffsetX;
 
@@ -1049,15 +1013,12 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private double _maskOffsetY;
 
     /// <summary>
-    /// The outlines the mask was drawn from, as text (see <see cref="Services.MaskStore"/>), in fractions of the
-    /// source frame; empty for a mask that was not drawn here. Kept so that they can be opened and changed again.
+    /// Editable mask outlines as text (<see cref="Services.MaskStore"/>) in source-frame fractions; empty for imported masks.
     /// </summary>
     [ObservableProperty] private string _maskShapes = "";
 
-    // Crop: how much of each edge of the clip's picture is cut away, as fractions of its width or height. Every clip's crop
-    // reframes its picture, on every track (4.4-BugHunt, the user's Q2): what is left of the picture is what fills its box,
-    // which keeps its width and takes the shape the crop leaves (a locked box; a box of a free height keeps its height and
-    // the cut picture is fitted to it). It is never a mask of the box. The graph cuts every clip so (CropFractions).
+    // Crop: per-edge fractions of width/height. Crop reframes (never masks): the remainder fills the box, which keeps its width and
+    // takes the cropped aspect when locked; a free-height box keeps its height and fits the picture. Applied via CropFractions.
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CropLeftPercent))]
     private double _cropLeft;
@@ -1074,8 +1035,7 @@ public sealed partial class Layer : ObservableObject
     [NotifyPropertyChangedFor(nameof(CropBottomPercent))]
     private double _cropBottom;
 
-    // The crop as percentages, for the sliders and the number boxes beside them. Set by hand, the box takes its new shape
-    // about its anchor point, as it does when it is sized (see KeepingAnchor).
+    // Crop as percentages for UI controls; manual changes reshape the box about its anchor (KeepingAnchor).
     public double CropLeftPercent { get => Math.Round(CropLeft * 100, 1); set => KeepingAnchor(() => CropLeft = Crop(value / 100)); }
     public double CropRightPercent { get => Math.Round(CropRight * 100, 1); set => KeepingAnchor(() => CropRight = Crop(value / 100)); }
     public double CropTopPercent { get => Math.Round(CropTop * 100, 1); set => KeepingAnchor(() => CropTop = Crop(value / 100)); }
@@ -1084,13 +1044,12 @@ public sealed partial class Layer : ObservableObject
     /// <summary>Some of an edge is cut away.</summary>
     public bool IsCropped => CropLeft + CropRight + CropTop + CropBottom > 0.0005;
 
-    /// <summary>The most of a picture's width or of its height a crop may take, both edges together: something of it always remains.</summary>
+    /// <summary>Maximum combined crop per axis, so some picture always remains.</summary>
     public const double LargestCropTotal = 0.95;
 
     /// <summary>
-    /// A crop as fractions (0 to 1) of a picture's width and height, held to what leaves a picture: each edge, then each
-    /// pair at most <see cref="LargestCropTotal"/> (the right and the bottom edge giving way); an edge that is not a number
-    /// is none. The one rule every clip's crop is cut by (4.4-BugHunt): the graph's, its box's shape, the Crop boxes'.
+    /// Clamps crop fractions (0-1): each edge, then each axis pair to <see cref="LargestCropTotal"/> (right/bottom yield); NaN = 0.
+    /// The single crop rule used by rendering, box shape and Crop controls.
     /// </summary>
     public static (double Left, double Top, double Right, double Bottom) HeldCrop(double left, double top, double right, double bottom)
     {
@@ -1103,15 +1062,15 @@ public sealed partial class Layer : ObservableObject
     public static (double Left, double Top, double Right, double Bottom) HeldCrop(LayerState look) => HeldCrop(look.CropLeft, look.CropTop, look.CropRight, look.CropBottom);
 
     /// <summary>
-    /// The crop the clip's picture is cut by, held (<see cref="HeldCrop(double, double, double, double)"/>); none while it is
-    /// not <see cref="IsCropped"/>, and none for what has no picture of its own to cut (an adjustment layer, the caption box).
+    /// Effective clamped crop (<see cref="HeldCrop(double, double, double, double)"/>); zero when not <see cref="IsCropped"/> or for
+    /// pixel-less layers (adjustment, caption box).
     /// </summary>
     public (double Left, double Top, double Right, double Bottom) CropFractions =>
         IsCropped && !IsAdjustment && !IsCaptions ? HeldCrop(CropLeft, CropTop, CropRight, CropBottom) : default;
 
     /// <summary>
-    /// The part of the source a piece cut from the video shows (<see cref="IsVideo"/>), as fractions of the source frame: its
-    /// source rectangle with its crop taken off. What the graph cuts from the frame, and its mask of the whole frame with it.
+    /// Visible source region of a Cutout (<see cref="IsVideo"/>) in source-frame fractions: source rect minus crop. Also selects the
+    /// region of its frame-space mask.
     /// </summary>
     public (double X, double Y, double Width, double Height) CroppedSource
     {
@@ -1122,7 +1081,7 @@ public sealed partial class Layer : ObservableObject
         }
     }
 
-    /// <summary>The height the crop leaves of the picture for each unit of the width it leaves, as a share of the whole picture's: 1 uncropped.</summary>
+    /// <summary>Cropped aspect factor (remaining height per remaining width relative to the full picture); 1 uncropped.</summary>
     private double CroppedShape
     {
         get
@@ -1133,9 +1092,8 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// A crop changed by hand: a box whose height follows its shape (locked) grows or shrinks about its anchor point, as it does
-    /// when it is sized (<see cref="AnchorCenter"/>); its width stays. Only once the layer is in use and has been laid out;
-    /// a crop put back with the rest of a place (ApplyPlace, an undo step, Apply Placement) is taken as given.
+    /// Manual crop change: a locked-aspect box resizes about its anchor (<see cref="AnchorCenter"/>) keeping its width. Only after
+    /// first layout; crops restored with a placement (ApplyPlace, undo, Apply Placement) are taken verbatim.
     /// </summary>
     private void KeepingAnchor(Action change)
     {
@@ -1151,10 +1109,8 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// Whether the frame around the clip is filled with a blurred copy of it (4.4): true gives a video from a file a blurred
-    /// copy of its whole picture under it, covering the frame (the sequence's blur-fill settings: radius, passes, dim, zoom
-    /// and effects); false or null, none (5.2-AuditB: null no longer follows a switch; the conversion of a project from before
-    /// wrote the old switch into each former main clip).
+    /// Blur fill: true draws a frame-covering blurred copy of the video under it (Sequence blur-fill settings: radius, passes, dim,
+    /// zoom, effects); false or null disables it.
     /// </summary>
     [ObservableProperty] private bool? _blurFill;
 
@@ -1184,7 +1140,7 @@ public sealed partial class Layer : ObservableObject
     [NotifyPropertyChangedFor(nameof(PositionYPercent))]
     private double _positionY = 0.03;
 
-    // A layer may lie partly or wholly outside the frame: its corner can be anywhere from a frame to the left of it to a frame to the right.
+    // Layers may extend off-frame: the corner ranges from one frame width left to one frame width right.
     public const double SmallestPosition = -200, LargestPosition = 200;
 
     /// <summary>The position as percentages of the frame, for the number boxes beside the X and Y sliders.</summary>
@@ -1225,8 +1181,7 @@ public sealed partial class Layer : ObservableObject
         set => SizeHeight = Math.Clamp(value, 1, 400) / 100.0;
     }
 
-    // Style: rounded corners, soft edges, transparency and a drop shadow, so the layer sits on the
-    // picture instead of being pasted on it.
+    // Style: corner radius, feather, opacity and drop shadow.
 
     /// <summary>Corner rounding as a percentage of the layer's shorter side: 0 is square, 50 a full half-circle.</summary>
     [ObservableProperty] private int _cornerRadius;
@@ -1239,12 +1194,11 @@ public sealed partial class Layer : ObservableObject
     [ObservableProperty] private bool _shadow;
     [ObservableProperty] private double _shadowOpacity = 0.5;
 
-    /// <summary>How far the drop shadow falls from the layer, in output pixels, 0 to 100 (4.1.1-B; it was one offset on both axes).</summary>
+    /// <summary>Drop shadow distance in output pixels, 0-100.</summary>
     [ObservableProperty] private int _shadowDistance = LayerState.DefaultShadowDistance;
 
     /// <summary>
-    /// Where the light comes from, in degrees, as design tools write it: 135 lights the layer from the upper left, so
-    /// the shadow falls right and down (as every shadow did before 4.1.1-B). See <see cref="ShadowShift"/>.
+    /// Light angle in degrees (design-tool convention): 135 = light from upper left, shadow down-right. See <see cref="ShadowShift"/>.
     /// </summary>
     [ObservableProperty] private double _shadowAngle = LayerState.DefaultShadowAngle;
 
@@ -1263,7 +1217,7 @@ public sealed partial class Layer : ObservableObject
         return ((int)Math.Round(-d * Math.Cos(radians), MidpointRounding.AwayFromZero), (int)Math.Round(d * Math.Sin(radians), MidpointRounding.AwayFromZero));
     }
 
-    /// <summary>Takes a saved layer's drop shadow: distance, angle, softness and colour, or those that keep the look of one saved with an offset.</summary>
+    /// <summary>Copies a saved drop shadow (distance, angle, softness, colour), converting legacy single-offset shadows.</summary>
     public void TakeShadow(LayerState? state)
     {
         state ??= new LayerState();
@@ -1287,8 +1241,7 @@ public sealed partial class Layer : ObservableObject
             Math.Max(Even(SourceWidth * sourceWidth), 2), Math.Max(Even(SourceHeight * sourceHeight), 2));
 
     /// <summary>
-    /// Where and how large the layer is on an output frame of the given size, in pixels. The source
-    /// size is needed for the shape of a locked layer; when it is unknown, 16:9 is assumed.
+    /// Output-pixel rectangle for a frame of the given size. Source size determines locked aspect; 16:9 is assumed when unknown.
     /// </summary>
     public (int X, int Y, int Width, int Height) GetOutputRect(int frameWidth, int frameHeight, int sourceWidth, int sourceHeight)
     {
@@ -1299,9 +1252,8 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// Where and how large the layer is on an output frame of the given size, in pixels, changing nothing (safe on a lowered layer that
-    /// the preview, the program strip and an export read at once). The source size is needed for the shape of a locked layer; when it is
-    /// unknown, 16:9 is assumed.
+    /// Side-effect-free output rectangle, safe for lowered layers read concurrently by preview, program strip and export. Source size
+    /// determines locked aspect; 16:9 when unknown.
     /// </summary>
     public (int X, int Y, int Width, int Height) ComputeOutputRect(int frameWidth, int frameHeight, int sourceWidth, int sourceHeight)
     {
@@ -1314,10 +1266,8 @@ public sealed partial class Layer : ObservableObject
     }
 
     /// <summary>
-    /// The height that keeps the layer's own shape at a given width: the source rectangle's, or the picture's, as its crop
-    /// leaves it (4.4-BugHunt: the crop reframes the picture, and the box takes the shape of what is left). One rule for every
-    /// clip (5.2-AuditB): a former main clip whose box the crop filter's evened sides drew otherwise has its height of its own
-    /// (as 5.2-AuditB's conversion wrote it; KeepsShape, the golden tests' LegacyMainVideo since 5.2-Arm64AndNpu).
+    /// Height preserving the layer's aspect at a given width: source rect or picture aspect after crop. Converted legacy clips with an
+    /// explicit height keep it (KeepsShape).
     /// </summary>
     private int GetProportionalHeight(int width, int sourceWidth, int sourceHeight)
     {

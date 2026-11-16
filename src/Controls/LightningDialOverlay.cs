@@ -9,37 +9,32 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// The Lightning Dial (4.4): a ring of eight slices opened at the pointer by Mouse 5 (or the key it is bound to). Its top
-/// level holds the settings' eight slices (5.1-Polish, the user's directive): each an action, run with one flick (the dial
-/// HandPeg comes with is eight of them), or a category. Resting on a category for a moment, or pushing the pointer out
-/// through the ring, swaps the slices in place for that category's seven actions, with Back in the slice opposite the one
-/// the pointer came in by. Held open, releasing the button on an action runs it and
-/// releasing it in the middle cancels; a quick click leaves the dial open to be used with clicks (a click in the middle
-/// or outside, Esc, or a right-click on the top level closes it). Drawn in OnRender with cached geometry and text; hosted
-/// by the main window in a Popup (it must be drawn over the player's native window).
+/// Lightning Dial: an eight-slice radial menu opened at the pointer by Mouse 5 (or its bound key). Top-level slices come from settings:
+/// each an action (one flick runs it; the default dial is eight actions) or a category. Dwelling on a category, or pushing out through
+/// the ring, swaps in its seven actions with Back opposite the entry slice. Held mode: release on an action runs it, release in the
+/// centre cancels. A quick click switches to click mode (centre or outside click, Esc, or right-click at top level closes).
+/// OnRender with cached geometry and text; hosted in a Popup by the main window so it draws over the player's native HWND.
 ///
-/// 4.4-BugHunt (the user's design): one unbroken ring from <see cref="InnerRadius"/> to <see cref="OuterRadius"/>, each
-/// slice a full 45 degrees, divided by eight straight spokes of one constant width; inside it a moat of one width all round
-/// the hub. The settings' picture of the dial draws the same ring (<see cref="DrawRing"/>, DialConfiguratorControl).
+/// Geometry: one continuous ring from <see cref="InnerRadius"/> to <see cref="OuterRadius"/>, 45-degree slices separated by eight
+/// constant-width spokes, and a uniform moat around the hub. DialConfiguratorControl draws the same ring via <see cref="DrawRing"/>.
 /// </summary>
 public sealed class LightningDialOverlay : FrameworkElement
 {
     /// <summary>
-    /// The ring's outer and inner radius, the hub's (between the hub and the ring is the moat: the middle, where nothing is
-    /// chosen), and the spokes' width, in DIPs.
+    /// Ring outer/inner radius, hub radius (the moat between hub and ring is the neutral centre), and spoke width, in DIPs.
     /// </summary>
     public const double OuterRadius = 134, InnerRadius = 48, HubRadius = 42, SpokeWidth = 1.5;
 
-    /// <summary>The dial's width and height (the ring and a rim round it).</summary>
+    /// <summary>Dial width and height (ring plus rim).</summary>
     public const double DialSize = 2 * (OuterRadius + Rim);
 
     private const int Slices = KeybindManager.DialSlices;
     private const double Rim = 6, PushReach = 72;
 
-    /// <summary>How wide a slice's name may be (two lines at most): inside the slice's two spokes, at the names' radius.</summary>
+    /// <summary>Max slice label width (two lines), fitting between the spokes at the label radius.</summary>
     internal const double LabelWidth = 68;
 
-    // How long the pointer rests on a category (or Back) before it opens, and what a quick click is.
+    // Dwell before a category (or Back) opens, and the quick-click threshold.
     private static readonly TimeSpan Dwell = TimeSpan.FromMilliseconds(120);
     private const long QuickClickMs = 350;
 
@@ -73,28 +68,28 @@ public sealed class LightningDialOverlay : FrameworkElement
         };
     }
 
-    /// <summary>An action was chosen: the host closes the dial and runs it.</summary>
+    /// <summary>Raised with the chosen action id; the host closes the dial and runs it.</summary>
     public event Action<string>? Chosen;
 
-    /// <summary>The dial was closed (a click in the middle or outside, Esc, or the button let go in the middle).</summary>
+    /// <summary>Raised on cancel (centre or outside click, Esc, or hold released in the centre).</summary>
     public event Action? CloseRequested;
 
-    /// <summary>Whether an action can run now: one that cannot is drawn dimmed and does nothing.</summary>
+    /// <summary>Host predicate: whether an action can run now (disabled ones are dimmed and inert).</summary>
     public Func<string, bool>? CanRun { get; set; }
 
-    /// <summary>Whether the dial is being held open (the button that opened it is still down).</summary>
+    /// <summary>True while the opening button is still held.</summary>
     public bool IsHeld => _held;
 
     /// <summary>
-    /// Starts the dial on its top level, or, for a slice's own key, on that slice's category (a slice that is an action: the
-    /// top level), held or in click mode.
+    /// Opens at the top level, or at <paramref name="category"/> when a slice key targets a category (action slices open the top level),
+    /// in held or click mode.
     /// </summary>
     public void Open(IReadOnlyList<DialCategoryState> dial, int? category, bool held)
     {
         _dial = dial;
         (_held, _moved, _hover, _armedFrom) = (held, false, -1, null);
         _openedAt = Environment.TickCount64;
-        // Where the pointer was is known with its first move over the dial (which is not under it when put where it fits).
+        // Origin is taken from the first move (the dial may be repositioned to fit, so the pointer is not at its centre).
         _openedFrom = new Point(double.NaN, double.NaN);
         _dwell.Stop();
         if (category is { } index && index >= 0 && index < dial.Count && !dial[index].IsAction)
@@ -103,14 +98,14 @@ public sealed class LightningDialOverlay : FrameworkElement
             ShowTop();
     }
 
-    /// <summary>Takes the mouse, so that the button's release and every click come here, wherever they are.</summary>
+    /// <summary>Captures the mouse (SubTree) so releases and clicks arrive here wherever they occur.</summary>
     public void TakeMouse()
     {
         if (!IsMouseCaptured)
             Mouse.Capture(this, CaptureMode.SubTree);
     }
 
-    /// <summary>Lets the mouse go and forgets the state (the host closes the popup).</summary>
+    /// <summary>Releases capture and clears state (the host closes the popup).</summary>
     public void Reset()
     {
         _dwell.Stop();
@@ -119,7 +114,7 @@ public sealed class LightningDialOverlay : FrameworkElement
             ReleaseMouseCapture();
     }
 
-    /// <summary>The button that holds the dial open was released (heard by the host while the dial could not take the mouse).</summary>
+    /// <summary>Hold button released (forwarded by the host when the dial could not capture the mouse).</summary>
     public void ReleaseHold()
     {
         if (!_held)
@@ -136,7 +131,7 @@ public sealed class LightningDialOverlay : FrameworkElement
                 Follow(_hover);
                 break;
             default:
-                // A quick click leaves the dial open, to be used with clicks; a release in the middle after moving cancels.
+                // Quick click: stay open in click mode; release in the centre after moving: cancel.
                 if (!quick)
                     CloseRequested?.Invoke();
                 break;
@@ -145,7 +140,7 @@ public sealed class LightningDialOverlay : FrameworkElement
 
     // ----- Levels -----
 
-    // The top level: each slice its action (chosen, it runs at once) or its category (5.1-Polish); one with neither is empty.
+    // Top level: each slice is an action (runs immediately), a category, or empty.
     private void ShowTop()
     {
         _level = -1;
@@ -161,7 +156,7 @@ public sealed class LightningDialOverlay : FrameworkElement
         Relabel();
     }
 
-    // The category's actions fill the slices clockwise from the one the pointer came in by; Back is opposite it.
+    // Category actions fill clockwise from the entry slice; Back sits opposite it.
     private void ShowCategory(int category, int entry)
     {
         _level = category;
@@ -187,7 +182,7 @@ public sealed class LightningDialOverlay : FrameworkElement
         Relabel();
     }
 
-    // Long labels lose what the dial makes plain ("Go to Start" stays; "Lightning Dial: Slice 2" becomes the slice's name).
+    // Compact slice label: "ui.dialN" actions show the slice name instead of "Lightning Dial: Slice N"; others drop a trailing period.
     private string ShortLabel(KeyAction action) =>
         action.Id.StartsWith("ui.dial", StringComparison.Ordinal) && action.Id.Length == 8 && action.Id[7] - '1' is var index && index >= 0 && index < _dial.Count
             ? _dial[index].Name
@@ -210,7 +205,7 @@ public sealed class LightningDialOverlay : FrameworkElement
                 return;
         }
 
-        // What is now under the pointer is not chosen until the pointer moves on: a release right after the swap is no choice.
+        // Arm against accidental choice: the new slice under the pointer is inert until it moves 8 DIPs.
         _armedFrom = Mouse.GetPosition(this);
         _hover = -1;
         Redraw();
@@ -232,11 +227,11 @@ public sealed class LightningDialOverlay : FrameworkElement
         var (dx, dy) = (point.X - Centre.X, point.Y - Centre.Y);
         distance = Math.Sqrt(dx * dx + dy * dy);
 
-        // The hub and its moat are the middle (a release there cancels); the ring, and a reach outside it, choose by angle.
+        // Hub and moat are neutral (release cancels); the ring plus PushReach beyond it select by angle.
         if (distance < InnerRadius || distance > OuterRadius + PushReach)
             return -1;
 
-        // Slot 0 is straight up; they go round clockwise, 45 degrees each.
+        // Slot 0 is up; clockwise in 45-degree steps.
         var degrees = Math.Atan2(dy, dx) * 180 / Math.PI + 90 + 22.5;
         degrees = (degrees % 360 + 360) % 360;
         return Math.Min((int)(degrees / 45), Slices - 1);
@@ -251,8 +246,8 @@ public sealed class LightningDialOverlay : FrameworkElement
         if (!_moved && (point - _openedFrom).Length > 6)
             _moved = true;
 
-        // Near a screen edge the dial is put where it fits, so the pointer may sit over a slice the moment it opens: nothing
-        // is hovered (or dwelt on, or pushed through) until the pointer has really moved.
+        // Near screen edges the dial is shifted to fit, so the pointer may start over a slice: no hover, dwell or push-through until
+        // it moves more than 6 DIPs.
         if (!_moved)
             return;
         if (_armedFrom is { } armed)
@@ -275,7 +270,7 @@ public sealed class LightningDialOverlay : FrameworkElement
             Redraw();
         }
 
-        // Pushed out through the ring: the category (or Back) opens at once.
+        // Push-through past the ring opens the category (or Back) immediately.
         if (slot >= 0 && distance > OuterRadius && _slots[slot].Kind is SlotKind.Category or SlotKind.Back)
         {
             _dwell.Stop();
@@ -295,7 +290,7 @@ public sealed class LightningDialOverlay : FrameworkElement
         e.Handled = true;
         if (_held)
         {
-            // Only the button that holds the dial open ends the hold (the host tells which by ReleaseHold).
+            // Only X1/X2/Middle releases end the hold here; the host calls ReleaseHold for the actual hold source.
             if (e.ChangedButton is MouseButton.XButton1 or MouseButton.XButton2 or MouseButton.Middle)
                 ReleaseHold();
             return;
@@ -323,7 +318,7 @@ public sealed class LightningDialOverlay : FrameworkElement
 
                 break;
 
-            // The right button goes back a level, and closes the top one.
+            // Right button: back one level; closes at the top level.
             case MouseButton.Right:
                 if (_level >= 0)
                 {
@@ -338,7 +333,7 @@ public sealed class LightningDialOverlay : FrameworkElement
 
                 break;
 
-            // Clicked again with the button that opened it: closed.
+            // Opening button clicked again: close.
             case MouseButton.XButton1 or MouseButton.XButton2:
                 CloseRequested?.Invoke();
                 break;
@@ -349,17 +344,17 @@ public sealed class LightningDialOverlay : FrameworkElement
     {
         base.OnLostMouseCapture(e);
 
-        // Another window took the mouse (a dialog, or another program): the dial is not left standing.
+        // Capture taken by another window (dialog or app): close rather than linger.
         if (IsVisible && Mouse.Captured is not null && !IsAncestorOf((DependencyObject)Mouse.Captured))
             CloseRequested?.Invoke();
     }
 
-    // ----- The ring (shared with the settings' picture of the dial) -----
+    // ----- Ring geometry (shared with DialConfiguratorControl) -----
 
-    /// <summary>The ring's middle, in the dial's own coordinates.</summary>
+    /// <summary>Ring centre in dial coordinates.</summary>
     internal static readonly Point Centre = new(OuterRadius + Rim, OuterRadius + Rim);
 
-    // Slot i is centred on -90 + 45 i degrees (0 straight up, clockwise): its edges lie 22.5 degrees either side.
+    // Slot i centred at -90 + 45i degrees (0 = up, clockwise); edges at +/-22.5 degrees.
     private static double EdgeOf(int slot) => -112.5 + slot * 45;
 
     private static Point At(double degrees, double radius)
@@ -368,11 +363,10 @@ public sealed class LightningDialOverlay : FrameworkElement
         return new Point(Centre.X + radius * Math.Cos(angle), Centre.Y + radius * Math.Sin(angle));
     }
 
-    // The slices' fills: annular sectors meeting edge to edge, the same eight for every level, made once. Not stroked (no
-    // doubled edges): the spokes drawn over the seams divide them.
+    // Eight frozen annular sectors, edge to edge, shared by all levels; unstroked (spokes drawn over the seams avoid doubled edges).
     private static readonly StreamGeometry[] Sectors = MakeSectors();
 
-    // The eight spokes as one geometry, stroked once.
+    // All eight spokes in one geometry, stroked once.
     private static readonly StreamGeometry Spokes = MakeSpokes();
 
     private static StreamGeometry[] MakeSectors()
@@ -415,9 +409,8 @@ public sealed class LightningDialOverlay : FrameworkElement
     }
 
     /// <summary>
-    /// Draws the ring in the dial's own coordinates (its middle at <see cref="Centre"/>): the eight slices filled edge to edge
-    /// (<paramref name="fills"/>, one a slice, clockwise from the top), the eight spokes over their seams, the rim and the
-    /// ring's inner edge, and the hub. The moat between the hub and the ring is left see-through.
+    /// Draws the ring in dial coordinates (centre <see cref="Centre"/>): eight sector fills (<paramref name="fills"/>, clockwise from top),
+    /// spokes over the seams, outer and inner edges, and the hub. The moat between hub and ring stays transparent.
     /// </summary>
     internal static void DrawRing(DrawingContext drawing, IReadOnlyList<Brush> fills, Brush hub, Pen edge, Pen spoke)
     {
@@ -430,7 +423,7 @@ public sealed class LightningDialOverlay : FrameworkElement
         drawing.DrawEllipse(hub, edge, Centre, HubRadius, HubRadius);
     }
 
-    /// <summary>A slice's glyph above its name, both centred in the slice.</summary>
+    /// <summary>Draws a slice's glyph above its label, centred in the slice.</summary>
     internal static void DrawSliceText(DrawingContext drawing, int slot, FormattedText glyph, FormattedText label)
     {
         var at = At(-90 + slot * 45, (InnerRadius + OuterRadius) / 2 + 2);
@@ -439,11 +432,11 @@ public sealed class LightningDialOverlay : FrameworkElement
         drawing.DrawText(label, new Point(at.X - LabelWidth / 2, at.Y - height / 2 + glyph.Height));
     }
 
-    /// <summary>A slice's glyph as the dial draws it.</summary>
+    /// <summary>Slice glyph text (Segoe MDL2 Assets, 20 DIP).</summary>
     internal static FormattedText GlyphText(string glyph, Brush brush, double dpi) =>
         new(glyph, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, GlyphFace, 20, brush, dpi);
 
-    /// <summary>A slice's name as the dial draws it: two lines at most, centred, cut short with an ellipsis.</summary>
+    /// <summary>Slice label text: max two lines, centred, ellipsis-trimmed.</summary>
     internal static FormattedText LabelText(string label, Brush brush, double dpi) =>
         new(label, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, LabelFace, 10.5, brush, dpi)
         {
@@ -453,7 +446,7 @@ public sealed class LightningDialOverlay : FrameworkElement
             TextAlignment = TextAlignment.Center,
         };
 
-    /// <summary>The text in the hub as the dial draws it: three lines at most, centred, inside the hub.</summary>
+    /// <summary>Hub text: max three lines, centred within the hub.</summary>
     internal static FormattedText CentreText(string text, Brush brush, double dpi) =>
         new(text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, LabelFace, 11, brush, dpi)
         {
@@ -463,7 +456,7 @@ public sealed class LightningDialOverlay : FrameworkElement
             TextAlignment = TextAlignment.Center,
         };
 
-    /// <summary>The pen of the ring's rim and edges (1 DIP), or of its spokes (<see cref="SpokeWidth"/>), in a brush: frozen.</summary>
+    /// <summary>Frozen flat-capped pen for ring edges (1 DIP) or spokes (<see cref="SpokeWidth"/>).</summary>
     internal static Pen RingPen(Brush brush, double width)
     {
         var pen = new Pen(brush, width) { StartLineCap = PenLineCap.Flat, EndLineCap = PenLineCap.Flat };
@@ -474,11 +467,11 @@ public sealed class LightningDialOverlay : FrameworkElement
     private static readonly Typeface GlyphFace = new("Segoe MDL2 Assets");
     private static readonly Typeface LabelFace = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
 
-    // ----- Drawing -----
+    // ----- Rendering -----
 
     private Brush Themed(string key, Color fallback) => TryFindResource(key) as Brush ?? Frozen(fallback);
 
-    // The rim's and the spokes' pens, made again only when the theme's outline brush changes.
+    // Edge and spoke pens, rebuilt only when the theme border brush changes.
     private Pen? _edge, _spoke;
     private Brush? _edgeBrush;
 
@@ -490,7 +483,7 @@ public sealed class LightningDialOverlay : FrameworkElement
         return (_edge, _spoke);
     }
 
-    // A new level: its glyphs and names are made at the next drawing (with the theme and the screen it is drawn for).
+    // Level changed: rebuild glyphs and labels on the next render (for the current theme and DPI).
     private void Relabel()
     {
         _labelsStale = true;
@@ -500,8 +493,7 @@ public sealed class LightningDialOverlay : FrameworkElement
     private bool _labelsStale = true;
     private double _labelsDpi;
 
-    // The slices' glyphs and names for the level shown: made when the level, the theme or the screen changes, never when
-    // the pointer moves.
+    // Builds slice glyphs and labels for the current level; only on level, theme or DPI change, never on pointer moves.
     private void MakeLabels(Brush text, double dpi)
     {
         var muted = Themed("MutedTextBrush", Color.FromRgb(0xA0, 0xA0, 0xA0));
@@ -549,7 +541,7 @@ public sealed class LightningDialOverlay : FrameworkElement
             if (_glyphs[i] is { } glyph && _labels[i] is { } label)
                 DrawSliceText(drawing, i, glyph, label);
 
-        // The middle: what the pointer is on, or where the dial is.
+        // Hub text: hovered slice label, else current level name.
         _centre ??= CentreText(CentreWords(), text, dpi);
         drawing.DrawText(_centre, new Point(Centre.X - _centre.MaxTextWidth / 2, Centre.Y - _centre.Height / 2));
     }
@@ -559,7 +551,7 @@ public sealed class LightningDialOverlay : FrameworkElement
         : _level >= 0 && _level < _dial.Count ? _dial[_level].Name
         : "Lightning Dial";
 
-    // Draws again for a new slice under the pointer or a new level (the middle's text follows them).
+    // Redraw on hover or level change (invalidates the hub text).
     private void Redraw()
     {
         _centre = null;

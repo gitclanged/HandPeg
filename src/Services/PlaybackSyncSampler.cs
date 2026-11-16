@@ -4,13 +4,11 @@ using System.Runtime.InteropServices;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The Playback &amp; A/V Sync Test's measuring thread (Pass 5.5.2-Release; tools\AvSync's session sampler, the app's own copy): it follows
-/// both clocks of a <see cref="GpuPreviewEngine"/> every few hundred microseconds while it plays: the sound being heard (the engine's
-/// master clock, WasapiAudioEngine.Position, with its QPC) and every frame the pump presents (the moment its scene was evaluated at, from
-/// the shared memory's scene of the sequence the worker presented). When a frame reached the screen is the swap chain's own report
-/// (GetFrameStatistics: the vblank that showed it), else the median of the reported ones after its Present, else the first vblank after
-/// the Present on DWM's grid. A frame's A/V is its moment minus the sound's moment when it was shown: positive, the picture is ahead.
-/// Allocation-free while it runs (arrays made beforehand); stopped before its engine is disposed.
+/// Playback &amp; A/V Sync Test sampler (in-app copy of tools\AvSync's): polls a <see cref="GpuPreviewEngine"/> every few hundred
+/// microseconds, recording the audio master clock (WasapiAudioEngine.Position with QPC) and each presented frame's scene time (from
+/// shared memory). Display time comes from GetFrameStatistics (the showing vblank), else the median reported latency after Present,
+/// else the next DWM vblank. A/V = frame time minus audio time at display (positive = video ahead). Allocation-free while running;
+/// stopped before the engine is disposed.
 /// </summary>
 internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
 {
@@ -26,8 +24,7 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
     private readonly double[] _clockSeconds = new double[Capacity];
     private int _clocks;
 
-    // The frames presented: when Present returned, its present count, the scene's sequence and moment, when the swap chain said it was
-    // shown (0 not said), and the first vblank after Present on DWM's grid.
+    // Per present: Present return time, present count, scene sequence and time, reported display time (0 unknown), next DWM vblank.
     private readonly long[] _presentTicks = new long[FrameCapacity];
     private readonly uint[] _presentIds = new uint[FrameCapacity];
     private readonly long[] _sceneSequences = new long[FrameCapacity];
@@ -60,7 +57,7 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
     public int ReportedFrames => Enumerable.Range(0, _frames).Count(i => _shownTicks[i] != 0);
 
     /// <summary>Stops the sampler thread.</summary>
-    /// <returns>Whether it stopped within 2 s (a DXGI or DWM call can hang with the driver); logged when not.</returns>
+    /// <returns>True if stopped within 2 s (DXGI/DWM calls can hang in the driver); logged otherwise.</returns>
     public bool Stop()
     {
         _stop = true;
@@ -102,8 +99,7 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
                 _frames++;
             }
 
-            // When each present was shown: the swap chain's report of the vblank that showed it (asked every half millisecond), matched over
-            // the last 128 presents (at 500 Hz a frame is shown 3 or 4 refreshes after its Present).
+            // Match swap-chain display reports (polled every 0.5 ms) over the last 128 presents (at 500 Hz display lags 3-4 refreshes).
             if (now >= nextStatistics)
             {
                 nextStatistics = now + Stopwatch.Frequency / 2000;
@@ -129,8 +125,7 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
         }
     }
 
-    // The moment the scene of a sequence was evaluated at: the slot of the shared memory that holds it (three slots: not written again
-    // until two more scenes are published, a refresh or more away). NaN when it is gone or was not a playing scene.
+    // Scene time for a sequence from its shared-memory slot (triple-buffered, safe for two publishes); NaN if overwritten or not playing.
     private static double SceneSeconds(CompositorClient client, long sequence)
     {
         for (var slot = 0; slot < CompositorProtocol.SceneSlots; slot++)
@@ -148,9 +143,8 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
     }
 
     /// <summary>
-    /// Each frame first shown within [from, to) (QPC): its A/V (its moment minus the sound's moment then, ms; frames whose showing or sound
-    /// is not known are left out), and every one's moment in the sequence (seconds), in the order shown: a frame skipped is a gap between two.
-    /// A frame is on screen from its first Present (the engine presents it again while the timeline frame stays the same).
+    /// Frames first displayed in [from, to) (QPC): A/V in ms (unknown display/audio omitted) and sequence times in display order (gaps =
+    /// skips). A frame counts from its first Present (repeats of the same timeline frame are ignored).
     /// </summary>
     public (List<double> OffsetsMs, List<double> Moments) FramesWithin(long from, long to)
     {
@@ -169,7 +163,7 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
         return (offsets, moments);
     }
 
-    // The median of Present to the vblank that showed a frame, over the frames the swap chain reported (QPC ticks; null for fewer than 5).
+    // Median Present-to-display latency over reported frames (QPC ticks; null with fewer than 5).
     private long? Latency()
     {
         var measured = Enumerable.Range(0, _frames).Where(i => _shownTicks[i] != 0 && _shownTicks[i] >= _presentTicks[i])
@@ -177,7 +171,7 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
         return measured.Count >= 5 ? measured[measured.Count / 2] : null;
     }
 
-    // When a frame was shown: as the swap chain reported it; else that long after its Present; else the first vblank after it.
+    // Display time: reported, else Present + median latency, else next vblank.
     private long? ShownAt(int i, long? latency) =>
         _shownTicks[i] != 0 ? _shownTicks[i] : latency is { } l ? _presentTicks[i] + l : _gridTicks[i] != 0 ? _gridTicks[i] : null;
 
@@ -202,8 +196,8 @@ internal sealed unsafe partial class PlaybackSyncSampler : IDisposable
         return _clockSeconds[lo] + (_clockSeconds[hi] - _clockSeconds[lo]) * (ticks - _clockTicks[lo]) / span;
     }
 
-    // DWM's last vblank and its refresh period, in QPC ticks (DwmGetCompositionTimingInfo for the whole desktop). DWM_TIMING_INFO, packed
-    // to the byte (dwmapi.h): cbSize 0, rateRefresh 4, qpcRefreshPeriod 12, rateCompose 20, qpcVBlank 28 ... 292 bytes.
+    // DWM last vblank and refresh period in QPC ticks (DwmGetCompositionTimingInfo). DWM_TIMING_INFO is byte-packed (dwmapi.h):
+    // cbSize 0, rateRefresh 4, qpcRefreshPeriod 12, rateCompose 20, qpcVBlank 28, ..., 292 bytes.
     private static bool VBlank(out long vblank, out long period)
     {
         const int size = 292;

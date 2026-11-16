@@ -5,14 +5,13 @@ using CliWrap.Buffered;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Finds out which GPU encoders actually work on this machine. FFmpeg lists every encoder it was
-/// built with, so the only reliable test is to encode a frame with each one.
+/// Detects working GPU encoders by test-encoding with each one (FFmpeg lists every compiled-in encoder regardless of hardware).
 /// </summary>
 public static class EncoderProber
 {
     /// <summary>
-    /// The hardware encoders looked for, in the order they are offered: every vendor's own first, then Windows' Media
-    /// Foundation ones (the way to a Snapdragon / Adreno ARM64 machine's encoder; see <see cref="MediaFoundationEncoder"/>).
+    /// Hardware encoders probed, in offer order: vendor encoders first, then Media Foundation (the route to ARM64 Snapdragon/Adreno
+    /// encoders; see <see cref="MediaFoundationEncoder"/>).
     /// </summary>
     public static IReadOnlyList<string> HardwareEncoders { get; } =
     [
@@ -23,13 +22,11 @@ public static class EncoderProber
     ];
 
     /// <summary>
-    /// The vendor encoder that already does a Media Foundation encoder's codec here (h264_nvenc for h264_mf), or null; null
-    /// for any other encoder. A Media Foundation encoder reaches the same chip as a vendor's own encoder of its codec, by a
-    /// narrower door (no presets, fewer controls): it is offered only for a codec no vendor encoder here does (Snapdragon /
-    /// Adreno ARM64 machines, a card whose vendor's encoder FFmpeg lacks or cannot run), the user's call (5.0-Verify Q3).
-    /// <see cref="HardwareEncoders"/> lists the vendors first, so each is known before its codec's Media Foundation encoder.
+    /// Vendor encoder already covering a Media Foundation encoder's codec (h264_nvenc for h264_mf), else null (also for non-MF encoders).
+    /// MF reaches the same silicon with fewer controls, so it is offered only for codecs no vendor encoder handles (ARM64 Adreno, or a
+    /// vendor encoder FFmpeg lacks or cannot run). <see cref="HardwareEncoders"/> orders vendors first so they are known beforehand.
     /// </summary>
-    /// <param name="supported">The encoders that passed their test so far.</param>
+    /// <param name="supported">Encoders that have passed so far.</param>
     public static string? CoveringVendorEncoder(string encoder, IEnumerable<string> supported)
     {
         if (!MediaFoundationEncoder.Is(encoder) || encoder.IndexOf('_') is not (> 0 and var underscore))
@@ -39,10 +36,8 @@ public static class EncoderProber
     }
 
     /// <summary>
-    /// The hardware encoders that work here, and for those that are in FFmpeg but do not, why not. Two steps:
-    /// "ffmpeg -encoders" says which ones this FFmpeg was built with (h264_nvenc, hevc_nvenc and the rest are
-    /// looked for by name), and each of those is then made to encode a few frames, because being built in
-    /// says nothing about the graphics card or its driver.
+    /// Working hardware encoders, plus failure reasons for compiled-in ones that fail. Step 1: "ffmpeg -encoders" lists compiled-in
+    /// encoders by name; step 2: each encodes a few frames, since compilation says nothing about the GPU or driver.
     /// </summary>
     public static async Task<(List<string> Supported, List<string> Problems)> ProbeAsync(CancellationToken cancellationToken)
     {
@@ -79,22 +74,19 @@ public static class EncoderProber
                 supported.Add(encoder);
                 Log($"Hardware encoder {encoder} passed its test encode.");
 
-                // What an NVENC encoder can do depends on the generation of the card, and asking for something
-                // it cannot do stops the whole encode: each of these is asked for once, here, instead. Of AMF
-                // and QuickSync only 10-bit is asked: their H.264 encoders have none, and older cards none at all.
+                // NVENC capabilities vary by GPU generation and an unsupported option aborts the encode, so probe each once here.
+                // AMF/QSV are probed for 10-bit only (no 10-bit H.264; older cards have none).
                 var isNvenc = encoder.EndsWith("_nvenc", StringComparison.Ordinal);
                 foreach (var (feature, pixelFormat, options) in FeatureTests.Where(t => isNvenc || t.Feature == TenBit))
                 {
-                    // QuickSync has no 10-bit H.264, and its test would not say so: FFmpeg hands the encoder
-                    // 8-bit frames instead of stopping. Nor has any hardware encoder behind Media Foundation.
+                    // QSV has no 10-bit H.264 and the probe would not reveal it (FFmpeg silently converts to 8-bit); same for MF.
                     if (encoder is "h264_qsv" or "h264_mf" && feature == TenBit)
                     {
                         refused.Add($"{encoder}:{feature}");
                         continue;
                     }
 
-                    // A Media Foundation encoder that does not take 10-bit frames is handed 8-bit ones the same way, and
-                    // FFmpeg says so only as a warning: its warnings are read for it.
+                    // MF encoders without 10-bit input are silently fed 8-bit; detect via FFmpeg's warning output.
                     var mf = MediaFoundationEncoder.Is(encoder);
                     var test = await TestEncodeAsync(encoder, pixelFormat, options, cancellationToken, warnings: mf);
                     if (test.ExitCode == 0 && !(mf && test.StandardError.Contains("Incompatible pixel format", StringComparison.OrdinalIgnoreCase)))
@@ -115,8 +107,8 @@ public static class EncoderProber
             driverTooOld |= encoder.EndsWith("_nvenc", StringComparison.Ordinal)
                 && result.StandardError.Contains("required nvenc API version", StringComparison.OrdinalIgnoreCase);
 
-            // Said once per vendor, and only for the vendor's H.264 encoder: the others fail for the same reason. Not said at all for a
-            // vendor whose card is not in this PC (5.4B: an FFmpeg built with NVENC fails to load nvcuda.dll on every AMD or Intel machine).
+            // Report once per vendor (H.264 only; others fail identically), and never for absent vendors (NVENC-enabled FFmpeg fails to
+            // load nvcuda.dll on every non-NVIDIA machine).
             if (encoder.StartsWith("h264_", StringComparison.Ordinal) && VendorPresent(encoder, GpuAdapters.All))
                 problems.Add($"{encoder}: {reason}");
         }
@@ -128,8 +120,8 @@ public static class EncoderProber
     }
 
     /// <summary>
-    /// Whether a probe problem ("h264_nvenc: Cannot load nvcuda.dll"), or an encoder, is about a vendor whose card is here (5.4B): NVENC an
-    /// NVIDIA card, AMF an AMD one, QuickSync an Intel one; Media Foundation and anything else always are. True when no card could be listed.
+    /// True when a probe problem or encoder belongs to a present vendor (NVENC/NVIDIA, AMF/AMD, QSV/Intel); MF and others always qualify.
+    /// True when adapters could not be listed.
     /// </summary>
     public static bool VendorPresent(string encoderOrProblem, IReadOnlyList<GpuAdapter> adapters)
     {
@@ -144,31 +136,27 @@ public static class EncoderProber
     }
 
     /// <summary>
-    /// The problems worth a word on this PC: those of a vendor whose card is here (<see cref="VendorPresent"/>), once the cards are listed
-    /// (<see cref="GpuAdapters.IsListed"/>); all of them before (they are never listed for this: before the first frame that would load
-    /// every card's driver, Law 1).
+    /// Problems to report: present vendors only (<see cref="VendorPresent"/>) once adapters are listed (<see cref="GpuAdapters.IsListed"/>);
+    /// all before that (never listed here: pre-Frame-1 enumeration would load every driver).
     /// </summary>
     public static List<string> ProblemsForCardsHere(IEnumerable<string> problems) =>
         GpuAdapters.IsListed ? problems.Where(p => VendorPresent(p, GpuAdapters.All)).ToList() : [.. problems];
 
-    // ----- The result, kept between launches -----
-    // Every test encode loads a graphics driver: a burst of memory and processor at every start, for an answer
-    // that only changes with FFmpeg or a driver. The answer is kept, with what it was found for (the FFmpeg
-    // executable and each card's driver), and asked again only when one of those has changed, or from Settings.
+    // ----- Persisted probe result -----
+    // Test encodes load GPU drivers (CPU/memory spike), yet the answer only changes with FFmpeg or drivers. The result is cached with
+    // its fingerprint (FFmpeg executable, per-adapter driver) and re-probed only when that changes or from Settings.
 
-    // (A result saved before 5.2-Arm64AndNpu also says whether FFmpeg's OpenCL blur ran: read without it, as unknown members are.)
-    // Internal for its generated metadata (AppSettingsJsonContext: read before the first frame).
+    // (Legacy OpenCL-blur field is skipped like any unknown member.) Internal for source-generated metadata (AppSettingsJsonContext, pre-Frame-1).
     internal sealed record SavedResult(string Key, List<string> Supported, List<string> Problems, List<string> Refused, bool NvencNeedsOlderFfmpeg);
 
-    // Raised when what the tests check changes, so that a result saved by an older HandPeg is not used (2: the Media
-    // Foundation encoders, 5.0; 3: tested in NV12, 5.2, so a Snapdragon's "none found" from before is asked again).
+    // Bumped when probe semantics change so older results are discarded (2: MF encoders added; 3: NV12 testing, re-probing ARM64 "none found").
     private const int TestsVersion = 3;
 
     private static List<string> _lastSupported = [], _lastProblems = [];
 
     private static string SavedPath => Path.Combine(AppPaths.Cache, "encoder-probe.json");
 
-    /// <summary>What the result was found for: this FFmpeg (where, how large, when written) and these cards with these drivers.</summary>
+    /// <summary>Result fingerprint: FFmpeg path, size and write time, plus adapters and driver versions.</summary>
     private static string MachineKey() => FfmpegKey() + "|" + GpuAdapters.Fingerprint;
 
     // The key without its last part, the cards (GpuAdapters.Fingerprint, which has no '|' in it).
@@ -185,29 +173,26 @@ public static class EncoderProber
     private static string? _cardsUnchecked;
 
     /// <summary>
-    /// Starts reading the saved result away from the calling thread, at launch, so that the window can have its encoders
-    /// before its first frame. Only FFmpeg's part of what it was found for is compared then: listing the cards (DXGI) loads
-    /// each card's driver, up to a quarter of a second while a card wakes up, and the window's thread, loading its own
-    /// libraries meanwhile, waited for it (Pass 4.2C). The cards are compared after the first frame (<see cref="CardsStillMatch"/>).
+    /// Starts loading the saved result off-thread at launch so encoders are known before Frame 1. Only the FFmpeg fingerprint is checked
+    /// then: DXGI enumeration loads every driver (up to 250 ms on wake) and stalled the UI thread. Adapters are checked after Frame 1
+    /// (<see cref="CardsStillMatch"/>).
     /// </summary>
     public static void LoadSavedResultEarly() => _early = Task.Run(() => LoadSaved(checkCards: false));
 
     /// <summary>
-    /// After the first frame, away from the window's thread: whether a result taken at launch was found for these cards and
-    /// drivers too. False when one has changed since: the hardware encoders are then probed again.
+    /// Post-Frame-1, off the UI thread: true when the launch result's adapter/driver fingerprint still matches; false triggers a re-probe.
     /// </summary>
     public static bool CardsStillMatch() => Interlocked.Exchange(ref _cardsUnchecked, null) is not { } key || key == MachineKey();
 
     /// <summary>
-    /// The saved result read at launch, once, when it is there within <paramref name="patience"/>; null when there is none
-    /// for this FFmpeg and these drivers, or it is still being read (the probe then reads it as it always did).
+    /// Launch-loaded result if ready within <paramref name="patience"/>; null when absent, mismatched or still loading (the probe then
+    /// loads it itself).
     /// </summary>
     public static (List<string> Supported, List<string> Problems)? TakeEarlyResult(TimeSpan patience) =>
         Interlocked.Exchange(ref _early, null) is { } early && early.Wait(patience) ? early.Result : null;
 
     /// <summary>
-    /// The result saved by an earlier probe for this FFmpeg and these drivers, put back in place (what each
-    /// encoder can do); null when there is none or it was found for something else.
+    /// Restores a saved probe result (per-encoder capabilities) matching this FFmpeg and drivers; null when absent or mismatched.
     /// </summary>
     public static (List<string> Supported, List<string> Problems)? LoadSavedResult() => LoadSaved(checkCards: true);
 
@@ -233,7 +218,7 @@ public static class EncoderProber
         }
     }
 
-    /// <summary>Forgets the saved result: the next probe tests every encoder again (Settings, "Check Hardware Again").</summary>
+    /// <summary>Deletes the saved result so the next probe retests everything (Settings "Check Hardware Again").</summary>
     public static void ForgetSavedResult()
     {
         try
@@ -283,16 +268,13 @@ public static class EncoderProber
     public static bool Supports(string encoder, string feature) => !_refused.Contains($"{encoder}:{feature}");
 
     /// <summary>
-    /// True when the last probe found NVENC stopped by the driver being older than this FFmpeg asks for. A card
-    /// whose drivers have ended (the GTX 10 series) can only be given an older FFmpeg.
+    /// True when NVENC failed because the driver is older than FFmpeg requires; end-of-life GPUs (GTX 10 series) need an older FFmpeg.
     /// </summary>
     public static bool NvencNeedsOlderFfmpeg { get; private set; }
 
-    // A real frame size and rate, in a pixel format the encodes use: NVENC and AMF reject frames below their
-    // minimum size, and NVENC ones in a format it was not told to expect, which would make a working GPU
-    // look unsupported. A Media Foundation encoder is tested in NV12 (MediaFoundationEncoder.PixelFormat: the Adreno's
-    // refuse yuv420p) and held to the hardware ("-hw_encoding 1"), as every export holds it: Windows' software encoder
-    // passing the test would offer a "hardware" encoder there is not.
+    // Realistic size, rate and pixel format: NVENC/AMF reject undersized frames and NVENC unexpected formats, faking "unsupported".
+    // MF is tested in NV12 (MediaFoundationEncoder.PixelFormat; Adreno rejects yuv420p) with "-hw_encoding 1" like exports, so the
+    // Windows software encoder cannot pass as hardware.
     private static Task<BufferedCommandResult> TestEncodeAsync(string encoder, string pixelFormat, string[] options, CancellationToken cancellationToken,
         bool warnings = false) =>
         ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)

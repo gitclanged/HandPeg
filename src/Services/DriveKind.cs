@@ -7,14 +7,11 @@ using static HandPegApp.Native.Kernel32;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Whether a file lies on a fast local solid-state drive (Pass 5.0-Release, the user's directive 5: speculative work
-/// before a drop is done only where reading ahead costs nothing). Asked of the volume itself: a fixed drive whose device
-/// says it has no seek penalty (IOCTL_STORAGE_QUERY_PROPERTY, StorageDeviceSeekPenaltyProperty, the volume opened with no
-/// access rights), on an internal bus. A network share, a removable drive (USB, SD, an optical drive), a spinning disk or
-/// a volume that will not say counts as not.
-/// <para>Learnt once per volume and kept (<see cref="Learn"/>, on the thread pool: never on the interface's thread, and a
-/// UNC path or a mapped network drive is never opened at all). <see cref="IsFast"/> only reads what is known: the
-/// interface's thread may ask it, and a volume not learnt yet counts as not fast until it is.</para>
+/// Detects fast local SSDs so speculative pre-drop reads only run where they are free: a fixed volume on an internal bus whose device
+/// reports no seek penalty (IOCTL_STORAGE_QUERY_PROPERTY StorageDeviceSeekPenaltyProperty, opened with no access rights). Shares,
+/// removable media, HDDs and unknown volumes count as slow.
+/// <para>Resolved once per volume on the pool (<see cref="Learn"/>; UNC paths and mapped drives are never opened). <see cref="IsFast"/>
+/// only reads cached results (UI-thread safe); unknown volumes are slow until learnt.</para>
 /// </summary>
 public static partial class DriveKind
 {
@@ -22,18 +19,17 @@ public static partial class DriveKind
     private static readonly ConcurrentDictionary<string, bool> Pluggable = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Whether a file's volume can be unplugged (removable media, or a device on a USB, 1394, SD, MMC or iSCSI bus, which external
-    /// SSDs and HDDs are although Windows reports them as fixed drives), learnt with <see cref="Learn"/>: null while not known yet.
-    /// A UNC path or a volume that will not say counts as pluggable. Touches no disk.
+    /// True when the volume is removable (removable media, or USB/1394/SD/MMC/iSCSI bus, including external drives reported as fixed);
+    /// null until <see cref="Learn"/> runs. UNC and unknown count as removable. No disk access.
     /// </summary>
     public static bool? IsHotPluggable(string path) =>
         RootOf(path) is not { } root ? true : Pluggable.TryGetValue(root, out var pluggable) ? pluggable : null;
     private static readonly ConcurrentDictionary<string, Task<bool>> Learning = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Whether a file's volume is known to be a fast local SSD (false while it is not known yet). Touches no disk.</summary>
+    /// <summary>True when the volume is known to be a fast local SSD (false if unknown). No disk access.</summary>
     public static bool IsFast(string path) => RootOf(path) is { } root && Known.TryGetValue(root, out var fast) && fast;
 
-    /// <summary>Whether a file's volume is a fast local SSD, learnt once per volume on the thread pool (false for anything else, or on failure).</summary>
+    /// <summary>Resolves and caches whether the volume is a fast local SSD (pool thread; false otherwise or on failure).</summary>
     public static Task<bool> Learn(string path)
     {
         if (RootOf(path) is not { } root)
@@ -59,7 +55,7 @@ public static partial class DriveKind
         }));
     }
 
-    /// <summary>The volume of a local path as "C:\" (null for a UNC path, a device path, or anything not rooted in a drive letter).</summary>
+    /// <summary>Drive root ("C:\") of a local path; null for UNC, device or non-drive-letter paths.</summary>
     private static string? RootOf(string path)
     {
         if (string.IsNullOrWhiteSpace(path))

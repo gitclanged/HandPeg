@@ -12,19 +12,18 @@ using HandPegApp.ViewModels;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Video Scopes pane (5.4C): the Histogram, the Luma Waveform, the RGB Parade or (5.6A) the Vectorscope of the frame the player
-/// shows, chosen in its title row (the Vectorscope kept square). Fed by a small capture of the paused player (GpuPreviewEngine.CaptureThumbnailAsync: never while it plays, so no played frame
-/// waits for one, Law 3), asked for only while the pane is in sight and paused, after the frame, the timeline or the preview changed,
-/// at most about eight times a second; the counting and drawing run off the interface's thread (Services/VideoScopes.cs) into one
-/// bitmap, reused. While the player plays the pane keeps its last picture and says it updates when paused. Built in code and light
-/// to make (Law 1): nothing is captured or drawn until it is shown.
+/// Video Scopes pane: Histogram, Luma Waveform, RGB Parade or Vectorscope (kept square) of the player frame, selected in the title row.
+/// Fed by a small paused-player capture (GpuPreviewEngine.CaptureThumbnailAsync; never during playback, so no frame waits on it: Law 3),
+/// requested only while visible and paused after frame, timeline or preview changes, at most ~8 Hz. Binning and rendering run off the UI
+/// thread (Services/VideoScopes.cs) into one reused bitmap. During playback the last image stays with an "updates when paused" note.
+/// Built in code and cheap to construct (Law 1): nothing is captured or drawn until shown.
 /// </summary>
 public sealed class VideoScopesPane : UserControl
 {
-    /// <summary>The scopes as the title row's box lists them, in <see cref="VideoScopeKind"/>'s order.</summary>
+    /// <summary>Scope names for the title-row selector, in <see cref="VideoScopeKind"/> order.</summary>
     internal static readonly string[] KindNames = ["Histogram", "Luma Waveform", "RGB Parade", "Vectorscope"];
 
-    /// <summary>The least time between two captures, milliseconds (about 8 Hz).</summary>
+    /// <summary>Minimum interval between captures, ms (~8 Hz).</summary>
     internal const int ThrottleMs = 125;
 
     private readonly MainViewModel _viewModel;
@@ -33,12 +32,12 @@ public sealed class VideoScopesPane : UserControl
     private readonly Image _picture;
     private readonly TextBlock _note;
 
-    // A trailing throttle: a change starts it, its tick captures; changes meanwhile are one capture.
+    // Trailing throttle: a change arms it, the tick captures; intermediate changes coalesce into one capture.
     private readonly DispatcherTimer _throttle = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(ThrottleMs) };
 
     private bool _attached, _capturing, _wanted;
 
-    // The last frame captured, so another scope is drawn from it at once; and the picture's one bitmap.
+    // Last captured frame (so switching scopes redraws immediately) and the single reused output bitmap.
     private (byte[] Bgra, int Width, int Height)? _frame;
     private WriteableBitmap? _bitmap;
     private int _drawn;
@@ -50,7 +49,7 @@ public sealed class VideoScopesPane : UserControl
         AutomationProperties.SetName(this, "Video Scopes Pane");
 
         _kindBox = new ComboBox { MinWidth = 120, Margin = new Thickness(6, 0, 0, 0), ItemsSource = KindNames, SelectedIndex = (int)VideoScopeKind.LumaWaveform };
-        // 5.6A: the microcopy law's tooltip (12 words at most); what each scope reads is its name.
+        // Short tooltip per the microcopy rule (12 words max); each scope's name describes it.
         _kindBox.ToolTip = "The scope drawn from the paused frame";
         AutomationProperties.SetName(_kindBox, "Scope");
         _kindBox.SelectionChanged += (_, _) => _ = DrawAsync();
@@ -80,7 +79,7 @@ public sealed class VideoScopesPane : UserControl
 
         _throttle.Tick += (_, _) => _ = CaptureAsync();
 
-        // Every dock rebuild takes the pane out and puts it back: it listens only while it is in a window.
+        // Dock rebuilds detach and re-attach the pane, so subscribe only while loaded.
         Loaded += (_, _) => Attach();
         Unloaded += (_, _) => Detach();
         IsVisibleChanged += (_, e) =>
@@ -92,7 +91,7 @@ public sealed class VideoScopesPane : UserControl
         };
     }
 
-    /// <summary>The scope shown.</summary>
+    /// <summary>Currently selected scope.</summary>
     internal VideoScopeKind Kind
     {
         get => (VideoScopeKind)Math.Max(_kindBox.SelectedIndex, 0);
@@ -127,8 +126,8 @@ public sealed class VideoScopesPane : UserControl
     {
         switch (e.PropertyName)
         {
-            // A paused scrub moves the playhead many times a second: captured once it has rested (5.4C review: a capture is an exact
-            // frame's readback on the pump, which a scrub's own frames would wait behind).
+            // Paused scrubs move the playhead many times per second: capture after it rests, since an exact-frame readback on the pump
+            // would delay the scrub's own frames.
             case nameof(MainViewModel.PositionMs) when !_viewModel.IsPlaying:
                 Want(afterRest: true);
                 break;
@@ -139,10 +138,10 @@ public sealed class VideoScopesPane : UserControl
         }
     }
 
-    /// <summary>The frame may have changed: captured again once the throttle lets it (never while playing: the note says so instead).</summary>
+    /// <summary>Frame may have changed: schedule a throttled recapture (never during playback; a note is shown instead).</summary>
     private void Want() => Want(afterRest: false);
 
-    /// <param name="afterRest">The throttle starts again from now (a trailing debounce), rather than running on from the first ask.</param>
+    /// <param name="afterRest">Restart the throttle from now (trailing debounce) instead of keeping the first request's schedule.</param>
     private void Want(bool afterRest)
     {
         if (!_attached || !IsVisible)
@@ -197,12 +196,12 @@ public sealed class VideoScopesPane : UserControl
             _capturing = false;
         }
 
-        // What changed while the capture was out is captured next.
+        // Changes that arrived during the capture trigger another one.
         if (_wanted && _attached && IsVisible && !_viewModel.IsPlaying)
             _throttle.Start();
     }
 
-    /// <summary>The scope chosen drawn from the last frame: counted and drawn off the interface's thread, then written into the one bitmap.</summary>
+    /// <summary>Renders the selected scope from the last frame off the UI thread, then writes it into the reused bitmap (stale results dropped).</summary>
     private async Task DrawAsync()
     {
         if (_frame is not { } frame)
@@ -214,7 +213,7 @@ public sealed class VideoScopesPane : UserControl
         if (turn != _drawn)
             return;
 
-        // 5.6A: the Vectorscope keeps its circle round (Uniform); the waveforms fill the pane.
+        // Vectorscope uses Uniform to keep its circle round; other scopes fill the pane.
         _picture.Stretch = kind == VideoScopeKind.Vectorscope ? Stretch.Uniform : Stretch.Fill;
 
         if (_bitmap is null || _bitmap.PixelWidth != width || _bitmap.PixelHeight != height)
@@ -226,7 +225,7 @@ public sealed class VideoScopesPane : UserControl
 
     private void ShowNote(string text)
     {
-        // Over a picture the note goes to the bottom edge, so the scope stays readable under it.
+        // With an image shown, bottom-align the note so the scope stays readable.
         _note.Text = text;
         _note.VerticalAlignment = _picture.Source is null ? VerticalAlignment.Center : VerticalAlignment.Bottom;
         _note.Visibility = text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;

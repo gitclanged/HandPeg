@@ -9,30 +9,26 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Subtitle Studio's timeline: the cues as blocks along a strip of time that slides under a playhead
-/// which stays in the middle. Everything is drawn in OnRender from the cues themselves; there is no element
-/// per cue, so a film's worth of subtitles scrolls and zooms as readily as ten do.
+/// Subtitle Studio timeline: cues as blocks on a time strip sliding under a fixed centre playhead. All drawing is in OnRender from the
+/// cue list (no element per cue), so feature-length tracks scroll and zoom as cheaply as short ones.
 ///
-/// Time is mapped to pixels by two transforms: a scale (pixels to the second, changed by Ctrl + wheel or a
-/// pinch) and a translation (changed by dragging the strip or by the wheel, which is the same as scrubbing: the
-/// playhead does not move, the time under it does). A cue is dragged by its middle to move it and by an end to
-/// retime that end.
+/// Time maps to pixels via a scale (px/s, Ctrl+wheel or pinch) and a translation (strip drag or wheel, i.e. scrubbing: the playhead is
+/// fixed and the time under it moves). Drag a cue's middle to move it, an end to retime that end.
 ///
-/// A flick of the strip coasts on (5.4C, a <see cref="MomentumScroller"/>): the time under the playhead goes on
-/// changing and slows to a stop, each step told as a scrub. A slow drag, a rest of 40 ms before letting go and
-/// a cue's drag never coast; any press, a zoom, the strip hidden, or the position set from outside (playback,
-/// a typed time) stops it. Its frame hook is there only while it coasts.
+/// Strip flicks coast via <see cref="MomentumScroller"/>, each step raised as a scrub. Slow drags, a 40 ms rest before release and cue
+/// drags never coast; any press, zoom, hiding, or an external position change (playback, typed time) stops it. The frame hook exists
+/// only while coasting.
 ///
-/// The wheel (5.4.1A) scrolls in time as the Timeline's Shift + wheel does: the plain wheel and Shift + wheel (down: later) and a
-/// sideways swipe or tilt (<see cref="ISidewaysWheel"/>, right: later), a fast stream coasting on; Ctrl + wheel (a precision
-/// touchpad's pinch arrives as one) zooms about the playhead in the middle (5.4.1-M1, the user's answer Q2 b: no seek on a pinch).
+/// Wheel scrolls in time like the Timeline's Shift+wheel: plain/Shift wheel (down = later) and horizontal swipe/tilt
+/// (<see cref="ISidewaysWheel"/>, right = later), fast streams coast. Ctrl+wheel (precision-touchpad pinch arrives as this) zooms about
+/// the centre playhead, so a pinch never seeks.
 /// </summary>
 public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
 {
-    /// <summary>DIPs the strip slides for a wheel delta of 1 (a notch of 120: 120 DIPs), the Timeline's Shift + wheel feel (PanWheelAt).</summary>
+    /// <summary>Strip DIPs per wheel delta unit (120 per notch), matching the Timeline's Shift+wheel (PanWheelAt).</summary>
     internal const double WheelDipsPerDelta = 1.0;
 
-    /// <summary>What a notch of Ctrl + wheel multiplies the zoom by.</summary>
+    /// <summary>Zoom multiplier per Ctrl+wheel notch.</summary>
     private const double ZoomStep = 1.2;
 
     private const double SmallestZoom = 4, LargestZoom = 1200, EdgePixels = 7, RulerHeight = 18, ShortestCue = 0.1;
@@ -56,21 +52,20 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
     private double _position;
     private Drag? _drag;
 
-    // Momentum (5.4C): made at its first press; whether a coast has the frame; whether the coast itself is setting the position.
+    // Momentum scroller (created on first press), frame-hook flag, and re-entrancy flag while the coast sets the position.
     private MomentumScroller? _momentum;
     private bool _coastHooked, _coastSetting;
 
-    // The strip (ruler, cues, words) is drawn into a visual of its own, three screens wide around the playhead,
-    // and slid by a transform as the time under the playhead changes: playing draws nothing until the view runs
-    // past what was drawn. It is drawn again when anything on it changes (InvalidateVisual: OnRender). The
-    // playhead, which never moves, is a visual of its own too, drawn again only when its colour changes.
+    // The strip (ruler, cues, words) renders into its own DrawingVisual three screens wide around the playhead and slides via a transform;
+    // playback redraws only when the view passes the drawn range. Content changes redraw via InvalidateVisual (OnRender). The fixed
+    // playhead is a separate visual redrawn only on colour change.
     private readonly DrawingVisual _strip = new(), _head = new();
     private readonly TranslateTransform _stripShift = new();
     private (double From, double To) _drawn = (double.NaN, double.NaN);
     private bool? _headOver;
     private double _headWidth;
 
-    // Ruler labels by their text: the same few dozen, drawn over and over as the strip slides.
+    // FormattedText cache for ruler labels (a few dozen strings, reused as the strip slides).
     private readonly Dictionary<string, FormattedText> _rulerLabels = [];
     private double _labelsDpi;
 
@@ -106,28 +101,28 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
 
     protected override Visual GetVisualChild(int index) => index == 0 ? _strip : _head;
 
-    /// <summary>The cues that are drawn. Not copied: the timeline draws them as they are whenever it is asked to.</summary>
+    /// <summary>Cue list, drawn live (not copied).</summary>
     public IList<SubtitleCue>? Cues { get; set; }
 
-    /// <summary>Seconds every cue is shown later by: the track's offset.</summary>
+    /// <summary>Track offset in seconds added to every cue.</summary>
     public double OffsetSeconds { get; set; }
 
-    /// <summary>How long the strip is.</summary>
+    /// <summary>Strip length in seconds.</summary>
     public double DurationSeconds { get; set; } = 60;
 
-    /// <summary>The cues are pictures: drawn in another colour, with no words.</summary>
+    /// <summary>Bitmap cues: drawn in a distinct colour without text.</summary>
     public bool CuesAreImages { get; set; }
 
     public SubtitleCue? Selected { get; private set; }
 
-    /// <summary>The word of the selected cue that was last clicked: what Delete takes out. -1 for none.</summary>
+    /// <summary>Last clicked word index in the selected cue (Delete target); -1 for none.</summary>
     public int ActiveWord { get; private set; } = -1;
 
     private static readonly Brush ActiveWordBrush = Frozen(Color.FromArgb(0x48, 0xFF, 0xFF, 0xFF));
     private static readonly Pen WordPen = FrozenPen(Color.FromArgb(0xE0, 0xFF, 0xE0, 0x66), 1.5);
 
-    /// <summary>The moment under the playhead. Set from outside to another moment, it stops a coast (5.4C); the same moment again (a host
-    /// echoing a scrub back) does not.</summary>
+    /// <summary>Time under the playhead. An external change stops a coast; setting the same value (a host echoing a scrub) does
+    /// not.</summary>
     public double PositionSeconds
     {
         get => _position;
@@ -141,19 +136,19 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         }
     }
 
-    /// <summary>Whether the strip is coasting on after a flick (5.4C): a host that follows the player may leave the position alone meanwhile.</summary>
+    /// <summary>True while coasting after a flick; a host following the player may skip position updates meanwhile.</summary>
     public bool IsCoasting => _momentum?.IsCoasting == true;
 
-    /// <summary>The strip was dragged: the moment now under the playhead.</summary>
+    /// <summary>Raised on strip scrub with the new time under the playhead.</summary>
     public event Action<double>? Scrubbed;
 
-    /// <summary>A drag of a cue has begun to move it: raised once, before the cue changes (so that it can be kept as it was, for Undo).</summary>
+    /// <summary>Raised once when a cue drag first moves, before the cue changes (so the host can snapshot it for Undo).</summary>
     public event Action<SubtitleCue>? CueGrabbed;
 
-    /// <summary>A cue is being dragged and has just changed.</summary>
+    /// <summary>Raised after each cue change during a drag.</summary>
     public event Action<SubtitleCue>? CueDragged;
 
-    /// <summary>A drag of a cue ended.</summary>
+    /// <summary>Raised when a cue drag ends.</summary>
     public event Action<SubtitleCue>? CueReleased;
 
     public event Action<SubtitleCue?>? SelectionChanged;
@@ -178,15 +173,14 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
     {
         drawing.DrawRectangle(BackBrush, null, new Rect(0, 0, ActualWidth, ActualHeight));
 
-        // Something on the strip changed (a cue, the selection, the zoom, the size): it is drawn again.
+        // Content changed (cue, selection, zoom, size): invalidate the drawn range and redraw.
         _drawn = (double.NaN, double.NaN);
         Slide();
     }
 
     /// <summary>
-    /// Puts the moment under the playhead in the middle: the strip is moved, and drawn again only when what is
-    /// on screen now runs past what was drawn (or nothing has been). The playhead takes its colour from whether a
-    /// subtitle is showing there.
+    /// Centres the current time under the playhead by translating the strip, redrawing only when the visible range exceeds the drawn
+    /// range. The playhead colour reflects whether a cue is active there.
     /// </summary>
     private void Slide()
     {
@@ -194,7 +188,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         if (width <= 0)
             return;
 
-        // The playhead stays in the middle: the strip is moved so that the moment it is at lies under it.
+        // Fixed centre playhead: pan so the current time sits under it.
         _pan.X = width / 2 - _position * _zoom.ScaleX;
         var (firstSecond, lastSecond) = (-_pan.X / _zoom.ScaleX, (width - _pan.X) / _zoom.ScaleX);
         if (double.IsNaN(_drawn.From) || firstSecond < _drawn.From || lastSecond > _drawn.To)
@@ -217,7 +211,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         DrawHead(width, over);
     }
 
-    /// <summary>The playhead, which never moves: drawn again only when its colour or the strip's width changes.</summary>
+    /// <summary>Draws the fixed playhead; redrawn only when its colour or the width changes.</summary>
     private void DrawHead(double width, bool over)
     {
         if (_headOver == over && _headWidth == width)
@@ -230,8 +224,8 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
     }
 
     /// <summary>
-    /// Draws the strip from a screen's width before what is on screen to a screen's width after it, with its own
-    /// origin at the first of those moments (x = (seconds - from) * zoom); <see cref="Slide"/> moves it into place.
+    /// Renders the strip from one screen before to one screen after the visible range, with local origin at its start
+    /// (x = (seconds - from) * zoom); <see cref="Slide"/> translates it into place.
     /// </summary>
     private void DrawStrip(double width, double firstSecond, double lastSecond)
     {
@@ -251,12 +245,12 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
 
         using var drawing = _strip.RenderOpen();
 
-        // Outside the video there is nothing to subtitle: that part of the strip is left darker.
+        // Lighter band over the video's duration; outside it stays dark.
         var (left, right) = (Math.Max(X(0), 0), Math.Min(X(DurationSeconds), X(to)));
         if (right > left)
             drawing.DrawRectangle(VideoBrush, null, new Rect(left, RulerHeight, right - left, height - RulerHeight));
 
-        // The ruler: a tick at every round step of time that leaves room for its label.
+        // Ruler ticks at the smallest round step leaving >= 72 px per label.
         var step = RulerSteps.FirstOrDefault(s => s * zoom >= 72, 7200);
         for (var tick = Math.Max(Math.Floor(from / step) * step, 0); tick <= Math.Min(to, DurationSeconds); tick += step)
         {
@@ -280,7 +274,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         {
             var (start, end) = (cue.Start + OffsetSeconds, cue.End + OffsetSeconds);
 
-            // A cue that is not on the strip costs a comparison and nothing more.
+            // Off-strip cues are culled with one comparison.
             if (end < from || start > to)
                 continue;
 
@@ -290,7 +284,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
 
             if (rect.Width > 12)
             {
-                // The ends are what is taken hold of to retime them.
+                // Edge grips for retiming.
                 drawing.DrawLine(EdgePen, new Point(rect.Left + 3, rect.Top + 5), new Point(rect.Left + 3, rect.Bottom - 5));
                 drawing.DrawLine(EdgePen, new Point(rect.Right - 3, rect.Top + 5), new Point(rect.Right - 3, rect.Bottom - 5));
             }
@@ -311,8 +305,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
                     _labels.AddOrUpdate(cue, label);
                 }
 
-                // The words keep to the part of the block that is on the strip; set only when that changes, as
-                // setting it lays the text out again.
+                // Constrain text to the on-strip part of the block; set limits only on change, since setting re-lays out the text.
                 var textLeft = Math.Max(rect.Left, 0) + 8;
                 var (maxWidth, maxHeight) = (Math.Max(rect.Right - textLeft - 8, 4), Math.Max(tall - 4, 12));
                 if (label.Formatted.MaxTextWidth != maxWidth)
@@ -327,8 +320,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
     }
 
     /// <summary>
-    /// The selected cue's words, each in its own part of the block: a divider where one word ends and the next
-    /// begins, which is what is dragged to retime them, and the word itself where there is room for it.
+    /// Draws the selected cue's words in their time slices: draggable dividers at word boundaries, and each word where it fits.
     /// </summary>
     private void DrawWords(DrawingContext drawing, SubtitleCue cue, string[] words, Rect rect, double stripRight, double dpi)
     {
@@ -354,13 +346,13 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         drawing.Pop();
     }
 
-    /// <summary>The cue under a point, and which part of it: an end, the middle, or (in the selected cue) the boundary between two words.</summary>
+    /// <summary>Cue hit-test returning the grip: an end, the middle, or (selected cue only) a word boundary.</summary>
     private (SubtitleCue Cue, Grip Grip, int Word)? Hit(Point point)
     {
         if (Cues is not { } cues || point.Y < CuesTop || point.Y > CuesTop + CuesHeight)
             return null;
 
-        // The boundaries inside the selected cue come first: they lie on top of it.
+        // Word boundaries of the selected cue first (drawn on top).
         if (Selected is { } chosen && !CuesAreImages && cues.Contains(chosen))
         {
             var (start, width) = (ToX(chosen.Start + OffsetSeconds), chosen.Duration * _zoom.ScaleX);
@@ -372,7 +364,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
             }
         }
 
-        // The selected cue first: where two overlap, it is the one that is being worked on.
+        // Selected cue first so it wins where cues overlap.
         foreach (var cue in Selected is { } selected && cues.Contains(selected) ? cues.Prepend(selected) : cues)
         {
             var (left, right) = (ToX(cue.Start + OffsetSeconds), ToX(cue.End + OffsetSeconds));
@@ -393,9 +385,8 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
     }
 
     /// <summary>
-    /// A wheel notch over the strip (test seam; OnMouseWheel calls it): Ctrl zooms about the playhead (a pinch on a precision
-    /// touchpad arrives as Ctrl + wheel; <paramref name="pointerX"/> is not used for it) and stops a coast; otherwise (none or Shift) the strip scrolls in time, wheel down
-    /// later, with momentum.
+    /// Test seam (called by OnMouseWheel): Ctrl zooms about the playhead and stops coasting (precision-touchpad pinch arrives as
+    /// Ctrl+wheel; <paramref name="pointerX"/> is unused); otherwise (none or Shift) scrolls in time with momentum, wheel down = later.
     /// </summary>
     internal void WheelAt(int delta, ModifierKeys modifiers, double nowMs, double pointerX)
     {
@@ -406,15 +397,15 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
             return;
         }
 
-        // Wheel up (positive) brings earlier moments: the strip slides right, the drag's way, as the coast that may follow goes on.
+        // Wheel up (positive) shows earlier time: the strip slides right, as a drag would, and any coast continues that way.
         PanWheel(delta * WheelDipsPerDelta, nowMs);
     }
 
-    /// <summary>A sideways swipe or tilt over the strip (WM_MOUSEHWHEEL from the window's hook): positive is to the right, later.</summary>
+    /// <summary>Horizontal swipe/tilt (WM_MOUSEHWHEEL via the window hook); positive = right = later.</summary>
     public void SidewaysWheel(double delta, double nowMs) => PanWheel(-delta * WheelDipsPerDelta, nowMs);
 
-    // The strip slid by a wheel tick of DIPs in the drag's sense (to the right brings earlier moments): what the momentum gives now is
-    // applied and told as a scrub; a fast stream coasts on (StepCoast subtracts the same way, so the coast keeps the direction).
+    // Wheel pan in drag-sense DIPs (right = earlier): applies the momentum step and raises Scrubbed; fast streams coast (StepCoast
+    // subtracts the same way, preserving direction).
     private void PanWheel(double dips, double nowMs)
     {
         if (_drag is not null || !(_zoom.ScaleX > 0))
@@ -445,8 +436,8 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
             HookCoast();
     }
 
-    // Zooms about the playhead (5.4.1-M1, the user's answer Q2 b): the moment under it stays in the middle, so the player never seeks on a
-    // pinch; the Media Browser's cutter keeps zooming about the pointer. Not while a drag holds the strip (a cue would leave the pointer).
+    // Zooms about the centre playhead so a pinch never seeks (the Media Browser cutter zooms about the pointer instead). Ignored during
+    // drags, where a dragged cue would detach from the pointer.
     private void ZoomAt(double factor)
     {
         if (_drag is not null)
@@ -458,13 +449,13 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         InvalidateVisual();
     }
 
-    /// <summary>Pixels to the second (test seam).</summary>
+    /// <summary>Test seam: pixels per second.</summary>
     internal double PixelsPerSecond => _zoom.ScaleX;
 
-    /// <summary>The moment at a point of the strip, on the cues' clock (test seam).</summary>
+    /// <summary>Test seam: strip x to cue-clock seconds.</summary>
     internal double SecondsAt(double x) => (x - _pan.X) / _zoom.ScaleX;
 
-    // Any press on the strip (any button, before anything else of it): a coast stops where it is (5.4C).
+    // Any press (any button) stops a coast before other handling.
     protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseDown(e);
@@ -477,17 +468,16 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         e.Handled = true;
     }
 
-    /// <summary>A left press at <paramref name="point"/> at <paramref name="nowMs"/>, as if the mouse were captured (5.4C test seam).</summary>
+    /// <summary>Test seam: left press at <paramref name="point"/> at <paramref name="nowMs"/>, treated as captured.</summary>
     internal void PressAt(Point point, double nowMs) => Begin(point, nowMs, captured: true);
 
-    /// <summary>The pointer at <paramref name="point"/> at <paramref name="nowMs"/> during a press (test seam).</summary>
+    /// <summary>Test seam: pointer move to <paramref name="point"/> at <paramref name="nowMs"/> during a press.</summary>
     internal void MoveTo(Point point, double nowMs) => Follow(point, nowMs);
 
-    /// <summary>The left button let go at <paramref name="nowMs"/>: a flick of the strip coasts on (test seam).</summary>
+    /// <summary>Test seam: left release at <paramref name="nowMs"/>; a strip flick starts a coast.</summary>
     internal void ReleaseAt(double nowMs) => End(nowMs);
 
-    // A press: a cue under it is selected (and its drag begun), elsewhere the strip is taken hold of to scrub; any coast stops, and the
-    // strip's drag is sampled from here for a flick.
+    // Press: on a cue, select it and start its drag; elsewhere start a scrub pan. Stops any coast and starts velocity sampling for pans.
     private void Begin(Point point, double nowMs, bool captured)
     {
         StopCoast();
@@ -505,7 +495,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
             _momentum.Sample(point.X, nowMs);
     }
 
-    // A press on a cue selects it; a press on a word of the cue that is selected makes that word the active one.
+    // Selects the cue; a press on a word of the already-selected cue makes it the active word.
     private void Press(SubtitleCue cue, Grip grip, Point point)
     {
         var again = ReferenceEquals(cue, Selected);
@@ -519,10 +509,10 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         ActiveWordChanged?.Invoke();
     }
 
-    /// <summary>Another word of the selected cue was clicked.</summary>
+    /// <summary>Raised when the active word of the selected cue changes.</summary>
     public event Action? ActiveWordChanged;
 
-    // A right-click chooses what the menu that opens is about, as a left one would.
+    // Right-click selects the context-menu target like a left press.
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
     {
         var point = e.GetPosition(this);
@@ -559,7 +549,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
 
         if (drag.Cue is not { } cue || drag.Grip == Grip.Pan)
         {
-            // Dragging the strip to the right brings earlier moments under the playhead.
+            // Dragging right moves earlier time under the playhead.
             _momentum?.Sample(point.X, nowMs);
             PositionSeconds = drag.Position - seconds;
             Scrubbed?.Invoke(_position);
@@ -568,7 +558,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
 
         switch (drag.Grip)
         {
-            // A boundary between two words: it goes where the pointer is, and the cue's own ends stay where they are.
+            // Word boundary follows the pointer; the cue's ends stay fixed.
             case Grip.Word:
                 if (cue.Duration > 0)
                     cue.SetBreak(drag.Word, (point.X - ToX(cue.Start + OffsetSeconds)) / (cue.Duration * _zoom.ScaleX));
@@ -591,8 +581,8 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e) => End(MomentumScroller.Now());
 
-    // Let go: a cue's drag is done; a click on the empty strip selects nothing; a flick of the strip (250 DIP/s or more, still
-    // moving within the last 40 ms) coasts on. Never a cue's drag.
+    // Release: ends a cue drag; a click on empty strip clears the selection; a strip flick (>= 250 DIP/s, moving within the last 40 ms)
+    // coasts. Cue drags never coast.
     private void End(double nowMs)
     {
         if (_drag is not { } drag)
@@ -618,16 +608,15 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         if (_drag is { Moved: true, Cue: { } cue } drag && drag.Grip != Grip.Pan)
             CueReleased?.Invoke(cue);
 
-        // Taken away mid-drag (End lets go of its own capture after the drag is over): nothing coasts.
+        // Capture lost mid-drag (End releases capture only after clearing _drag): no coast.
         if (_drag is not null)
             StopCoast();
         _drag = null;
     }
 
     /// <summary>
-    /// One frame of the coast at <paramref name="nowMs"/>: the time under the playhead moves on by what the coast covered (the strip
-    /// coasting right brings earlier moments) and is told as a scrub; the start or the end of the strip stops it. Whether it moved
-    /// (test seam; the frame hook calls it).
+    /// Test seam (called per frame): advances the coast at <paramref name="nowMs"/> (rightward = earlier) and raises Scrubbed; hitting
+    /// either strip end stops it. Returns whether the position moved.
     /// </summary>
     internal bool StepCoast(double nowMs)
     {
@@ -671,7 +660,7 @@ public sealed class SubtitleTimeline : FrameworkElement, ISidewaysWheel
         UnhookCoast();
     }
 
-    // The frame is hooked only while a coast runs and the strip is shown; a test steps the coast itself.
+    // CompositionTarget.Rendering is hooked only while coasting and visible; tests call StepCoast directly.
     private void HookCoast()
     {
         if (_coastHooked || !IsVisible)

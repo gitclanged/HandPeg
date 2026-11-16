@@ -4,28 +4,26 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// Proxies (see ProxyCache): the files whose clips asked for one (a clip's right-click Optimize Long-GOP Clip for
-// Scrubbing, ProxyChoice.Make), the ones ready, and the making of the rest in the background, as soon as nothing plays or
-// exports. Since 5.0-Verify (the user's Q6) the item is offered only where it helps (OptimizeIsUseful: a long-GOP file the
-// preview cannot decode fast, or Shift held), nothing is made by itself, and the proxy cache has no on/off switch. The GPU
-// preview reads a video layer's proxy in place of its file once it is made (GpuScenePlan, through PreviewPaths, which only
-// the preview's state reads: SequenceExportState.IsPreview); exports never do, and the sound always comes from the originals.
+// Proxies (ProxyCache): files with clips requesting one (right-click Optimize Long-GOP Clip for Scrubbing, ProxyChoice.Make), ready
+// proxies, and background generation whenever nothing plays or exports. The item is offered only where useful (OptimizeIsUseful:
+// long-GOP file the preview cannot decode fast, or Shift held); nothing is generated automatically and there is no cache toggle. The
+// GPU preview substitutes ready proxies (GpuScenePlan via PreviewPaths, read only when SequenceExportState.IsPreview); exports never
+// do, and audio always comes from the originals.
 public partial class MainViewModel
 {
-    // Proxies made (this session or before) for files, by the file.
+    // Ready proxies by source file (any session).
     private readonly Dictionary<string, string> _proxies = new(StringComparer.OrdinalIgnoreCase);
 
-    // The proxies the preview plays now: of the files whose clips asked for one, made.
+    // Proxies the preview currently uses: requested and ready.
     private Dictionary<string, string> _proxiesInUse = new(StringComparer.OrdinalIgnoreCase);
 
-    // Files waiting for a proxy, first first.
+    // FIFO of files awaiting a proxy.
     private readonly List<string> _proxyQueue = [];
     private bool _baking;
 
     /// <summary>
-    /// The files that may have a proxy, and whether one was asked for (Optimize on any clip of the file: Make; Auto
-    /// otherwise; an older project's Use Original counts as Auto): the video clips' files (5.2-AuditB: the file opened too, as
-    /// any clip of it is).
+    /// Proxy-eligible files (all video clip files) with their request state: Make if any clip of the file chose Optimize, else Auto
+    /// (legacy Use Original maps to Auto).
     /// </summary>
     private Dictionary<string, ProxyChoice> ProxyFiles()
     {
@@ -43,13 +41,10 @@ public partial class MainViewModel
         return files;
     }
 
-    /// <summary>Whether a file's proxy was asked for on one of its clips (Optimize Long-GOP Clip for Scrubbing), not found heavy.</summary>
+    /// <summary>Whether any clip of a file explicitly requested a proxy (not inferred from GOP length).</summary>
     private bool ProxyAskedFor(string file) => ProxyFiles().TryGetValue(file, out var choice) && choice == ProxyChoice.Make;
 
-    /// <summary>
-    /// Brings the proxies in line with the timeline: those ready are played, and a file whose clips asked for one and has
-    /// none is queued. Cheap: asked after every change.
-    /// </summary>
+    /// <summary>Syncs proxies with the timeline: uses ready ones and queues missing requested ones. Cheap; runs after every change.</summary>
     private void RefreshProxies()
     {
         if (_isBackgroundWorker)
@@ -61,7 +56,7 @@ public partial class MainViewModel
             if (choice != ProxyChoice.Make)
                 continue;
 
-            // Made before (an earlier session, or for another clip of the file).
+            // Already exists (earlier session or another clip of the file).
             if ((!_proxies.TryGetValue(file, out var ready) || !FileState.Exists(ready)) && ProxyCache.Find(file, CurrentProjectPath) is { } found)
                 _proxies[file] = ready = found;
 
@@ -71,7 +66,7 @@ public partial class MainViewModel
                 continue;
             }
 
-            // One that failed this session (a file FFmpeg cannot decode, a full drive) waits for the user to ask again.
+            // Failed this session (undecodable file, full drive): wait for an explicit re-request.
             if (!_proxyQueue.Contains(file, StringComparer.OrdinalIgnoreCase) && !_proxyFailed.Contains(file))
                 QueueProxy(file);
         }
@@ -84,8 +79,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The clip's right-click choice: Optimize Long-GOP Clip for Scrubbing (<see cref="ProxyChoice.Make"/>: a proxy made
-    /// now, which the preview plays in the file's place once it is ready), or not (Auto: the original).
+    /// Sets a clip's proxy choice: <see cref="ProxyChoice.Make"/> (generate now; preview substitutes it when ready) or Auto (original).
     /// </summary>
     public void SetProxyChoice(Layer clip, ProxyChoice choice)
     {
@@ -102,7 +96,7 @@ public partial class MainViewModel
         });
     }
 
-    /// <summary>Where a clip's proxy stands, for its right-click menu.</summary>
+    /// <summary>Clip proxy status for its context menu.</summary>
     public string ProxyStatus(Layer clip)
     {
         var file = clip.ImagePath.Trim().Trim('"');
@@ -113,16 +107,15 @@ public partial class MainViewModel
             : "Its proxy is to be made";
     }
 
-    // ----- When the item is offered (5.0-Verify, the user's Q6: hidden unless it is needed) -----
+    // ----- Menu item visibility (hidden unless useful) -----
 
-    /// <summary>With no hardware benchmark of the preview's card: an exact frame that took the preview longer than this (its worst this session) counts as slow.</summary>
+    /// <summary>Fallback without a benchmark for the preview GPU: a worst-case exact-frame time above this (ms, this session) means slow.</summary>
     private const double SlowExactFrameMs = 250;
 
     /// <summary>
-    /// Whether a clip's right-click menu offers Optimize Long-GOP Clip for Scrubbing: when the clip has it on (so that it can
-    /// be turned off); when Shift is held as the menu opens (<paramref name="asked"/>); or when a video layer's file is
-    /// long-GOP (its I-frames further apart than Settings' heavy interval) and the preview cannot decode it fast (see
-    /// <see cref="PreviewDecodesFast"/>).
+    /// Whether to offer Optimize Long-GOP Clip for Scrubbing: already on (to allow turning off), Shift held at menu open
+    /// (<paramref name="asked"/>), or a long-GOP video (I-frame spacing above Settings' heavy interval) that the preview cannot decode
+    /// fast (<see cref="PreviewDecodesFast"/>).
     /// </summary>
     public bool OptimizeIsUseful(Layer clip, bool asked)
     {
@@ -137,7 +130,7 @@ public partial class MainViewModel
         return IsLongGop(file) && !PreviewDecodesFast(file);
     }
 
-    /// <summary>Whether a file's I-frames (listed this session) lie further apart than Settings' heavy interval, at the median; false while they are not known.</summary>
+    /// <summary>Whether the median I-frame spacing (indexed this session) exceeds Settings' heavy interval; false while unknown.</summary>
     private static bool IsLongGop(string file)
     {
         if (MediaProbe.KnownIFrames(file) is not { Length: >= 2 } times)
@@ -151,10 +144,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether the GPU preview decodes a file fast: hardware decoding is on, the preview does not run on the processor
-    /// (WARP), and its card has a hardware decoder for the file's codec (the hardware benchmark's list for that card, when it
-    /// was measured on these cards and drivers). Without such a benchmark, by how long an exact frame has taken the running
-    /// preview at worst (<see cref="SlowExactFrameMs"/>); fast while nothing says otherwise.
+    /// Whether the GPU preview decodes a file fast: hardware decode on, not WARP, and the GPU has a hardware decoder for the codec (per
+    /// a benchmark matching current GPUs/drivers). Without one, uses worst exact-frame time (<see cref="SlowExactFrameMs"/>); defaults
+    /// to fast.
     /// </summary>
     private static bool PreviewDecodesFast(string file)
     {
@@ -175,7 +167,7 @@ public partial class MainViewModel
         return engine is null || engine.CacheStats.WorstExactLatencyMs <= SlowExactFrameMs;
     }
 
-    /// <summary>The hardware benchmark's name for a video's codec (<see cref="HardwareBenchmarkAdapter.DecodeCodecs"/>); null for one no card decodes for the preview.</summary>
+    /// <summary>Benchmark codec key for a video (<see cref="HardwareBenchmarkAdapter.DecodeCodecs"/>); null when no GPU decodes it for preview.</summary>
     private static string? HardwareCodec(VideoStreamInfo? video) => video?.Codec switch
     {
         "h264" => "H.264",
@@ -185,7 +177,7 @@ public partial class MainViewModel
         _ => null,
     };
 
-    // Files whose proxy could not be made this session: not tried again until a clip's choice changes.
+    // Files whose proxy failed this session; not retried until a clip's choice changes.
     private readonly HashSet<string> _proxyFailed = new(StringComparer.OrdinalIgnoreCase);
 
     private void QueueProxy(string file)
@@ -197,10 +189,7 @@ public partial class MainViewModel
         _ = BakeProxiesAsync();
     }
 
-    /// <summary>
-    /// Makes the proxies waiting, one at a time, as soon as nothing plays or exports. Background work, decoded and encoded
-    /// on the background card where there is one.
-    /// </summary>
+    /// <summary>Generates queued proxies one at a time while idle (no playback/export), on the background GPU when available.</summary>
     private async Task BakeProxiesAsync()
     {
         if (_baking || _isBackgroundWorker)
@@ -215,7 +204,7 @@ public partial class MainViewModel
                 while (IsPlaying || IsBusy)
                     await Task.Delay(1000, _shutdown.Token);
 
-                // No longer on the timeline (another project was opened meanwhile), or no longer wanted: not made.
+                // Skip if no longer on the timeline (another project opened) or no longer requested.
                 if (ProxyAskedFor(file))
                 {
                     var working = VideoEncoders.Where(e => e.IsHardware).Select(e => e.Name).ToList();
@@ -249,8 +238,8 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Called when a project or a source is closed: its proxies go too, when Settings says so.</summary>
-    /// <param name="now">Deleted before returning (HandPeg is closing), not in the background.</param>
+    /// <summary>On project/source close, deletes its proxies when Settings enables it.</summary>
+    /// <param name="now">Delete synchronously (app shutdown) instead of in the background.</param>
     private void ForgetProjectProxies(bool now = false)
     {
         if (_isBackgroundWorker || !AppSettings.Current.ClearProjectProxiesOnExit)

@@ -5,21 +5,20 @@ using HandPegApp.Compositor.Native;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- Voices on their way to the mixer (Pass 5.0-AudioAnd3D, 5.0C) -----
+// ----- Voice rings feeding the mixer -----
 //
-// Each voice has a lock-free single-producer, single-consumer ring of stereo frames at the device's rate, already on the
-// sequence's clock: frame f of the ring is output frame f of the mixer. The mixer (the consumer) asks for a voice to be
-// fed from a frame (a request, a seqlock of plain fields: nothing is allocated on its thread); a feeder (the producer)
-// seeks the voice's decoder there, fills the ring ahead of the mixer, and says from which ring index and which frame its
-// answer starts (a second seqlock). The mixer reads only an answer to its newest request, so a seek never plays what was
-// decoded for the moment before it: a voice not ready yet is silent for that buffer, and catches up.
+// Each voice has a lock-free SPSC ring of stereo frames at the device rate on the sequence clock (ring frame f = mixer output frame f).
+// The mixer (consumer) requests feeding from a frame via a seqlock of plain fields (no allocation on its thread); a feeder (producer) seeks
+// the decoder there, fills ahead of the mixer, and publishes the ring index and frame its answer starts at (a second seqlock). The mixer
+// reads only the answer to its newest request, so a seek never plays audio decoded for the previous position: an unready voice is silent
+// for that buffer and catches up.
 
-/// <summary>The transport's line: sound time at output frame f is Origin + (f - Frame) x Rate / sample rate.</summary>
+/// <summary>Transport line: sound time at output frame f = Origin + (f - Frame) x Rate / sample rate.</summary>
 internal readonly record struct TransportLine(long Id, long Frame, double Origin, double Rate)
 {
     public double SoundAt(long frame, int sampleRate) => Origin + (frame - Frame) * Rate / sampleRate;
 
-    /// <summary>The first frame at or after a sound moment (a long way off for a moment that never comes).</summary>
+    /// <summary>First frame at or after a sound time (far in the future for a time that never comes).</summary>
     public long FrameAt(double sound, int sampleRate)
     {
         if (Rate <= 0 || double.IsNaN(sound))
@@ -29,7 +28,7 @@ internal readonly record struct TransportLine(long Id, long Frame, double Origin
     }
 }
 
-/// <summary>Ring arrays, kept for the next voice: each is a large object, made once.</summary>
+/// <summary>Pool of ring arrays reused across voices (each is a large-object allocation).</summary>
 internal static class AudioRings
 {
     private static readonly ConcurrentBag<float[]> Free = [];
@@ -52,20 +51,20 @@ internal static class AudioRings
     }
 }
 
-/// <summary>One voice of the program at work: its ring, the requests and answers, and its producer.</summary>
+/// <summary>Runtime state of one program voice: ring, request/answer seqlocks and producer.</summary>
 internal sealed class VoiceState
 {
     private readonly int _capacity;
     private float[]? _ring;
 
-    // Written by the producer, read by the consumer (and the other way round for _read).
+    // _write is written by the producer and read by the consumer; _read the reverse.
     private long _write, _read;
 
-    // The request: a seqlock (odd while it is being written), the consumer's alone to write.
+    // Request seqlock (odd while being written); written only by the consumer.
     private long _requestLock, _requestSerial, _requestLineFrame, _requestStart;
     private double _requestOrigin, _requestRate;
 
-    // The answer: a seqlock, the producer's alone to write.
+    // Answer seqlock; written only by the producer.
     private long _answerLock, _answerSerial, _answerRing, _answerFrame;
 
     public VoiceState(string key, AudioVoice voice, int capacityFrames)
@@ -77,28 +76,28 @@ internal sealed class VoiceState
 
     private AudioVoice _voice;
 
-    /// <summary>The voice as the newest program has it (its timing line is the same in every program that shares this state).</summary>
+    /// <summary>The voice as the newest program defines it (timing is identical across programs sharing this state).</summary>
     public AudioVoice Voice
     {
         get => Volatile.Read(ref _voice);
         set => Volatile.Write(ref _voice, value);
     }
 
-    // ----- The consumer's side (the mixer's thread) -----
+    // ----- Consumer side (mixer thread) -----
 
     private long _consumerSerial;
     private bool _answered;
     private long _ring0, _frame0;
 
-    /// <summary>The transport line the last request was made on.</summary>
+    /// <summary>Transport line id of the last request.</summary>
     public long RequestedLine { get; private set; } = -1;
 
-    /// <summary>Frames the consumer wanted and the producer had not written: a feeder falling behind.</summary>
+    /// <summary>Frames the consumer wanted that the producer had not written (feeder falling behind).</summary>
     public long StarvedFrames { get; set; }
 
     public bool NeedsRequest { get; set; }
 
-    /// <summary>The line the voice was told it is not wanted on (its decoder let go), so it is told once.</summary>
+    /// <summary>Line on which the voice was last marked idle (decoder released), so it is marked only once.</summary>
     public long IdleLine { get; private set; } = -1;
 
     public void Idle(in TransportLine line)
@@ -117,8 +116,8 @@ internal sealed class VoiceState
     }
 
     /// <summary>
-    /// Copies the voice's frames from <paramref name="frame"/> into interleaved stereo (<paramref name="frames"/> of them),
-    /// silence for what is not there (not answered yet, started later, not written yet). Returns how many were real.
+    /// Copies <paramref name="frames"/> frames from <paramref name="frame"/> into interleaved stereo, silence where unavailable (unanswered,
+    /// starting later, not yet written). Returns the number of real frames.
     /// </summary>
     public int Take(long frame, Span<float> stereo, int frames)
     {
@@ -143,7 +142,7 @@ internal sealed class VoiceState
             return 0;
         }
 
-        // Before the answer's first frame (the producer began a little later than asked): silence.
+        // Before the answer's first frame (the producer started slightly later than requested): silence.
         var done = 0;
         if (frame < _frame0)
         {
@@ -201,14 +200,14 @@ internal sealed class VoiceState
         return false;
     }
 
-    // ----- The producer's side (a feeder's thread, one at a time: Busy) -----
+    // ----- Producer side (one feeder thread at a time, guarded by Busy) -----
 
-    /// <summary>1 while a feeder works on it.</summary>
+    /// <summary>1 while a feeder is servicing this voice.</summary>
     public int Busy;
 
     public VoiceProducer? Producer;
 
-    /// <summary>The runtime version that dropped it: its ring and decoder go once the mixer has moved past it.</summary>
+    /// <summary>Runtime version that dropped this voice; ring and decoder are released once the mixer has moved past it.</summary>
     public long RetiredAt = long.MaxValue;
 
     public bool ReadRequest(out long serial, out long lineFrame, out double origin, out double rate, out long start)
@@ -238,7 +237,7 @@ internal sealed class VoiceState
         Volatile.Write(ref _answerLock, _answerLock + 1);
     }
 
-    /// <summary>Room in the ring for more frames.</summary>
+    /// <summary>Free ring capacity in frames.</summary>
     public int Room => _ring is null ? 0 : (int)(_capacity - (_write - Volatile.Read(ref _read)));
 
     public void Write(ReadOnlySpan<float> left, ReadOnlySpan<float> right, int frames)
@@ -255,8 +254,8 @@ internal sealed class VoiceState
     }
 
     /// <summary>
-    /// The producer's: gives the ring back while nothing will read it (the voice idle, or long past its end); the next
-    /// answer takes one again before the mixer may read it.
+    /// Producer side: rents the ring when absent. <see cref="DropRing"/> returns it while nothing will read it (voice idle or long past its
+    /// end); the next answer rents one again before the mixer can read.
     /// </summary>
     public void EnsureRing() => _ring ??= AudioRings.Rent(_capacity * 2);
 
@@ -269,7 +268,7 @@ internal sealed class VoiceState
         }
     }
 
-    /// <summary>Gives back the ring and the decoder (the voice is gone from every program the mixer may still play).</summary>
+    /// <summary>Returns the ring and decoder (the voice is absent from every program the mixer may still play).</summary>
     public void Release(AudioDecoderPool pool)
     {
         Producer?.Release(pool);
@@ -283,15 +282,15 @@ internal sealed class VoiceState
 }
 
 /// <summary>
-/// What feeds one voice: its decoder (from the pool), WSOLA for a tempo other than 1, the resampler for a rate other than
-/// the device's (or a start between two samples), and the frame it has written up to.
+/// Feeds one voice: pooled decoder, WSOLA or phase vocoder for tempo other than 1, resampler for non-device rates (or fractional starts),
+/// and the frame written so far.
 /// </summary>
 internal sealed class VoiceProducer
 {
     private const int Chunk = 2048;
     private readonly int _rate;
     private readonly float[] _left = new float[Chunk], _right = new float[Chunk];
-    // Made the first time a voice needs them (most play at the device's rate, at speed: the decoder's own samples).
+    // Created on first need (most voices play at device rate and 1x: the decoder's own samples).
     private PolyphaseResampler? _resampler;
     private WsolaStretcher? _wsola;
     private AudioPhaseVocoder? _vocoder;
@@ -303,13 +302,12 @@ internal sealed class VoiceProducer
 
     public VoiceProducer(int rate) => _rate = rate;
 
-    /// <summary>A request's start that says: nothing wanted now.</summary>
+    /// <summary>Request start meaning "nothing wanted now".</summary>
     public const long Idle = long.MaxValue;
 
     /// <summary>
-    /// Answers a new request (seeks there), then writes ahead up to <paramref name="liveFrame"/> + <paramref name="lead"/>.
-    /// Live, the answer starts no sooner than <paramref name="margin"/> frames past where the mixer is; exactly where asked
-    /// otherwise (the offline render).
+    /// Answers a new request (seeking there), then writes ahead up to <paramref name="liveFrame"/> + <paramref name="lead"/>. Live, the answer
+    /// starts at least <paramref name="margin"/> frames past the mixer position; offline (<paramref name="exact"/>) exactly where requested.
     /// </summary>
     public void Service(VoiceState state, AudioDecoderPool pool, long liveFrame, int lead, int margin, bool exact)
     {
@@ -318,7 +316,7 @@ internal sealed class VoiceProducer
         var line = new TransportLine(0, lineFrame, origin, rate);
         var voice = state.Voice;
 
-        // Not wanted on the transport's new line (a seek took the playhead away from it): its decoder goes back.
+        // Idle on the new transport line (a seek moved the playhead away): return the decoder.
         if (start == Idle)
         {
             if (serial != _served)
@@ -342,15 +340,15 @@ internal sealed class VoiceProducer
         }
         else if (_decoder is not null && _decoder.SampleRate != _decoderRate)
         {
-            // The stream changed its rate mid-way (HE-AAC's SBR): the chain is set up again from where it is, the ring goes on.
+            // Stream changed rate mid-way (HE-AAC SBR): rebuild the chain from the current position; the ring continues.
             Reposition(voice, line, _produced, pool);
         }
 
-        // Its end as the newest program has it (a trim moves it without a new request).
+        // End per the newest program (a trim moves it without a new request).
         _end = line.FrameAt(voice.End, _rate);
         if (_finished)
         {
-            // Long past its end, the mixer reads nothing of it any more: its ring goes back (a seek back asks again).
+            // Long past its end the mixer no longer reads it: return the ring (a seek back requests again).
             if (_produced >= _end)
             {
                 if (liveFrame > _end + 2L * lead)
@@ -374,9 +372,9 @@ internal sealed class VoiceProducer
             var got = _output!.Read(_left.AsSpan(0, frames), _right.AsSpan(0, frames));
             if (got <= 0)
             {
-                // Nothing yet is only ever an FFmpeg pipe that has not caught up (a decoder fills with silence past its
-                // end). Live, the feeder comes back to it; offline (exact: AudioMixer.Render, an export's sound) it is
-                // waited for, up to 20 s, so what is rendered is the file's sound and never a gap.
+                // No data yet only happens with an FFmpeg pipe that has not caught up (decoders pad with silence past the end).
+                // Live, the feeder returns later; offline (exact: AudioMixer.Render, export audio) it waits up to 20 s so the
+                // render never contains a gap.
                 if (exact && (waitedSince == 0 || Stopwatch.GetElapsedTime(waitedSince).TotalSeconds < 20))
                 {
                     waitedSince = waitedSince == 0 ? Stopwatch.GetTimestamp() : waitedSince;
@@ -391,7 +389,7 @@ internal sealed class VoiceProducer
             _produced += got;
         }
 
-        // Everything it plays is written: its decoder goes back for the next clip of the file.
+        // Everything to play is written: return the decoder for the file's next clip.
         if (_produced >= _end)
         {
             _finished = true;
@@ -420,8 +418,7 @@ internal sealed class VoiceProducer
         var stretched = Math.Abs(tempo - 1) > 1e-4;
         var step = fs * pitch / _rate;
 
-        // At the device's rate and at speed: the decoder's own samples, exactly (from the nearest one: a part of a sample
-        // is a few microseconds, nothing to the picture).
+        // Device rate at 1x: the decoder's own samples, seeking to the nearest sample (a sub-sample offset is microseconds).
         if (!stretched && Math.Abs(step - 1) < 1e-9)
         {
             decoder.Seek(Math.Round(media * fs) / fs);
@@ -429,9 +426,8 @@ internal sealed class VoiceProducer
             return true;
         }
 
-        // Otherwise from a little before, for the resampler's kernel (and WSOLA's first frames, or the vocoder's) to have what they
-        // reach back to. A Spectral voice (5.6.0) goes through the phase vocoder up to its fastest tempo (WSOLA's past it), whose
-        // frames are longer than WSOLA's at a low sample rate.
+        // Otherwise seek slightly earlier so the resampler kernel (and WSOLA's or the vocoder's first frames) have history. Spectral voices
+        // use the phase vocoder up to its fastest tempo (WSOLA beyond), whose frames are longer than WSOLA's at low sample rates.
         var spectral = stretched && voice.Spectral && tempo <= AudioPhaseVocoder.FastestTempo;
         var reach = PolyphaseResampler.HalfTaps + 4 + (spectral ? Math.Max(fs * 0.06, AudioPhaseVocoder.WarmUp(fs)) : stretched ? fs * 0.06 : 0);
         var before = reach * (stretched ? tempo : 1) / fs;
@@ -474,17 +470,16 @@ internal sealed class VoiceProducer
 }
 
 /// <summary>
-/// The feeders: two threads (most of the work is decoding, which Media Foundation does on the processor) that keep every
-/// voice the mixer asked for filled ahead of it, the least filled first. Woken by the mixer after each buffer and by every
-/// request; they never take a lock the mixer takes.
+/// Two feeder threads (mostly decoding, which Media Foundation does on the CPU) keeping every requested voice filled ahead of the mixer.
+/// Woken by the mixer after each buffer and by every request; they never take a lock the mixer takes.
 /// </summary>
 internal sealed class AudioFeeders : IDisposable
 {
     private readonly Thread[] _threads;
     private readonly AutoResetEvent _wake = new(false);
 
-    // Set once to stop: a ManualResetEvent wakes both feeders at once (the auto-reset wake releases only one, which left the other
-    // to its 1 s timeout on every dispose and device reopen).
+    // Stop signal: a ManualResetEvent wakes both feeders at once (the auto-reset wake releases only one, leaving the other on its 1 s
+    // timeout at every dispose and device reopen).
     private readonly ManualResetEvent _stop = new(false);
     private readonly WaitHandle[] _wakeOrStop;
     private readonly Func<VoiceState[]?> _voices;
@@ -517,8 +512,8 @@ internal sealed class AudioFeeders : IDisposable
         _ = Com.CoInitializeEx(0, Com.CoInitMultithreaded);
         while (!_stopping)
         {
-            // Woken by the mixer after every buffer while it plays, by every request and by the stop; the timeout is only a
-            // safety net, so a paused engine's feeders do not wake by themselves.
+            // Woken after every mixer buffer during playback, by every request, and by stop; the timeout is only a safety net, so a
+            // paused engine's feeders stay asleep.
             WaitHandle.WaitAny(_wakeOrStop, 1000);
             if (_stopping)
                 break;
@@ -529,14 +524,14 @@ internal sealed class AudioFeeders : IDisposable
             }
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
-                // Never down: the voice whose feeding threw is silent until its next request.
+                // Feeders never stop on errors: the voice whose feeding threw stays silent until its next request.
                 AppLog.Write("Sound engine: a feeder failed", ex);
                 Thread.Sleep(20);
             }
         }
     }
 
-    // Every voice once. The two feeders start at opposite ends of the list, so that they share it rather than queue on it.
+    // Services every voice once; the two feeders start at opposite ends of the list to share it rather than contend.
     private void Pass(int feeder)
     {
         if (_voices() is not { Length: > 0 } voices)
@@ -562,7 +557,7 @@ internal sealed class AudioFeeders : IDisposable
         }
     }
 
-    // Voices no program the mixer may still play holds: their rings and decoders go.
+    // Releases rings and decoders of retired voices no longer held by any program the mixer may still play.
     private void LetGo()
     {
         var observed = _observedVersion();
@@ -580,11 +575,11 @@ internal sealed class AudioFeeders : IDisposable
     }
 
     /// <summary>
-    /// Stops both feeders against one 2 s deadline (inside the mixer thread's 3 s budget) and releases the retired voices. When a
-    /// feeder did not stop it may still be inside a decoder's read: nothing it can reach is released (its voices, the decoders, the
-    /// events), and the caller keeps the decoder pool's busy decoders to it.
+    /// Stops both feeders against one 2 s deadline (within the mixer thread's 3 s budget) and releases retired voices. A feeder that did not
+    /// stop may still be inside a decoder read, so nothing it can reach is released (voices, decoders, events) and the caller leaves the pool's
+    /// busy decoders alone.
     /// </summary>
-    /// <returns>Whether both feeders stopped.</returns>
+    /// <returns>True when both feeders stopped.</returns>
     public bool Stop()
     {
         _stopping = true;

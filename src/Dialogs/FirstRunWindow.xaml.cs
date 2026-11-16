@@ -7,31 +7,27 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 /// <summary>
-/// Shown before the main window on a first start (and again from Settings), in two screens (5.5A, FirstRunWindow.Screens.cs):
-/// 1. the workspace the window starts laid out as, its theme (both shown at once in a live miniature) and the core engines with
-/// their one-click downloads; 2. the GPU and NPU roles from the two-phase hardware profile (FirstRunWindow.Profile.cs: an estimate at
-/// once, out of process, then the full test, 5.6A, each role a click to pick on its card), the encoders HandPeg starts with (the
-/// hardware ones estimated from the cards, then always confirmed by FFmpeg before it closes), what happens on closing, and whether
-/// crash reports are written (with the Privacy Policy beside it). Closing it without pressing
-/// Start Editing leaves the settings alone, and it is shown again next time.
+/// First-run window (also reopenable from Settings), two screens (FirstRunWindow.Screens.cs): (1) workspace layout and theme with a
+/// live miniature, plus core engine downloads; (2) GPU/NPU roles from the two-phase hardware profile (FirstRunWindow.Profile.cs:
+/// out-of-process estimate, then full test; roles pickable per card), startup encoders (estimated, then confirmed by FFmpeg), close
+/// behaviour and crash reporting. Closing without Start Editing changes nothing and it shows again next start.
 /// </summary>
 public partial class FirstRunWindow : Window
 {
-    // The theme in effect when the window opened, put back if it is closed without confirming.
+    // Theme at open, restored if closed without confirming.
     private readonly string _originalTheme = AppSettings.Current.Theme;
     private bool _confirmed;
 
-    // The roles of the hardware profile shown (FirstRunWindow.Profile.cs): written into the settings only by Start (Finish), on a first
-    // start, as every other choice here.
+    // Displayed hardware profile roles (FirstRunWindow.Profile.cs); persisted only by Start (Finish) on a first start.
     private HardwareBenchmarkRoles? _benchmarkRoles;
     private bool _closed;
 
-    // Whether the workspace was chosen here by hand: opened again from the settings, the window keeps the arrangement in use unless it was.
+    // Whether a workspace card was explicitly chosen; when reopened from Settings the current layout is kept otherwise.
     private bool _workspaceChosen;
     private readonly bool _initialized;
 
-    // Whether the window starts its own work (the hardware profile, the encoder probe, the component panel's look online): off for the
-    // goldens only, whose window must reach no network and start no worker of its own.
+    // Whether the window starts background work (hardware profile, encoder probe, online component check); off only for goldens,
+    // which must not touch the network or spawn workers.
     private readonly bool _live;
 
     public FirstRunWindow()
@@ -40,8 +36,7 @@ public partial class FirstRunWindow : Window
     }
 
     /// <summary>
-    /// The window; with <paramref name="live"/> false (the goldens) nothing is started on its own (no hardware profile, no encoder probe)
-    /// and the component panel is left out of the window, so it never asks GitHub for the latest builds.
+    /// With <paramref name="live"/> false (goldens) no background work starts and the component panel is omitted, so GitHub is never queried.
     /// </summary>
     internal FirstRunWindow(bool live)
     {
@@ -52,24 +47,22 @@ public partial class FirstRunWindow : Window
         PromptBox.IsChecked = AppSettings.Current.PromptToSaveOnExit;
         CrashReportsBox.IsChecked = AppSettings.Current.SendCrashReports;
 
-        // The audio settings an editor starts with: encoded, so that edits to the sound never meet a copied track.
+        // Default audio is encoded so audio edits never conflict with stream copy.
         AudioEncoderBox.ItemsSource = AudioTrack.AllCodecs;
         AudioEncoderBox.SelectedItem = AudioTrack.AllCodecs.Contains(AppSettings.Current.DefaultAudioEncoder) ? AppSettings.Current.DefaultAudioEncoder : "aac";
         AudioBitrateBox.ItemsSource = AudioTrack.AllBitrates;
         AudioBitrateBox.SelectedItem = AudioTrack.AllBitrates.Contains(AppSettings.Current.DefaultAudioBitrate) ? AppSettings.Current.DefaultAudioBitrate : "192k";
 
-        // The components in plain words: what the cards' buttons fetch. (The 5.5A addenda, the user's call: an FFmpeg already on the PC is
-        // pointed at in Settings, its ffmpeg.exe Path box, never here.)
+        // Plain-language component descriptions for the card buttons; an existing FFmpeg is configured in Settings (ffmpeg.exe Path), not here.
         Dependencies.InstallLabel = "Download Required Components";
         Dependencies.ReadyLabel = "All required components are installed";
 
-        // The two screens: the theme swatches, the live miniature, the slide between them, the fit to the work area, the download's
-        // progress in the footer and the cards' Download buttons (FirstRunWindow.Screens.cs).
+        // Two-screen setup: theme swatches, live miniature, slide transition, work-area fit, footer download progress and card
+        // Download buttons (FirstRunWindow.Screens.cs).
         InitializeScreens();
 
-        // The encoders: what is always there at once, the hardware ones estimated from the cards as soon as the profile has them,
-        // and asked of FFmpeg as soon as there is one (now, when it is here already). A component installed from this window may be the
-        // FFmpeg that makes the asking possible, so then it is asked again, and Start waits for the asking to end (Start_Click).
+        // Encoders: software immediately, hardware estimated from the profile, then probed via FFmpeg once present. Installing FFmpeg
+        // here triggers a re-probe; Start waits for it (Start_Click).
         _wantedEncoder = AppSettings.Current.DefaultVideoEncoder;
         RefreshEncoders();
         Closed += (_, _) =>
@@ -77,14 +70,14 @@ public partial class FirstRunWindow : Window
             _closed = true;
             _probeCancellation.Cancel();
 
-            // 5.5A: the hardware profile's workers end with the window (killed, not waited for; 5.6A: the full test's too).
+            // Kill hardware profile workers (estimate and full test) with the window; do not wait.
             _profileCancellation.Cancel();
         };
 
-        // Closing the window stops an install, so Start waits for it (or for Cancel).
+        // Closing aborts an install, so Start waits for it (or Cancel).
         Dependencies.RunningChanged += () => StartButton.IsEnabled = !Dependencies.IsRunning && !_finishing;
 
-        // Here the list is two cards and one progress bar; the rows behind them are not shown.
+        // Compact mode: two cards and one progress bar; per-component rows hidden.
         Dependencies.IsUnified = true;
         Dependencies.Refreshed += ApplyTier;
         ApplyTier();
@@ -99,12 +92,11 @@ public partial class FirstRunWindow : Window
             }
         };
 
-        // 5.5.2 (the user's Q2): the Playback & A/V Sync Test's result, kept by Start Editing with the other choices; opened again from the
-        // settings, the last one kept is shown.
+        // Playback & A/V Sync Test result, persisted by Start Editing; when reopened, the last saved result is shown.
         SyncTestCard.Completed += result => _syncResult = result;
         SyncTestCard.ShowKept(AppSettings.Current.LastPlaybackSyncTest);
 
-        // 5.6A: a role picked on its card (its menu), kept for Start Editing (FirstRunWindow.Profile.cs).
+        // Role picked from a card menu, applied by Start Editing (FirstRunWindow.Profile.cs).
         RoleCards.RoleChosen += RoleCards_RoleChosen;
 
         if (live)
@@ -114,26 +106,24 @@ public partial class FirstRunWindow : Window
         _initialized = true;
     }
 
-    // The Playback & A/V Sync Test's result from this window (null none), written by Finish.
+    // A/V Sync Test result from this window (null for none), written by Finish.
     private PlaybackSyncResult? _syncResult;
 
-    /// <summary>What the window starts on its own: the encoder probe and its re-asking, and the hardware profile.</summary>
+    /// <summary>Starts background work: encoder probe (with re-probes) and the hardware profile.</summary>
     private void StartLiveWork()
     {
         _ = ProbeEncodersAsync();
         Dependencies.Changed += () => _ = ProbeEncodersAsync();
 
-        // And whenever an install pass ends, however it ended: one that was cancelled or failed part of the way
-        // may still have left an FFmpeg behind, and the encoders are asked of whichever FFmpeg is there now.
+        // Re-probe after every install pass, including cancelled or failed ones that may still have installed FFmpeg.
         Dependencies.RunningChanged += () =>
         {
             if (!Dependencies.IsRunning)
                 _ = ProbeEncodersAsync();
         };
 
-        // An FFmpeg installed from anywhere while this window is open (this panel, Settings, a feature's prompt, the
-        // background update): its encoders are asked for the moment it is in place (5.2), on this window's thread; and (5.6A) the
-        // full hardware test that could not decode (no test clip without FFmpeg) runs once more, with the test clip FFmpeg makes.
+        // FFmpeg installed from any source while open: probe its encoders immediately on the UI thread, and rerun the full hardware
+        // test that lacked a test clip without FFmpeg.
         Action<string> installed = tool =>
         {
             if (tool == DependencyUpdater.Ffmpeg)
@@ -148,7 +138,7 @@ public partial class FirstRunWindow : Window
         DependencyUpdater.Installed += installed;
         Closed += (_, _) => DependencyUpdater.Installed -= installed;
 
-        // The hardware profile (5.5A): the estimate now, off this thread; the full test once the window is up (5.6A, every open).
+        // Hardware profile: estimate now off-thread; full test once the window is shown (every open).
         StartProfile();
         Loaded += Profile_Loaded;
     }
@@ -163,8 +153,8 @@ public partial class FirstRunWindow : Window
     }
 
     /// <summary>
-    /// The built-in layout whose card is chosen, by the name the Layout button lists it under (the main window takes it up and makes it the
-    /// Default layout too, 5.4D: MainWindow.TakeFirstRunLayout).
+    /// Selected built-in layout name (as listed by the Layout button); the main window applies it and makes it the Default layout
+    /// (MainWindow.TakeFirstRunLayout).
     /// </summary>
     private string ChosenWorkspace() =>
         new[] { StandardLayoutCard, ColorLayoutCard, AssemblyLayoutCard, ShortsLayoutCard, VerticalCreatorLayoutCard }.FirstOrDefault(c => c?.IsChecked == true)?.Tag as string
@@ -172,13 +162,13 @@ public partial class FirstRunWindow : Window
 
     // ----- The required components: two packages -----
 
-    // The speech models the captions package fetches; the second is the one captions are then set to use.
+    // Speech models fetched by the captions package; the second becomes the active model.
     private const string TierBaseModel = "ggml-base.en.bin";
     private const string TierDefaultModel = "ggml-medium.en.bin";
 
     private void Tier_Checked(object sender, RoutedEventArgs e) => ApplyTier();
 
-    /// <summary>Tells the component list what the chosen package is made of.</summary>
+    /// <summary>Updates the component list with the chosen package contents.</summary>
     private void ApplyTier()
     {
         if (Dependencies is null || EditorTier is null)
@@ -194,19 +184,18 @@ public partial class FirstRunWindow : Window
 
     private readonly CancellationTokenSource _probeCancellation = new();
 
-    // The encoder to select when the list is (re)filled: the one saved before, or blank for "the best there is".
+    // Encoder to select on refill: the saved one, or blank for the best available.
     private string _wantedEncoder;
     private bool _fillingEncoders;
 
-    // The hardware encoders FFmpeg's probe found (null until it has answered: then the profile's estimate stands in), the profile's
-    // estimate, and what the list was last filled from (it is filled again only when that changes).
+    // Probed hardware encoders (null until answered; the profile estimate stands in), the estimate, and the last fill signature.
     private IReadOnlyList<string>? _verifiedHardware;
     private IReadOnlyList<string> _estimatedHardware = [];
     private string? _encodersShown;
 
     private void EncoderBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        // A choice made by hand is kept when the list is filled again.
+        // Preserve a manual choice across refills.
         if (!_fillingEncoders && EncoderBox.SelectedItem is EncoderOption chosen)
             _wantedEncoder = chosen.Name;
         UpdateCopyWarning();
@@ -214,14 +203,14 @@ public partial class FirstRunWindow : Window
 
     private void UpdateCopyWarning()
     {
-        // Raised while the window is still being built.
+        // May fire during window construction.
         if (CopyWarningText is not null)
             CopyWarningText.Visibility = EncoderBox.SelectedItem is EncoderOption { Family: EncoderFamily.Copy } ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>
-    /// Fills the list again when what it is filled from has changed: FFmpeg's answer when it has come (it always wins, whichever arrives
-    /// first), else the hardware profile's estimate; ranked for the Export role's card (5.5A).
+    /// Refills the encoder list when its source changes: the FFmpeg probe once available (always authoritative), else the profile
+    /// estimate; ranked for the Export role GPU.
     /// </summary>
     private void RefreshEncoders()
     {
@@ -235,8 +224,8 @@ public partial class FirstRunWindow : Window
     }
 
     /// <summary>
-    /// Hardware encoders first, the Export role's card's own family first (5.5A: the Desktop's RX 7900 XTX composites and exports, so AMF
-    /// before the Arc A310's QuickSync), then NVENC, QuickSync, AMF and Media Foundation; then the software ones; Copy last.
+    /// Encoder ranking: hardware first with the Export GPU's family leading (e.g. AMF before QSV when an AMD card is the Export GPU beside
+    /// an Intel one), then NVENC, QSV, AMF, MF; then software; Copy last.
     /// </summary>
     private void FillEncoders(IReadOnlyList<string> hardware)
     {
@@ -252,7 +241,7 @@ public partial class FirstRunWindow : Window
         UpdateCopyWarning();
     }
 
-    /// <summary>FFmpeg's answer (the hardware encoders that encoded here): the list from now on, whatever the profile estimated.</summary>
+    /// <summary>Applies the FFmpeg probe result (working hardware encoders), superseding the estimate.</summary>
     internal void ShowVerifiedEncoders(IReadOnlyList<string> hardware)
     {
         _verifiedHardware = hardware;
@@ -265,15 +254,14 @@ public partial class FirstRunWindow : Window
         };
     }
 
-    // The FFmpeg the encoders were last asked of, and which asking is the latest: it is asked again only when
-    // the FFmpeg is another one, and an answer that a later asking has overtaken is dropped.
+    // Last probed FFmpeg identity and probe generation: re-probe only on a different FFmpeg; stale answers are dropped.
     private string _probedFfmpeg = "";
     private int _probeRun;
 
-    // The latest asking still running (or the last one, ended): what Start waits for.
+    // Latest probe task (running or completed); Start awaits it.
     private Task _probeTask = Task.CompletedTask;
 
-    /// <summary>Asks the FFmpeg that is here now for its hardware encoders, unless that one was asked already.</summary>
+    /// <summary>Probes the current FFmpeg's hardware encoders unless already probed.</summary>
     private Task ProbeEncodersAsync()
     {
         var task = ProbeOnceAsync();
@@ -294,7 +282,7 @@ public partial class FirstRunWindow : Window
             return;
         }
 
-        // The same file as last time (its path, size and date): what was found then still holds.
+        // Same file (path, size, mtime): the previous result stands.
         var file = new FileInfo(ffmpeg);
         var identity = FormattableString.Invariant($"{file.FullName}|{file.Length}|{file.LastWriteTimeUtc.Ticks}");
         if (identity == _probedFfmpeg)
@@ -306,7 +294,7 @@ public partial class FirstRunWindow : Window
         EncoderStatusText.Text = "Detecting GPU hardware encoders...";
         try
         {
-            // ProbeAsync keeps its answer (encoder-probe.json), so the main window starts with it.
+            // ProbeAsync persists to encoder-probe.json, which the main window loads at start.
             var (hardware, _) = await EncoderProber.ProbeAsync(_probeCancellation.Token);
             if (run != _probeRun)
                 return;
@@ -318,7 +306,7 @@ public partial class FirstRunWindow : Window
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            // Not kept as asked: the next change of components tries again.
+            // Not recorded as probed: the next component change retries.
             if (run == _probeRun)
                 (_probedFfmpeg, EncoderStatusText.Text) = ("", "Hardware encoders could not be checked.");
         }
@@ -329,10 +317,10 @@ public partial class FirstRunWindow : Window
         }
     }
 
-    // Until FFmpeg is here: the encoders the profile estimated from the cards, said as such.
+    // Before FFmpeg exists: profile-estimated encoders, labelled as estimates.
     private void ShowEstimatedEncoderStatus()
     {
-        // FFmpeg's answer is in, or an FFmpeg is being asked (its probe says so itself).
+        // Probe answered or in progress (it reports its own status).
         if (_verifiedHardware is not null || _probedFfmpeg.Length > 0)
             return;
 
@@ -341,34 +329,30 @@ public partial class FirstRunWindow : Window
             : "Hardware encoders are detected once the core engines are downloaded.";
     }
 
-    // What a crash report holds, and what it never does.
+    // Crash report contents disclosure (included and excluded data).
     private void PrivacyPolicy_Click(object sender, RoutedEventArgs e) =>
         PrivacyPolicyDialog.ShowFor(this, CrashReportsBox.IsChecked == true, on => CrashReportsBox.IsChecked = on);
 
-    /// <summary>
-    /// Whether an encode, a preview or a transcription is running behind this window. Only possible when it
-    /// was opened again from the settings; nothing is installed while it is.
-    /// </summary>
+    /// <summary>Whether an encode, preview or transcription is running (only when reopened from Settings); installs are blocked meanwhile.</summary>
     public bool AppIsBusy
     {
         get => Dependencies.AppIsBusy;
         set => Dependencies.AppIsBusy = value;
     }
 
-    /// <summary>Raised when components were installed or replaced from this window.</summary>
+    /// <summary>Raised after components are installed or replaced from this window.</summary>
     public event Action? DependenciesChanged
     {
         add => Dependencies.Changed += value;
         remove => Dependencies.Changed -= value;
     }
 
-    // Set while Start waits for the hardware encoder check.
+    // Set while Start awaits the encoder probe.
     private bool _finishing;
 
     /// <summary>
-    /// Start Editing: when there is an FFmpeg, its hardware encoders are always known first. An asking still running is waited
-    /// for, and an FFmpeg not asked yet is asked now, so that the probe's answer is saved and the best encoder chosen
-    /// (unless one was chosen by hand) before the settings are.
+    /// Start Editing: with FFmpeg present, awaits (or starts) the encoder probe so its result is saved and the best encoder selected
+    /// (unless chosen manually) before settings are written.
     /// </summary>
     private void Start_Click(object sender, RoutedEventArgs e) => Faults.Forget(Start_ClickAsync(sender, e), nameof(Start_Click));
 
@@ -395,7 +379,7 @@ public partial class FirstRunWindow : Window
                 StartButton.IsEnabled = !Dependencies.IsRunning;
             }
 
-            // Closed while it waited: that is not a Start.
+            // Window closed during the wait: not a Start.
             if (_closed)
                 return;
         }
@@ -405,8 +389,7 @@ public partial class FirstRunWindow : Window
 
     private void Finish()
     {
-        // 5.5A: the hardware profile's workers (the full test still measuring, an estimate not back yet) are killed first, before the
-        // main window and its compositor start.
+        // Kill hardware profile workers (pending estimate or full test) before the main window and compositor start.
         _profileCancellation.Cancel();
         SyncTestCard.Cancel();
 
@@ -416,8 +399,7 @@ public partial class FirstRunWindow : Window
         var firstStart = !settings.FirstRunComplete;
         settings.Theme = _chosenTheme;
 
-        // The interface as HandPeg starts it, on a first start only: opened again (from the settings, or because the
-        // engines are missing on this PC), the user's own view settings and arrangement stay.
+        // Reset UI defaults on a first start only; when reopened (Settings, or missing engines) existing view settings and layout stay.
         if (firstStart)
             settings.ApplyEditorDefaults();
         settings.DefaultVideoEncoder = EncoderBox.SelectedItem is EncoderOption encoder ? encoder.Name : "";
@@ -427,25 +409,22 @@ public partial class FirstRunWindow : Window
         settings.SendCrashReports = CrashReportsBox.IsChecked == true;
         (settings.DefaultAudioEncoder, settings.DefaultAudioBitrate) = (AudioEncoderBox.SelectedItem as string ?? "aac", AudioBitrateBox.SelectedItem as string ?? "192k");
 
-        // The workspace: on a first start always (there is no arrangement yet); opened again from the settings, only
-        // when a card was chosen here, so that the arrangement in use is not replaced by the card that was simply ticked.
-        // The main window lays itself out so and writes it into DockLayout (MainWindow.TakeFirstRunLayout).
+        // Workspace: always on a first start; when reopened only if a card was explicitly chosen (a pre-ticked card never replaces the
+        // current layout). The main window applies it and writes DockLayout (MainWindow.TakeFirstRunLayout).
         if (firstStart || _workspaceChosen)
             settings.FirstRunLayout = ChosenWorkspace();
         settings.FirstRunComplete = true;
 
-        // 5.5A: the GPU roles of the profile shown, on a first start (opened again, the roles stay as Settings has them: a card chosen there
-        // by hand is never undone from here), against the cards the profile found itself (nothing lists the cards in this process). 5.5A
-        // review: Decode and Background always Auto, whatever an older saved result shown here holds.
+        // Profile GPU roles apply on a first start only (reopened, Settings' roles are kept), matched against the profile's own GPU list
+        // (this process does not enumerate GPUs). Decode and Background are always Auto regardless of older saved results.
         if (firstStart && _benchmarkRoles is { } roles && _profile is { } profile)
             HardwareBenchmarkService.WriteRoles(HardwareBenchmarkService.DecodeAndBackgroundAuto(roles), settings, [.. profile.Adapters.Select(a => a.Index)]);
 
-        // 5.6A: the roles picked by hand on the cards, whatever the start (a card is given a role only by the user's own pick: CLAUDE.md 8),
-        // against the cards the profile found (its first listings).
+        // Manually picked card roles apply on any open (roles are only ever assigned by explicit pick), matched to the profile's GPU list.
         if (_rolesChosen && (_profile ?? _figures) is { } listed)
             WritePicks(_picks, settings, [.. listed.Adapters.Where(a => a.SameCardAs < 0).Select(a => a.Index)]);
 
-        // The captions package's larger model is the one captions use, once it is there.
+        // Use the captions package's larger model once installed.
         if (EditorTier.IsChecked == true && File.Exists(DependencyUpdater.GetWhisperModelPath(TierDefaultModel)))
             settings.WhisperModel = TierDefaultModel;
 
@@ -457,8 +436,7 @@ public partial class FirstRunWindow : Window
         {
             AppLog.Write("First run: the settings could not be saved", ex);
 
-            // The folder cannot be written to: the choices still hold for this session, and the window
-            // will come back next time.
+            // Settings folder not writable: choices apply for this session and the window reappears next start.
             MessageBox.Show(this, $"The settings could not be saved, so this window will be shown again next time.\n\n{ex.Message}",
                 "HandPeg", MessageBoxButton.OK, MessageBoxImage.Warning);
         }

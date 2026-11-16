@@ -8,11 +8,11 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The colour sliders' grade of the whole picture (the old Filters tab's: 5.6.0 shows it only in the Color tab's Legacy Grade fold, whose
-// Convert turns it into Sequence Output cards), and layout files.
+// Legacy whole-frame slider grade (shown only in the Color tab's Legacy Grade fold, whose Convert turns it into Sequence Output cards)
+// and layout files.
 public partial class MainViewModel
 {
-    // What each control is at when it does nothing.
+    // Neutral value of each control.
     private const double NeutralContrast = 1;
     private const double NeutralBrightness = 0;
     private const double NeutralSaturation = 1;
@@ -23,10 +23,10 @@ public partial class MainViewModel
     [ObservableProperty] private double _colorSaturation = NeutralSaturation;
     [ObservableProperty] private double _colorGamma = NeutralGamma;
 
-    /// <summary>Rotation of every colour around the colour wheel, in degrees: -180 to 180.</summary>
+    /// <summary>Hue rotation in degrees (-180..180).</summary>
     [ObservableProperty] private double _colorHue;
 
-    // RGB balance: how much of each primary is added (or, negative, taken away): -1 to 1.
+    // RGB balance per primary (-1..1; negative reduces).
     [ObservableProperty] private double _colorRed;
     [ObservableProperty] private double _colorGreen;
     [ObservableProperty] private double _colorBlue;
@@ -44,10 +44,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The colour sliders' grade of the whole picture (5.2-AuditB: typed, it was FFmpeg eq / hue / unsharp text, with exactly the
-    /// numbers that text wrote: each to three decimals): contrast, brightness, saturation, gamma and the RGB balance's per-channel
-    /// gammas, a hue turn, the Sharpen strength. A control left where it does nothing adds nothing, so untouched video is not
-    /// processed for no reason.
+    /// Typed legacy slider grade (values rounded to 3 decimals, matching the original eq/hue/unsharp semantics): contrast, brightness,
+    /// saturation, gamma, per-channel RGB gammas, hue rotation and Sharpen strength. Neutral controls contribute nothing.
     /// </summary>
     public SequenceGrade GetSequenceGrade()
     {
@@ -55,7 +53,7 @@ public partial class MainViewModel
         var brightness = Math.Clamp(ColorBrightness, -1, 1);
         var saturation = Math.Clamp(ColorSaturation, 0, 3);
         var gamma = Math.Clamp(ColorGamma, 0.1, 3);
-        // The RGB balance is per-channel gammas: a slider at 0 is a gamma of 1; the ends, -1 and 1, are a gamma of a half and of two.
+        // RGB balance maps to per-channel gamma: 0 -> 1.0, -1 -> 0.5, +1 -> 2.0.
         var (red, green, blue) = (Math.Clamp(ColorRed, -1, 1), Math.Clamp(ColorGreen, -1, 1), Math.Clamp(ColorBlue, -1, 1));
         var isBalanced = IsChanged(red, 0) || IsChanged(green, 0) || IsChanged(blue, 0);
 
@@ -67,7 +65,7 @@ public partial class MainViewModel
 
         var hue = Math.Clamp(ColorHue, -180, 180);
 
-        // The Sharpen effect's strength (5.1-Polish), as its amount was written (Models.Effects.EffectRegistry.SharpenAmount times it).
+        // Sharpen strength (amount = Models.Effects.EffectRegistry.SharpenAmount x strength).
         var sharpen = Math.Clamp(SharpenStrength, 0, 1);
         return new SequenceGrade
         {
@@ -76,33 +74,31 @@ public partial class MainViewModel
             Sharpen = IsChanged(sharpen, 0) ? Math.Round(Models.Effects.EffectRegistry.SharpenAmount * sharpen, 3) / Models.Effects.EffectRegistry.SharpenAmount : null,
         };
 
-        // The controls move in hundredths; anything closer to neutral than that is neutral.
+        // Controls step by 0.01; anything closer to neutral counts as neutral.
         static bool IsChanged(double value, double neutral) => Math.Abs(value - neutral) >= 0.005;
     }
 
-    // ----- The legacy grade as Sequence Output cards (5.6.0: the Color tab's Legacy Grade fold) -----
+    // ----- Legacy grade to Sequence Output cards (Color tab Legacy Grade fold) -----
 
-    /// <summary>Whether the project still has the colour sliders' grade or the old Filters tab's LUT (the Color tab's Legacy Grade fold shows while it does).</summary>
+    /// <summary>Whether a legacy slider grade or legacy LUT remains (the Legacy Grade fold shows while true).</summary>
     public bool HasLegacyGrade => !GetSequenceGrade().IsNeutral || !string.IsNullOrWhiteSpace(LutPath);
 
     /// <summary>
-    /// Whether a Sequence Output card already holds a LUT (5.6.0: a LUT 3D card with a file, a Color Grade card with a LUT; switched on
-    /// or not): Convert then keeps the legacy LUT as it is (its own entry draws it before every card), so no stack ever holds two.
+    /// Whether a Sequence Output card already holds a LUT (LUT 3D with a file, or Color Grade with a LUT; enabled or not). Convert then
+    /// leaves the legacy LUT in place (drawn before all cards) so no stack holds two LUT cards.
     /// </summary>
     public bool SequenceOutputHoldsLut => SequenceEffects.Any(HoldsLutFile);
 
-    // A card that names a LUT file (the plan gives the first such card on a stack its table: GpuScenePlan.Create.LookCards).
+    // Card with a LUT file (the plan binds the first such card's table: GpuScenePlan.Create.LookCards).
     private static bool HoldsLutFile(EffectInstance card) =>
         card.Type == EffectRegistry.Lut ? card.GetText("file").Trim().Trim('"').Length > 0
         : card.Type == EffectRegistry.ColorStudio && card.GetText(ColorGradeKeys.Lut).Trim().Trim('"').Length > 0;
 
     /// <summary>
-    /// Moves the legacy grade into Sequence Output cards that draw the same picture (<see cref="LegacyGradeCards"/>), put first in its stack (the
-    /// legacy grade was drawn before it), and puts the sliders back where they do nothing and the LUT path to none: one step of Undo, which
-    /// holds the LUT path too (SequenceLook). Never a second Color Grade card nor a second LUT (5.6.0): when a Sequence Output card holds a
-    /// LUT already, the legacy LUT stays as it is (the sliders alone move); when the stack has a Color Grade card, the LUT goes in as a LUT 3D
-    /// card (the user's card stays the one the Color Studio grades); else the new Color Grade card holds it at 100 %. False when there is
-    /// nothing to convert.
+    /// Converts the legacy grade into equivalent Sequence Output cards (<see cref="LegacyGradeCards"/>) at the stack front (legacy drew
+    /// first), resetting sliders and clearing the LUT path in one undo step (SequenceLook includes the path). Never duplicates Color Grade
+    /// or LUT: an existing LUT card keeps the legacy LUT in place (only sliders move); an existing Color Grade card gets the LUT as a LUT 3D
+    /// card (the existing card stays the Color Studio target); else a new Color Grade card holds it at 100 %. False when nothing to convert.
     /// </summary>
     public bool ConvertLegacyGrade()
     {
@@ -124,16 +120,15 @@ public partial class MainViewModel
             ResetColor();
         }
 
-        // After the step was taken, which holds the path (Undo and Redo move it with the cards).
+        // After the step (which captures the path, so undo/redo move it with the cards).
         if (lut.Length > 0)
             LutPath = "";
         return true;
     }
 
     /// <summary>
-    /// The Legacy Grade fold's Reset (5.6.0): the sliders back where they do nothing and the legacy LUT path to none, kept or not, as
-    /// one step of Undo (it holds the path too: SequenceLook), so a LUT that Convert keeps as it is can still be taken away. False when
-    /// there is nothing to reset.
+    /// Legacy Grade Reset: neutral sliders and no legacy LUT in one undo step (SequenceLook holds the path), so a LUT kept by Convert
+    /// can still be removed. False when nothing to reset.
     /// </summary>
     public bool ResetLegacyGrade()
     {
@@ -151,11 +146,10 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The cards a legacy grade becomes, in the order GpuScenePlan drew it (its Whole entry: the LUT, eq's grade, the hue turn, the sharpening),
-    /// each lane as that entry's packet had it: a Color Grade card holding the LUT at 100 % (its other values neutral; with
-    /// <paramref name="lutAsCard"/>, a LUT 3D card: its packet is the legacy one), Brightness &amp; Contrast
-    /// (gamma times green's gamma, the channel balance as its Cb and Cr gammas: PSColorGrade's own), Hue (saturation 1) and Sharpen (the
-    /// radius of unsharp's 5 x 5 square at <paramref name="frameWidth"/>). No LUT card for an empty <paramref name="lut"/>. Pure (the goldens).
+    /// Pure (golden-tested) legacy-grade card list in GpuScenePlan's Whole-entry order (LUT, grade, hue, sharpen), lanes matching its packet:
+    /// Color Grade with the LUT at 100 % (others neutral) or a LUT 3D card when <paramref name="lutAsCard"/>; Brightness &amp; Contrast
+    /// (gamma x green gamma, channel balance as Cb/Cr gammas per PSColorGrade); Hue (saturation 1); Sharpen (radius of a 5 x 5 unsharp
+    /// kernel at <paramref name="frameWidth"/>). No LUT card for an empty <paramref name="lut"/>.
     /// </summary>
     public static List<EffectInstance> LegacyGradeCards(in SequenceGrade grade, string lut, int frameWidth, bool lutAsCard = false)
     {
@@ -213,8 +207,7 @@ public partial class MainViewModel
     private static readonly JsonSerializerOptions LayoutJsonOptions = new() { WriteIndented = true };
 
     /// <summary>
-    /// The layout (5.2-AuditB: the template of the clip it is taken from, TemplateBase: its Cutouts, its look, and its place
-    /// written as the Game Preset file's Center values), the grading and the blur fill as they are now.
+    /// Current layout (TemplateBase's Cutouts, look and placement as legacy Center values), grading and blur fill.
     /// </summary>
     private StylePreset CaptureLayout() => new()
     {
@@ -258,10 +251,10 @@ public partial class MainViewModel
         },
     };
 
-    /// <summary>The project settings as they are now, for the export dialog to describe and choose from.</summary>
+    /// <summary>Current project settings for the export dialog.</summary>
     public StylePreset CaptureStyle() => CaptureLayout();
 
-    /// <summary>Writes the chosen parts of the project settings to a file. Returns a line for the status bar.</summary>
+    /// <summary>Exports selected project setting sections to a file; returns a status line.</summary>
     public string ExportStyle(string path, bool layout, bool color, bool blur, bool subtitles)
     {
         var settings = CaptureLayout();
@@ -293,7 +286,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The Game Preset as it is now, with the mask pictures of its Cutouts inside it: what Export writes, whole.</summary>
+    /// <summary>Self-contained current Game Preset with embedded Cutout masks, as written by Export.</summary>
     public StylePreset CaptureStyleWithMasks()
     {
         var style = CaptureLayout();
@@ -301,10 +294,7 @@ public partial class MainViewModel
         return style;
     }
 
-    /// <summary>
-    /// Puts the mask pictures its Cutouts use into the Game Preset itself, as Base64, and has the Cutouts name them
-    /// by file name alone: the file then needs nothing beside it.
-    /// </summary>
+    /// <summary>Embeds Cutout mask images as Base64 and rewrites references to bare file names, making the preset self-contained.</summary>
     private static void EmbedMasks(StylePreset style)
     {
         var masks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -313,7 +303,7 @@ public partial class MainViewModel
         style.Masks = masks.Count > 0 ? masks : null;
     }
 
-    /// <summary>Everything in a Game Preset that can carry a mask: its Cutouts, its video's look, and the caption box.</summary>
+    /// <summary>Mask-bearing parts of a Game Preset: Cutouts, video look and caption box.</summary>
     private static IEnumerable<LayerState> StyleLayers(StylePreset style)
     {
         foreach (var layer in style.Layout?.Layers ?? [])
@@ -324,7 +314,7 @@ public partial class MainViewModel
             yield return captions;
     }
 
-    /// <summary>Writes the masks a Game Preset carries into the masks folder, and points its Cutouts at them there.</summary>
+    /// <summary>Extracts embedded masks to the masks folder and repoints Cutouts at them.</summary>
     private void ExtractMasks(StylePreset style)
     {
         if (style.Masks is not { Count: > 0 } masks)
@@ -337,7 +327,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Reads a layout file, or returns null with the reason in the status bar.</summary>
+    /// <summary>Reads a layout file; null (reason in the status bar) on failure.</summary>
     public StylePreset? ReadStyle(string path)
     {
         try
@@ -358,24 +348,24 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Takes over the chosen parts of a layout file. Parts the file does not have are skipped.</summary>
-    // The Game Preset in use: the last one applied. A double-click on a slider goes back to its values.
+    /// <summary>Applies selected sections of a layout file, skipping absent ones.</summary>
+    // Active Game Preset (last applied); slider double-click resets to its values.
     private StylePreset? _activeStyle;
 
-    /// <summary>The Game Presets in the Styles folder, by name, newest first.</summary>
+    /// <summary>Game Presets in the Styles folder, newest first.</summary>
     public System.Collections.ObjectModel.ObservableCollection<string> StylePresets { get; } = [];
 
-    /// <summary>The Game Preset chosen from the list. Choosing one applies all of it.</summary>
+    /// <summary>Selected Game Preset; selecting applies it fully.</summary>
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string? _selectedStylePreset;
 
     private bool _listingStyles;
 
-    /// <summary>The name a Game Preset is saved under, as typed in its dialog.</summary>
+    /// <summary>Save name typed in the Game Preset dialog.</summary>
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty] private string _styleName = "";
 
     /// <summary>
-    /// Saves the layout and Cutouts, color, blur and subtitle settings as they are now as a Game Preset of the list: a
-    /// .hpstyle file in the Styles folder, under the name typed. An existing one of that name is replaced.
+    /// Saves current layout, Cutouts, colour, blur and subtitle settings as a .hpstyle Game Preset in the Styles folder, replacing
+    /// a same-named one.
     /// </summary>
     public void SaveStyle()
     {
@@ -389,7 +379,7 @@ public partial class MainViewModel
         Directory.CreateDirectory(AppPaths.Styles);
         ExportStyle(Path.Combine(AppPaths.Styles, name + ".hpstyle"), layout: true, color: true, blur: true, subtitles: true);
 
-        // It is now the Game Preset in use, and shown as chosen without being applied over itself.
+        // Mark it active and selected without re-applying it.
         _activeStyle = CaptureStyle();
         RefreshStylePresets();
         _listingStyles = true;
@@ -397,7 +387,7 @@ public partial class MainViewModel
         _listingStyles = false;
     }
 
-    /// <summary>Reads the Styles folder again: called as the list is opened, so that it shows what is there now.</summary>
+    /// <summary>Rescans the Styles folder (called when the list opens).</summary>
     public void RefreshStylePresets()
     {
         var chosen = SelectedStylePreset;
@@ -427,7 +417,7 @@ public partial class MainViewModel
         if (_listingStyles || value is null || ReadStyle(Path.Combine(AppPaths.Styles, value + ".hpstyle")) is not { } style)
             return;
 
-        // With clips selected on the Timeline it goes on them alone, and the list lets go of it, so that it can be chosen again for the next clip.
+        // With a Timeline selection, apply to those clips only and clear the list selection so it can be re-chosen for the next clip.
         if (TimelineSelection?.Invoke() is { Count: > 0 } selected && GamePresetTargets(selected).Count > 0)
         {
             ApplyGamePreset(selected, value);
@@ -441,11 +431,11 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// What a double-click puts a slider or a number box back to: the value the Game Preset in use has for
-    /// it, when the settings ask for that and the Game Preset has one. Null leaves it to the built-in default.
+    /// Double-click reset value for a slider or number box: the active Game Preset's value when enabled and present; null uses the
+    /// built-in default.
     /// </summary>
-    /// <param name="source">What the control is bound to: this view model, or a clip.</param>
-    /// <param name="property">The property it is bound to.</param>
+    /// <param name="source">Binding source: this VM or a clip.</param>
+    /// <param name="property">Bound property name.</param>
     public double? GetResetValue(object? source, string? property)
     {
         if (_activeStyle is not { } style || property is null || AppSettings.Current.DoubleClickResetsTo != AppSettings.ResetToPreset)
@@ -475,8 +465,7 @@ public partial class MainViewModel
         if (source is not Layer layer)
             return null;
 
-        // The clip as the Game Preset has it: the caption box, the Cutout of the same name and kind, or (a video clip the Game
-        // Preset goes on, 5.2-AuditB) its video's look, placed by the file's Center values.
+        // Preset counterpart: caption box, same-name/kind Cutout, or for a target video clip the preset video look placed by Center values.
         var isBase = false;
         var saved = layer.IsCaptions ? style.Subtitles?.Layer
             : style.Layout?.Layers.FirstOrDefault(l => l.Kind == layer.Kind && l.Name == layer.Name);
@@ -501,10 +490,7 @@ public partial class MainViewModel
         };
     }
 
-    /// <summary>
-    /// Puts a Game Preset's parts in place: one undo step for all of it, its colour grade and blur included (4.4: they are
-    /// in the step), and no step of their own for the looks it sets on the way.
-    /// </summary>
+    /// <summary>Applies a Game Preset as one undo step (grade and blur included), suppressing per-look steps.</summary>
     public void ApplyStyle(StylePreset preset, bool layout, bool color, bool blur, bool subtitles)
     {
         if (layout || subtitles || color || blur)
@@ -516,12 +502,11 @@ public partial class MainViewModel
 
         if (layout && preset.Layout is { } layers)
         {
-            // The shape of the frame first: the clips are placed by fractions of it.
+            // Frame shape first: clip placement is in frame fractions.
             if (layers.Vertical is { } vertical && vertical != UseVerticalResolution)
                 UseVerticalResolution = vertical;
 
-            // On the selected video clips, or every top-level one (5.2-AuditB: the per-clip template path); with none, the next
-            // file opened takes it. Its blur fill is the one a file opened from now on gets.
+            // Apply to TemplateTargets, or pend for the next opened file; its blur fill becomes the default for future opens.
             ExtractMasks(preset);
             _backgroundRow.IsHidden = layers.BackgroundHidden;
             TakeBlurFill(layers.BackgroundHidden);
@@ -561,7 +546,7 @@ public partial class MainViewModel
             applied.Add("subtitle settings");
         }
 
-        // Settings may say the default encoding settings win over what a Game Preset sets (a tall frame, say).
+        // A setting may let default encoding settings override preset values (e.g. a vertical frame).
         ApplyEncodingDefaultsOverStyle();
 
         Log(applied.Count > 0 ? $"Applied Game Preset: {string.Join(", ", applied)}" : "Nothing was imported");
@@ -569,7 +554,7 @@ public partial class MainViewModel
             StatusText += " " + warning;
     }
 
-    /// <summary>A preset's settings for the blur fill's look (the sequence's one, every clip's that has a blur fill).</summary>
+    /// <summary>Applies a preset's blur fill look (Sequence-level, used by every clip with blur fill).</summary>
     private void TakeBlur(BlurSection background)
     {
         BlurRadius = Math.Clamp(background.Radius, 0, Models.Effects.EffectRegistry.BackgroundMostRadius);
@@ -581,18 +566,17 @@ public partial class MainViewModel
 
     // ----- The shape of video a layout was made on -----
 
-    // Width over height of the video the current Cutouts were marked on; 0 when not known.
+    // Aspect (w/h) of the video the current Cutouts were marked on; 0 when unknown.
     private double _layoutSourceAspect;
 
     private double CurrentSourceAspect => SourceWidth > 0 && SourceHeight > 0 ? (double)SourceWidth / SourceHeight : 0;
 
-    /// <summary>What a saved layout records: the shape its Cutouts were marked on, or failing that the loaded video's.</summary>
+    /// <summary>Aspect recorded in a saved layout: the Cutouts' marking aspect, else the loaded video's.</summary>
     private double GetLayoutSourceAspect() =>
         Math.Round(_layoutSourceAspect > 0 && Layers.Any(IsCutout) ? _layoutSourceAspect : CurrentSourceAspect, 4);
 
     /// <summary>
-    /// The warning for a layout made on a video of another shape than the one loaded; null when they agree,
-    /// when either shape is unknown, or when there is nothing cut from the video to go wrong.
+    /// Aspect mismatch warning for a layout made on a different-aspect video; null when matching, unknown, or no Cutouts.
     /// </summary>
     private string? GetLayoutAspectWarning()
     {

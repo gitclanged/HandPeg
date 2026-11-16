@@ -5,21 +5,19 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The Settings screen's live mirror of the editor (Pass 4.4) -----
-// The Settings screen shows, above its drawn pictures, the part of the editor the option looked at is about, as it is now
-// (a VisualBrush of it: SettingsStagePreview.ShowMirror). Only a pane that is on show is offered: one that is closed,
-// hidden, behind another tab or not made yet is never made or shown for it (that would cost the memory and the work of a
-// pane the user did not open). The player's picture is drawn by the GPU preview in a window of its own, which no brush can see: a
-// still from the thumbnail sheet at the playhead stands in for it.
+// ----- Settings screen live mirror of the editor -----
+// The Settings stage shows the editor region the focused option affects, live, via a VisualBrush (SettingsStagePreview.ShowMirror).
+// Only visible panes are offered; closed, hidden, background-tab or unrealized panes are never realized for it (that would cost memory
+// and work for a pane the user did not open). The player video renders in a separate GPU child window invisible to brushes, so a
+// thumbnail-sheet still at the playhead stands in for it.
 public partial class MainWindow
 {
-    // The still last cut for the mirror: the sheet it came from, its cell, and the picture, kept while the playhead stays in that cell.
+    // Cached mirror still (source sheet, cell index, image), reused while the playhead stays in that cell.
     private (BitmapSource Sheet, int Index, ImageSource Still)? _mirrorStill;
 
     /// <summary>
-    /// The element of the editor a region of the Settings stage mirrors ("Window", "Header", "Timeline", "Player",
-    /// "Canvas", "Media", "Effects", "Export"), the part of it to show (its own bounds, in its own coordinates), and for the
-    /// player a still standing in for the video with where the video lies in it; null when that part is not on show.
+    /// Mirror source for a Settings stage region ("Window", "Header", "Timeline", "Player", "Canvas", "Media", "Effects", "Export"):
+    /// the element, its view rect (local bounds), and for the player a stand-in video still with its rect; null when not visible.
     /// </summary>
     internal (FrameworkElement Source, Rect View, ImageSource? Video, Rect VideoRect)? StageMirror(string region)
     {
@@ -27,7 +25,7 @@ public partial class MainWindow
         {
             "Window" => ShownForMirror(ChromeRoot),
             "Header" => ShownForMirror(EditorHeader),
-            // The timeline pane; the Sequence Overview Scrubber while the timeline is not on show.
+            // Timeline pane, falling back to the Overview Scrubber when the Timeline is not visible.
             "Timeline" => ShownForMirror(UnifiedTimelinePanel) ?? ShownForMirror(TimelinePane),
             "Player" => ShownForMirror(PlayerPane),
             "Canvas" => ShownForMirror(LayoutPane),
@@ -50,15 +48,14 @@ public partial class MainWindow
         return (source, new Rect(0, 0, source.ActualWidth, source.ActualHeight), still, videoRect);
     }
 
-    // An element that is on show, laid out and large enough to be worth a picture; else null (and null for a tab's part not made
-    // yet: the Export tab's body comes from its template, 5.3-Stage2). Nothing here realizes a pane.
+    // Returns the element if visible, laid out and at least 40 x 20 DIPs; else null (including unrealized template parts such as the
+    // Export tab body). Never realizes a pane.
     private static FrameworkElement? ShownForMirror(FrameworkElement? element) =>
         element is { IsVisible: true, ActualWidth: >= 40, ActualHeight: >= 20 } ? element : null;
 
     /// <summary>
-    /// The Sequence Overview Scrubber's picture nearest the playhead, as the timeline's strip cuts them (RebuildFilmstrip), or null while
-    /// there is no sheet: the sequence's own (drawn by the GPU engine), else the opened file's key frames, whose own time is
-    /// near enough to the sequence's for a stand-in.
+    /// Overview Scrubber thumbnail nearest the playhead, sliced as RebuildFilmstrip does; null without a sheet. Uses the GPU-rendered
+    /// sequence sheet, else the source file's keyframe sheet (close enough in time to stand in).
     /// </summary>
     private ImageSource? StillAtPlayhead()
     {

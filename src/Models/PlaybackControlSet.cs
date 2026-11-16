@@ -17,9 +17,8 @@ public sealed partial class PlaybackControlOption(string id, string label, strin
 }
 
 /// <summary>
-/// Which controls the playback bar shows, chosen in the Views menu's Playback Bar column (5.4.4), as editors' viewers let one choose
-/// (a viewer's button editor, its viewer options). The bar binds each control's visibility to this
-/// by name (<c>PlaybackControls[Loop]</c>). Saved as the names of the controls shown.
+/// Visible playback bar controls (Views menu, Playback Bar column). The bar binds visibility by name (<c>PlaybackControls[Loop]</c>);
+/// serialized as the list of visible control names.
 /// </summary>
 public sealed class PlaybackControlSet : ObservableObject
 {
@@ -46,14 +45,13 @@ public sealed class PlaybackControlSet : ObservableObject
             new("SafeMargins", "Safe Margins", "Viewer", "Outlines the action-safe (90%) and title-safe (80%) areas of the frame over the picture."),
             new("EditOnVideo", "Edit Clips on Video Preview", "Viewer", "Move, resize and turn the selected clip on the player itself."),
             new("Exploded3D", "3D Exploded View", "Viewer", "Turns the player into a 3D view of the layer stack: orbit it, spread the layers apart, drag them in their planes and along the stack (the GPU preview engine)."),
-            // 5.4D: shown by default, right after the 3D view (list version 3 shows it once on bars saved before it), so an
-            // editor can switch it on while cutting. Only the button is shown: the preview itself is never saved and starts off.
+            // Live Encoded Preview button: default visible after 3D View (list version 3 adds it once to older bars); the preview
+            // state itself is never saved and starts off.
             new("ExportQualityPreview", "Live Encoded Preview", "Viewer", "Shows the picture as the export's encoder would leave it, live: the encoded frame, a split wipe against the source, or the difference x10 (an approximation by this PC's hardware encoder)."),
             new("ExportFrame", "Export Frame", "Viewer", "Saves the frame as it is shown, as a PNG beside the output."),
             new("Reload", "Reload Player", "Viewer", "For when the player has stopped answering."),
             new("Timecode", "Timecode", "Viewer", "The playhead's time and the sequence's length."),
-            // 5.4.4: Volume is one pill, its speaker the player's mute; the standalone "Mute" control is retired (a saved list naming it
-            // loads the rest, as Load ignores a name it does not know, and the next save drops it).
+            // Volume pill includes mute; the retired "Mute" name is ignored on load and dropped on next save.
             new("Volume", "Volume", "Sound", "The player's volume, and its mute: a click on its speaker silences the player (not the export)."),
             new("Speed", "Playback Speed", "Sound", "How fast the player plays (0.25x to 2x)."),
         ];
@@ -76,14 +74,12 @@ public sealed class PlaybackControlSet : ObservableObject
     /// <summary>Whether the control of this name is shown.</summary>
     public bool this[string id] => _byId.TryGetValue(id, out var option) && option.IsShown;
 
-    // What the bar starts with. (5.3-Stage2: the Live Preview switch is gone; 5.4.1A: so is Render Preview. A saved list naming
-    // either shows the rest, as Load ignores a name it does not know, and the next save drops it.)
+    // Default controls. (Retired names such as Live Preview and Render Preview are ignored on load and dropped on save.)
     private static readonly string[] Defaults =
         ["PrevIFrame", "StepBack", "StepForward", "NextIFrame", "Reload", "Volume", "Speed", "AddMarker", "EditOnVideo", "Exploded3D", "ExportQualityPreview"];
 
-    // The saved list's version (its last name, "@3"), and the controls each version brought: a list saved before a control
-    // existed shows it once (5.0-Verify, the user's Q4: the 3D Exploded View on bars saved before 5.0; 5.4D: the Live
-    // Encoded Preview on bars saved before 5.4); after that, the user's choice is kept.
+    // List version (trailing "@3") and controls introduced per version: older lists gain new controls once (3D Exploded View, Live
+    // Encoded Preview), after which the saved choice is respected.
     private const int Version = 3;
     private const string VersionMark = "@";
     private static readonly (string Id, int Since)[] Later = [("Exploded3D", 2), ("ExportQualityPreview", 3)];

@@ -7,20 +7,20 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The Creator Hotbar on the Timeline's row of tools (Pass 5.2.1) -----
-// Five slots (AppSettings.HotbarSlots, Models.HotbarSlot): a click puts what a slot holds on the selected clips, else the video clip at
-// the playhead (MainViewModel.ApplyHotbarSlot, one step of Undo); a right-click chooses what it holds: any Effect, Transition, Game
-// Preset or one-click tool, saved at once. Since 5.3-Stage2 the slots are in the Quick FX button's flyout (the user's de-clutter: one
-// button on the row instead of five). Hidden with Settings > Timeline's box (ShowCreatorHotbar) or its own menu. The row's Undo and
-// Redo buttons follow their setting here too (ShowTimelineUndoRedo, off by default).
+// ----- Creator Hotbar (Quick FX) on the Timeline tool row -----
+// Five slots (AppSettings.HotbarSlots, Models.HotbarSlot): click applies the slot to the selected clips, else the video clip at the
+// playhead (MainViewModel.ApplyHotbarSlot, one Undo step); right-click assigns any Effect, Transition, Game Preset or one-click tool,
+// saved immediately. Slots live in the Quick FX button's flyout (one button on the row instead of five). Hidden via Settings >
+// Timeline (ShowCreatorHotbar) or its own menu. The row's Undo/Redo buttons are also applied here (ShowTimelineUndoRedo, off by
+// default).
 public partial class MainWindow
 {
-    /// <summary>The hotbar's slots as the settings have them now.</summary>
+    /// <summary>Current hotbar slots from settings.</summary>
     private static IReadOnlyList<HotbarSlot> HotbarSlots => HotbarSlot.FromSettings(AppSettings.Current.HotbarSlots);
 
     /// <summary>
-    /// The row of tools as the settings say (at start-up, before the first frame; after Settings and after a change): the Quick FX
-    /// button and its slots' names, or the button hidden; and the Undo and Redo buttons shown or not.
+    /// Applies tool-row settings (at start-up before Frame 1, after Settings, and after changes): Quick FX button and slot labels, or
+    /// hidden; Undo/Redo buttons shown or hidden.
     /// </summary>
     private void ShowHotbar()
     {
@@ -28,7 +28,7 @@ public partial class MainWindow
         UnifiedTimeline.ShowUndoRedo(AppSettings.Current.ShowTimelineUndoRedo);
     }
 
-    /// <summary>A slot pressed: what it holds goes on the selected clips (the clips selected together, else the one), or the video clip at the playhead.</summary>
+    /// <summary>Applies slot <paramref name="index"/> to the group selection, else the single selection, else the video clip at the playhead.</summary>
     private void ApplyHotbar(int index)
     {
         if (index < 0 || index >= HotbarSlot.Count)
@@ -47,8 +47,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// What a slot holds, chosen at that slot: every Effect (by its kind), Transition, Game Preset (the Styles folder read again) and
-    /// one-click tool, the one it holds ticked; then putting it back to its default, every slot back, or the hotbar hidden.
+    /// Slot assignment menu: every Effect (by category), Transition, Game Preset (Styles folder rescanned) and one-click tool, with the
+    /// current choice checked; plus Reset This Slot, Reset Quick FX Slots and Hide Quick FX Button.
     /// </summary>
     private void OpenHotbarSlotMenu(int index, FrameworkElement at)
     {
@@ -112,12 +112,12 @@ public partial class MainWindow
         menu.Items.Add(MenuAction("Hide Quick FX Button", () => SaveHotbar(s => s.ShowCreatorHotbar = false),
             "Takes the Quick FX button off the Timeline's row of tools. Settings > Timeline, or Timeline Settings (the Timeline's tab menu, or the gear on its row of tools), brings it back."));
 
-        // The slot's flyout stays open while this menu is (the pointer crossing into the menu leaves it).
+        // Keep the Quick FX flyout open while this menu is open (moving into the menu leaves the flyout).
         UnifiedTimeline.HoldQuickFxFor(menu);
         menu.IsOpen = true;
     }
 
-    /// <summary>One slot given something else to hold, saved at once.</summary>
+    /// <summary>Assigns a slot and saves immediately.</summary>
     private void SetHotbarSlot(int index, HotbarSlot slot)
     {
         var kept = HotbarSlots.Select(s => s.ToString()).ToList();

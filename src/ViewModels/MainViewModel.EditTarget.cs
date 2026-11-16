@@ -3,24 +3,23 @@ using HandPegApp.Models.Effects;
 namespace HandPegApp.ViewModels;
 
 /// <summary>
-/// What the editing panes work on (the Effects pane and the Color Studio): a clip (or the blur fill's row), the Sequence Output, or
-/// nothing. The view model owns it, so neither pane reaches into the other: the Effects pane applies its selection rules (a sound clip
-/// selected, the blur fill row, the key layer) and publishes the result (<see cref="SetEditTarget"/>); the Color Studio follows
-/// <see cref="EditTargetChanged"/>; either switches the Sequence Output through <see cref="EditSequenceOutput"/>.
+/// Shared edit target for the Effects pane and Color Studio: a clip (or blur fill row), the Sequence Output, or none. VM-owned so the
+/// panes stay decoupled: the Effects pane applies selection rules (audio clip, blur fill row, key layer) and publishes via
+/// <see cref="SetEditTarget"/>; Color Studio follows <see cref="EditTargetChanged"/>; either toggles <see cref="EditSequenceOutput"/>.
 /// </summary>
 public partial class MainViewModel
 {
     private readonly EditTargetState _editTarget = new();
 
-    /// <summary>Raised after <see cref="EditTarget"/> or <see cref="EditSequenceOutput"/> changed.</summary>
+    /// <summary>Raised after <see cref="EditTarget"/> or <see cref="EditSequenceOutput"/> changes.</summary>
     public event Action? EditTargetChanged;
 
-    /// <summary>What the editing panes work on now.</summary>
+    /// <summary>Current edit target.</summary>
     public ColorGradeTarget EditTarget => _editTarget.Target;
 
     /// <summary>
-    /// Whether the panes edit the Sequence Output rather than a clip. Set from either pane's toggle; the target becomes the Sequence Output
-    /// at once (or nothing, switched off), and the Effects pane then publishes the clip it works on.
+    /// Panes target the Sequence Output instead of a clip. Toggled from either pane; switches the target immediately (to none when
+    /// off), after which the Effects pane republishes its clip.
     /// </summary>
     public bool EditSequenceOutput
     {
@@ -35,7 +34,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The Effects pane's target, published as it retargets (nothing raised when it is the same).</summary>
+    /// <summary>Publishes the Effects pane's target on retarget (no event when unchanged).</summary>
     internal void SetEditTarget(ColorGradeTarget target)
     {
         if (_editTarget.Target == target)

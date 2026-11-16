@@ -5,9 +5,9 @@
         Title="Caption Style Settings" Width="540" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-    <!-- Edits a copy of the style; nothing changes unless OK is pressed. -->
+    <!-- Edits a copy of the style; applied only on OK. -->
     <StackPanel Margin="16">
-        <!-- A sample line drawn in the style as it is being edited -->
+        <!-- Live sample line in the current style -->
         <local:CaptionPreview x:Name="Preview" Height="110" Margin="0,0,0,6" AutomationProperties.Name="Caption Preview" />
         <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12"
                    Text="A preview of the style, at the moment one word is being spoken. Sizes are for a frame 1080 pixels on its shorter side and scale with the output and with the caption box." />
@@ -32,7 +32,7 @@
                     <Setter Property="VerticalAlignment" Value="Center" />
                     <Setter Property="Margin" Value="0,0,14,0" />
                 </Style>
-                <!-- A button filled with the colour it chooses; pressing it opens the Windows colour picker -->
+                <!-- Colour swatch button; opens the Windows colour picker -->
                 <Style x:Key="ColorButton" TargetType="Button">
                     <Setter Property="Width" Value="150" />
                     <Setter Property="Height" Value="26" />

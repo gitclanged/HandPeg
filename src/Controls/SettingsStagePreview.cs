@@ -7,10 +7,10 @@ using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
-/// <summary>Which picture the Settings window's live preview stage draws for the option being looked at (4.3-0B).</summary>
+/// <summary>Preview kind drawn on the Settings window's live stage for the focused option.</summary>
 public enum StageKind
 {
-    /// <summary>No picture: the description says it all.</summary>
+    /// <summary>No preview; the description suffices.</summary>
     None,
     Appearance,
     Timeline,
@@ -18,22 +18,20 @@ public enum StageKind
     Hardware,
     Captions,
 
-    /// <summary>The keys of the main window (4.4): the page draws its own keyboard on the stage (StageKeybindsHost), so no picture here.</summary>
+    /// <summary>Keybinds: the page draws its own keyboard on the stage (StageKeybindsHost); nothing drawn here.</summary>
     Keybinds,
 
     /// <summary>
-    /// A live miniature of a workspace layout in a theme (5.5A, the first-run window: the layout card and the theme swatch under the
-    /// pointer, else the chosen ones): <see cref="SettingsStagePreview.Workspace"/>.
+    /// Live workspace-layout miniature in a theme (first-run window: hovered layout card and theme swatch, else the chosen ones);
+    /// see <see cref="SettingsStagePreview.Workspace"/>.
     /// </summary>
     Workspace,
 }
 
 /// <summary>
-/// The picture on the Settings window's live preview stage (Pass 4.3-0B): what the options of a category do, drawn from
-/// the copy of the settings being edited, so that it follows every change before Save. A miniature of the chosen theme, a
-/// stretch of timeline, the caches' gauges, the processors and graphics cards at work, a speech model's trade-off. Above
-/// it (4.4), the part of the editor the option is about, live, as it is now (ShowMirror). All of it is drawn here
-/// (OnRender): no child elements.
+/// Settings live preview stage: illustrates a category's options from the edited settings copy, updating before Save (theme miniature,
+/// timeline excerpt, cache gauges, CPU/GPU usage, speech model trade-off). Above it, a live mirror of the relevant editor region
+/// (ShowMirror). Entirely drawn in OnRender; no child elements.
 /// </summary>
 public sealed partial class SettingsStagePreview : FrameworkElement
 {
@@ -41,7 +39,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
 
     public SettingsStagePreview()
     {
-        // The editor's picture is kept between its changes, and drawn again only once the stage's scale has halved or doubled.
+        // Cache the mirror bitmap; re-rasterize only when the scale halves or doubles.
         RenderOptions.SetCachingHint(_mirror, CachingHint.Cache);
         RenderOptions.SetCacheInvalidationThresholdMinimum(_mirror, 0.5);
         RenderOptions.SetCacheInvalidationThresholdMaximum(_mirror, 2);
@@ -49,19 +47,19 @@ public sealed partial class SettingsStagePreview : FrameworkElement
 
     public StageKind Kind { get; private set; }
 
-    // Whether the kind on show has a picture of its own (the keys' page draws its keyboard itself).
+    // True when the current kind draws a picture here (Keybinds draws its own keyboard).
     private bool HasPicture => Kind is not (StageKind.None or StageKind.Keybinds);
 
-    /// <summary>Where a dropped clip goes, as the Timeline tab's box says (the settings take it only on Save).</summary>
+    /// <summary>Unsaved Timeline tab choice for where dropped clips go (settings apply it only on Save).</summary>
     public bool DroppedClipsJoin { get; set; }
 
-    /// <summary>What each cache holds now, in bytes, as last measured: the timeline's, the media browser's, the proxies'.</summary>
+    /// <summary>Last measured cache sizes in bytes: timeline, media browser, proxies.</summary>
     public (long Timeline, long Browser, long Proxies) CacheBytes { get; set; }
 
-    /// <summary>A theme to draw instead of the chosen one: the one under the pointer in the open Theme list.</summary>
+    /// <summary>Theme to preview instead of the chosen one (hovered item in the open Theme list).</summary>
     public string? ThemeOverride { get; set; }
 
-    /// <summary>Draws the picture of a kind from the settings being edited (read now and at every redraw).</summary>
+    /// <summary>Shows a preview kind for the edited settings (read on every redraw).</summary>
     public void Show(StageKind kind, AppSettings settings)
     {
         (Kind, _settings) = (kind, settings);
@@ -74,8 +72,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
 
     private const double CoreGap = 4;
 
-    // The labels' row ("Now in the editor", "After Save"), the gap between the editor and the picture, and the editor's
-    // least and greatest height on the stage.
+    // Label row height ("Now in the editor", "After Save"), mirror-to-picture gap, and the mirror's min/max height.
     private const double LabelRow = 18, PictureGap = 14, MirrorLeast = 90, MirrorMost = 300;
 
     protected override Size MeasureOverride(Size availableSize)
@@ -105,7 +102,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         if (size.Width < 60)
             return;
 
-        // The editor as it is now, then (labelled, when both are on show) the picture of what Save makes of it.
+        // Live mirror first, then (labelled "After Save" when both show) the post-Save preview.
         var top = 0.0;
         var (viewbox, drawn, scale) = MirrorLayout(size.Width);
         if (!drawn.IsEmpty)
@@ -144,11 +141,10 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             drawing.Pop();
     }
 
-    // ----- The editor, live (4.4): the part of the main window an option is about, as it is now -----
+    // ----- Live editor mirror: the main-window region an option affects -----
 
-    // The editor's picture. A VisualBrush cannot be frozen (a Visual is not a Freezable): it is the one brush here that is
-    // not, by necessity, and there is one for the life of the stage. It shows the part asked for in the part's own
-    // coordinates (Absolute: children reaching past the part, or turned, never shift it), and never lays out what it shows.
+    // Mirror brush. A VisualBrush cannot be frozen (Visual is not Freezable), so this is the one unfrozen brush, one per stage lifetime.
+    // Absolute viewbox in the source's coordinates (overhanging or rotated children never shift it); AutoLayoutContent off.
     private readonly VisualBrush _mirror = new()
     {
         Stretch = Stretch.Fill, ViewboxUnits = BrushMappingMode.Absolute, AutoLayoutContent = false, TileMode = TileMode.None,
@@ -158,13 +154,12 @@ public sealed partial class SettingsStagePreview : FrameworkElement
     private Rect _mirrorView = Rect.Empty, _mirrorVideoRect = Rect.Empty;
     private ImageSource? _mirrorVideo;
 
-    /// <summary>Raised when the part of the editor on show is hidden, shown or resized: the stage asks for it again.</summary>
+    /// <summary>Raised when the mirrored element is hidden, shown or resized, so the host can re-request it.</summary>
     public event Action? MirrorChanged;
 
     /// <summary>
-    /// Shows a part of the editor above the picture, live: the element, the part of it (in its own coordinates), and for
-    /// the player a still standing in for its video with where the video lies in it (the GPU preview draws the video in a
-    /// window of its own, which no brush sees). Null shows none, and lets go of the element shown before.
+    /// Mirrors <paramref name="view"/> (source coordinates) of <paramref name="source"/> above the preview. For the player, a still and its
+    /// rect stand in for the video (the GPU preview renders into its own HWND, invisible to brushes). Null clears and unhooks the source.
     /// </summary>
     public void ShowMirror(FrameworkElement? source, Rect view, ImageSource? video, Rect videoRect)
     {
@@ -208,9 +203,8 @@ public sealed partial class SettingsStagePreview : FrameworkElement
     private void MirrorSource_SizeChanged(object sender, SizeChangedEventArgs e) => MirrorChanged?.Invoke();
 
     /// <summary>
-    /// Where the editor's part goes on a stage this wide: as wide as the stage; a short part (a header, a bar) no less than
-    /// 90 px tall, or its own height when it is shorter (never enlarged for it), its left end only; a tall one no taller
-    /// than 300 px, narrower and centred. The part shown (in its own coordinates), where it is drawn, and its scale.
+    /// Mirror layout for a stage width: full width; short regions drawn at least 90 px tall (or native height if smaller, never upscaled
+    /// for that), cropped to their left part; tall regions capped at 300 px, narrower and centred. Returns viewbox, drawn rect and scale.
     /// </summary>
     private (Rect Viewbox, Rect Drawn, double Scale) MirrorLayout(double width)
     {
@@ -237,7 +231,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             _mirror.Viewbox = viewbox;
         drawing.DrawRoundedRectangle(_mirror, Line(BorderBrush, 1), drawn, 4, 4);
 
-        // The player's video: a still from the thumbnail sheet, or the stand-in landscape, fitted where the video lies.
+        // Player video area: a thumbnail-sheet still or placeholder landscape, fitted to the video rect.
         var video = _mirrorVideoRect;
         if (video.IsEmpty)
             return;
@@ -274,7 +268,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         drawing.Pop();
     }
 
-    // ----- Appearance: the chosen theme as a little workspace -----
+    // ----- Appearance: theme miniature workspace -----
 
     private void DrawAppearance(DrawingContext drawing, Size size)
     {
@@ -290,7 +284,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         var frame = new Rect(0.5, 0.5, w - 1, h - 1);
         drawing.DrawRoundedRectangle(Of("WindowBackgroundBrush"), Line(Of("ControlBorderBrush"), 1), frame, 6, 6);
 
-        // The title bar, its words and the three caption buttons.
+        // Title bar, title text and caption buttons.
         var title = Of("TitleBarBrush", "WindowBackgroundBrush");
         drawing.DrawRoundedRectangle(title, null, new Rect(1, 1, w - 2, 24), 6, 6);
         drawing.DrawRectangle(title, null, new Rect(1, 13, w - 2, 12));
@@ -303,7 +297,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         drawing.DrawLine(caption, new Point(w - 22, 9), new Point(w - 14, 17));
         drawing.DrawLine(caption, new Point(w - 22, 17), new Point(w - 14, 9));
 
-        // Tabs: the open one boxed in the panel's colour with its trace, the others inline.
+        // Tabs: active one in panel colour with its trace; inactive ones plain.
         var panel = Of("PanelBrush");
         var tabs = new[] { "Timeline", "Effects", "Export" };
         for (var i = 0; i < tabs.Length; i++)
@@ -322,14 +316,14 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             Text(drawing, tabs[i], tab.X + 10, tab.Y + 4, 11, i == 0 ? text : muted);
         }
 
-        // The panel, with a scrollbar as thick as the slider says, at full size.
+        // Panel with a scrollbar at the configured thickness (actual size).
         var thickness = Math.Clamp(_settings.ScrollbarThickness, 4, 16);
         var body = new Rect(10, 54, w - 20, h - 64);
         drawing.DrawRoundedRectangle(panel, Line(Of("ControlBorderBrush"), 1), body, controlRadius, controlRadius);
         var thumb = new Rect(body.Right - thickness - 3, body.Top + 8, thickness, Math.Max(body.Height * 0.42, 12));
         drawing.DrawRoundedRectangle(Of("ScrollThumbBrush", "MutedTextBrush"), null, thumb, thickness / 2, thickness / 2);
 
-        // A raised button (the accent's face, its bevel) and a plain one.
+        // Accent button (face and bevel) and a neutral button.
         var (x, y) = (body.Left + 12, body.Top + 12);
         var raised = new Rect(x, y, 78, 24);
         drawing.DrawRoundedRectangle(Of("ButtonFaceBrush", "AccentBrush"), Line(Of("ButtonBorderBrush", "AccentBrush"), 1), raised, controlRadius, controlRadius);
@@ -339,7 +333,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         drawing.DrawRoundedRectangle(Of("NeutralButtonBrush", "ControlHoverBrush"), Line(Of("NeutralButtonBorderBrush", "ControlBorderBrush"), 1), plain, controlRadius, controlRadius);
         Text(drawing, "Cancel", plain.Left, plain.Top + 4, 11, text, width: plain.Width, center: true);
 
-        // A ticked box with the focus's dotted rectangle round its words, and a sunken empty one.
+        // Checked box with dotted focus rect around its label, and an unchecked sunken box.
         y += 38;
         var ticked = new Rect(x, y, 14, 14);
         drawing.DrawRoundedRectangle(Of("CheckedBoxBrush", "AccentBrush"), Line(Of("CheckedBoxBorderBrush", "AccentBrush"), 1), ticked, 2, 2);
@@ -365,7 +359,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         drawing.DrawRoundedRectangle(Of("WellBrush"), Line(Of("WellBorderBrush", "ControlBorderBrush"), 1), well, 2, 2);
         Text(drawing, "Show waveforms", well.Right + 8, y - 1, 11, text);
 
-        // A list with its chosen row.
+        // List with a selected row.
         y += 26;
         var list = new Rect(x, y, Math.Clamp(body.Width - thickness - 36, 40, 220), Math.Max(body.Bottom - y - 10, 20));
         drawing.DrawRoundedRectangle(Of("WellBrush"), Line(Of("WellBorderBrush", "ControlBorderBrush"), 1), list, controlRadius, controlRadius);
@@ -378,7 +372,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         Text(drawing, string.Create(CultureInfo.InvariantCulture, $"{ThemeManager.DisplayName(theme)}   ·   scrollbars {thickness:0} px"), 2, h + 4, 11, MutedBrush);
     }
 
-    // ----- Timeline & Player: a stretch of timeline -----
+    // ----- Timeline & Player: timeline excerpt -----
 
     private void DrawTimeline(DrawingContext drawing, Size size)
     {
@@ -386,7 +380,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         var span = right - left;
         double At(double fraction) => left + span * fraction;
 
-        // The hover preview above the pointer, as large as its scale makes it.
+        // Hover preview above the pointer at the configured zoom.
         var zoom = _settings.HoverPreviewZoom;
         var (pw, ph) = (Math.Min(48 * zoom, span * 0.5), Math.Min(27 * zoom, 76));
         var pointer = At(0.3);
@@ -396,7 +390,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         drawing.DrawLine(Line(MutedBrush, 1), new Point(pointer, preview.Bottom), new Point(pointer, 92));
         Text(drawing, string.Create(CultureInfo.InvariantCulture, $"Hover preview ×{zoom:0.##}"), Math.Min(preview.Right + 8, right - 110), preview.Top, 11, MutedBrush);
 
-        // The ruler and its I-frames; the snap zone round the one nearest the playhead.
+        // Ruler with I-frame ticks; snap zone around the I-frame nearest the playhead.
         drawing.DrawRectangle(WellBrush, null, new Rect(left, 86, span, 12));
         var iframe = Line(MutedBrush, 1);
         for (var i = 0; i <= 8; i++)
@@ -418,12 +412,12 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         for (var i = 0; i <= 8; i++)
             drawing.DrawLine(faint, new Point(At(i / 8.0), lane1.Top), new Point(At(i / 8.0), lane2.Bottom));
 
-        // Clips, their corner fades and gain lines.
+        // Clips with corner fades and gain lines.
         DrawClip(drawing, new Rect(At(0.04), lane1.Top + 3, span * 0.46, lane1.Height - 6));
         DrawClip(drawing, new Rect(At(0.52), lane1.Top + 3, span * 0.4, lane1.Height - 6));
         DrawClip(drawing, new Rect(At(0.16), lane2.Top + 3, span * 0.28, lane2.Height - 6));
 
-        // Where a dropped clip goes: into the free stretch of the track under the pointer, or onto a new track.
+        // Drop target: free span of the track under the pointer, or a new track.
         var dashed = new Pen(TextBrush, 1) { DashStyle = new DashStyle([3, 2], 0) };
         dashed.Freeze();
         if (DroppedClipsJoin)
@@ -437,7 +431,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             Text(drawing, "dropped: a new track", lane3.Left + 6, lane3.Top + 4, 10, TextBrush);
         }
 
-        // The ripple: the later clips of every track move, or only of the edited one.
+        // Ripple arrows: all tracks, or only the edited track.
         var ripple = Line(AccentBrush, 1.5);
         foreach (var lane in _settings.RippleAllTracks ? new[] { lane1, lane2 } : [lane1])
         {
@@ -447,7 +441,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             drawing.DrawLine(ripple, new Point(x - 2, y + 4), new Point(x + 2, y));
         }
 
-        // The playhead, pulled onto the I-frame when snapping is on.
+        // Playhead, snapped to the I-frame when snapping is on.
         var playhead = snaps ? snapAt : At(0.6);
         drawing.DrawLine(Line(PlayheadBrush, 1.5), new Point(playhead, 84), new Point(playhead, lane2.Bottom));
 
@@ -463,7 +457,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
     {
         drawing.DrawRoundedRectangle(Tint(AccentBrush, 0.55), Line(AccentBrush, 1), clip, 3, 3);
 
-        // The fades: the curve from each top corner, the faded stretch darker.
+        // Fade curves from each top corner with darkened faded regions.
         var fade = Math.Min(clip.Width * 0.18, 26);
         var curve = new StreamGeometry();
         using (var context = curve.Open())
@@ -494,7 +488,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         drawing.DrawGeometry(null, Line(GainBrush, 1.2), line);
     }
 
-    // A frame's stand-in picture: a sun over two hills.
+    // Placeholder frame art: sun over two hills.
     private static void DrawLandscape(DrawingContext drawing, Rect frame)
     {
         var hills = new StreamGeometry();
@@ -511,7 +505,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         drawing.DrawEllipse(SunBrush, null, new Point(frame.Left + frame.Width * 0.78, frame.Top + frame.Height * 0.28), frame.Height * 0.11, frame.Height * 0.11);
     }
 
-    // ----- Preview & Cache: what the caches hold, and a proxy beside its original -----
+    // ----- Preview & Cache: cache gauges and proxy-vs-original comparison -----
 
     private void DrawCaches(DrawingContext drawing, Size size)
     {
@@ -522,7 +516,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         y = Gauge(drawing, "Media browser", browser, _settings.BrowserCacheMegabytes * (1L << 20), _settings.CacheBrowserPreviews, y, width);
         y = Gauge(drawing, "Proxies", proxies, (long)(_settings.ProxyCacheGigabytes * (1L << 30)), true, y, width);
 
-        // A 2160-line original beside a proxy of the chosen height, in proportion.
+        // 2160p original beside a proxy at the chosen height, to scale.
         y += 6;
         var tier = Math.Clamp(_settings.ProxyTier, 240, 2160);
         var tall = Math.Min(size.Height - y - 34, (width - 30) * 0.5 * 9 / 16);
@@ -557,7 +551,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         return y + 44;
     }
 
-    // ----- Export & Hardware: the processors and graphics cards at work -----
+    // ----- Export & Hardware: CPU reservation, background jobs and benchmark -----
 
     private static int CoreColumns => Environment.ProcessorCount <= 8 ? Environment.ProcessorCount : Environment.ProcessorCount <= 16 ? 8 : 16;
 
@@ -570,7 +564,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         var width = size.Width;
         var cores = Environment.ProcessorCount;
 
-        // The reserved processors are the first ones, as the tools' Job Object affinity leaves them out (JobObjects.ToolAffinity).
+        // Reserved cores are the lowest indices, matching the tools' Job Object affinity mask (JobObjects.ToolAffinity).
         var reserved = _settings.EffectiveReservedCores;
         var limited = reserved > 0 && cores <= 64 && cores - reserved >= 2;
         Text(drawing, string.Create(CultureInfo.InvariantCulture, $"{cores} logical processors"), 0, 0, 11, TextBrush, bold: true);
@@ -595,8 +589,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             : string.Create(CultureInfo.InvariantCulture, $"Auto, {WorkScheduler.LaneLimit(WorkLane.Background)}");
         Text(drawing, $"Background tools ({jobs} at once)", 146, y, 11, TextBrush);
 
-        // 5.6A: the four GPU roles are the stage's role cards above this picture (SettingsWindow's RoleCardsPanel: clickable, one home),
-        // no longer drawn here.
+        // GPU roles are shown by SettingsWindow's RoleCardsPanel above this stage (their single home), not drawn here.
         y += 24;
         var encoder = _settings.DefaultVideoEncoder.Length == 0 ? "the built-in default (Copy)" : _settings.DefaultVideoEncoder;
         Text(drawing, $"A new export encodes with {encoder}", 0, y, 11, MutedBrush, width: width);
@@ -605,19 +598,19 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             DrawBenchmark(drawing, y + 24, width);
     }
 
-    // ----- The hardware benchmark (5.0-0): each card's measured decoding, seeking, accuracy and transfer speeds -----
+    // ----- Hardware benchmark: per-adapter decode, seek, accuracy and transfer results -----
 
     private HardwareBenchmarkResult? _benchmark;
     private double? _benchmarkFraction;
     private string _benchmarkMessage = "";
     private bool _benchmarkStale;
 
-    // Heights of the benchmark's parts: its heading (with the progress track while it runs), a card's block, the cross-card line.
+    // Section heights: heading, progress track (while running), per-adapter block, cross-adapter block, error line.
     private const double BenchHeading = 22, BenchProgress = 10, BenchCard = 78, BenchCross = 40, BenchLine = 18;
 
     /// <summary>
-    /// The hardware benchmark's results drawn under the GPU roles: the last saved, or (with <paramref name="fraction"/>,
-    /// while it runs) what it has measured so far and how far it has got. A null result and fraction draw nothing.
+    /// Shows benchmark results: the last saved, or partial results plus progress while running (<paramref name="fraction"/>). Null result
+    /// and fraction hide the section.
     /// </summary>
     public void ShowBenchmark(HardwareBenchmarkResult? result, double? fraction, string message, bool stale)
     {
@@ -671,7 +664,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         if (result is null)
             return;
 
-        // Every bar of speed on one scale, so that cards compare at a glance; the processor's figure is measured once.
+        // All speed bars share one scale for cross-adapter comparison; the CPU figure is measured once.
         var software = result.Adapters.Count == 0 ? 0 : result.Adapters.Max(a => a.SoftwareDecodeFps);
         var softwareSeek = result.Adapters.Count == 0 ? 0 : result.Adapters.Max(a => a.SoftwareSeekMs);
         var fastest = Math.Max(software, result.Adapters.Count == 0 ? 0 : result.Adapters.Max(a => a.HardwareDecodeFps));
@@ -683,11 +676,11 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             var memory = card.DedicatedVideoMemoryMb > 0 ? string.Create(CultureInfo.InvariantCulture, $"{card.DedicatedVideoMemoryMb / 1024.0:0.#} GB · ") : "";
             Text(drawing, memory + codecs, width, y, 10, MutedBrush, alignRight: true);
             Meter(drawing, "Hardware", card.HardwareDecodeFps, fastest, Fps(card.HardwareDecodeFps), y + 18, width, AccentBrush);
-            // 5.5A: the first start's quick check never decodes on the processor, so it has no processor figure to draw.
+            // Quick (first-run) benchmarks skip CPU decode, so there is no processor figure.
             if (result.Kind != HardwareBenchmarkResult.KindQuick)
                 Meter(drawing, "Processor", software, fastest, Fps(software), y + 34, width, processorBar);
 
-            // 5.6A: the compositor's all-slots frame first, where the card was timed.
+            // Compositor all-slots frame time first, when measured.
             var line = card.Note.Length > 0 ? card.Note : string.Join("  ·  ", new[]
             {
                 card.CompositorMs > 0 ? string.Create(CultureInfo.InvariantCulture, $"Compositor {card.CompositorMs:0.00} ms") : "",
@@ -713,7 +706,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
             Text(drawing, $"Stopped short: {result.Error}", 0, y, 10, WarningBrush, width: width);
     }
 
-    // A labelled bar with its figure at the right: the share of the greatest figure it is drawn against.
+    // Labelled bar scaled to value / greatest, with the figure right-aligned.
     private void Meter(DrawingContext drawing, string name, double value, double greatest, string figure, double y, double width, Brush brush)
     {
         const double labelWidth = 66, figureWidth = 84;
@@ -729,7 +722,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
 
     private static string MegabytesPerSecond(double rate) => string.Create(CultureInfo.InvariantCulture, $"{rate:#,0} MB/s");
 
-    // ----- Auto-Captions: the speech model's speed against its accuracy -----
+    // ----- Auto-Captions: speech model speed vs accuracy -----
 
     private void DrawSpeechModel(DrawingContext drawing, Size size)
     {
@@ -751,7 +744,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         drawing.DrawRoundedRectangle(AccentBrush, null, new Rect(track.Left, track.Top, Math.Max(track.Width * share, 10), track.Height), 5, 5);
     }
 
-    // Smaller models are faster and make more mistakes; the turbo large model is about the medium one's speed; an English-only model is a little better at English.
+    // Heuristic: smaller = faster, less accurate; large-turbo ~ medium speed; .en models get +0.05 accuracy for English.
     private static (double Speed, double Accuracy) TradeOff(string model)
     {
         var name = model.ToLowerInvariant();
@@ -774,7 +767,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
 
     private Brush WarningBrush => Resource("WarningTextBrush", Brushes.OrangeRed);
 
-    // A theme brush as it is now, frozen: the pens drawn with it are frozen, and freezing one must never freeze the theme's own brush.
+    // Frozen snapshot of a theme brush (GetCurrentValueAsFrozen), so freezing pens never freezes the live theme brush.
     private Brush Resource(string key, Brush fallback) => TryFindResource(key) is Brush brush ? (Brush)brush.GetCurrentValueAsFrozen() : fallback;
 
     private static readonly Brush StageBlack = Frozen(Color.FromRgb(0x10, 0x12, 0x16));
@@ -784,7 +777,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
     private static readonly Brush GainBrush = Frozen(Color.FromRgb(0xF2, 0xC1, 0x4E));
     private static readonly Brush FadeShade = Frozen(Color.FromArgb(0x70, 0x00, 0x00, 0x00));
 
-    // A brush's colour at a share of its opacity (a solid one; any other comes back as it was).
+    // Solid brush with alpha scaled by opacity; non-solid brushes are returned unchanged.
     private static Brush Tint(Brush brush, double opacity) => brush is SolidColorBrush { Color: var color }
         ? Frozen(Color.FromArgb((byte)(color.A * opacity), color.R, color.G, color.B))
         : brush;
@@ -796,7 +789,7 @@ public sealed partial class SettingsStagePreview : FrameworkElement
         return pen;
     }
 
-    /// <summary>Writes a line of text; returns how wide it is. Given a width, it is trimmed to it (or centred in it).</summary>
+    /// <summary>Draws one line of text and returns its width; with a width, trims (or centres) within it.</summary>
     private double Text(DrawingContext drawing, string text, double x, double y, double size, Brush brush,
         bool bold = false, double width = 0, bool center = false, bool alignRight = false)
     {

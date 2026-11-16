@@ -4,30 +4,26 @@ using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.Services;
 
-/// <summary>A colour in Ottosson's OKLab (5.6.0): perceptual lightness L (0 black, 1 white) and the two opponent axes a, b.</summary>
+/// <summary>Ottosson OKLab colour: perceptual lightness L (0-1) and opponent axes a, b.</summary>
 public readonly record struct OkLab(double L, double A, double B);
 
 /// <summary>
-/// What Color Match solved (5.6.0): the card's new values, the distance left between the target as they grade it and the reference
-/// (OKLab's dE), the target's colour before the card's grade (the inverse of the grade it was sampled under), whether that distance is
-/// within <see cref="ColorMatch.Tolerance"/>, and the solver's iterations.
+/// Color Match result: new card values, residual OKLab dE to the reference, the ungraded target colour, whether dE is within
+/// <see cref="ColorMatch.Tolerance"/>, and iteration count.
 /// </summary>
 public readonly record struct ColorMatchSolution(ColorGradeValues Values, double DeltaE, (double R, double G, double B) Ungraded, bool Converged, int Iterations);
 
 /// <summary>
-/// Color Match's maths (5.6.0), pure: OKLab, the bilateral mean of a patch (one picked colour that a stray pixel or the other side of
-/// an edge never pulls), and the solver that makes the Color Grade card turn the target's colour into the reference's, against the
-/// card's own model (<see cref="ColorGradeMath.Apply"/>: the very maths its shader follows). Colours are display-referred sRGB, 0..1
-/// per channel, as the compositor's frames and the screen are (an HDR project's or an HDR desktop's samples are their SDR-mapped 8-bit
-/// pictures). Order: the target is first ungraded (the card's current grade numerically inverted: the frame was read with it applied),
-/// then exposure is solved for the lightness, then exposure, temperature and tint together for the colour, and what is left (a hue
-/// those cannot reach, a limit met) goes to the wheel of the target's tone zone (Lift for shadows, Gamma for midtones, Gain for
-/// highlights). Each stage is a damped Gauss-Newton (Levenberg-Marquardt) of at most <see cref="MaxIterations"/> steps, checked with
-/// the forward model.
+/// Pure Color Match math: OKLab conversion, robust bilateral patch sampling (outlier- and edge-resistant), and a solver fitting Color
+/// Grade values that map the target to the reference using the card's own model (<see cref="ColorGradeMath.Apply"/>, identical to the
+/// shader). Colours are display-referred sRGB 0..1 (HDR sources are their SDR-mapped 8-bit frames).
+/// Stages: ungrade the target (numerically invert the current grade), solve exposure for lightness, then exposure + temperature + tint
+/// for colour, then assign the remainder to the target's tone-zone wheel (Lift/Gamma/Gain). Each stage is Levenberg-Marquardt with at
+/// most <see cref="MaxIterations"/> steps, verified with the forward model.
 /// </summary>
 public static class ColorMatch
 {
-    /// <summary>The patch: (2 radius + 1) squared pixels about the point; the bilateral weights' spreads; the cross-edge cut (OKLab dE).</summary>
+    /// <summary>Patch size ((2r + 1)^2 px), bilateral spatial/range sigmas, and the edge-rejection threshold (OKLab dE).</summary>
     public const int PatchRadius = 7;
 
     public const double SpatialSigma = 4, RangeSigma = 0.05, EdgeReject = 0.12;
@@ -38,7 +34,7 @@ public static class ColorMatch
     /// <summary>The most steps each stage of the solver takes.</summary>
     public const int MaxIterations = 20;
 
-    // sRGB's 256 levels in linear light, made the first time a patch is read (the screen eyedropper reads one 60 times a second).
+    // Lazy sRGB-to-linear LUT for 256 levels (the screen eyedropper samples at 60 Hz).
     private static double[]? _linear;
 
     private static double[] Linear => _linear ??= [.. Enumerable.Range(0, 256).Select(i => ColorGradeMath.SrgbToLinear(i / 255.0))];
@@ -91,17 +87,16 @@ public static class ColorMatch
     }
 
     /// <summary>
-    /// The colour at a point of a BGRA8 frame (its alpha never read), as one pick: the bilateral mean of the patch about it in OKLab (each
-    /// pixel weighted by its distance from the point and by how far its colour is from the point's own: the median of the 3 x 3 about the
-    /// point), any pixel further than <see cref="EdgeReject"/> from the point's colour left out altogether (the other side of an edge). The
-    /// patch is cut at the frame's edges. Null for an empty frame or a point outside it. Allocates nothing.
+    /// Robust colour pick from a BGRA8 frame (alpha ignored): OKLab bilateral mean of the patch, weighted by spatial distance and by colour
+    /// distance from the 3 x 3 median; pixels beyond <see cref="EdgeReject"/> are excluded. Patch clipped to frame bounds. Null for an
+    /// empty frame or out-of-bounds point. Allocation-free.
     /// </summary>
     public static (double R, double G, double B)? BilateralMean(ReadOnlySpan<byte> bgra, int width, int height, int x, int y, int radius = PatchRadius)
     {
         if (width <= 0 || height <= 0 || bgra.Length < width * height * 4 || x < 0 || y < 0 || x >= width || y >= height)
             return null;
 
-        // The point's own colour: the median of the 3 x 3 about it, channel by channel (a single stray pixel at the point is not it).
+        // Reference colour: per-channel 3 x 3 median (rejects a single stray pixel).
         Span<double> ls = stackalloc double[9], as_ = stackalloc double[9], bs = stackalloc double[9];
         var n = 0;
         for (var dy = -1; dy <= 1; dy++)
@@ -144,8 +139,8 @@ public static class ColorMatch
     }
 
     /// <summary>
-    /// A colour through the card's whole model (5.6.0): its parametric grade (<see cref="ColorGradeMath.Apply"/>), then its curves
-    /// when it has any (<see cref="ColorCurveStage"/>), as PSColorStudio runs them. A LUT mixed in is not modelled: Color Match refuses it.
+    /// Forward model: parametric grade (<see cref="ColorGradeMath.Apply"/>) then curves (<see cref="ColorCurveStage"/>), as PSColorStudio.
+    /// LUTs are not modelled (Color Match refuses them).
     /// </summary>
     public static (double R, double G, double B) Graded((double R, double G, double B) ungraded, in ColorGradeValues values, ColorCurveStage? curves = null)
     {
@@ -154,10 +149,8 @@ public static class ColorMatch
     }
 
     /// <summary>
-    /// The colour a graded colour was before the card's grade: the card's model (<see cref="Graded"/>: <see cref="ColorGradeMath.Apply"/>,
-    /// then its <paramref name="curves"/> when given) inverted numerically (Gauss-Newton from the graded colour itself, at most
-    /// <see cref="MaxIterations"/> steps, kept within 0..1). Where the grade clipped, one of the colours it came from. A neutral grade with
-    /// no curves gives the colour back as it is.
+    /// Numerically inverts <see cref="Graded"/> (grade plus optional <paramref name="curves"/>) by Gauss-Newton from the graded colour (max
+    /// <see cref="MaxIterations"/>, clamped 0..1). Clipped values return one valid preimage; a neutral grade returns the input.
     /// </summary>
     public static (double R, double G, double B) Ungrade((double R, double G, double B) graded, in ColorGradeValues current, ColorCurveStage? curves = null) =>
         Ungrade(graded, current, curves, out _);
@@ -181,9 +174,8 @@ public static class ColorMatch
     }
 
     /// <summary>
-    /// The card's values that turn the <paramref name="target"/> (as sampled, under <paramref name="current"/> and its
-    /// <paramref name="curves"/>) into the <paramref name="reference"/>: the target ungraded (<see cref="Ungrade"/>), then
-    /// <see cref="SolveFrom"/>.
+    /// Solves card values mapping the sampled <paramref name="target"/> (under <paramref name="current"/> and <paramref name="curves"/>) to
+    /// <paramref name="reference"/>: <see cref="Ungrade"/> then <see cref="SolveFrom"/>.
     /// </summary>
     public static ColorMatchSolution Solve((double R, double G, double B) target, (double R, double G, double B) reference, in ColorGradeValues current, ColorCurveStage? curves = null)
     {
@@ -193,12 +185,10 @@ public static class ColorMatch
     }
 
     /// <summary>
-    /// The card's values that turn the target's colour before the card (<paramref name="ungraded"/>: worked out once, under the grade its
-    /// frame was read with; 5.6.0) into the <paramref name="reference"/>, from the card's <paramref name="current"/> values, its
-    /// <paramref name="curves"/> kept: exposure, then exposure with temperature and tint, then (what is left) the wheel of its tone zone;
-    /// every other value of the card kept. A white balance driven to its limit to reach the colour (a whole-picture cast for one shadow or
-    /// highlight) is weighed against the tone zone's wheel alone after the exposure, which is kept when it matches. Checked with the
-    /// forward model, curves and all: <see cref="ColorMatchSolution.DeltaE"/>.
+    /// Solves from the <paramref name="ungraded"/> target to <paramref name="reference"/> starting at <paramref name="current"/> (curves kept):
+    /// exposure, then exposure + temperature + tint, then the tone-zone wheel; other values unchanged. A white balance pinned at its limit is
+    /// compared against a wheel-only solution after exposure and replaced when that matches. Verified with the full forward model
+    /// (<see cref="ColorMatchSolution.DeltaE"/>).
     /// </summary>
     public static ColorMatchSolution SolveFrom((double R, double G, double B) ungraded, (double R, double G, double B) reference, in ColorGradeValues current, ColorCurveStage? curves = null)
     {
@@ -226,7 +216,7 @@ public static class ColorMatch
             return start with { Exposure = q[0] };
         }
 
-        // 2. Exposure, temperature and tint together, for the colour (temperature and tint in hundredths, -1..1, so the steps compare).
+        // 2. Joint exposure/temperature/tint fit (temperature and tint scaled to -1..1 for comparable step sizes).
         ColorGradeValues Balance(ColorGradeValues start)
         {
             if (Distance(start) <= StopAt)
@@ -236,8 +226,7 @@ public static class ColorMatch
             return start with { Exposure = q[0], Temperature = q[1] * 100, Tint = q[2] * 100 };
         }
 
-        // 3. What is left, to the wheel of the target's tone zone (its luma before the grade): Lift, Gamma or Gain, red, green and blue;
-        // kept only when it brings the colour closer (a wheel that cannot help changes nothing).
+        // 3. Residual to the tone-zone wheel (by ungraded luma): Lift, Gamma or Gain RGB; kept only if it reduces dE.
         var luma = ColorGradeMath.LumaR * ungraded.R + ColorGradeMath.LumaG * ungraded.G + ColorGradeMath.LumaB * ungraded.B;
         var zone = luma < 1 / 3.0 ? 0 : luma > 2 / 3.0 ? 2 : 1;
         ColorGradeValues Wheel(ColorGradeValues start)
@@ -277,29 +266,26 @@ public static class ColorMatch
         return new ColorMatchSolution(values, left, ungraded, left <= Tolerance, iterations);
     }
 
-    // ----- What Color Match refuses (5.6.0), pure: the goldens check it -----
+    // ----- Refusal rules (pure, golden-tested) -----
 
     /// <summary>
-    /// Why a target's Color Grade card cannot be matched now (null: it can): a LUT mixed in (no model of it here: a match would be checked
-    /// against a picture the LUT then changes) or a keyframed number (the frame was drawn with its keys; a match would write the static
-    /// values behind them).
+    /// Reason the card cannot be matched (null if it can): a mixed-in LUT (not modelled) or a keyframed value (a match would write static
+    /// values hidden by the keys).
     /// </summary>
     public static string? CardRefusal(EffectInstance? card) =>
         card is null ? null : ColorGradeMath.LutMixedIn(card) ? "LUT blocks match" : ColorGradeMath.IsKeyframed(card) ? "Grade is keyframed" : null;
 
     /// <summary>
-    /// Why the target's grade is not drawn now (5.6.0; null: it is): its card switched off, or its stack bypassed (the clip's
-    /// Bypass All, or the Sequence Output's), as the plan's Look and LookCards skip them. The frame then has no grade: a pick would be
-    /// ungraded with values it never had, and a match would write into a card (one made, when there is none) that nothing draws.
-    /// Allocates nothing (Refusal asks on every move while picking).
+    /// Reason the grade is not rendered (null if it is): card disabled or stack bypassed (clip or Sequence Output Bypass All), matching the
+    /// plan's Look/LookCards skips; picking would ungrade with wrong values and matching would write into an inactive card. Allocation-free
+    /// (called on every pick move).
     /// </summary>
     public static string? DrawnRefusal(EffectInstance? card, bool bypassed) =>
         bypassed || card is { Enabled: false } ? "Grade is off" : null;
 
     /// <summary>
-    /// Whether a Color Grade card's curves are drawn (5.6.0): a layer has one curve table, which the plan's LookCards gives to the
-    /// first card that asks for it, so an earlier enabled Curves card that changes the picture takes it and the grade is drawn without its
-    /// curves (PSColorStudio skips them). An identity or switched-off Curves card takes none, and one below the grade comes too late.
+    /// True when the grade's curves are rendered: a layer has one curve table, assigned by LookCards to the first requesting card, so an
+    /// earlier active non-identity Curves card takes it (PSColorStudio then skips the grade's curves). Identity, disabled or later Curves cards do not.
     /// </summary>
     public static bool OwnsCurveTable(IList<EffectInstance> stack, EffectInstance card)
     {
@@ -317,8 +303,7 @@ public static class ColorMatch
     }
 
     /// <summary>
-    /// Whether a clip (or the blur fill) is on screen at a moment of the Sequence, in seconds: the blur fill always; a clip shown, not
-    /// deleted, from its start up to its end (a Duration of 0 runs to the end).
+    /// True when a clip (or blur fill, always) is visible at a Sequence time: shown, not binned, within [start, end) (Duration 0 runs to the end).
     /// </summary>
     public static bool ShownAt(Layer layer, double seconds) =>
         layer.IsBackground || !layer.IsHidden && !layer.IsDeleted && seconds >= layer.StartTime - 0.0005 && (layer.Duration <= 0 || seconds < layer.StartTime + layer.Duration);
@@ -326,9 +311,8 @@ public static class ColorMatch
     private delegate (double, double, double) ResidualOf(ReadOnlySpan<double> parameters);
 
     /// <summary>
-    /// A damped Gauss-Newton fit (Levenberg-Marquardt) of up to three parameters, each kept within its bounds, against a residual of three:
-    /// finite-difference Jacobian, at most <see cref="MaxIterations"/> steps, stopping once the squared residual is under
-    /// <paramref name="stop"/>. Returns the steps taken; the parameters hold the best found.
+    /// Bounded Levenberg-Marquardt for up to three parameters against a 3-component residual: finite-difference Jacobian, max
+    /// <see cref="MaxIterations"/> steps, stops when squared residual &lt; <paramref name="stop"/>. Returns steps taken; parameters hold the best fit.
     /// </summary>
     private static int Fit(Span<double> q, ReadOnlySpan<double> low, ReadOnlySpan<double> high, ResidualOf residual, double stop)
     {
@@ -444,9 +428,8 @@ public static class ColorMatch
 }
 
 /// <summary>
-/// The Color Grade card's curves as Color Match models them (5.6.0): what PSColorStudio runs after the parametric grade, each
-/// channel through its own curve then the master, looked up in the very table the plan bakes (<see cref="GpuColorTables.ColorCurves"/>:
-/// 256 entries, linear between them, as the shader samples it). Made once a match; nothing allocated per lookup.
+/// Curve stage model matching PSColorStudio after the parametric grade: per-channel curve then master, sampled from the baked
+/// <see cref="GpuColorTables.ColorCurves"/> table (256 entries, linear interpolation). Built once per match; allocation-free lookups.
 /// </summary>
 public sealed class ColorCurveStage
 {
@@ -472,7 +455,7 @@ public sealed class ColorCurveStage
     public static ColorCurveStage? Of(EffectInstance card) =>
         Of(card.GetText(ColorGradeKeys.CurveMaster), card.GetText(ColorGradeKeys.CurveRed), card.GetText(ColorGradeKeys.CurveGreen), card.GetText(ColorGradeKeys.CurveBlue));
 
-    /// <summary>A colour (0..1) through the curves, as the shader looks it up (the colour clamped first, the result kept within 0..1).</summary>
+    /// <summary>Applies the curves like the shader (input clamped, output clamped to 0..1).</summary>
     public (double R, double G, double B) Apply((double R, double G, double B) c) => (At(c.R, 0), At(c.G, 1), At(c.B, 2));
 
     // The shader's lookup: texel coordinate v * 255, linear between the two entries about it (a clamped sampler).

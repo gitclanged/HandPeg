@@ -4,22 +4,19 @@ using System.Text.Unicode;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The small block of shared memory HandPeg keeps for its crash sentinel: a header (what the process is, how it is
-/// doing, and the native fault when there is one), the 64 breadcrumbs, and a handful of named context slots, all as
-/// fixed-size fields, so that the sentinel can read them from another process after this one has died, and so that the
-/// unhandled-exception filter can write the fault into it without allocating or taking a lock.
+/// Shared-memory block for the crash sentinel: header (process identity, state, native fault), 64 breadcrumbs and named context
+/// slots, all fixed-size so the sentinel can read them after this process dies and the exception filter can write without
+/// allocating or locking.
 ///
-/// The breadcrumbs and the context are kept here as the caller passed them: they are sanitized (<see
-/// cref="CrashSanitizer"/>) when a report is written, by whichever process writes it, so nothing that identifies the
-/// computer or the media reaches a file. The block only ever lives in memory, shared between HandPeg and its own
-/// sentinel; it is never written to disk.
+/// Breadcrumbs and context are stored raw and sanitized (<see cref="CrashSanitizer"/>) by whichever process writes the report, so
+/// nothing identifying reaches disk. The block is memory-only, shared with the sentinel, never persisted.
 ///
 /// Layout (format 1, little-endian, 20 KB):
 ///   0       header (256 bytes)
 ///   256     64 breadcrumbs of 192 bytes: sequence (8), seconds since start (8), category (24), detail (152)
 ///   12544   12 context slots of 256 bytes: key (24), value (232)
-///   15616   24 file names of 160 bytes (the files in use, kept out of the report: see CrashSanitizer.KeepOutFileName)
-/// Text fields are UTF-8, cut at a character boundary and ended by a zero byte.
+///   15616   24 file names of 160 bytes (in-use files redacted from reports; CrashSanitizer.KeepOutFileName)
+/// Text fields: UTF-8, truncated on a character boundary, zero-terminated.
 /// </summary>
 public static unsafe class CrashSharedMemory
 {
@@ -42,18 +39,18 @@ public static unsafe class CrashSharedMemory
     /// <summary>HandPeg is closing in the ordinary way: nothing to report, whatever the exit code.</summary>
     public const uint FlagCleanExit = 1;
 
-    /// <summary>HandPeg wrote a report of its own for the fault that is ending it: the sentinel must not write a second.</summary>
+    /// <summary>Set when HandPeg reported its own fatal fault, so the sentinel skips a duplicate.</summary>
     public const uint FlagManagedReportWritten = 2;
 
     /// <summary>The unhandled-exception filter recorded a fault (code, address, module base) in the header.</summary>
     public const uint FlagNativeFault = 4;
 
-    /// <summary>Set by the sentinel once it has the process open and has made sure it is the right one: from then on a death is seen.</summary>
+    /// <summary>Set by the sentinel after opening and verifying the process; deaths are detected from then on.</summary>
     public const uint FlagSentinelWatching = 8;
 
     /// <summary>
-    /// The user asked HandPeg to close and it is on its way out (the save prompt may be up): ended from outside now (the
-    /// taskbar, Task Manager), it is the user's doing, not a crash. A native fault recorded meanwhile is still reported.
+    /// Set once a close was requested (save prompt possibly showing): external termination (taskbar, Task Manager) is then not a crash.
+    /// Native faults recorded meanwhile are still reported.
     /// </summary>
     public const uint FlagUserClosing = 16;
 
@@ -63,7 +60,7 @@ public static unsafe class CrashSharedMemory
     private const int OffVersion = 4;
     private const int OffFlags = 8;
     private const int OffWatchedPid = 12;
-    private const int OffCreationTime = 16;     // The watched process's creation time (FILETIME), to tell a reused process id apart.
+    private const int OffCreationTime = 16;     // Process creation time (FILETIME), distinguishing reused PIDs.
     private const int OffProcessorCount = 24;
     private const int OffSelfContained = 28;
     private const int OffWorkingSet = 32;
@@ -109,9 +106,8 @@ public static unsafe class CrashSharedMemory
     private const int FileNameBase = ContextBase + ContextSlotCount * ContextSlotBytes;
     private const int FileNameBytes = 160;
 
-    // The layout must fit the block, and the header its 256 bytes: a negative constant cannot be a uint, so a field
-    // added later that runs off the end stops the build instead of the sentinel. (No static constructor: the filter
-    // calls into this class, and must not meet a check for one.)
+    // Compile-time layout checks: a negative constant cannot convert to uint, so an overflowing field breaks the build. (No static
+    // constructor: the exception filter calls this class and must not hit a type-initializer check.)
     private const uint SpareBytes = TotalBytes - (FileNameBase + FileNameCount * FileNameBytes);
     private const uint SpareHeaderBytes = HeaderBytes - (OffModuleName + ModuleNameBytes);
 
@@ -146,8 +142,8 @@ public static unsafe class CrashSharedMemory
     // ----- The native fault (the unhandled-exception filter: no allocation, no lock) -----
 
     /// <summary>
-    /// Records a fault from the EXCEPTION_RECORD Windows hands the filter (x64 layout: code at 0, address at 16, the
-    /// parameter count at 24, the parameters from 32). Only numbers are copied; the flag goes up last.
+    /// Records a fault from the filter's EXCEPTION_RECORD (x64: code @0, address @16, parameter count @24, parameters @32). Copies
+    /// numbers only; sets the flag last.
     /// </summary>
     public static void WriteFault(byte* p, byte* record, IntPtr moduleBase)
     {
@@ -165,7 +161,7 @@ public static unsafe class CrashSharedMemory
         SetFlag(p, FlagNativeFault);
     }
 
-    /// <summary>The sentinel's answer to a fault: the module the address is in, by file name, and the address's offset in it.</summary>
+    /// <summary>Sentinel-resolved fault module file name and address offset within it.</summary>
     public static void WriteModule(byte* p, string name, ulong moduleBase, ulong offset)
     {
         WriteUtf8(p, OffModuleName, ModuleNameBytes, name);
@@ -177,8 +173,8 @@ public static unsafe class CrashSharedMemory
     // ----- Writing a breadcrumb (HandPeg) -----
 
     /// <summary>
-    /// Puts breadcrumb number <paramref name="sequence"/> (1, 2, 3...) into its slot. The slot's sequence is cleared
-    /// first and set last, so a breadcrumb caught half-written by a crash is skipped rather than read scrambled.
+    /// Writes breadcrumb <paramref name="sequence"/> (1-based) to its slot, clearing the slot sequence first and setting it last so a
+    /// torn write is skipped.
     /// </summary>
     public static void WriteBreadcrumb(byte* p, long sequence, double at, string category, string? detail)
     {
@@ -232,7 +228,7 @@ public static unsafe class CrashSharedMemory
     public static string ModuleName(byte* p) => ReadUtf8(p, OffModuleName, ModuleNameBytes);
     public static string AppVersion(byte* p) => ReadUtf8(p, OffAppVersion, AppVersionBytes);
 
-    /// <summary>For an access violation: whether it was a read (0), a write (1) or an execution (8), and of what address; null otherwise.</summary>
+    /// <summary>Access violation kind (0 read, 1 write, 8 execute) and target address; null for other faults.</summary>
     public static (ulong Kind, ulong Address)? Access(byte* p) =>
         ReadU32(p, OffParameterCount) >= 2 ? (ReadU64(p, OffAccessKind), ReadU64(p, OffAccessAddress)) : null;
 
@@ -268,7 +264,7 @@ public static unsafe class CrashSharedMemory
         return context;
     }
 
-    /// <summary>The names of the files in use that HandPeg handed over, for the sentinel to keep out of its report.</summary>
+    /// <summary>In-use file names published for the sentinel to redact.</summary>
     public static List<string> FileNames(byte* p)
     {
         var names = new List<string>(FileNameCount);
@@ -289,8 +285,7 @@ public static unsafe class CrashSharedMemory
     private static ulong ReadU64(byte* p, int offset) => *(ulong*)(p + offset);
 
     /// <summary>
-    /// Encodes a string into a fixed field as UTF-8, as much of it as fits in whole characters with room for the zero
-    /// that ends it. One pass, no allocation: a breadcrumb costs a copy, however long its detail.
+    /// Encodes UTF-8 into a fixed field, truncating on a character boundary and leaving room for the terminator. Single pass, no allocation.
     /// </summary>
     public static void WriteUtf8(byte* p, int offset, int maxBytes, string value)
     {

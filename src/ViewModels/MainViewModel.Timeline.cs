@@ -8,11 +8,9 @@ using HandPegApp.Services;
 namespace HandPegApp.ViewModels;
 
 /// <summary>
-/// The timeline as Undo keeps it (4.3C): the document (every track and clip, the markers, the Sequence Output's effects),
-/// how each output audio track is made, the blur fill's switch for files opened, the recycle bin, the subtitles, the caption
-/// box, and (4.4) the sequence's own look: its colour grade, sharpening and blur fill. Nothing else, and no pictures. A Project
-/// Settings step alone (5.4A) also carries the frame as the view model holds it (<see cref="ProjectSettingsFrame"/>; null, and not
-/// written, in every other step).
+/// One undo state: the document, output audio tracks, blur-fill default, recycle bin, subtitles, caption box and the Sequence
+/// look (grade, sharpening, blur fill); no pictures. Project Settings steps also carry <see cref="ProjectSettingsFrame"/>
+/// (null and omitted otherwise).
 /// </summary>
 public sealed record TimelineSnapshot(
     Models.Timeline.TimelineDocument Document, List<AudioOutputEdit> Audio, bool BackgroundHidden = false, List<DeletedClip>? Bin = null,
@@ -21,8 +19,8 @@ public sealed record TimelineSnapshot(
     ProjectSettingsFrame? Frame = null) : System.Text.Json.Serialization.IJsonOnDeserialized
 {
     /// <summary>
-    /// Whether the step's bin's tethers are to be read as written (5.5.0, the user's Q6; as TimelineDocument.TethersMarked for its
-    /// document): written only when the bin holds a piece that lies where a reader of an older step finds a tether.
+    /// Whether the bin's tethers are read as written (like TimelineDocument.TethersMarked); emitted only when the bin holds a
+    /// piece an older reader would misread as a tether.
     /// </summary>
     [System.Text.Json.Serialization.JsonInclude]
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
@@ -45,19 +43,17 @@ public sealed record TimelineSnapshot(
 }
 
 /// <summary>
-/// An undo step as Undo keeps it, and (4.4-BugHunt) as a project carries it: a <see cref="TimelineSnapshot"/> as UTF-8 JSON
-/// (System.Text.Json's own way: the names as declared, enums as numbers), Brotli-compressed at quality 1. A project names
-/// this shape by its undo format (ProjectFile.CurrentUndoFormat): bump that when the snapshot changes shape incompatibly.
+/// Packed undo step (in memory and in project files): <see cref="TimelineSnapshot"/> as UTF-8 JSON (declared names, numeric
+/// enums), Brotli quality 1. Bump ProjectFile.CurrentUndoFormat on any incompatible snapshot change.
 /// </summary>
 public static class UndoSteps
 {
     /// <summary>
-    /// The most a step's JSON may come to as it is read: a timeline with an hour of captions word by word is a few megabytes,
-    /// and a damaged step (a project's, from the disk) could claim gigabytes.
+    /// Decompression cap: an hour of word-level captions is a few MB, while a corrupt step from disk could claim gigabytes.
     /// </summary>
     public const int MaximumBytes = 128 * 1024 * 1024;
 
-    /// <summary>A timeline packed as a step, its JSON written into the room given (used again; a new one when none).</summary>
+    /// <summary>Packs a snapshot, serializing into the reusable buffer given (a new one when null).</summary>
     public static byte[] Pack(TimelineSnapshot state, System.Buffers.ArrayBufferWriter<byte>? room = null)
     {
         room ??= new System.Buffers.ArrayBufferWriter<byte>(64 * 1024);
@@ -69,7 +65,7 @@ public static class UndoSteps
         var packed = System.Buffers.ArrayPool<byte>.Shared.Rent(System.IO.Compression.BrotliEncoder.GetMaxCompressedLength(text.Length));
         try
         {
-            // Quality 1: what CompressionLevel.Fastest is.
+            // Quality 1 = CompressionLevel.Fastest.
             return System.IO.Compression.BrotliEncoder.TryCompress(text, packed, out var written, quality: 1, window: 22)
                 ? packed.AsSpan(0, written).ToArray()
                 : throw new InvalidOperationException("An undo step could not be compressed.");
@@ -81,8 +77,8 @@ public static class UndoSteps
     }
 
     /// <summary>
-    /// A step read back into a timeline, its JSON written into the room given (used again; a new one when none). Throws for a
-    /// step that is not one (InvalidDataException for a damaged stream or one past <see cref="MaximumBytes"/>, JsonException).
+    /// Unpacks a step via the reusable buffer given (a new one when null). Throws InvalidDataException for a corrupt stream or
+    /// one past <see cref="MaximumBytes"/>, JsonException for invalid JSON.
     /// </summary>
     public static TimelineSnapshot? Unpack(byte[] state, System.Buffers.ArrayBufferWriter<byte>? room = null)
     {
@@ -104,21 +100,20 @@ public static class UndoSteps
 }
 
 /// <summary>
-/// How one output audio track is made (5.2-AuditB: an output choice, by its stream): what is done with it (copied, encoded again,
-/// or Ignore / Drop) and its title. Null in a state that did not record them, and then left as they are. (A step from before
-/// 5.2-AuditB also held the main video's stream mixing here, by the same name: what is not one of these is not read.)
+/// One output audio track's handling (copy, re-encode, Ignore/Drop) and title, by stream. Null when not recorded (left unchanged).
+/// Legacy steps stored main-video stream mixing under the same name; unknown fields are ignored.
 /// </summary>
 public sealed record AudioOutputEdit(int Index, string? Action = null, string? Title = null);
 
 /// <summary>What Remove Dead Air does with the silences it finds.</summary>
 public enum DeadAirMode
 {
-    /// <summary>The cut list becomes everything between the silences (Encoder Mode's way before 4.2; the value at rest).</summary>
+    /// <summary>The cut list keeps everything between silences (legacy Encoder Mode behaviour; the default value).</summary>
     Classic,
 
     /// <summary>
-    /// The silences are folded out of the timeline (4.3D): cut out, what follows closed up, and each kept at its cut to be
-    /// put back (a FoldedSegment; right-click the clip after the cut). What is on the timeline is what renders.
+    /// Silences are folded: cut, closed up, and stored at the cut as a FoldedSegment (restorable from the clip menu).
+    /// The timeline renders as shown.
     /// </summary>
     SplitAndMark,
 
@@ -126,52 +121,47 @@ public enum DeadAirMode
     Delete,
 }
 
-/// <summary>What Remove Dead Air finds the dead air by (4.4).</summary>
+/// <summary>Detection source for Remove Dead Air.</summary>
 public enum DeadAirSource
 {
-    /// <summary>The stretches of the sound quieter than the threshold, for long enough.</summary>
+    /// <summary>Audio below the threshold for at least the minimum duration.</summary>
     Audio,
 
-    /// <summary>The gaps between the words the captions heard, less a little kept on either side of each word.</summary>
+    /// <summary>Gaps between caption words, minus padding around each word.</summary>
     Captions,
 }
 
-// Editing on the timeline: undo and redo, deleting and trimming whatever is selected, audio that can be
-// slipped and cut on its own, and the question of whether anything has changed since it was last saved.
+// Timeline editing: undo/redo, delete and trim of the selection, independent audio slip/cut, and dirty tracking.
 public partial class MainViewModel
 {
     // ----- The time bars -----
 
-    /// <summary>Whether a dragged or dropped clip's edges catch on the other clips' edges, the end of the sequence and the playhead. Remembered.</summary>
+    /// <summary>Snap dragged/dropped clip edges to other clip edges, the sequence end and the playhead. Persisted.</summary>
     [ObservableProperty] private bool _snapClips = AppSettings.Current.SnapClips;
 
     partial void OnSnapClipsChanged(bool value) => AppSettings.Set(s => s.SnapClips, (s, v) => s.SnapClips = v, value);
 
-    /// <summary>Whether the layers' controls are shown beside their time bars; folded away, every row's time bar is wider, all alike.</summary>
+    /// <summary>Whether row headers are shown beside the time bars; collapsed, every time bar widens equally.</summary>
     [ObservableProperty] private bool _layerControlsShown = true;
 
     // ----- Undo and redo -----
-    // Before anything on the timeline is changed, the timeline as it is goes onto a stack, as a small piece
-    // of JSON: the cuts, the layers, the audio edits. Twenty deep. Undo puts the last one back.
+    // Before each change the current state is pushed as a JSON snapshot (cuts, layers, audio edits); 20 deep.
 
     private const int UndoDepth = 20;
-    // Each state is kept compressed (Brotli): the JSON of a timeline is mostly the same property names over
-    // and over, and shrinks to a small fraction. It is only made text again when it is stepped back to.
+    // States are stored Brotli-compressed (repetitive property names shrink well) and decoded only when stepped to.
     private readonly List<(string What, byte[] State)> _undo = [];
     private readonly List<(string What, byte[] State)> _redo = [];
 
-    // Pass 5.5A: how many of the undo steps predate the last save or open (MarkSaved): the recovery copy lags only through the rest
-    // (MainViewModel.Recovery.cs), so it never lands before what was last saved or opened.
+    // Number of undo steps older than the last save/open (MarkSaved); the recovery copy only lags through newer steps
+    // (MainViewModel.Recovery.cs), so it never predates the saved state.
     private int _savedDepth;
 
-    // The room a state is written into as UTF-8 before it is compressed, and read back into, kept and used again:
-    // with a long subtitle track a state is hundreds of kilobytes of text, which made afresh at every checkpoint
-    // (as a string, then its bytes) went on the large object heap each time. Only the compressed copy is kept. (Made
-    // anew after a damaged step stretched it far past any timeline's: ReadStep.)
+    // Reusable UTF-8 buffer for packing/unpacking: long subtitle tracks make states hundreds of KB, which would hit the LOH
+    // on every checkpoint. Only compressed copies are kept; ReadStep replaces the buffer after a corrupt step inflates it.
     private System.Buffers.ArrayBufferWriter<byte> _stateText = new(64 * 1024);
     private readonly System.Buffers.ArrayBufferWriter<byte> _otherText = new(16 * 1024);
 
-    /// <summary>A value as JSON (UTF-8), in the room given, which it replaces.</summary>
+    /// <summary>Serializes a value to UTF-8 JSON into the given buffer, replacing its contents.</summary>
     private static ReadOnlySpan<byte> WriteJson<T>(T value, System.Buffers.ArrayBufferWriter<byte> room)
     {
         room.ResetWrittenCount();
@@ -180,7 +170,7 @@ public partial class MainViewModel
         return room.WrittenSpan;
     }
 
-    /// <summary>Whether two values come out as the same JSON: for "has this part of the state changed".</summary>
+    /// <summary>Whether two values serialize to identical JSON (change detection).</summary>
     private bool SameJson<T>(T first, T second) => WriteJson(first, _stateText).SequenceEqual(WriteJson(second, _otherText));
 
     private byte[] Pack(TimelineSnapshot state) => UndoSteps.Pack(state, _stateText);
@@ -188,8 +178,7 @@ public partial class MainViewModel
     private TimelineSnapshot? Unpack(byte[] state) => UndoSteps.Unpack(state, _stateText);
 
     /// <summary>
-    /// An undo step read back, or null when it cannot be (damaged, or of another shape: a history a project carried is read
-    /// only when it is stepped to): checked for everything putting it back reads. Why not is written to the log.
+    /// Unpacks and validates a step, or returns null (corrupt or incompatible; project histories are read lazily) and logs why.
     /// </summary>
     private TimelineSnapshot? ReadStep(byte[] state, string what)
     {
@@ -197,8 +186,8 @@ public partial class MainViewModel
         {
             if (Unpack(state) is { } step && IsWhole(step))
             {
-                // A step of the shape before 5.2-AuditB (the old main video) is never put back: none of this version's making
-                // holds one, and a project of that shape is converted as it is opened, its history let go (TakeUpHistory).
+                // Legacy main-video steps are rejected: current code never writes them and legacy projects drop their
+                // history on conversion (TakeUpHistory).
                 if (!ProjectStore.HoldsOldKinds(step.Document, step.Bin))
                     return step;
 
@@ -212,7 +201,7 @@ public partial class MainViewModel
         {
             AppLog.Write($"The undo step \"{what}\" could not be read", ex);
 
-            // A damaged step can stretch the room far past any timeline's: it is not kept that size.
+            // A corrupt step can inflate the buffer far beyond any real timeline; do not keep it at that size.
             if (_stateText.Capacity > 16 * 1024 * 1024)
                 _stateText = new(64 * 1024);
         }
@@ -220,16 +209,15 @@ public partial class MainViewModel
         return null;
     }
 
-    /// <summary>Whether a step read back holds all that putting it back reads: its document, every track's clips with their looks, its output tracks, its bin's looks.</summary>
+    /// <summary>Validates that a step has everything a restore reads: document, clips with looks, output tracks, bin looks.</summary>
     private static bool IsWhole(TimelineSnapshot step) =>
         step is { Document: { Tracks: { } tracks, Markers: not null, SequenceEffects: not null }, Audio: not null }
         && tracks.TrueForAll(t => t is { Clips: { } clips } && clips.TrueForAll(c => c is { State: not null }))
         && (step.Bin ?? []).TrueForAll(d => d is not { Clip: { State: null } });
 
     /// <summary>
-    /// The timeline as it is now, the views' looks written into the document first. The document is a copy of its own (its
-    /// tracks and clips; the looks shared, which no edit changes in place): an edit's step is packed only once the edit is
-    /// committed (OnDocumentCommitted), when the document itself has changed.
+    /// Current state after FlushLooks, with a shallow document copy (own tracks/clips, shared immutable looks); an edit's
+    /// step is packed on commit (OnDocumentCommitted).
     /// </summary>
     private TimelineSnapshot CaptureSnapshot()
     {
@@ -242,12 +230,11 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts an undo step on the stack that brings back the state given, which may be other than the present one: an edit
-    /// of the document keeps the timeline as it was before it (MainViewModel.Document.cs, OnDocumentCommitted).
+    /// Pushes an undo step restoring the given state (not necessarily the current one: document edits push the pre-edit state).
     /// </summary>
     private void Checkpoint(string what, TimelineSnapshot before)
     {
-        // Never while a step is being put back (4.4-BugHunt): the restore moves the histories itself.
+        // Not during a restore: it manages both histories itself.
         if (_isBackgroundWorker || _restoring > 0)
             return;
 
@@ -256,9 +243,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A new step on Undo's history (Pass 5.5A: the one place a step is taken): Redo's history let go, the oldest step past twenty
-    /// dropped, and the count of steps before the last save or open kept true (<see cref="_savedDepth"/>): a step taken after undoing
-    /// past the save starts a new branch, the saved state left on Redo's side gone with it.
+    /// The single push point for undo: clears redo, drops the oldest past 20 and maintains <see cref="_savedDepth"/>. A push after
+    /// undoing past the save starts a new branch, discarding the saved state on the redo side.
     /// </summary>
     private void PushStep(string what, byte[] state)
     {
@@ -275,14 +261,13 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Call before changing what is not an edit of the timeline document (a clip's look, its keyframes and effects, the
-    /// subtitles, the caption box, the output audio tracks): what it all looks like now can then be brought back with
-    /// Undo. (An edit of the document keeps its own step.)
+    /// Takes an undo step before a non-document change (looks, keyframes, effects, subtitles, caption box, output audio tracks).
+    /// Document edits take their own step.
     /// </summary>
-    /// <param name="what">The change about to be made, in a word or two, for the status bar.</param>
+    /// <param name="what">Short status-bar label for the change.</param>
     public void Checkpoint(string what)
     {
-        // Never while a step is being put back (4.4-BugHunt): what asks then is the restore itself, or something it set going.
+        // Not during a restore: requests then come from the restore itself.
         if (_isBackgroundWorker || _restoring > 0)
         {
             if (_restoring > 0)
@@ -297,8 +282,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// After a dialog whose visit was one step (<see cref="Checkpoint(string)"/> as it opened, <see cref="UndoMark"/> just
-    /// after): that step goes again when nothing was changed in it (4.3E), so Ctrl+Z never seems to do nothing.
+    /// Closes a dialog-scoped step (<see cref="Checkpoint(string)"/> on open, <see cref="UndoMark"/> after): drops it if nothing
+    /// changed, so Ctrl+Z never appears to do nothing.
     /// </summary>
     public void DropStepIfUnchanged(object? mark)
     {
@@ -314,10 +299,9 @@ public partial class MainViewModel
     public void Redo() => Step(_redo, _undo, "Redid");
 
     /// <summary>
-    /// Puts back the newest step of one history (Undo's, or Redo's), and keeps the timeline as it is now on the other. Since
-    /// 4.4-BugHunt the histories move only once the step has been read and put in place: one that cannot be read, or put
-    /// back, is let go and said (the timeline stays, or goes back to, what it was), the histories otherwise as they were.
-    /// Refused while a change is under way: an edit open, another step being put back.
+    /// Restores the newest step of one history and pushes the current state onto the other. Histories move only after a
+    /// successful read and install; a failed step is discarded and reported, leaving the timeline unchanged.
+    /// Refused while an edit or another restore is in progress.
     /// </summary>
     private void Step(List<(string What, byte[] State)> from, List<(string What, byte[] State)> to, string verb)
     {
@@ -347,7 +331,7 @@ public partial class MainViewModel
 
         CrashReporter.Note(category, NoteOf(what));
 
-        // A Project Settings step (5.4A) keeps the frame as it is now on the other history too, so the step back puts it back.
+        // Project Settings steps also record the current frame on the opposite history so the reverse step restores it.
         var now = Pack(target.Frame is null ? CaptureSnapshot() : CaptureSnapshot() with { Frame = CaptureProjectFrame() });
         using (BeginRestore())
         {
@@ -357,7 +341,7 @@ public partial class MainViewModel
             }
             catch (Exception ex)
             {
-                // Let go, and the timeline put back as it was (the step just taken of it): the histories as they were, less it.
+                // Discard the bad step and reinstall the pre-restore state; histories unchanged otherwise.
                 NoteFault(category, $"{name} of \"{what}\"", $"{category} of {NoteOf(what)}", ex);
                 RemoveStep(from, state);
                 try
@@ -380,7 +364,7 @@ public partial class MainViewModel
             {
                 to.RemoveAt(0);
 
-                // The oldest step of Undo's history dropped (Pass 5.5A): one fewer of those before the last save or open.
+                // Oldest undo step dropped: one fewer step predates the save.
                 if (ReferenceEquals(to, _undo))
                     _savedDepth = Math.Max(0, _savedDepth - 1);
             }
@@ -389,7 +373,7 @@ public partial class MainViewModel
         Log($"{verb}: {what}");
     }
 
-    /// <summary>Takes a step out of a history: the newest of that state (stepping takes the newest; nothing else moves a history meanwhile).</summary>
+    /// <summary>Removes the given (newest) step from a history; nothing else mutates histories during a restore.</summary>
     private static void RemoveStep(List<(string What, byte[] State)> steps, byte[] state)
     {
         var at = steps.FindLastIndex(s => ReferenceEquals(s.State, state));
@@ -402,19 +386,18 @@ public partial class MainViewModel
         if (state is not { } snapshot)
             return;
 
-        // A document being put in place (4.4-BugHunt): nothing it sets going takes a step or makes an edit, and the captions
-        // are projected once, as it ends (MainViewModel.Undo.cs).
+        // Restore scope: no steps or edits from side effects; captions project once at the end (MainViewModel.Undo.cs).
         using var restoring = BeginRestore();
 
-        // One rebuild of the command for the whole step, not one for every clip that is put back.
+        // Rebuild the command once per step, not per restored clip.
         using var whole = DeferCommand();
 
-        // A Project Settings step's frame (5.4A): turned before the clips' views are made again, so they are made for the frame
-        // they were kept on, and its boxes set again once the document's natural size is back (MainViewModel.ProjectSettings.cs).
+        // Apply a Project Settings step's frame before rebuilding views (so they match their saved frame); its boxes are reset
+        // once the natural size is restored (MainViewModel.ProjectSettings.cs).
         if (snapshot.Frame is { } frame)
             RestoreProjectFrame(frame);
 
-        // An undo step is the same project: the unknown project fields it was opened with stay with it (not part of the step's JSON).
+        // Same project: unknown project fields from open are preserved (they are not in the step JSON).
         snapshot.Document.CarriedProjectFields = Document.CarriedProjectFields;
         InstallDocument(snapshot.Document);
         if (snapshot.Frame is { } boxes)
@@ -426,25 +409,24 @@ public partial class MainViewModel
             if (AudioTracks.FirstOrDefault(t => t.Index == output.Index) is not { } track)
                 continue;
 
-            // How it is made, each only where it differs.
+            // Apply output track settings only where they differ.
             if (output.Action is { } action && AudioTrack.AllActions.Contains(action))
                 track.Action = action;
             if (output.Title is { Length: > 0 } title)
                 track.Title = title;
         }
 
-        // The sequence's look (4.4), only where it differs: a step that did not touch it leaves the graph's filters as they are.
-        // (Compared as JSON: it holds the blur fill's effects, a list, since 5.0-Release.)
+        // Apply the Sequence look only if it differs, leaving render filters untouched otherwise. Compared as JSON because it
+        // contains the blur fill's effect list.
         if (snapshot.Look is { } look && !SameJson(look, CaptureLook()))
             ApplyLook(look);
 
-        // A change made right after this is a step of its own, never the end of a run from before it.
+        // End any merge run: the next change takes its own step.
         _gesture.Looks.Reset();
         _gesture.Fields.Reset();
 
-        // The subtitles, the caption box and its style, each only where it differs: a step that did not touch
-        // them leaves the caption preview as it is. (What anchored captions show is not the subtitles' own: it is made
-        // again from their anchors through the timeline put back, once, as the restore ends. 4.4.0.)
+        // Subtitles, caption box and style are applied only where they differ, so the caption preview is otherwise untouched.
+        // Anchored caption cues are re-projected from their anchors once at the end of the restore.
         if (!SameJson(Unprojected(snapshot.Subtitles), Unprojected(CaptureSubtitles())))
         {
             ApplySubtitles(snapshot.Subtitles);
@@ -462,8 +444,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A subtitle track without the cues that only show its anchored captions (as ApplySubtitles leaves them out, to make them
-    /// again from the anchors): what tells whether a step changed the subtitles themselves, or only where the timeline shows them.
+    /// The subtitle track minus projected anchored-caption cues (as ApplySubtitles strips them), to detect whether a step
+    /// changed the subtitles themselves or only their projection.
     /// </summary>
     private static SubtitleTrackData? Unprojected(SubtitleTrackData? data) =>
         data is { IsImage: false, Source.IsAnchored: true, Anchors.Count: > 0 }
@@ -474,12 +456,11 @@ public partial class MainViewModel
             }
             : data;
 
-    // ----- The history a project carries (4.4-BugHunt) -----
-    // A save writes the undo and redo history with the project (its steps as Undo keeps them), so that Ctrl+Z goes on where
-    // the save left it once the project is opened again. It is never part of what tells whether the project has changed (the
-    // fingerprint is CaptureState's, which has none), and a queued job carries none.
+    // ----- Persisted undo history -----
+    // Saves include packed undo/redo steps so Ctrl+Z continues after reopening. History is excluded from the dirty
+    // fingerprint (CaptureState has none) and from queued jobs.
 
-    /// <summary>Lets the whole history go (a new source, a new project): nothing to undo or redo, nothing of it carried on.</summary>
+    /// <summary>Clears both histories (new source or project).</summary>
     private void ForgetHistory()
     {
         _undo.Clear();
@@ -491,11 +472,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The history a project carries, taken up as it is opened in place of none: each step is read only when it is stepped
-    /// to (one that cannot be is let go then). When the file opened is another than the project was saved with (a link's
-    /// download that moved), the steps are pointed at this one as the timeline is (TimelineToOpen). A project converted as it was opened
-    /// (a 5.1 project, LegacyMainVideo) keeps none: its steps hold the old main video and its stream mixing, which is not kept. Takes no
-    /// step, and changes nothing that counts as a change of the project.
+    /// Adopts a project's saved history on open; steps are decoded lazily (failures discarded then). If the source file moved,
+    /// steps are re-pointed like the timeline (TimelineToOpen). Legacy-converted projects (LegacyMainVideo) keep no history.
+    /// Takes no step and does not dirty the project.
     /// </summary>
     private void TakeUpHistory(ProjectState state, bool converted)
     {
@@ -534,16 +513,14 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The project as a save writes it: <see cref="CaptureState"/>, with the undo and redo history (4.4.0). With
-    /// <paramref name="moved"/> (downloads kept in a folder of the user's), the steps are written with their files moved as
-    /// the timeline's are, while the history this session goes on with is left as it is. With its thumbnail (Pass
-    /// 5.2.0): the Sequence at the playhead as the GPU engine draws it, or the last one taken
-    /// (<see cref="ThumbnailForSave"/>).
+    /// Save payload: <see cref="CaptureState"/> plus undo/redo history. <paramref name="moved"/> (downloads relocated to a chosen
+    /// folder) rewrites paths in the saved steps only, not the live history. Includes a thumbnail of the Sequence at the
+    /// playhead, or the last one taken (<see cref="ThumbnailForSave"/>).
     /// </summary>
     public ProjectState CaptureStateForSave(string name = "", Func<string, string>? moved = null) => CaptureStateForSave(name, moved, waitForThumbnail: true);
 
     /// <summary><see cref="CaptureStateForSave(string, Func{string, string}?)"/>; without <paramref name="waitForThumbnail"/> (autosave) it
-    /// carries the last thumbnail taken, and the caller finishes a fresh one off the window's thread.</summary>
+    /// uses the last thumbnail and the caller renders a fresh one off the UI thread.</summary>
     private ProjectState CaptureStateForSave(string name, Func<string, string>? moved, bool waitForThumbnail)
     {
         TrustOwnCommandOnSave();
@@ -554,13 +531,13 @@ public partial class MainViewModel
         return state;
     }
 
-    /// <summary>The window's arrangement for a save's "workspace" section (Pass 5.4.1-M5); set by the window, unset for a background worker.</summary>
+    /// <summary>Provides the window layout for a save's "workspace" section; set by the window, null in background workers.</summary>
     public Func<ProjectWorkspace?>? WorkspaceForSave { get; set; }
 
-    /// <summary>Raised after a project carrying a "workspace" section is opened, for the window to take it up (when the user wants that).</summary>
+    /// <summary>Raised after opening a project with a "workspace" section so the window can apply it if enabled.</summary>
     public event Action<ProjectWorkspace>? WorkspaceOpened;
 
-    /// <summary>A history as a project carries it, oldest first (its steps shared: a packed step is never changed); null when empty.</summary>
+    /// <summary>A history as saved, oldest first (immutable packed steps are shared); null when empty.</summary>
     private List<UndoStepState>? HistoryOf(List<(string What, byte[] State)> steps, Func<string, string>? moved)
     {
         if (_isBackgroundWorker || steps.Count == 0)
@@ -576,15 +553,13 @@ public partial class MainViewModel
         return history.Count > 0 ? history : null;
     }
 
-    /// <summary>A step with its files moved (<see cref="MoveFiles"/>): packed anew when any moved, itself when none did; null when it cannot be read.</summary>
+    /// <summary>A step with moved files re-pointed (<see cref="MoveFiles"/>): repacked if anything moved, else itself; null if unreadable.</summary>
     private byte[]? MovedStep(byte[] state, string what, Func<string, string> moved) =>
         ReadStep(state, what) is not { } step ? null : MoveFiles(step, moved) ? Pack(step) : state;
 
     /// <summary>
-    /// Points a step read back at files that have moved: its clips' (on the timeline and in the bin, with what went with
-    /// them; their looks' too), Project Media's (5.4C) and its captions' source. The step is a copy of its own, just read, so it is
-    /// changed in place.
-    /// Whether anything moved.
+    /// Re-points a freshly decoded step at moved files (timeline and bin clips with their looks, Project Media, caption source),
+    /// mutating it in place. Returns whether anything moved.
     /// </summary>
     private static bool MoveFiles(TimelineSnapshot step, Func<string, string> moved)
     {
@@ -618,7 +593,7 @@ public partial class MainViewModel
 
     // ----- Whatever is selected -----
 
-    /// <summary>Removes the selected clip: it goes to the recycle bin, its time left empty. Any clip, on any track.</summary>
+    /// <summary>Moves the selected clip to the recycle bin, leaving a gap.</summary>
     public bool DeleteClip(object? clip)
     {
         if (clip is Layer layer && ClipOf(layer) is not null)
@@ -636,35 +611,33 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Sets how fast a clip runs. The clip plays the same stretch of its file as before, so its block on the
-    /// timeline is as much shorter or longer as it is faster or slower; what follows it ripples by as much as the
-    /// Ripple Timeline setting says (5.6.0: AppSettings.SpeedRipplesTimeline, every speed's way in: the Speed &amp; Time
-    /// card, the Inspector's box, the clip menu).
+    /// Sets a clip's speed over the same source range, so its duration scales inversely; following clips ripple per
+    /// AppSettings.SpeedRipplesTimeline (shared by the Speed &amp; Time card, Inspector box and clip menu).
     /// </summary>
     public void SetClipSpeed(Layer clip, double speed) => SetClipSpeed(clip, speed, AppSettings.Current.SpeedRipplesTimeline);
 
     /// <summary>
-    /// Sets how fast a clip runs, with its family (its streams' lanes, its Cutouts); with <paramref name="ripple"/>, what follows it on
-    /// the timeline (every track, or its own, as Ripple All Tracks says) moves by as much as it grew or shrank, in the same step
-    /// (5.6.0). Without, what it grows into on its track moves on and a gap is left where it shrinks, as before.
+    /// Sets the speed of a clip and its family (stream lanes, Cutouts). With <paramref name="ripple"/>, following content (all
+    /// tracks or its own, per Ripple All Tracks) shifts by the length delta in the same step; without, growth pushes its own
+    /// track's clips and shrinking leaves a gap.
     /// </summary>
     public void SetClipSpeed(Layer clip, double speed, bool ripple)
     {
         speed = Math.Round(Math.Clamp(speed, Layer.SlowestSpeed, Layer.FastestSpeed), 3);
 
-        // (A box's echo while a step is being put back, or its bindings settle, is no request: 4.4-BugHunt.)
+        // Binding echoes during undo/redo or its settle are not requests.
         if (ClipOf(clip) is not { PlaysFile: true } model || Math.Abs(model.Speed - speed) < 0.0005 || IsRestoringTimeline)
         {
-            // A box bound to the speed shows what it is.
+            // Refresh bound speed boxes.
             OnViewSpeedRefused(clip);
             return;
         }
 
-        // Its streams' lanes and the Cutouts cut from it are its own file at the same moment: they run at its speed, or they drift off it.
+        // Stream lanes and Cutouts share the clip's source time, so they take its speed to stay in sync.
         var family = Document.Tracks.SelectMany(t => t.Clips).Where(c => c.ParentClipId == model.Id && c.PlaysFile && string.Equals(c.SourcePath, model.SourcePath, StringComparison.OrdinalIgnoreCase)).ToList();
 
-        // Rippled (5.6.0), the clip ripples once for its family: a clip that grows moves what follows before its family grows into the
-        // room; one that shrinks has its family shrink first, so none of them holds back what moves up after it.
+        // Ripple once for the family: when growing, shift followers before the family grows; when shrinking, shrink the family
+        // first so nothing blocks followers moving up.
         var all = AppSettings.Current.RippleAllTracks;
         var grows = speed < model.Speed;
         if (Edit($"change the speed of {clip.Name}", edit =>
@@ -687,7 +660,7 @@ public partial class MainViewModel
             OnViewSpeedRefused(clip);
     }
 
-    /// <summary>A view whose speed box asked for what could not be: the box shows the clip's speed again.</summary>
+    /// <summary>Reverts a view's speed box after a refused speed change.</summary>
     private void OnViewSpeedRefused(Layer view)
     {
         if (ClipOf(view) is { } clip && Document.TrackOf(clip) is { } track)
@@ -706,7 +679,7 @@ public partial class MainViewModel
         view.NotifySpeed();
     }
 
-    /// <summary>Trims the selected clip to the playhead: its start (everything before goes) or its end (everything after).</summary>
+    /// <summary>Trims the selected clip's start or end to the playhead.</summary>
     public bool TrimClip(object? clip, bool start, double seconds)
     {
         if (clip is Layer layer && ClipOf(layer) is { } model && seconds > model.Start + TimelineDocument.MinimumClipSeconds && seconds < model.End - TimelineDocument.MinimumClipSeconds)
@@ -723,7 +696,7 @@ public partial class MainViewModel
         return false;
     }
 
-    /// <summary>Copies a clip's whole track (every clip on it) onto a new track just above, moved a little on the frame.</summary>
+    /// <summary>Duplicates a clip's whole track onto a new track just above, slightly offset on the frame.</summary>
     public void DuplicateLayer(Layer layer)
     {
         if (TrackOfRow(layer) is not { } track || track.Clips.Count == 0)
@@ -764,16 +737,16 @@ public partial class MainViewModel
             : $"Removed {layer.Name}.";
     }
 
-    /// <summary>Raised when a track has been hidden or shown: the layout pane draws its boxes again.</summary>
+    /// <summary>Raised when a track is hidden or shown; the layout pane redraws its boxes.</summary>
     public event Action? LayerVisibilityChanged;
 
     /// <summary>
-    /// Hides a row, or shows it again: the blur fill of every video (the blur fill's settings row, 5.2-AuditB); a picture track
-    /// (its own switch, its stack with it); a sound track's clips.
+    /// Toggles a row's visibility: the blur fill row (all videos' blur fill), a picture track (its switch, hiding its stack),
+    /// or an audio track's clips.
     /// </summary>
     public void ToggleHidden(Layer layer)
     {
-        // A picture track's eye is its own switch (5.2), not its first clip's.
+        // A picture track's eye is the track switch, not its first clip's.
         var hide = !layer.IsAudio && !layer.IsBackground && !layer.IsCaptions && TrackOfRow(layer) is not null ? !IsTrackHidden(layer) : !layer.IsHidden;
         if (layer.IsBackground)
         {
@@ -791,9 +764,8 @@ public partial class MainViewModel
         }
         else if (!Edit(hide ? $"hide {layer.Name}" : $"show {layer.Name}", edit =>
                  {
-                     // A picture track's eye is its whole family's (5.2, the user's rule): the track's own switch hides its clips and
-                     // the tracks in its stack with theirs (TimelineDocument.IsHiddenWithParents), and never touches a clip's own switch.
-                     // A track hidden clip by clip before 5.2 is shown again whole. A sound track's is still each of its clips' sound.
+                     // Picture track: the track switch hides its clips and stacked tracks (TimelineDocument.IsHiddenWithParents) without
+                     // touching clip switches; legacy per-clip hiding is cleared on show. Audio tracks toggle each clip's audio.
                      if (!layer.IsAudio)
                      {
                          var byClips = !track.IsHidden;
@@ -821,14 +793,14 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether a picture track's header shows it hidden (5.2): by its own switch, or every clip of it turned off (as a header hid a
-    /// track before 5.2, clip by clip), which its eye then shows again whole.
+    /// Whether a picture track header shows hidden: by its own switch, or every clip hidden (legacy per-clip hiding, which the
+    /// eye clears on show).
     /// </summary>
     public bool IsTrackHidden(Layer row) => TrackOfRow(row) is { } track
         ? track.IsHidden || (track.Clips.Count > 0 && track.Clips.All(c => c.IsHidden))
         : row.IsHidden;
 
-    /// <summary>Has auto-captions listen to a video clip's own sound.</summary>
+    /// <summary>Runs auto-captions on a video clip's own audio.</summary>
     public void UseLayerAudioForCaptions(Layer layer)
     {
         if (!layer.CarriesSound)
@@ -837,7 +809,7 @@ public partial class MainViewModel
             return;
         }
 
-        // Followed through its clips (4.4): its words are shown where each clip of its file plays them, at its speed.
+        // Captions project through the clips of their file, at each clip's position and speed.
         if (ResolveCaptionSource(layer) is { } source)
             ChooseCaptionSource(source);
         StatusText = $"Auto-captions now listen to {layer.Name}.";
@@ -845,31 +817,25 @@ public partial class MainViewModel
 
     // ----- Audio on the timeline -----
 
-    /// <summary>
-    /// Whether the audio follows the picture. Linked, an audio track cannot be moved by itself, and a video
-    /// layer's sound starts where the layer does. Unlinked, each can be slipped on its own.
-    /// </summary>
+    /// <summary>Whether audio is linked to picture: linked audio moves with its video; unlinked audio can be slipped independently.</summary>
     [ObservableProperty] private bool _audioLinked = true;
 
-    /// <summary>Whether the clips' blocks on the timeline show the waveform of the sound that is linked to their picture, drawn over them.</summary>
+    /// <summary>Whether video clip blocks overlay the waveform of their linked audio.</summary>
     [ObservableProperty] private bool _showLinkedAudio = true;
 
-    /// <summary>
-    /// Links or unlinks audio and video. Linking again after something was slipped asks first: linked means
-    /// in step, so the audio that was moved has to come back to where its picture is.
-    /// </summary>
+    /// <summary>Links or unlinks audio and video; relinking after a slip confirms first, since slipped audio snaps back to its picture.</summary>
     public void SetAudioLinked(bool linked)
     {
         if (linked == AudioLinked)
             return;
 
-        // Every clip with sound has its own link (the document's); this switch sets them all.
+        // Per-clip audio links live in the document; this switch sets all of them.
         var clips = Document.Tracks.SelectMany(t => t.Clips.Select(c => (Track: t, Clip: c))).Where(c => c.Clip.HasSound).ToList();
         var slipped = clips.Any(c => Math.Abs(c.Clip.AudioSlipSeconds) > 0.001);
         var choice = 1;
         if (linked && slipped)
         {
-            // Which of the two gives way: the sound goes back to its picture, or the picture goes to its sound.
+            // Choose which side moves: audio back to its picture, or picture to its audio.
             choice = Choose?.Invoke("Link Audio and Video",
                 "The audio has been moved out of step with its video. Linking puts them back together, one way or the other:\n\n"
                 + "Snap Audio to Video: the sound goes back to where its picture is.\n"
@@ -883,7 +849,7 @@ public partial class MainViewModel
             }
         }
 
-        // The clips' links are one edit.
+        // All link changes form one edit.
         if (!Edit(linked ? "link audio and video" : "unlink audio and video", edit =>
             {
                 foreach (var (track, clip) in clips)
@@ -898,7 +864,7 @@ public partial class MainViewModel
                         }
                         catch (TimelineEditException)
                         {
-                            // No room where its sound was: it stays, its sound brought back to it.
+                            // No room at the audio's position: keep the picture and move the audio back.
                         }
                     }
                 }
@@ -916,19 +882,17 @@ public partial class MainViewModel
     }
 
 
-    /// <summary>The video clips whose own sound goes into the output: those that have any, and are not hidden.</summary>
+    /// <summary>Visible video clips with audio, whose audio is mixed into the output.</summary>
     private List<Layer> GetLayerAudioSources() =>
         Layers.Where(l => l.CarriesSound && !l.IsHidden && !l.IsSoundMuted && FileState.Exists(l.ImagePath)).ToList();
 
-    /// <summary>Draws the waveform of a video clip's sound, for its block on the timeline. In the background; the clip works without it.</summary>
+    /// <summary>Builds a clip's timeline waveform in the background (optional decoration).</summary>
     private async Task LoadLayerWaveformAsync(Layer layer)
     {
         if (_isBackgroundWorker || !layer.CarriesSound || !(ShowWaveforms || layer.IsAudio))
             return;
 
-        // The picture of a file is made once in a session, however often its clips are split, undone and
-        // put back: every one of those makes new clips, and none of them a new picture.
-        // (A stream's lane shows that stream of its file.)
+        // Built once per file (and stream) per session; splits and undo create new clips but reuse the cached picture.
         var path = layer.ImagePath;
         var stream = Math.Max(ClipOf(layer)?.AudioStreamIndex ?? 0, 0);
         var key = ClipPictures.SoundKey(path, stream);
@@ -947,14 +911,13 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            // Not kept: the next clip of this file may have better luck.
+            // Failures are not cached; the next clip of this file retries.
             _layerWaveforms.Remove(key);
         }
     }
 
-    // The background work that draws layers' pictures, by file: all of it hangs off one source (the session's),
-    // and each file's can be stopped on its own. It is, the moment no clip on the timeline uses the file any
-    // more: FFmpeg is not left decoding a long file for a clip that was dropped and taken off again.
+    // Per-file cancellation for picture work, linked to the session token; cancelled as soon as no clip uses the file so
+    // decoding stops for removed clips.
     private readonly Dictionary<string, CancellationTokenSource> _pictureWork = new(StringComparer.OrdinalIgnoreCase);
 
     private CancellationToken PictureToken(string path)
@@ -964,42 +927,36 @@ public partial class MainViewModel
         return work.Token;
     }
 
-    // The pictures made of layers' files this session, by file: waveforms, and strips of frames. No more
-    // than this many of each are kept: the file used longest ago gives way to a new one. A clip that is on
-    // the timeline holds its own pictures whatever happens here, so nothing that is showing goes blank; what
-    // is bounded is how much is remembered of files that are no longer in use. A strip is at most 25 frames
-    // 54 pixels high (about half a megabyte), a waveform 1200 by 60.
+    // LRU cap per kind (waveforms, strips) for files no longer in use; on-timeline clips pin their own pictures so nothing
+    // visible blanks. A strip is <= 25 frames at 54 px high (~0.5 MB); a waveform is 1200 x 60.
     private const int PicturesKept = 24;
 
-    /// <summary>The Timeline blocks' strips of frames and waveforms, by file (shared by every clip of a file, in every tab).</summary>
+    /// <summary>Timeline filmstrips and waveforms keyed by file, shared across clips and tabs.</summary>
     public ClipPictures ClipPictures { get; }
 
     /// <summary>The strip of frames a video clip's block shows; null while none is made.</summary>
     public System.Windows.Media.ImageSource? FilmstripOf(Layer layer) => layer.IsVideoFile ? ClipPictures.Film(layer.ImagePath) : null;
 
-    /// <summary>The waveform a clip's block shows: of its file's audio stream (a stream's lane shows that stream); null while none is made.</summary>
+    /// <summary>The clip's waveform for its file (or lane's stream); null until built.</summary>
     public System.Windows.Media.ImageSource? WaveformOf(Layer layer) =>
         layer.ImagePath.Length == 0 ? null : ClipPictures.Sound(ClipPictures.SoundKey(layer.ImagePath, Math.Max(ClipOf(layer)?.AudioStreamIndex ?? 0, 0)));
 
-    // The files the window's Sequence uses (the picture store keeps their pictures).
+    // Files used by the current Sequence (pinned in the picture store).
     private IEnumerable<string> FilesInUse() => Layers.Select(l => l.ImagePath).Append(LocalMediaPath).Where(f => f.Length > 0);
 
-    // How tall a block's strip is made (FfmpegRunner.GenerateFilmstripAsync's height): the Media Browser's strip is decoded at it.
+    // Block filmstrip height (FfmpegRunner.GenerateFilmstripAsync); Media Browser strips are decoded at this height too.
     private const int LayerStripHeight = 54;
 
     private readonly LruCache<string, Task<System.Windows.Media.ImageSource?>> _layerWaveforms = new(PicturesKept, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>The pictures a layer's block is drawn with: the waveform of its sound, and for a video a strip of its frames.</summary>
+    /// <summary>Requests a layer block's pictures: its waveform and, for video, its filmstrip.</summary>
     private async Task LoadLayerPicturesAsync(Layer layer)
     {
-        // Side by side: the frames do not wait for the waveform to be drawn.
+        // Run concurrently: the filmstrip does not wait for the waveform.
         await Task.WhenAll(LoadLayerWaveformAsync(layer), LoadLayerFilmstripAsync(layer));
     }
 
-    /// <summary>
-    /// Takes a strip of frames from a video clip's file, evenly spread over its length, for its block on the
-    /// timeline. In the background, once for each file; the clip works without it.
-    /// </summary>
+    /// <summary>Builds an evenly spaced filmstrip for a video clip's block, in the background, once per file (optional).</summary>
     private async Task LoadLayerFilmstripAsync(Layer layer)
     {
         if (_isBackgroundWorker || !layer.IsVideoFile || ClipPictures.Film(layer.ImagePath) is not null || !File.Exists(layer.ImagePath))
@@ -1012,18 +969,18 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException)
         {
-            // Its length stays unknown: one frame is taken, from its start.
+            // Unknown length: grab a single frame from the start.
         }
 
-        // Stored by file (MakeFilmstripAsync): every clip of the file shows it, a clip split while it was being made included.
+        // Keyed by file (MakeFilmstripAsync), so every clip of the file shows it, including clips split mid-build.
         await GetFilmstripAsync(layer.ImagePath, Math.Clamp(AppSettings.Current.LayerThumbnailCount, 1, 25), layer.MediaDuration);
     }
 
 
-    // The strips that are being made right now, by file: a second clip of a file waits for the first one's.
+    // In-flight filmstrip tasks by file; later clips of the same file await the first.
     private readonly Dictionary<string, Task<System.Windows.Media.ImageSource?>> _filmstripsBeingMade = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>The strip of frames of a file: the one made earlier this session, the one being made, or a new one.</summary>
+    /// <summary>A file's filmstrip: cached, in flight, or newly started.</summary>
     private Task<System.Windows.Media.ImageSource?> GetFilmstripAsync(string file, int count, double seconds)
     {
         if (ClipPictures.Film(file) is { } made)
@@ -1035,7 +992,7 @@ public partial class MainViewModel
 
     private async Task<System.Windows.Media.ImageSource?> MakeFilmstripAsync(string file, int count, double seconds)
     {
-        // Let the caller go on first, so that this is in the list of strips being made before it can leave it.
+        // Yield first so the task is registered in the in-flight map before it can remove itself.
         await Task.Yield();
         try
         {
@@ -1043,13 +1000,11 @@ public partial class MainViewModel
             var token = _shutdown.Token;
             var kind = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"strip{count}");
 
-            // Both the extraction and the reading of the picture happen away from the interface. The picture
-            // is frozen there, before it is handed over: a bitmap made on one thread cannot be shown by
-            // another until it is, and a frozen one is also the only kind WPF does not keep watching.
+            // Extract and decode off the UI thread, then Freeze before handing over: unfrozen bitmaps are thread-affine and
+            // tracked for changes by WPF.
             var picture = await Task.Run(async () =>
             {
-                // Made before, for this file as it is: taken from the cache; else the Media Browser's strip of it (5.4.1-M3: a file dropped
-                // from the browser has its frames at once), decoded at a block's height.
+                // Disk cache hit for this file version; else reuse the Media Browser's strip (instant for browser drops) at block height.
                 if (PreviewCache.Timeline.Find(file, kind, ".jpg") is { } kept)
                     path = kept;
                 else if (MediaBrowserFrames.KeptStripAt(file, LayerStripHeight) is { } shared)
@@ -1059,7 +1014,7 @@ public partial class MainViewModel
                 else
                     return null;
 
-                // Read into memory, so that the file is not held open.
+                // Load into memory so the file handle is released.
                 var bitmap = new System.Windows.Media.Imaging.BitmapImage();
                 bitmap.BeginInit();
                 bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
@@ -1082,7 +1037,7 @@ public partial class MainViewModel
         }
         finally
         {
-            // Made or not, it is no longer being made: a file that failed is tried again when next asked for.
+            // Remove from in-flight either way; a failed file retries on the next request.
             _filmstripsBeingMade.Remove(file);
         }
     }
@@ -1094,9 +1049,8 @@ public partial class MainViewModel
     private DeadAirSource _deadAirSource;
 
     /// <summary>
-    /// Remove Dead Air on what is selected: a clip with sound of its own (it is listened to and cut up), or otherwise the sound
-    /// marked as the voice, else the first stream of the video given or at the playhead, every clip of its file cut. The dead air
-    /// is found by the sound's silences, or by the gaps between the words its captions heard (4.4).
+    /// Remove Dead Air on the selection: a clip with its own audio is cut directly; otherwise the voice-marked audio, else the
+    /// first stream of the given/playhead video, cutting every clip of that file. Detection uses silences or caption word gaps.
     /// </summary>
     public void RunDeadAir(DeadAirMode mode, object? target, DeadAirSource source = DeadAirSource.Audio)
     {
@@ -1106,16 +1060,12 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Cuts clips at the silences in their sound (found in their file's own time): each is split where a silence it plays
-    /// begins and ends, and the silent parts are then folded (<paramref name="fold"/>, 4.3D: taken out, what follows closed
-    /// up, each kept at its cut to be put back, <see cref="UnfoldSegment"/>) or taken out. With <paramref name="closeUp"/>
-    /// (the dead air of a file's clips) they go from every unlocked track and what follows on all of them closes up behind them,
-    /// as a cut list's left-out stretches did; otherwise (a layer's) a fold closes up its own track, and a silence taken out
-    /// leaves its time empty, as in 4.2.0. One step of Undo for them all.
+    /// Splits clips at silences (in file time) and folds (<paramref name="fold"/>; restorable via <see cref="UnfoldSegment"/>) or
+    /// removes the silent parts. With <paramref name="closeUp"/> they are removed from every unlocked track with a ripple;
+    /// otherwise a fold closes up its own track and a removal leaves a gap. One undo step.
     /// </summary>
     /// <param name="layerLimit">
-    /// How many cuts a layer may take: a few dozen silences keep a layer usable, while the gaps between captioned words
-    /// (4.4) are many more by nature.
+    /// Maximum cuts per layer: a few dozen silences keep a layer usable; caption word gaps are naturally far more numerous.
     /// </param>
     private string ApplyDeadAir(IReadOnlyList<Layer> views, List<(double Start, double End)> silences, bool fold, bool closeUp, int layerLimit = 60)
     {
@@ -1123,7 +1073,7 @@ public partial class MainViewModel
         if (clips.Count == 0)
             return "Nothing to cut: select a clip that plays a file.";
 
-        // Each clip's silent stretches on the sequence: where in its file it is, at its speed.
+        // Map each clip's silences from file time to sequence time at its speed.
         var cuts = new List<(TimelineClip Clip, double From, double To)>();
         foreach (var (_, clip) in clips)
         {
@@ -1139,8 +1089,7 @@ public partial class MainViewModel
         var name = clips.Count == 1 ? clips[0].View.Name : $"the clips of {Path.GetFileName(clips[0].View.ImagePath)}";
         if (cuts.Count == 0)
             return $"No silence found in {name}.";
-        // A layer is cut into clips of its own, which a few dozen keep usable; a file's silences closed up across the timeline are
-        // taken out of it (4.2.0's cut list had no limit), however many a long recording has.
+        // Per-layer cuts are capped to stay usable; file-wide ripple removal is unlimited for long recordings.
         if (cuts.Count > (closeUp ? 5000 : layerLimit))
             return $"{(clips.Count == 1 ? $"{clips[0].View.Name} has" : $"The clips of {Path.GetFileName(clips[0].View.ImagePath)} have")} too many silences to cut ({cuts.Count}): raise the shortest silence and try again.";
 
@@ -1148,13 +1097,13 @@ public partial class MainViewModel
         var marked = 0;
         Edit($"remove dead air from {name}", edit =>
         {
-            // Latest first: what is cut out (and closed up behind) never moves a silence still to be cut.
+            // Latest first so ripple closes never shift silences still to be cut.
             foreach (var (clip, from, to) in cuts.OrderByDescending(c => c.From))
             {
                 if (Document.TrackOf(clip) is null)
                     continue;
 
-                // Folded out of the timeline at its cut, to be put back: what is on the timeline is what renders.
+                // Fold at the cut (restorable); the timeline renders as shown.
                 if (fold)
                 {
                     try
@@ -1164,13 +1113,13 @@ public partial class MainViewModel
                     }
                     catch (TimelineEditException)
                     {
-                        // Too near another cut or an edge, or what follows cannot close up: left as it is.
+                        // Too near a cut or edge, or the ripple cannot close: leave unchanged.
                     }
 
                     continue;
                 }
 
-                // Taken out of every unlocked track, and what follows closed up behind it, as 4.2.0s cut list left it out.
+                // Ripple-delete across every unlocked track.
                 if (closeUp)
                 {
                     marked++;
@@ -1179,8 +1128,7 @@ public partial class MainViewModel
                     continue;
                 }
 
-                // Both cuts and the lift in one step: too near another cut or an edge to be a clip of its own, the stretch is left
-                // exactly as it is (never one cut made and the other refused).
+                // Both cuts and the lift are atomic: if either cut is refused (too close to an edge or cut), skip the stretch.
                 try
                 {
                     removed += edit.DeleteStretchOf(clip, from, to);
@@ -1198,23 +1146,23 @@ public partial class MainViewModel
             : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{marked} silent stretches ({removed:0.#} s) were removed from {name}{(closeUp ? ", and what follows closed up" : "")}.");
     }
 
-    // ----- Folded silences (4.3D) -----
+    // ----- Folded silences -----
 
-    /// <summary>The stretches folded out at a clip's cuts (its start, or its end where nothing came after), latest seam first.</summary>
+    /// <summary>Segments folded at a clip's seams (start, or end when nothing follows), latest seam first.</summary>
     public IReadOnlyList<FoldedSegment> FoldsAt(Layer clip) =>
         ClipOf(clip) is { } model && Document.Folds is { } folds ? [.. folds.Where(f => f.SeamClipId == model.Id)] : [];
 
-    /// <summary>How many stretches are folded out of the timeline at cuts that are still there.</summary>
+    /// <summary>Number of folded segments whose seams still exist.</summary>
     public int FoldCount => Document.Folds?.Count(f => f.SeamIn(Document) is not null) ?? 0;
 
-    /// <summary>Puts a folded stretch back at its cut, as one step of Undo: what follows moves on by its length.</summary>
+    /// <summary>Unfolds a segment at its seam, rippling later content by its length. One undo step.</summary>
     public void UnfoldSegment(FoldedSegment fold)
     {
         if (Edit($"put back {fold.Length:0.#} s at a cut", edit => edit.UnfoldSegment(fold)))
             Log(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"Put back {fold.Length:0.#} s at the cut at {TimeDisplay.Format(fold.SeamIn(Document) ?? 0)}"));
     }
 
-    /// <summary>Puts every folded stretch back, latest first (so none moves a seam still to be opened), as one step of Undo.</summary>
+    /// <summary>Unfolds every segment, latest first so earlier seams stay put. One undo step.</summary>
     public void UnfoldAll()
     {
         var folds = (Document.Folds ?? []).Where(f => f.SeamIn(Document) is not null).OrderByDescending(f => f.SeamIn(Document)).ToList();
@@ -1230,23 +1178,20 @@ public partial class MainViewModel
 
     // ----- Unsaved changes -----
 
-    // What the project looked like when it was last saved or loaded, to tell whether anything has changed since.
+    // Fingerprint at the last save/load, for dirty tracking.
     private string _savedFingerprint = "";
 
-    // Whether the user has touched HandPeg (a key, a click, the wheel, a drop) since then, or an edit has taken a step of
-    // Undo (one the user set going earlier, finishing in the background). What changes before either is not theirs (a probe,
-    // a scan or the player settling after the load) and never counts as an edit (4.3E: a project opened and closed again
-    // must never ask to be saved).
+    // Whether user input (key, click, wheel, drop) or an undoable edit occurred since load/save. Earlier changes (probes,
+    // scans, player settling) are absorbed into the saved state so open-then-close never prompts to save.
     private bool _touchedSinceSaved;
 
     /// <summary>
-    /// The project as JSON for dirty tracking: the live state serialized as it is (no deep copy: serializing only reads), with no name and
-    /// no time saved (<see cref="FingerprintOptions"/>, the options <see cref="FrozenStateDiffers"/> uses, so a tab put behind compares
-    /// byte for byte). The same text as the deep copy's (the golden fingerprint-live-equals-copy).
+    /// Dirty-tracking JSON of the live state (no deep copy; serialization only reads), without name or save time, using
+    /// <see cref="FingerprintOptions"/> like <see cref="FrozenStateDiffers"/>. Byte-equal to the deep-copy form (golden fingerprint-live-equals-copy).
     /// </summary>
     internal string Fingerprint() => JsonSerializer.Serialize(CaptureState("", liveTimeline: true, copyBin: false), FingerprintOptions);
 
-    /// <summary>The fingerprint as it was made before it serialized the live state (a deep copy, the default options): for the golden.</summary>
+    /// <summary>Reference fingerprint via a deep copy with default options; used by the golden only.</summary>
     internal string FingerprintOfCopy()
     {
         var state = CaptureState();
@@ -1254,26 +1199,26 @@ public partial class MainViewModel
         return JsonSerializer.Serialize(state);
     }
 
-    /// <summary>Takes the project as it is now as the saved one: called after a load and after a save.</summary>
+    /// <summary>Marks the current state as saved (after load and save).</summary>
     public void MarkSaved()
     {
         _savedFingerprint = Fingerprint();
         _touchedSinceSaved = false;
 
-        // Pass 5.5A: every step there is now predates the save (or open): the recovery copy lags only through the steps that follow.
+        // All current steps now predate the save/open; recovery lags only through later steps.
         _savedDepth = _undo.Count;
     }
 
     /// <summary>
-    /// The user's first key, click, wheel turn or drop since the project was loaded or saved (the window hears them in every
-    /// one of HandPeg's windows): whatever changed by itself before it is taken as the saved state, so only what follows counts.
+    /// First user input since load/save (from any HandPeg window): rebaselines the saved fingerprint so only later changes
+    /// count as dirty.
     /// </summary>
     public void NoteUserInput()
     {
-        // A touch of the user's ends the settling of a step put back at once (4.4-BugHunt): what follows is theirs.
+        // User input ends any restore settle immediately.
         _settleEndsAt = 0;
 
-        // For Undo (4.4): a look changed a moment after this is the user's change, and takes a step (MainViewModel.Undo.cs).
+        // Look changes right after input are user changes and take an undo step (MainViewModel.Undo.cs).
         _userInputAt = Environment.TickCount64;
         _inputGesture++;
         if (!_undoSourcesHooked)
@@ -1290,19 +1235,13 @@ public partial class MainViewModel
         _savedFingerprint = now;
     }
 
-    /// <summary>
-    /// Whether the project (with media or without: clips, text, an emptied timeline) has changed since it was loaded, last saved or
-    /// set up new, by the user's hand.
-    /// </summary>
+    /// <summary>Whether user changes (clips, text, emptying the timeline) occurred since load, save or creation.</summary>
     public bool HasUnsavedChanges => _touchedSinceSaved && _savedFingerprint.Length > 0 && Fingerprint() != _savedFingerprint;
 
-    /// <summary>For the log, as HandPeg closes with unsaved changes: which parts of the project they are in.</summary>
+    /// <summary>Log helper on close with unsaved changes: which project parts differ.</summary>
     public string DescribeUnsavedChanges() => ChangedParts(_savedFingerprint, Fingerprint());
 
-    /// <summary>
-    /// Where two fingerprints of the project differ, by the names of the parts (the first few): never their values, so the
-    /// log holds no file names or titles.
-    /// </summary>
+    /// <summary>The first few differing property paths between two fingerprints; names only, so logs carry no file names or titles.</summary>
     private static string ChangedParts(string before, string after)
     {
         var parts = new List<string>();

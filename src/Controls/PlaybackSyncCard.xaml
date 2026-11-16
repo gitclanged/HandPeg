@@ -3,9 +3,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:HandPegApp">
     <!--
-        The Playback & A/V Sync Test (Pass 5.5.2-Release, the user's Q2): one button (Cancel Test while it runs), the user's line about it,
-        and, while it runs, the test playing in a small on-screen picture with its progress; then the result in a few words (every step's
-        figures in its tooltip). Used by the first-run window's second screen and Settings > Export & Hardware > GPU & NPU Roles.
+        Playback & A/V Sync Test card: a single button (Cancel Test while running) with a one-line description; while running, a
+        small on-screen preview with progress; afterwards a short result summary (per-step figures in its tooltip). Used by the
+        first-run window's second screen and Settings > Export & Hardware > GPU & NPU Roles.
     -->
     <StackPanel>
         <StackPanel Orientation="Horizontal">

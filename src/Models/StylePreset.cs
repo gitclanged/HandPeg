@@ -1,9 +1,7 @@
 namespace HandPegApp.Models;
 
 /// <summary>
-/// A layout file: what the Frame &amp; Layer Engine is showing, with the colour and blur settings that go
-/// with the look. Each part is optional, so a file may carry only some of them and an import may take
-/// only some of what a file carries.
+/// Style (layout) file: layers plus colour and blur settings. All sections are optional, and imports may apply a subset.
 /// </summary>
 public sealed class StylePreset
 {
@@ -19,8 +17,7 @@ public sealed class StylePreset
     public SubtitleSection? Subtitles { get; set; }
 
     /// <summary>
-    /// The mask pictures the layers use, by file name, each as Base64: carried inside the file, so that a
-    /// style preset is one file that works on any machine. Null when no layer has a mask.
+    /// Embedded mask bitmaps by file name (Base64) so the style is self-contained; null when no layer has a bitmap mask.
     /// </summary>
     public Dictionary<string, string>? Masks { get; set; }
 }
@@ -44,12 +41,11 @@ public sealed class LayoutSection
     public double CenterOffsetY { get; set; }
 
     /// <summary>
-    /// Width divided by height of the video the layout was made on; 0 when not recorded. The layers are
-    /// cut from the source by fractions of its frame, which only land on the same things in a video of the same shape.
+    /// Source aspect ratio the layout was authored on (0 if unknown); fractional crops only match sources of the same aspect.
     /// </summary>
     public double SourceAspectRatio { get; set; }
 
-    /// <summary>Whether the layout is for a frame turned on its side (tall from a wide video); null when the style leaves the frame as it is.</summary>
+    /// <summary>True for a vertical frame from a wide source; null leaves the frame orientation unchanged.</summary>
     public bool? Vertical { get; set; }
 
     /// <summary>How many of the layers lie under the main video; null in a style that does not say.</summary>
@@ -77,7 +73,7 @@ public sealed class ColorSection
     public double Sharpen { get; set; }
 }
 
-/// <summary>The blurred background's look (5.0-Release: a continuous radius from 0, its zoom and its own effect stack).</summary>
+/// <summary>Blur fill look: continuous radius from 0, zoom and its own effect stack.</summary>
 public sealed class BlurSection
 {
     public double Radius { get; set; } = 20;

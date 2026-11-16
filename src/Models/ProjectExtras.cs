@@ -3,12 +3,9 @@ using System.Text.Json;
 namespace HandPegApp.Models;
 
 /// <summary>
-/// The fields of a project file that this version does not know, kept per object of the file: a newer HandPeg's additions (or
-/// fields an older format wrote and this one retired). Read with the project (<c>[JsonExtensionData]</c> on each object), carried
-/// with its timeline (<see cref="Timeline.TimelineDocument.CarriedProjectFields"/>) and written back on the next save, so opening
-/// and saving a project made by a newer version does not drop what that version stored. The timeline, its tracks, clips and
-/// looks carry their own unknown fields on their own objects; these are the objects the editor rebuilds from its own state when
-/// it saves (the file header, source, output, sequence, background and export settings).
+/// Unknown project fields (newer-version additions or retired fields) per rebuilt object (header, source, output, sequence, background,
+/// export settings), captured via <c>[JsonExtensionData]</c>, carried on <see cref="Timeline.TimelineDocument.CarriedProjectFields"/>
+/// and re-emitted on save so round trips preserve them. Timeline, tracks, clips and looks keep their own unknown fields.
 /// </summary>
 public sealed record ProjectExtras(
     Dictionary<string, JsonElement>? File,

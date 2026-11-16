@@ -1,18 +1,16 @@
-// HandPeg compositor: the Thanos Snap (slot 69, TransitionStyle.ParticleSnap): a picture breaking into
-// embers on a wind. The picture cracks into Voronoi cells that let go one after another, in a sweep from the side the wind blows to,
-// broken up by noise, each glowing along its cracks just before it goes; what has let go flies as grains, turning to embers and
-// burning out. Nothing here depends on the clock but how far through the fade it is, so one moment always draws the same frame.
-// Run backwards it is a picture gathering itself from embers.
+// Particle Snap transition (slot 69, TransitionStyle.ParticleSnap): the picture disintegrates into embers on a wind.
+// It cracks into Voronoi cells released in a noisy sweep from the downwind side, each glowing along its cracks just before release;
+// released grains drift, turn to embers and burn out. Deterministic in fade progress; played in reverse for a fade in.
 // Compiled at build time (HandPegApp.csproj).
 
 #include "Common.hlsli"
 
-// P3 how far through the fade the clock is (0 to 1), P4 1 for a fade in.
-// Params2: where the picture lies in what is drawn (it has room round it for the embers): u0, v0, width, height.
-// Params3: the picture's size in texels; Params.x: texels per px of a 1080-wide frame.
+// P3 fade progress 0..1, P4 1 for a fade in.
+// Params2: picture rect within the padded target (room for embers): u0, v0, width, height.
+// Params3: picture size in texels; Params.x: texels per px of a 1080-wide frame.
 
-static const float GrainLife = 0.34;  // Of the whole fade, how much a grain's flight takes.
-static const int GrainSteps = 10;     // How many ages of grain are looked for at a pixel.
+static const float GrainLife = 0.34;  // Grain flight time, fraction of the fade.
+static const int GrainSteps = 10;     // Grain ages sampled per pixel.
 static const float3 Ember = float3(1.0, 0.46, 0.12);
 
 float SnapHash(float2 p)
@@ -35,10 +33,10 @@ float SnapNoise(float2 p)
     return lerp(lerp(SnapHash(i), SnapHash(i + float2(1, 0)), f.x), lerp(SnapHash(i + float2(0, 1)), SnapHash(i + float2(1, 1)), f.x), f.y);
 }
 
-// The wind: up and to the right.
+// Wind direction: up and to the right.
 float2 SnapWind() { return float2(0.86, -0.5); }
 
-// When a place lets go, 0 (first) to 1 (last): the side the wind blows to goes first; every grain has some chance of its own.
+// Release time 0 (first) .. 1 (last): downwind side first, broken up by noise, plus per-grain randomness.
 float SnapRelease(float2 uv, float2 id)
 {
     float sweep = dot(uv - 0.5, SnapWind()) + 0.5;
@@ -56,7 +54,7 @@ float4 PSParticleSnap(VsOut i) : SV_Target
     float2 grid = size / grain;
     float4 result = 0;
 
-    // What is still in place, cracked into cells.
+    // Intact picture, cracked into Voronoi cells.
     if (all(uv >= 0) && all(uv <= 1))
     {
         float2 p = uv * grid, cell = floor(p), f = p - cell;
@@ -91,7 +89,7 @@ float4 PSParticleSnap(VsOut i) : SV_Target
         result.rgb += Ember * heat * source.a;
     }
 
-    // What has let go: for each age of grain, where one of that age passing here came from.
+    // Released grains: for each age, trace back to the cell a grain of that age passing here came from.
     float reach = max(size.x, size.y) * 0.26;
     float2 swirl = float2(SnapNoise(uv * 7 + 3.1), SnapNoise(uv * 7 + 9.7)) - 0.5;
     [loop]

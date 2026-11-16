@@ -5,16 +5,15 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Compositor;
 
-// ----- The Live Encoded Preview's software encoder (5.4.4-Final, the user's: libx264, libx265, libsvtav1, libvpx-vp9 previewed for real) -----
+// ----- Live Encoded Preview software encoder (libx264, libx265, libsvtav1, libvpx-vp9) -----
 //
-// A paused frame through the export's own software encoder, with the export's own video arguments (MainViewModel.BuildVideoCodecArguments:
-// -c:v, -preset, -crf or -b:v, -pix_fmt, -tune, ...): one FFmpeg run per frame, NV12 in on its standard input, the bitstream out on its standard
-// output (Annex B for H.264 and HEVC, OBUs for AV1, IVF for VP9), decoded again by the loopback's Media Foundation decoder. FFmpeg only encodes
-// (Law 4: no filter is named). It runs on a thread of the pool, never on the worker's: the worker looks for it between scenes (Poll), and a
-// newer frame handed over while one is encoded waits in place of any other (the newest picture only). Paused frames only: a software encoder's
-// frame takes tens to thousands of milliseconds, so while playing the player shows the plain picture.
+// Encodes a paused frame with the export's own software encoder and video arguments (MainViewModel.BuildVideoCodecArguments: -c:v,
+// -preset, -crf or -b:v, -pix_fmt, -tune, ...): one FFmpeg run per frame, NV12 on stdin, bitstream on stdout (Annex B for H.264/HEVC,
+// OBUs for AV1, IVF for VP9), decoded again by the loopback's MF decoder. FFmpeg only encodes (Law 4: no filters). Runs on the thread
+// pool, never the worker thread: the worker polls between scenes, and a newer frame submitted mid-encode replaces any waiting one.
+// Paused frames only: software encodes take tens to thousands of ms, so playback shows the plain picture.
 
-/// <summary>A software encoder of the loopback: FFmpeg run once per paused frame (<see cref="ILoopbackEncoder"/>).</summary>
+/// <summary>Software loopback encoder: one FFmpeg run per paused frame (<see cref="ILoopbackEncoder"/>).</summary>
 internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
 {
     private readonly string _ffmpeg;
@@ -24,7 +23,7 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
     private readonly double _fps;
     private readonly CancellationTokenSource _stop = new();
 
-    // The frame being encoded (its task gives its bitstream and its sample time), and the newest frame waiting for it.
+    // Frame in flight (its task yields the bitstream and sample time) and the newest frame waiting behind it.
     private Task<(byte[]? Bitstream, long Time, string Error)>? _running;
     private (byte[] Frame, long Time)? _waiting;
 
@@ -36,15 +35,15 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
 
     public bool TakesP010 => false;
 
-    /// <summary>A slow preset's frame (x265 or SVT-AV1 at their slowest, 4K) may take seconds: given up on after 30.</summary>
+    /// <summary>Slow presets (x265 or SVT-AV1 at their slowest, 4K) can take seconds per frame: abandon after 30 s.</summary>
     public int GiveUpMs => 30_000;
 
     private FfmpegLoopbackEncoder(string ffmpeg, IReadOnlyList<string> arguments, string muxer, int width, int height, double fps, string name) =>
         (_ffmpeg, _arguments, _muxer, _width, _height, _fps, Name) = (ffmpeg, arguments, muxer, width, height, fps, name);
 
     /// <summary>
-    /// The software encoder for the settings: the export's arguments as given (they name the encoder), FFmpeg where Settings or the local copy
-    /// has it. Null with <see cref="ExportLoopbackState.NoEncoder"/> when there is no FFmpeg or no arguments.
+    /// Creates the software encoder from the export's arguments (which name the encoder) and FFmpeg from Settings or the bundled copy.
+    /// Null with <see cref="ExportLoopbackState.NoEncoder"/> when FFmpeg or the arguments are missing.
     /// </summary>
     public static FfmpegLoopbackEncoder? Create(in LoopbackConfig config, out ExportLoopbackState state)
     {
@@ -52,7 +51,7 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
         var arguments = SplitArguments(config.SoftwareArguments);
         var ffmpeg = DependencyUpdater.FfmpegPath;
 
-        // (A worker with a data folder of its own, the golden tests', takes the FFmpeg they name.)
+        // Workers with a private data folder (goldens) use the FFmpeg named by HANDPEG_FFMPEG.
         if ((string.IsNullOrWhiteSpace(ffmpeg) || !File.Exists(ffmpeg)) && Environment.GetEnvironmentVariable("HANDPEG_FFMPEG") is { Length: > 0 } named && File.Exists(named))
             ffmpeg = named;
         if (arguments.Count == 0 || string.IsNullOrWhiteSpace(ffmpeg) || !File.Exists(ffmpeg))
@@ -67,10 +66,10 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
         return new FfmpegLoopbackEncoder(ffmpeg, arguments, MuxerOf(config.Codec), config.Width, config.Height, config.Fps, $"{encoder} (FFmpeg)");
     }
 
-    /// <summary>The raw bitstream format FFmpeg writes for a codec: Annex B (h264, hevc), AV1's OBUs (obu), VP9 in IVF (ivf).</summary>
+    /// <summary>Raw bitstream muxer per codec: Annex B (h264, hevc), AV1 OBUs (obu), VP9 in IVF (ivf).</summary>
     internal static string MuxerOf(Guid codec) => codec == MfGuids.Hevc ? "hevc" : codec == MfGuids.Av1 ? "obu" : codec == MfGuids.Vp9 ? "ivf" : "h264";
 
-    /// <summary>The encoder the arguments name (after -c:v or -vcodec); null for none.</summary>
+    /// <summary>The encoder named after -c:v, -vcodec or -codec:v; null when none.</summary>
     internal static string? EncoderOf(IReadOnlyList<string> arguments)
     {
         for (var i = 0; i + 1 < arguments.Count; i++)
@@ -83,8 +82,8 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
     }
 
     /// <summary>
-    /// The whole FFmpeg command for one frame: NV12 of the size and rate in on pipe 0, one frame, no sound, the export's video arguments,
-    /// the codec's raw format out on pipe 1. Pure, for the golden test.
+    /// Full FFmpeg command for one frame: NV12 at the given size and rate on pipe 0, one frame, no audio, the export's video arguments,
+    /// the codec's raw format on pipe 1. Pure (golden).
     /// </summary>
     internal static List<string> CommandFor(IReadOnlyList<string> exportArguments, string muxer, int width, int height, double fps) =>
     [
@@ -96,7 +95,7 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
         "-f", muxer, "pipe:1",
     ];
 
-    /// <summary>Arguments split as a command line is (spaces, double quotes around a value with spaces in it). Pure, for the golden test.</summary>
+    /// <summary>Splits arguments like a command line (whitespace; double quotes around values with spaces). Pure (golden).</summary>
     internal static List<string> SplitArguments(string? text)
     {
         var parts = new List<string>();
@@ -129,7 +128,7 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
         return parts;
     }
 
-    /// <summary>The first frame of an IVF file (VP9): after its 32-byte header, a 12-byte frame header (the size, then the time). Null when there is none.</summary>
+    /// <summary>First frame payload of an IVF file (VP9): after the file header (>= 32 bytes) and a 12-byte frame header (size, timestamp); null when absent.</summary>
     internal static byte[]? FirstIvfFrame(byte[] ivf)
     {
         if (ivf.Length < 44 || ivf[0] != (byte)'D' || ivf[1] != (byte)'K' || ivf[2] != (byte)'I' || ivf[3] != (byte)'F')
@@ -143,10 +142,10 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
 
     public void SetQualityVsSpeed(int value)
     {
-        // The preset is in the export's arguments; a playing frame is never encoded here.
+        // The preset comes from the export's arguments; playback frames never reach this encoder.
     }
 
-    /// <summary>A frame handed over (the sample is let go here): its NV12 bytes copied out, encoded now or once the frame before it is done.</summary>
+    /// <summary>Takes ownership of the sample (released here), copies its NV12 bytes and encodes now or after the frame in flight.</summary>
     public void Submit(nint sample, bool forceKey)
     {
         try
@@ -189,7 +188,7 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
         _running = Task.Run(() => Encode(next.Frame, next.Time));
     }
 
-    // One FFmpeg run: the frame written, the output read whole, the run waited for (killed past GiveUpMs or when the encoder is let go).
+    // One FFmpeg run: write the frame, read all output, wait for exit (killed past GiveUpMs or on Dispose).
     private (byte[]? Bitstream, long Time, string Error) Encode(byte[] frame, long time)
     {
         var clock = Stopwatch.StartNew();
@@ -216,10 +215,10 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
             }
             catch (IOException)
             {
-                // FFmpeg ended before it took the frame: its own words say why.
+                // FFmpeg exited before reading the frame; its stderr explains why.
             }
 
-            // Waited for a tenth of a second at a time, so the encoder let go (the preview off, a setting changed) kills it at once.
+            // Poll in 100 ms steps so Dispose (preview off, setting changed) kills the run promptly.
             while (!process.WaitForExit(100) && clock.ElapsedMilliseconds < GiveUpMs && !_stop.IsCancellationRequested)
             {
             }
@@ -256,8 +255,8 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
     }
 
     /// <summary>
-    /// The encoded frame once FFmpeg is done: a bitstream sample in memory (its sample time the frame's), else 0. A run that failed is thrown
-    /// as a GpuException (the loopback says so, and gives the encoder up).
+    /// The encoded frame as an in-memory bitstream sample (with the frame's sample time) once FFmpeg finishes, else 0. A failed run throws
+    /// GpuException (the loopback reports it and abandons the encoder).
     /// </summary>
     public nint TryTakeOutput()
     {
@@ -305,12 +304,12 @@ internal sealed unsafe class FfmpegLoopbackEncoder : ILoopbackEncoder
         }
     }
 
-    /// <summary>Nothing is held back: each run gives its one frame out whole.</summary>
+    /// <summary>Nothing is buffered: each run outputs its single frame whole.</summary>
     public bool Drain() => true;
 
     public byte[]? SequenceHeader() => null;
 
-    /// <summary>Lets go: a run under way is killed (on its own thread, at its next look), a frame waiting dropped.</summary>
+    /// <summary>Kills any run in flight (on its own thread, at its next poll) and drops the waiting frame.</summary>
     public void Dispose()
     {
         _stop.Cancel();

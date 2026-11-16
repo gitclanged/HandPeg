@@ -2,19 +2,18 @@ using System.Runtime.InteropServices;
 
 namespace HandPegApp.Compositor.Native;
 
-// ----- COM by hand (Pass 5.0-Core) -----
+// ----- Hand-rolled COM -----
 //
-// DXGI, Direct3D 11 and Media Foundation are called through their method tables directly: a COM pointer's first field
-// is its table, and each method is a function pointer at a fixed place in it. The places are the interfaces' declaration
-// order, checked against Windows.Win32.winmd (the Win32 metadata) for this pass: IUnknown is 0-2, then each base
-// interface's methods, then the interface's own. No NuGet, no generated wrappers, no reflection; nothing allocates.
+// DXGI, D3D11 and Media Foundation are called through raw vtables: a COM pointer's first field is its method table and each method
+// sits at its declaration-order slot (IUnknown 0-2, then base interfaces, then the interface's own; verified against
+// Windows.Win32.winmd). No NuGet, generated wrappers or reflection; no allocation.
 
-/// <summary>A failed HRESULT from the graphics or media stack, with what was being done.</summary>
+/// <summary>A failed HRESULT from the graphics or media stack, tagged with the failing operation.</summary>
 public sealed class GpuException(int hresult, string what) : Exception(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{what} failed (0x{hresult:X8})"))
 {
     public int Code { get; } = hresult;
 
-    /// <summary>The card was removed, reset, hung or its driver fell over: a TDR. The device is gone; the worker starts again.</summary>
+    /// <summary>Device removed, reset, hung or driver internal error (TDR): the device is gone and the worker restarts.</summary>
     public bool IsDeviceLost => Com.IsDeviceLost(Code);
 }
 
@@ -36,7 +35,7 @@ internal static unsafe partial class Com
             throw new GpuException(hresult, what);
     }
 
-    /// <summary>The method table of a COM pointer.</summary>
+    /// <summary>The vtable of a COM pointer.</summary>
     public static void** Table(nint instance) => *(void***)instance;
 
     public static void Release(ref nint instance)

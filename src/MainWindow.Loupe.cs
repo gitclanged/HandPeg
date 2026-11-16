@@ -4,15 +4,15 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- The magnifier loupe's wiring (Pass 5.0-Verify, the user's bug 6) -----
-// The panes that own the edge sliders say when one is held (MainViewModel.BeginEdgeTuning / EndEdgeTuning); here that
-// becomes the GPU engine's loupe (GpuPreviewEngine.SetLoupe), which the worker draws (SceneRenderer.Loupe.cs): it looks at the
-// edge's clip, or, for a box that stands for none (the Crop boxes), the clip they stand for (CropTarget).
+// ----- Edge loupe wiring -----
+// Panes owning edge sliders report holds (MainViewModel.BeginEdgeTuning / EndEdgeTuning); this forwards them to the GPU engine's loupe
+// (GpuPreviewEngine.SetLoupe), rendered by the worker (SceneRenderer.Loupe.cs). It targets the edge's clip, or for clip-less boxes
+// (Crop boxes) the clip they edit (CropTarget).
 public partial class MainWindow
 {
     private void HookLoupe() => _viewModel.EdgeTuningChanged += SyncLoupe;
 
-    /// <summary>The edge tuned now to the GPU engine: its clip's key and kind, or none.</summary>
+    /// <summary>Pushes the current edge-tuning target (clip key and edge kind, or none) to the GPU engine.</summary>
     private void SyncLoupe()
     {
         if (_gpu is not { } engine)

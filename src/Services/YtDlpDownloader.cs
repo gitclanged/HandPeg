@@ -21,12 +21,11 @@ public static partial class YtDlpDownloader
             : "bestvideo+bestaudio/best";
 
     /// <summary>
-    /// Downloads the URL with the local yt-dlp and returns the path of the resulting file. A download
-    /// made earlier with the same options, and still in the cache, is returned without downloading again.
+    /// Downloads the URL with the local yt-dlp and returns the file path; a cached download with the same options is reused.
     /// </summary>
     /// <param name="saveFolder">
-    /// A folder of the user's to save the file in, to keep; blank keeps it in the cache. Either way the cache
-    /// remembers the request, so loading the same URL again finds the file wherever it was saved.
+    /// Permanent destination folder; blank keeps the file in the cache. The cache records the request either way so the same URL resolves
+    /// to the saved file.
     /// </param>
     public static Task<string> DownloadAsync(
         string url, string resolution, bool downloadSubtitles, string sponsorBlockCategories, bool markSponsorBlock, string saveFolder,
@@ -63,8 +62,7 @@ public static partial class YtDlpDownloader
         var directory = Path.Combine(DownloadRoot, name);
         Directory.CreateDirectory(directory);
 
-        // Saved for keeps: yt-dlp works in a folder of its own inside the chosen one (so what it leaves behind
-        // is easy to tell apart), and the finished files are moved out of it, which on one drive is instant.
+        // Permanent save: yt-dlp works in a private subfolder (isolating leftovers); finished files are moved out (instant on one volume).
         saveFolder = saveFolder.Trim().Trim('"');
         var work = directory;
         if (saveFolder.Length > 0)
@@ -77,8 +75,7 @@ public static partial class YtDlpDownloader
         // Embedded rather than left as loose files, so the subtitles show up as tracks of the download.
         string[] subtitleArguments = downloadSubtitles ? ["--write-subs", "--write-auto-subs", "--embed-subs"] : [];
 
-        // yt-dlp cuts the chosen SponsorBlock segments out of the file after downloading it, or (4.2B-2) marks them as
-        // named chapters of the file, which Copy YouTube Timestamps then lists.
+        // SponsorBlock segments are removed after download, or marked as named chapters (listed by Copy YouTube Timestamps).
         string[] sponsorBlockArguments = sponsorBlockCategories.Length == 0 ? []
             : markSponsorBlock ? ["--sponsorblock-mark", sponsorBlockCategories, "--embed-chapters"]
             : ["--sponsorblock-remove", sponsorBlockCategories];
@@ -120,9 +117,8 @@ public static partial class YtDlpDownloader
         {
             var exitCode = await RunAsync([]);
 
-            // Walled off (an age check, a sign-in, 403): tried again as a signed-in browser would ask, with each
-            // source of cookies the settings allow, until one gets through or the failure is something else.
-            // A browser whose cookies cannot be read (Chrome or Edge open, say) is passed over for the next one.
+            // Gated content (age check, sign-in, 403): retry with each allowed cookie source until one succeeds or the error changes.
+            // Browsers whose cookies are unreadable (e.g. Chrome/Edge running) are skipped.
             if (exitCode != 0 && walled)
             {
                 var (wall, tried) = (lastError, new List<string>());
@@ -148,13 +144,12 @@ public static partial class YtDlpDownloader
             file = FindMediaFile(work)
                    ?? throw new InvalidOperationException("yt-dlp finished without producing a file.");
 
-            // yt-dlp has exited, so the file should be complete. Make sure of it before anything opens it:
-            // a player given a file that is missing, empty or still being written has nothing to draw on.
+            // Verify the file is present, non-empty and unlocked before anything opens it.
             await WaitUntilReadableAsync(file, cancellationToken);
         }
         catch when (!ReferenceEquals(work, directory))
         {
-            // A failed or cancelled download leaves nothing behind in the user's folder.
+            // Failed or cancelled downloads leave nothing in the destination folder.
             TryDelete(work);
             throw;
         }
@@ -169,9 +164,8 @@ public static partial class YtDlpDownloader
         return file;
     }
 
-    // What yt-dlp says when a site wants a signed-in (or grown-up) visitor: "Sign in to confirm your age", "This video
-    // is only available for registered users", "login required", "Use --cookies-from-browser or --cookies", "HTTP
-    // Error 403: Forbidden", "members-only", "Private video" and the like.
+    // yt-dlp messages indicating authentication or age gating ("Sign in to confirm your age", "login required", "HTTP Error 403",
+    // "members-only", "Private video", ...).
     [System.Text.RegularExpressions.GeneratedRegex(@"sign[ -]?in|log[ -]?in|login|age[- ]?(restrict|gate|verif)|confirm your age|registered users|--cookies|cookies-from-browser|authenticat|\b403\b|forbidden|members[- ]only|private video", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
     private static partial System.Text.RegularExpressions.Regex SignInWall();
 
@@ -180,10 +174,8 @@ public static partial class YtDlpDownloader
     private static partial System.Text.RegularExpressions.Regex CookieTrouble();
 
     /// <summary>
-    /// The cookies a walled download is tried again with, in order, as the settings allow
-    /// (<see cref="AppSettings.YtDlpCookieSource"/>): for Automatic (or a value this version does not know), each browser
-    /// found on this PC, then the cookies file when one is named and there; otherwise the one chosen; none when Off.
-    /// Each with the words the progress line names it by, never a path.
+    /// Ordered cookie sources for gated retries per <see cref="AppSettings.YtDlpCookieSource"/>: Automatic (or unknown) tries each
+    /// installed browser then an existing cookies file; otherwise the chosen source; none when Off. Each has a display label, never a path.
     /// </summary>
     private static List<(string Label, string[] Arguments)> CookieSources()
     {
@@ -208,9 +200,8 @@ public static partial class YtDlpDownloader
     }
 
     /// <summary>
-    /// The browsers yt-dlp can read cookies from, in the order Automatic tries them, and how each is found: what to
-    /// pass to --cookies-from-browser, or null when it is not on this PC. yt-dlp has no name for Waterfox, which keeps
-    /// Firefox's kind of profile: it is given as Firefox with the folder of its profile.
+    /// Cookie-capable browsers in Automatic order with their --cookies-from-browser value (null when not installed). Waterfox has no
+    /// yt-dlp name and is passed as Firefox with its profile folder.
     /// </summary>
     private static readonly (string Name, string Label, Func<string?> Find)[] Browsers =
     [
@@ -221,11 +212,11 @@ public static partial class YtDlpDownloader
         ("brave", "Brave", () => LocalBrowser("brave", "BraveSoftware", "Brave-Browser", "User Data")),
     ];
 
-    /// <summary>The browser's name for yt-dlp when its user data folder (under the local application data) is there.</summary>
+    /// <summary>yt-dlp browser name when its user data folder exists under LocalAppData.</summary>
     private static string? LocalBrowser(string name, params string[] folder) =>
         Directory.Exists(Path.Combine([Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), .. folder])) ? name : null;
 
-    /// <summary>Of the profile folders under <paramref name="profiles"/>, the one whose cookies were written last; null when there is none.</summary>
+    /// <summary>Profile under <paramref name="profiles"/> with the newest cookies file; null if none.</summary>
     private static string? LatestFirefoxProfile(string profiles)
     {
         try
@@ -245,8 +236,8 @@ public static partial class YtDlpDownloader
     }
 
     /// <summary>
-    /// Moves what yt-dlp left in its working folder into the folder it was saved to, under a name no file there
-    /// has yet, and removes the working folder. Returns where the media file went.
+    /// Moves yt-dlp output from its working folder to the destination under a unique name, removes the working folder, and returns the
+    /// media file path.
     /// </summary>
     private static string MoveOut(string work, string file, string folder)
     {
@@ -275,7 +266,7 @@ public static partial class YtDlpDownloader
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Left behind with a partial file in it: harmless, and in the user's own folder to delete.
+            // A leftover folder with a partial file is harmless and user-deletable.
         }
     }
 
@@ -347,9 +338,8 @@ public static partial class YtDlpDownloader
     }
 
     /// <summary>
-    /// The download folders (by name) that projects use: those saved in the projects folder, and the files given
-    /// (what the open project uses). Their downloads are kept whatever the cache's size (Settings: Keep downloads
-    /// used by projects). Projects are not opened, only searched for the download folder's path.
+    /// Download folder names referenced by saved projects and the given files (open project); exempt from cache trimming (Settings:
+    /// Keep downloads used by projects). Projects are text-searched, not parsed.
     /// </summary>
     public static HashSet<string> FoldersUsedByProjects(IEnumerable<string> projectFolders, IEnumerable<string> filesInUse)
     {
@@ -408,8 +398,7 @@ public static partial class YtDlpDownloader
     }
 
     /// <summary>
-    /// Keeps the most recently used downloads, up to <paramref name="keep"/>, and deletes the rest; never those whose
-    /// folder is in <paramref name="pinned"/> (used by a project).
+    /// Keeps the <paramref name="keep"/> most recently used downloads and deletes the rest, except folders in <paramref name="pinned"/>.
     /// </summary>
     public static void TrimDownloads(int keep, IReadOnlySet<string>? pinned = null)
     {

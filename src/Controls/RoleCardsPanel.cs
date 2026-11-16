@@ -10,20 +10,20 @@ using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
-/// <summary>A card a role menu offers (Pass 5.6A): its DXGI number and name.</summary>
+/// <summary>Device offered in a role menu: DXGI adapter index and name.</summary>
 public readonly record struct RoleDevice(int Index, string Name);
 
 /// <summary>
-/// The GPU and NPU role cards (Pass 5.6A), shared by the first-run window's second screen and Settings' Export &amp; Hardware stage: one
-/// inspector card per role (Role, the card that holds it, why), a green check on a measured card and its S-F tier pill (the figures in the
-/// pill's tooltip), or a badge ("Estimated", "Measuring...", "Detected") where nothing is measured. A click on a card (or Enter / Space
-/// on it) opens its menu: Auto (Recommended) and each distinct card (Background also Processor Only; the NPU Auto, NPU, Graphics Card,
-/// Processor), the current choice checked; a choice raises <see cref="RoleChosen"/> and the owner writes it. Built in code, nothing until
-/// its items are set; the cards are made once and updated in place (the measurement's progress updates them many times a second).
+/// GPU and NPU role cards shared by the first-run window's second screen and Settings' Export &amp; Hardware stage: one inspector card per
+/// role (role, assigned device, reason), with a green check and S-F tier pill (figures in its tooltip) when measured, else a badge
+/// ("Estimated", "Measuring...", "Detected"). Click, Enter or Space opens the role menu: Auto (Recommended) plus each distinct device
+/// (Background adds Processor Only; NPU offers Auto, NPU, Graphics Card, Processor), current choice checked; a pick raises
+/// <see cref="RoleChosen"/> for the owner to persist. Built in code and empty until items are set; cards are created once and updated in
+/// place (benchmark progress refreshes them many times per second).
 /// </summary>
 public sealed class RoleCardsPanel : StackPanel
 {
-    // The tier pills' colours (one per grade, F to S) and the check's: frozen (Law 2), the same in every theme (they carry the grade).
+    // Tier pill colours (one per grade, F to S) and the check colour: frozen (Law 2) and theme-independent since they encode the grade.
     private static readonly Brush[] TierBrushes =
     [
         Frozen(0xF2, 0x5F, 0x5C), Frozen(0xF0, 0x88, 0x3E), Frozen(0xB4, 0x8C, 0xFF), Frozen(0x4E, 0xA1, 0xFF), Frozen(0x3D, 0xD6, 0x8C), Frozen(0xFF, 0xB0, 0x20),
@@ -36,7 +36,7 @@ public sealed class RoleCardsPanel : StackPanel
 
     public RoleCardsPanel() => Focusable = false;
 
-    /// <summary>The role cards shown, in order (Compositor, Decode, Background, Export, NPU).</summary>
+    /// <summary>Role cards to display, in order (Compositor, Decode, Background, Export, NPU).</summary>
     public IEnumerable<FirstRunRoleCard>? ItemsSource
     {
         get => _items;
@@ -47,22 +47,22 @@ public sealed class RoleCardsPanel : StackPanel
         }
     }
 
-    /// <summary>The cards each GPU role's menu offers (first listings only: the owner's list).</summary>
+    /// <summary>Devices offered in each GPU role menu (distinct adapters, as supplied by the owner).</summary>
     public IReadOnlyList<RoleDevice> Devices { get; set; } = [];
 
-    /// <summary>Whether there is an NPU to offer to Auto-Captions (its menu item is off without one).</summary>
+    /// <summary>True when an NPU is available for Auto-Captions (the NPU menu item is disabled otherwise).</summary>
     public bool HasNpu { get; set; }
 
     /// <summary>
-    /// A role chosen from a card's menu: the role (<see cref="HardwareRoles"/>), and the value: a GPU role's card number ("-1" Auto,
-    /// Background's "-2" Processor Only), the NPU's Auto-Captions accelerator ("auto", "npu", "gpu", "cpu").
+    /// Raised on a menu choice with the role (<see cref="HardwareRoles"/>) and value: an adapter index for GPU roles ("-1" Auto,
+    /// Background "-2" Processor Only), or the Auto-Captions accelerator for NPU ("auto", "npu", "gpu", "cpu").
     /// </summary>
     public event Action<string, string>? RoleChosen;
 
-    /// <summary>The colour of a grade's pill.</summary>
+    /// <summary>Pill brush for a tier grade.</summary>
     public static Brush TierBrush(TierGrade grade) => TierBrushes[(int)grade];
 
-    /// <summary>A tier pill: the grade's letter on its colour, the tooltip given (the figures and the score).</summary>
+    /// <summary>Builds a tier pill: grade letter on its colour, with the given tooltip (figures and score).</summary>
     public static Border TierPill(PerformanceTier tier, string tip)
     {
         var letter = new TextBlock { Text = tier.Letter, FontSize = 11, FontWeight = FontWeights.Bold, Foreground = PillText, HorizontalAlignment = HorizontalAlignment.Center };
@@ -71,7 +71,7 @@ public sealed class RoleCardsPanel : StackPanel
         return pill;
     }
 
-    /// <summary>The menu a role offers: (header, value) in order. Pure: the goldens read it.</summary>
+    /// <summary>Ordered (header, value) menu choices for a role. Pure; golden-tested.</summary>
     public static IReadOnlyList<(string Header, string Value)> ChoicesFor(string role, IReadOnlyList<RoleDevice> devices)
     {
         if (role == HardwareRoles.Npu)
@@ -87,10 +87,10 @@ public sealed class RoleCardsPanel : StackPanel
 
     private static string Number(int value) => value.ToString(CultureInfo.InvariantCulture);
 
-    /// <summary>The green of a measured card's check (and Settings' sync line's).</summary>
+    /// <summary>Green used for measured-card checks (and the Settings sync line).</summary>
     public static Brush MeasuredBrush => CheckBrush;
 
-    /// <summary>A card's measurement on its badge: decoding and the bus, or the bus alone; empty when nothing was measured on it.</summary>
+    /// <summary>Measured figures text (decode fps and/or readback MB/s); empty when nothing was measured.</summary>
     public static string Figures(HardwareBenchmarkAdapter card) => (card.HardwareDecodeFps, card.ReadbackMBps) switch
     {
         ( > 0, > 0) => string.Create(CultureInfo.InvariantCulture, $"{card.HardwareDecodeFps:#,0} fps · {card.ReadbackMBps:#,0} MB/s"),
@@ -99,12 +99,12 @@ public sealed class RoleCardsPanel : StackPanel
         _ => "",
     };
 
-    /// <summary>The menu of a card, as a click opens it (made each time: nothing of it before it is wanted).</summary>
+    /// <summary>Builds a card's role menu on demand (created per open, nothing pre-built).</summary>
     internal ContextMenu MenuFor(FirstRunRoleCard card, FrameworkElement target)
     {
         var menu = new ContextMenu { PlacementTarget = target, Placement = PlacementMode.Custom };
 
-        // Under the card's left edge, in its device pixels (never mirrored on a PC whose menus open to the left of the hand).
+        // Below the card's left edge in device pixels (custom placement avoids mirroring under right-handed menu alignment).
         menu.CustomPopupPlacementCallback = (_, targetSize, _) =>
         {
             var perDip = target.ActualHeight > 0 ? targetSize.Height / target.ActualHeight : 1;
@@ -123,7 +123,7 @@ public sealed class RoleCardsPanel : StackPanel
         return menu;
     }
 
-    /// <summary>Opens a card's menu (a click, Enter or Space on it).</summary>
+    /// <summary>Opens the menu of the card at <paramref name="index"/> (click, Enter or Space).</summary>
     internal void OpenMenu(int index)
     {
         if (index < 0 || index >= _views.Count || _views[index].Card is not { } card)
@@ -132,7 +132,7 @@ public sealed class RoleCardsPanel : StackPanel
         menu.IsOpen = true;
     }
 
-    /// <summary>The card elements (the goldens find each by its automation id).</summary>
+    /// <summary>Card root elements (goldens locate them by automation id).</summary>
     internal IReadOnlyList<Border> Cards => [.. _views.Select(v => v.Root)];
 
     private void Refresh()
@@ -157,7 +157,7 @@ public sealed class RoleCardsPanel : StackPanel
         }
     }
 
-    // One card's elements, made once and updated in place.
+    // Elements of one card, created once and updated in place.
     private sealed class CardView
     {
         private readonly TextBlock _role, _name, _detail, _badgeText;
@@ -214,7 +214,7 @@ public sealed class RoleCardsPanel : StackPanel
             grid.Children.Add(_detail);
             Root.Child = grid;
 
-            // A press and its release on the card: its menu. Enter or Space on it (it takes the keyboard focus): the same.
+            // Press then release on the card opens its menu; Enter or Space does the same when focused.
             var pressed = false;
             Root.MouseLeftButtonDown += (_, e) =>
             {
@@ -239,7 +239,7 @@ public sealed class RoleCardsPanel : StackPanel
                 }
             };
 
-            // The outline in the accent colour under the pointer or the keyboard's focus, as the first run's choice cards are.
+            // Accent outline on hover or keyboard focus, matching the first-run choice cards.
             void Outline() => Root.SetResourceReference(Border.BorderBrushProperty,
                 Root.IsKeyboardFocused ? "AccentBrush" : Root.IsMouseOver ? "AccentHoverBrush" : "InspectorCardBorderBrush");
             Root.MouseEnter += (_, _) => Outline();
@@ -264,7 +264,7 @@ public sealed class RoleCardsPanel : StackPanel
             (_detail.Text, _detail.ToolTip) = (card.Detail, card.Detail.Length > 0 ? card.Detail : null);
             _check.Visibility = card.Measured ? Visibility.Visible : Visibility.Collapsed;
 
-            // A measured tier: its pill (the figures in its tooltip). Otherwise the badge, as 5.5A had it, when it says anything.
+            // Measured tier: show the pill (figures in its tooltip); otherwise the text badge, when non-empty.
             if (_pillShown != (card.Tier, card.TierTip))
             {
                 _pillShown = (card.Tier, card.TierTip);

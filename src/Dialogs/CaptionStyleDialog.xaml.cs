@@ -7,13 +7,11 @@ using HandPegApp.Models;
 namespace HandPegApp;
 
 /// <summary>
-/// Font, colours, outline, words per line and animation of the auto-captions, with a sample drawn in the
-/// style as it is edited. Works on a copy of the style, which the caller takes when the dialog is confirmed.
+/// Auto-caption style editor (font, colours, outline, words per line, animation) with a live sample. Edits a copy the caller takes on OK.
 /// </summary>
 public partial class CaptionStyleDialog : Window
 {
-    // The style is a plain object that does not announce its changes, so the sample is simply redrawn a
-    // few times a second while the dialog is open.
+    // The style is a plain (non-observable) object, so the sample is redrawn on a timer a few times per second.
     private readonly DispatcherTimer _refresh = new() { Interval = TimeSpan.FromMilliseconds(150) };
 
     public CaptionStyleDialog(CaptionStyle style)
@@ -21,11 +19,11 @@ public partial class CaptionStyleDialog : Window
         InitializeComponent();
         SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
 
-        // Ctrl+Z and Ctrl+Y take back and redo what is changed here, a press at a time (4.3E).
+        // Dialog-local Ctrl+Z/Ctrl+Y, one step per press.
         _ = new BoundUndo(this);
         EditedStyle = style.Clone();
 
-        // The fonts on this computer; a style made elsewhere may name one that is not, and keeps it all the same.
+        // Installed fonts; a style's missing font is preserved as-is.
         var fonts = Fonts.SystemFontFamilies.Select(f => f.Source).Order(StringComparer.OrdinalIgnoreCase).ToList();
         if (!fonts.Contains(EditedStyle.FontName))
             fonts.Insert(0, EditedStyle.FontName);
@@ -43,10 +41,10 @@ public partial class CaptionStyleDialog : Window
         Closed += (_, _) => _refresh.Stop();
     }
 
-    /// <summary>The style as edited. Only meaningful once the dialog has been confirmed.</summary>
+    /// <summary>Edited style; valid only after OK.</summary>
     public CaptionStyle EditedStyle { get; }
 
-    /// <summary>Opens the Windows colour picker for the button that was pressed.</summary>
+    /// <summary>Opens the Windows colour picker for the pressed button.</summary>
     private void PickColor_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button { Tag: string which })
@@ -59,7 +57,7 @@ public partial class CaptionStyleDialog : Window
             FullOpen = true,
         };
 
-        // Owned by this window, so that it opens over it and blocks it like any other dialog.
+        // Owned by this window so it opens on top and is modal to it.
         var owner = new System.Windows.Forms.NativeWindow();
         owner.AssignHandle(new System.Windows.Interop.WindowInteropHelper(this).Handle);
         try
@@ -93,7 +91,7 @@ public partial class CaptionStyleDialog : Window
         }
     }
 
-    /// <summary>Fills each colour button with its colour and writes the value on it, light or dark so that it reads.</summary>
+    /// <summary>Fills each colour button with its colour and value label, using contrasting text.</summary>
     private void ShowColors()
     {
         foreach (var (button, value) in new[]

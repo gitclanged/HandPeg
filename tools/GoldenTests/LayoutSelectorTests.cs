@@ -464,6 +464,30 @@ public static class LayoutSelectorTests
 
     // ----- dock-splitter-range -----
 
+    // A window root that is a plain UIElement: UiScale.Apply scales only a FrameworkElement root, so the case's layout stays its own.
+    private sealed class PlainRoot : UIElement
+    {
+        private readonly UIElement _child;
+
+        public PlainRoot(UIElement child)
+        {
+            _child = child;
+            AddVisualChild(child);
+        }
+
+        protected override int VisualChildrenCount => 1;
+
+        protected override Visual GetVisualChild(int index) => _child;
+
+        protected override Size MeasureCore(Size availableSize)
+        {
+            _child.Measure(availableSize);
+            return _child.DesiredSize;
+        }
+
+        protected override void ArrangeCore(Rect finalRect) => _child.Arrange(new Rect(finalRect.Size));
+    }
+
     private static void Idle()
     {
         for (var i = 0; i < 4; i++)
@@ -546,8 +570,11 @@ public static class LayoutSelectorTests
             header.Children.Add(new Button { Content = content, Padding = glyph.Length == 0 ? new Thickness(9, 6, 9, 6) : new Thickness(10, 6, 10, 6), Margin = new Thickness(6, 0, 0, 6), ToolTip = name });
         }
 
-        var host = new ContentControl { Focusable = false };
-        var window = new Window { Left = 20, Top = 20, Width = 1280, Height = 760, Content = host, ShowActivated = false, WindowStyle = WindowStyle.None, ShowInTaskbar = false, ResizeMode = ResizeMode.NoResize };
+        // The host's own size and rounding (5.6J): the parts are laid out at 1280 x 760 DIPs on whole DIPs whatever the screen, its work
+        // area, its DPI or a UI scale an earlier case left set. The window's root is no FrameworkElement, so UiScale never scales it, and
+        // its root DPI is pinned at 1 once shown.
+        var host = new ContentControl { Focusable = false, Width = 1280, Height = 760, UseLayoutRounding = true };
+        var window = new Window { Left = 20, Top = 20, Width = 1280, Height = 760, Content = new PlainRoot(host), ShowActivated = false, WindowStyle = WindowStyle.None, ShowInTaskbar = false, ResizeMode = ResizeMode.NoResize };
         var dock = new DockManager(window, host, () => MainWindow.StandardLayout(TabIds));
         var resets = 0;
         static FrameworkElement Pane(string name) => new Border { Background = Brushes.DimGray, Child = new TextBlock { Text = name } };
@@ -586,6 +613,9 @@ public static class LayoutSelectorTests
         try
         {
             window.Show();
+            VisualTreeHelper.SetRootDpi(window, new DpiScale(1, 1));
+            Idle();
+            Console.WriteLine($"  dock-splitter-range: root DPI {VisualTreeHelper.GetDpi(host).DpiScaleX:0.###}, UI scale percent {AppSettings.Current.UiScalePercent}");
             var layouts = MainWindow.BuiltInLayoutStates(TabIds).Where(l => l.Name is "Standard Editing" or "Vertical & Shorts Studio" or "Vertical Creator Split").ToList();
             foreach (var (name, layout) in layouts)
             {

@@ -7,19 +7,19 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using HandPegApp.Models;
 using HandPegApp.Services;
+using HandPegApp.Services.Audio;
 
 namespace HandPegApp.ViewModels;
 
-// Sound: waveforms, the voiceover and its recording, and playback that skips what was cut.
-// Also the resolution presets and the preset bar's place, which arrived in the same pass.
+// Audio: waveforms, row heights, Audio tab rows, voice detection, voiceover recording; plus resolution presets.
 public partial class MainViewModel
 {
     // ----- Waveforms -----
 
-    // One colour per track, so that they can be told apart where they are laid over each other.
+    // Distinct colour per track so overlaid waveforms stay distinguishable.
     private static readonly string[] WaveformPalette = ["#4FC3F7", "#FFB74D", "#81C784", "#F06292", "#BA68C8", "#FFF176"];
 
-    /// <summary>The mix of the audio tracks in use, drawn behind the timeline. Null when there is none (yet), or waveforms are off.</summary>
+    /// <summary>Mixed waveform of active audio tracks drawn behind the timeline; null when absent or waveforms are off.</summary>
     [ObservableProperty] private ImageSource? _timelineWaveform;
 
     private static string WaveformFolder => Path.Combine(SessionPaths.Root, "waves");
@@ -27,35 +27,34 @@ public partial class MainViewModel
     private CancellationTokenSource? _waveformCancellation;
     private CancellationTokenSource? _timelineWaveformCancellation;
 
-    /// <summary>Whether waveforms are drawn at all: the timeline's and the Audio tab's go on and off together.</summary>
+    /// <summary>Global waveform toggle for the timeline and the Audio tab.</summary>
     public bool ShowWaveforms => AppSettings.Current.ShowTimelineWaveform;
 
-    // The three heights: the Sequence Overview Scrubber's, and the track heights of the timeline's and the Audio tab's rows.
-    // Each runs 1 to 50 (the Scrubber's 1 to 52) and is remembered. The Sequence Overview Scrubber's has no slider since 4.2B-2:
-    // its lower edge and the border under it (a plain drag; Ctrl-drag shares the rows instead) and its tab's right-click presets
-    // set it, a drag keeping to 16 to 120 px (TimelineAreaHeight; MainWindow.ScrubberStep).
+    // Persisted heights: Overview Scrubber (1..52), timeline tracks and Audio tab rows (1..50). The scrubber has no slider: its
+    // lower edge (plain drag; Ctrl-drag redistributes) and tab presets set it, drags clamped to 16..120 px (TimelineAreaHeight,
+    // MainWindow.ScrubberStep).
 
-    /// <summary>How tall the Sequence Overview Scrubber is, 1 (16 px) to 52.</summary>
+    /// <summary>Overview Scrubber height step, 1 (16 px) to 52.</summary>
     public double MasterTimelineHeight
     {
         get => Math.Clamp(AppSettings.Current.MasterTimelineHeight is > 0 and var set ? set : 4 * AppSettings.Current.TimelineHeight - 1, 1, MostMasterTimeline);
         set => SetHeight(s => s.MasterTimelineHeight, (s, v) => s.MasterTimelineHeight = v, value, nameof(MasterTimelineHeight), nameof(TimelineAreaHeight), MostMasterTimeline);
     }
 
-    /// <summary>The Sequence Overview Scrubber's presets (its tab's menu): 44, 88 and (held to 120 px by MainWindow.ScrubberStep) Tall.</summary>
+    /// <summary>Overview Scrubber tab-menu presets: 44, 88 and Tall (clamped to 120 px by MainWindow.ScrubberStep).</summary>
     public const int CompactMasterTimeline = 8, MediumMasterTimeline = AppSettings.DefaultMasterTimelineHeight, TallMasterTimeline = 37;
 
-    // The Scrubber's tallest setting: 220 px, as before its steps were moved down by two (5.2-AuditB).
+    // Tallest scrubber step: 220 px (the step scale is offset by two).
     private const int MostMasterTimeline = 52;
 
-    /// <summary>How tall each track's time bar is on the timeline, 1 to 50.</summary>
+    /// <summary>Timeline track height step, 1 to 50.</summary>
     public double LayerTrackHeight
     {
         get => Math.Clamp(AppSettings.Current.LayerHeight, 1, 50);
         set => SetHeight(s => s.LayerHeight, (s, v) => s.LayerHeight = v, value, nameof(LayerTrackHeight), nameof(LayerBarHeight));
     }
 
-    /// <summary>How tall each sound's row is on the Audio tab, 1 to 50.</summary>
+    /// <summary>Audio tab row height step, 1 to 50.</summary>
     public double AudioTrackHeight
     {
         get => Math.Clamp(AppSettings.Current.AudioHeight, 1, 50);
@@ -73,20 +72,20 @@ public partial class MainViewModel
         OnPropertyChanged(pixels);
     }
 
-    /// <summary>Height in pixels of the timeline (waveform, I-frame lines, playhead): 16 at its slimmest, 220 at its tallest.</summary>
+    /// <summary>Scrubber area height in pixels (waveform, I-frame lines, playhead): 16 to 220.</summary>
     public double TimelineAreaHeight => 12 + 4 * MasterTimelineHeight;
 
-    /// <summary>Height in pixels of a track's time bar on the timeline: 26 at the default of 25.</summary>
-    // The same reckoning as an audio row's height, so that the two sliders reach the same smallest and largest.
+    /// <summary>Timeline track height in pixels (26 at the default step 25).</summary>
+    // Same mapping as audio row height so both sliders share the same range.
     public double LayerBarHeight => Math.Round(46 + 2.16 * LayerTrackHeight);
 
-    /// <summary>Height in pixels of one sound's row in the Audio tab: 100 at the default of 25.</summary>
+    /// <summary>Audio tab row height in pixels (100 at the default step 25).</summary>
     public double AudioTrackRowHeight => ShowWaveforms ? Math.Round(46 + 2.16 * AudioTrackHeight) : 64;
     /// <summary>
-    /// Draws the timeline's waveform and one for every audio track, in the background, after a load: all of
-    /// them from one reading of the file (see Waveforms.RenderManyAsync).
+    /// Renders the timeline waveform and one per audio track in the background after a load, from a single file pass
+    /// (Waveforms.RenderManyAsync).
     /// </summary>
-    /// <summary>The waveforms of the opened file's audio tracks, one per track drawn, layered in the Master Mix view.</summary>
+    /// <summary>Per-track waveforms of the opened file, layered in the Master Mix view.</summary>
     public System.Collections.ObjectModel.ObservableCollection<System.Windows.Media.ImageSource> SourceWaveforms { get; } = [];
 
     private async Task GenerateWaveformsAsync(string mediaPath)
@@ -128,7 +127,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            // Waveforms are a picture of the sound, not the sound: everything works without them.
+            // Waveforms are optional decoration; failures are ignored.
         }
         finally
         {
@@ -141,10 +140,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>
-    /// Draws the timeline's waveform: every audio track that is not dropped, mixed together, so that the
-    /// picture is of what the output will sound like. Run again whenever a track is dropped or taken back.
-    /// </summary>
+    /// <summary>Renders the timeline waveform as the mix of non-dropped tracks; re-run when a track is dropped or restored.</summary>
     private async Task RefreshTimelineWaveformAsync(string mediaPath)
     {
         _timelineWaveformCancellation?.Cancel();
@@ -181,18 +177,14 @@ public partial class MainViewModel
     // ----- The layers list -----
 
     /// <summary>
-    /// The timeline's picture rows: the video clips, Cutouts and images, and after them the
-    /// caption box while auto-captions are on. One list, so every clip is placed and sized the same way.
+    /// Picture rows: video clips, Cutouts and images, then the caption box while auto-captions are on; one list so all share placement logic.
     /// </summary>
     public ObservableCollection<Layer> LayerRows { get; } = [];
 
     private void RefreshLayerRows()
     {
-        // As they are stacked, front first: the captions over everything, then the layers, and the blur fill's settings
-        // row behind it all.
-        // A row is a track: its first clip stands for it, and the others are drawn on the same time bar. The lists are
-        // only filled again when their rows are other rows (every edit asks): a row re-made loses its selection and a
-        // box being dragged in it.
+        // Stack order front-first: captions, layers, then the blur fill row. Each row is a track represented by its first clip.
+        // Lists are refilled only when the row set changes, since recreating a row drops its selection and any in-progress drag.
         var rows = new List<Layer>();
         if (AutoCaptions)
             rows.Add(CaptionLayer);
@@ -206,9 +198,7 @@ public partial class MainViewModel
                 LayerRows.Add(row);
         }
 
-        // A video layer that has sound is a sound on the timeline too: it gets a row of its own on the Audio
-        // tab, which is the layer itself seen as its sound. So the sound is where the picture is, as long as
-        // the picture is, and goes where the picture goes; there is nothing to keep in step.
+        // A video layer with audio also gets an Audio tab row backed by the same layer, so picture and audio cannot drift.
         var sounds = Layers.Where(l => l is { IsVideoFile: true, HasAudio: true }).GroupBy(l => l.TrackId).Select(t => t.First())
             .Concat(Layers.Where(l => l.IsAudio).GroupBy(l => l.TrackId).Select(t => t.First())).ToList();
         if (!sounds.SequenceEqual(AudioClipRows))
@@ -225,16 +215,10 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(IsTextLayerSelected));
     }
 
-    /// <summary>
-    /// The Audio tab's one list: the output audio tracks (the file last opened's streams, 5.2-AuditB: what each output track
-    /// is made as), and after them every sound on the timeline, one row per track.
-    /// </summary>
+    /// <summary>Audio tab list: output audio tracks (last opened file's streams), then one row per timeline audio track.</summary>
     public ObservableCollection<object> AudioRows { get; } = [];
 
-    /// <summary>
-    /// Hide Dropped Tracks: the Audio tab lists only the sounds that go into the output. A track of the video
-    /// set to Ignore / Drop, and a clip that is muted, are still there; they are just not shown.
-    /// </summary>
+    /// <summary>Hide Dropped Tracks: list only audio reaching the output; Ignore/Drop tracks and muted clips are hidden, not removed.</summary>
     [ObservableProperty] private bool _hideDroppedTracks;
 
     partial void OnHideDroppedTracksChanged(bool value)
@@ -246,7 +230,7 @@ public partial class MainViewModel
             : $"Hiding {hidden} dropped or muted audio track{(hidden == 1 ? "" : "s")}. Press the button again to show {(hidden == 1 ? "it" : "them")}.";
     }
 
-    /// <summary>Whether a sound's row is listed: always, unless dropped sounds are hidden and it is one.</summary>
+    /// <summary>Row visibility: hidden only when it is dropped and Hide Dropped Tracks is on.</summary>
     private bool IsAudioRowShown(object row) => !HideDroppedTracks || row switch
     {
         AudioTrack track => !track.IsDropped,
@@ -265,34 +249,31 @@ public partial class MainViewModel
             AudioRows.Add(row);
     }
 
-    /// <summary>The sounds added to the timeline from files, one row per track, for the Audio tab.</summary>
+    /// <summary>Audio tab rows for file audio on the timeline, one per track.</summary>
     public ObservableCollection<Layer> AudioClipRows { get; } = [];
 
     public bool HasAudioClips => AudioClipRows.Count > 0;
 
-    /// <summary>Opens the Canvas by itself when the settings ask for that (they do to start with).</summary>
+    /// <summary>Auto-opens the Canvas when the setting is enabled (default on).</summary>
     private void OpenLayoutPaneIfWanted()
     {
         if (!_isBackgroundWorker && AppSettings.Current.AutoOpenLayoutPane && CanEditLayout)
             IsArrangeActive = true;
     }
 
-    // ----- The voice among the tracks, found by its name (4.3E) -----
+    // ----- Voice track detection by name -----
 
     /// <summary>
-    /// On loading a new file (never a project or a queued job, whose clips keep what was saved): marks the sound of the stream
-    /// whose title names a microphone or a voice as the voice (<see cref="VoiceTrackScanner"/>; 5.2-AuditB: its clips on the
-    /// timeline, a Sub-Lane's sound, Layer.IsVoice), unless the settings say not to or a sound already is one. It is marked as a
-    /// tick would mark it, so Auto-Captions follow it (<see cref="ListenToVoice(Layer)"/>) and the lanes set to Duck make room
-    /// for it. Returns what the status line says of it; null when nothing was marked.
+    /// On fresh file loads only (not projects or queued jobs): marks the stream whose title names a microphone/voice as the voice
+    /// (<see cref="VoiceTrackScanner"/>, Layer.IsVoice on its Sub-Lane clips) unless disabled or a voice exists. Equivalent to the manual
+    /// tick, so Auto-Captions (<see cref="ListenToVoice(Layer)"/>) and ducking follow. Returns a status line, or null when nothing was marked.
     /// </summary>
     private string? MarkVoiceTrack()
     {
         if (!AppSettings.Current.AutoMarkVoiceTrack || Layers.Any(l => l is { IsVoice: true, CarriesSound: true }))
             return null;
 
-        // The titles the file gives its tracks ("Track 2", given to an untitled one, names nothing); an untitled track of an
-        // MP4 or MOV recorder by the name it was handled under (a generic one names no voice either).
+        // Track titles (placeholder "Track N" ignored); untitled MP4/MOV tracks fall back to their handler name (generic ones ignored).
         if (VoiceTrackScanner.Pick(AudioTracks.Select(t => (t.Index, t.Stream.Title.Length > 0 ? t.Stream.Title : t.Stream.HandlerName))) is not { } index
             || AudioTracks.FirstOrDefault(t => t.Index == index) is not { } voice)
         {
@@ -312,8 +293,7 @@ public partial class MainViewModel
     }
 
     // ----- Voiceover -----
-    // Recorded (or brought in from a file) in the Voiceover Studio, kept for the session, and mixed into
-    // the first audio track of the encode.
+    // Recorded or imported in the Voiceover Studio, session-scoped, mixed into output audio track 1.
 
     private readonly VoiceRecorder _recorder = new();
 
@@ -323,14 +303,14 @@ public partial class MainViewModel
     [NotifyCanExecuteChangedFor(nameof(RecordVoiceoverCommand))]
     private string? _selectedMicrophone;
 
-    /// <summary>A stretch is being recorded right now.</summary>
+    /// <summary>Recording is active.</summary>
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(RecordVoiceoverCommand))]
     [NotifyCanExecuteChangedFor(nameof(PauseVoiceoverCommand))]
     [NotifyCanExecuteChangedFor(nameof(StopVoiceoverCommand))]
     private bool _isRecording;
 
-    /// <summary>A recording was paused and can be carried on, or stopped.</summary>
+    /// <summary>Recording is paused (resumable or stoppable).</summary>
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(RecordVoiceoverCommand))]
     [NotifyCanExecuteChangedFor(nameof(PauseVoiceoverCommand))]
@@ -360,13 +340,13 @@ public partial class MainViewModel
     [NotifyPropertyChangedFor(nameof(VoiceoverTrimText))]
     private double _voiceoverTrimEnd;
 
-    /// <summary>Louder or quieter than recorded, in decibels.</summary>
+    /// <summary>Voiceover gain in dB.</summary>
     [ObservableProperty] private double _voiceoverGainDb;
 
     /// <summary>How far into the finished video the voiceover begins, in seconds.</summary>
     [ObservableProperty] private double _voiceoverStartSeconds;
 
-    /// <summary>Whether the voiceover goes into the encode. It also does whenever captions are made from it.</summary>
+    /// <summary>Whether the voiceover is mixed into the encode (also implied when captions use it).</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IncludeVoiceover))]
     private bool _mixVoiceover = true;
@@ -404,7 +384,6 @@ public partial class MainViewModel
 
         VoiceoverStatus = found.Count switch
         {
-            0 when !File.Exists(DependencyUpdater.FfmpegPath) => "FFmpeg is not installed: install it from Settings to record.",
             0 => "No microphone found.",
             1 => "1 microphone found.",
             _ => $"{found.Count} microphones found.",
@@ -423,14 +402,14 @@ public partial class MainViewModel
         {
             await _recorder.StartAsync(SelectedMicrophone!, VoiceoverFolder);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
             AppLog.Write($"Voiceover: recording from {SelectedMicrophone}", ex);
             VoiceoverStatus = $"Could not record from {SelectedMicrophone}: {ex.Message}";
             return;
         }
 
-        // Where on the timeline the take begins: it is put there when it is finished.
+        // Timeline start of the take; it is placed there when finished.
         if (!resuming)
             _recordingStartSeconds = Math.Max(PositionMs / 1000, 0);
 
@@ -449,8 +428,8 @@ public partial class MainViewModel
     private bool CanStopVoiceover() => HoldsRecording;
 
     /// <summary>
-    /// Whether a voiceover take belongs to the open project: recording, or paused (the recorder, its file and the moment it began are
-    /// kept for Record to carry on, and Stop places the take in this project). Project tabs never change while it holds one.
+    /// Whether a take (recording or paused, keeping recorder, file and start time) belongs to the open project; tab switches are
+    /// blocked meanwhile so Stop places it in this project.
     /// </summary>
     public bool HoldsRecording => IsRecording || IsRecordingPaused;
 
@@ -464,15 +443,14 @@ public partial class MainViewModel
         {
             recorded = await _recorder.StopAsync(RecordingPath, _shutdown.Token);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or IOException or OperationCanceledException)
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException or OperationCanceledException)
         {
             recorded = false;
             AppLog.Write("Voiceover: finishing the recording", ex);
             VoiceoverStatus = $"The recording could not be finished: {ex.Message}";
         }
 
-        // The take being placed is an add under way (5.4D-TabPerf review, P1): the tabs stay as they are from the moment the recording
-        // ends until it is on the timeline (or taken as the voiceover), so it lands in the project it was recorded for.
+        // Count placement as a pending add so tabs cannot switch between stop and placement.
         using var placing = BeginAdd();
         (IsRecording, IsRecordingPaused) = (false, false);
         if (recorded && PlacesVoiceoverOnTimeline)
@@ -483,25 +461,22 @@ public partial class MainViewModel
             VoiceoverStatus = "Nothing was recorded. Check that the microphone is not in use by another program.";
     }
 
-    // Where the playhead was when the take that is being recorded was begun, in seconds.
+    // Playhead position (s) when the current take started.
     private double _recordingStartSeconds;
 
     /// <summary>
-    /// A voiceover is a clip like any other sound: once recorded it goes straight onto the
-    /// timeline, where it is moved, trimmed, split and ducked against as the rest are. With nothing open there is no
-    /// timeline to put it on, and the one voiceover is mixed in.
+    /// Takes are placed as ordinary audio clips on the timeline; with nothing open, the single session voiceover is mixed instead.
     /// </summary>
     public bool PlacesVoiceoverOnTimeline => HasSource;
 
-    /// <summary>What the Voiceover Studio says about itself, which differs with where the recording goes.</summary>
+    /// <summary>Voiceover Studio hint text, depending on where takes go.</summary>
     public string VoiceoverIntro => PlacesVoiceoverOnTimeline
         ? "Record a voiceover while the video plays in the main window. When you press Stop it goes onto the timeline as an audio clip of its own, starting where the playhead was when you pressed Record. It is marked as a voice, so sounds set to Auto-Duck make room for it; move, trim, split or delete it on the Audio tab like any other sound."
         : "Record a voiceover while the video plays in the main window, or bring one in from a file. It is added to the encode as a second input and mixed into the first audio track, after any cuts.";
 
     /// <summary>
-    /// Makes the take that was just recorded an audio clip on the timeline, at the moment recording began. The
-    /// recording is first given a file of its own in the Voiceovers folder: the next take would otherwise
-    /// write over it, and a project that is saved has to find it again.
+    /// Places the finished take as an audio clip at its start time, after moving it to its own file in the Voiceovers folder
+    /// (the next take would overwrite it, and saved projects must find it).
     /// </summary>
     private async Task PlaceRecordingAsync()
     {
@@ -524,7 +499,7 @@ public partial class MainViewModel
         var generation = _projectGeneration;
         if (!await AddAudioLayerAsync(kept, at, isVoice: true, name: name))
         {
-            // Its project tab went behind all the same (P1): the take is placed in no other project, and kept in its file.
+            // Tab was backgrounded anyway: never place it in another project; the file is kept.
             VoiceoverStatus = generation != _projectGeneration
                 ? $"The take was not placed: its project tab went behind first. It is kept as {kept}, to drag onto that project's timeline."
                 : "Nothing was recorded. Check that the microphone is not in use by another program.";
@@ -535,7 +510,7 @@ public partial class MainViewModel
         Log($"Added {name} at {TimeDisplay.Format(at)}");
     }
 
-    /// <summary>Takes an existing audio file as the voiceover, instead of recording one: as a clip at the playhead.</summary>
+    /// <summary>Imports an audio file as the voiceover, placed as a clip at the playhead.</summary>
     public async Task ImportVoiceoverAsync(string path)
     {
         if (!PlacesVoiceoverOnTimeline)
@@ -559,7 +534,7 @@ public partial class MainViewModel
     [RelayCommand]
     private void RemoveVoiceover()
     {
-        // A recording is the session's own and goes with it; a file brought in from elsewhere is the user's and stays.
+        // Session recordings are deleted with the session; imported files are never deleted.
         var recorded = VoiceoverPath.Equals(RecordingPath, StringComparison.OrdinalIgnoreCase);
 
         (VoiceoverPath, VoiceoverWaveform, VoiceoverDuration) = ("", null, 0);
@@ -574,11 +549,11 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Still open somewhere; it is in the session folder and goes when the application closes.
+            // Still locked; the session folder is cleaned on exit.
         }
     }
 
-    /// <summary>Do-Over: throws away the take being recorded, or the one just made, so the next Record starts afresh.</summary>
+    /// <summary>Do-Over: discards the current or just-finished take so the next Record starts fresh.</summary>
     [RelayCommand]
     private async Task DiscardVoiceoverAsync()
     {
@@ -590,13 +565,10 @@ public partial class MainViewModel
 
     // ----- The voiceover against the timeline -----
 
-    /// <summary>Length of the finished video in seconds (see GetOutputDuration).</summary>
+    /// <summary>Output duration in seconds (GetOutputDuration).</summary>
     public double OutputDurationSeconds => GetOutputDuration();
 
-    /// <summary>
-    /// Where one clip of a file's picture begins after another in the finished video (5.2-AuditB: every shown top-level video
-    /// clip, PictureSpans; 4.3C: what 4.2.0's kept segments were), each as a fraction (0 to 1) of its length.
-    /// </summary>
+    /// <summary>Cut positions between visible top-level picture clips (PictureSpans) as fractions (0..1) of the output length.</summary>
     public List<double> GetCutSplitFractions()
     {
         var total = SequenceSeconds;
@@ -614,18 +586,17 @@ public partial class MainViewModel
         return splits;
     }
 
-    /// <summary>The part of the voiceover's waveform that is kept by its trim, for the Master Mix View.</summary>
+    /// <summary>Trimmed voiceover waveform for the Master Mix View.</summary>
     [ObservableProperty] private ImageSource? _voiceoverMixWaveform;
 
-    /// <summary>Where the voiceover begins and how long it is in the Master Mix View, as fractions (0 to 1) of the source's length.</summary>
+    /// <summary>Voiceover start and length in the Master Mix View as fractions (0..1) of the source length.</summary>
     [ObservableProperty] private double _voiceoverMixStart;
 
     [ObservableProperty] private double _voiceoverMixWidth;
 
     /// <summary>
-    /// Places the voiceover in the Master Mix View. The tracks there are drawn along the source, while the
-    /// voiceover is timed against the finished video; so its start and end are taken back through the cuts
-    /// to the moments of the source that are on screen when it starts and ends.
+    /// Positions the voiceover in the Master Mix View: tracks are drawn in source time while the voiceover is in output time, so its
+    /// start and end are mapped back through the cuts to source time.
     /// </summary>
     private void UpdateVoiceoverMix()
     {
@@ -641,8 +612,7 @@ public partial class MainViewModel
         if (to - from < 0.001)
             (from, to) = (0, 1);
 
-        // The waveform is a drawing made from its peaks (not a bitmap to cut a strip out of): the part that
-        // is kept is drawn again from the peaks between the two ends of the trim.
+        // Waveforms are vector drawings from peaks, so the trimmed part is redrawn from the peaks within the trim.
         var kept = Waveforms.Cut(VoiceoverWaveform, from, to, Math.Max((int)(1200 * (to - from)), 2), 120);
         if (kept is null)
         {
@@ -650,7 +620,7 @@ public partial class MainViewModel
             return;
         }
 
-        // The finished video is the timeline (4.3C: nothing is cut out of it on the way).
+        // Output time equals timeline time.
         var start = VoiceoverStartSeconds;
         var end = Math.Max(VoiceoverStartSeconds + (to - from) * VoiceoverDuration, start);
         VoiceoverMixWaveform = kept;
@@ -658,10 +628,10 @@ public partial class MainViewModel
         VoiceoverMixWidth = Math.Clamp((end - start) / total, 0, 1 - VoiceoverMixStart);
     }
 
-    /// <summary>Takes a wave file as the session's voiceover: measures it, draws it, and opens the trim to its whole length.</summary>
+    /// <summary>Adopts a WAV file as the session voiceover: measures, renders its waveform and sets the trim to full length.</summary>
     private async Task LoadVoiceoverAsync(string path, string verb)
     {
-        // The voiceover is the project's (5.4D-TabPerf review, P1): an add under way while its file is looked at, and taken by no other tab.
+        // Counts as a pending add while probing so no other tab can receive it.
         using var adding = BeginAdd();
         var generation = _projectGeneration;
         var info = File.Exists(path) ? await MediaProbe.ProbeAsync(path, _shutdown.Token) : null;
@@ -673,8 +643,7 @@ public partial class MainViewModel
             return;
         }
 
-        // Cleared first, so that everything bound to the voiceover sees a change even when the file is the
-        // same one as before with a new recording in it.
+        // Clear first so bindings see a change even when the path is reused for a new recording.
         VoiceoverPath = "";
         VoiceoverDuration = info.DurationSeconds;
         (VoiceoverTrimStart, VoiceoverTrimEnd) = (0, info.DurationSeconds);
@@ -696,11 +665,11 @@ public partial class MainViewModel
     [GeneratedRegex(@"\((\d+)x(\d+)\)")]
     private static partial Regex ResolutionRegex();
 
-    /// <summary>The sizes offered, "Match Project Settings" first (5.4A: blank boxes, the Sequence's own size), then Custom and the common ones.</summary>
+    /// <summary>Resolution choices: Match Project Settings (blank boxes), Custom, then common sizes.</summary>
     public IReadOnlyList<string> ResolutionPresets { get; } =
         [MatchProject, CustomResolution, "4K (3840x2160)", "1440p (2560x1440)", "1080p (1920x1080)", "720p (1280x720)", "480p (854x480)"];
 
-    /// <summary>The common size the Width and Height boxes currently hold, either way up; Match Project Settings while both are blank; or Custom.</summary>
+    /// <summary>Preset matching the size boxes in either orientation; Match Project Settings when blank; else Custom.</summary>
     [ObservableProperty] private string _resolutionPreset = MatchProject;
 
     private bool _syncingResolutionPreset;
@@ -710,7 +679,7 @@ public partial class MainViewModel
         if (_syncingResolutionPreset || value is null)
             return;
 
-        // Match Project Settings: both boxes blank, the Sequence's own size.
+        // Match Project Settings: both boxes blank (Sequence size).
         if (value == MatchProject)
         {
             SetOutputSize("", "");
@@ -720,14 +689,14 @@ public partial class MainViewModel
         if (ResolutionRegex().Match(value) is not { Success: true } match)
             return;
 
-        // The presets are named the wide way round; with Use Vertical Resolution they go in on their side.
+        // Presets are landscape; transpose under Use Vertical Resolution.
         var (width, height) = (match.Groups[1].Value, match.Groups[2].Value);
         if (UseVerticalResolution)
             (width, height) = (height, width);
         SetOutputSize(width, height);
     }
 
-    /// <summary>Shows in the drop-down which preset the size boxes amount to, without that counting as choosing it.</summary>
+    /// <summary>Syncs the drop-down to the matching preset without treating it as a user choice.</summary>
     private void SyncResolutionPreset()
     {
         var match = ResolutionPresets.FirstOrDefault(p =>
@@ -747,12 +716,12 @@ public partial class MainViewModel
 
     public bool ShowPresetBarAtTop => AppSettings.Current.PresetBarLocation == AppSettings.PresetBarAtTop;
 
-    /// <summary>The Export Presets selector sits in the Export tab's first card (5.4B; 5.4A's preset bar, before that on the retired Summary tab).</summary>
+    /// <summary>Whether the Export Presets selector is shown in the Export tab's first card.</summary>
     public bool ShowPresetBarInExport => !ShowPresetBarAtTop;
 
     // ----- Notifications -----
 
-    /// <summary>Tells Windows that something long has finished, when the settings ask for that.</summary>
+    /// <summary>Raises a Windows completion notification for long tasks when enabled.</summary>
     private void NotifyFinished(string title, string message)
     {
         if (!_isBackgroundWorker && AppSettings.Current.NotifyOnEncodeComplete)

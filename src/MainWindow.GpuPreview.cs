@@ -5,14 +5,13 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The GPU preview engine: the player (Pass 5.0-AudioAnd3D, 5.0D; the only player since 5.0-Verify) -----
-// The player is GpuPreviewEngine: the compositor draws the scene plan of the sequence into the video surface, the WASAPI
-// mixer plays its sound, and the mixer's clock is the playhead. Everything that moves it (seeks, play and pause, J/K/L,
-// scrubs, Loop, the zoom) goes through the few places in MainWindow.Player.cs (PlayerSeek, PlayerSetPause,
-// PlayerIsPlaying, TakePlayerPosition ...); every change reaches it through ScheduleGpuState. An edit is a new scene plan, never a graph.
-// When the engine cannot start, or its worker's supervisor gives up on it, the player stops with a notice where the
-// picture was (OnGpuFailed) and starts again by itself a few seconds later; failing again, on the processor (WARP: slow,
-// but a picture); failing there too, it waits for Reload Player.
+// ----- GPU preview engine (the player) -----
+// GpuPreviewEngine is the sole player: the compositor renders the sequence's scene plan into the video surface and the WASAPI mixer
+// plays audio; the mixer clock is the playhead. All transport (seek, play/pause, J/K/L, scrub, Loop, zoom) goes through
+// MainWindow.Player.cs (PlayerSeek, PlayerSetPause, PlayerIsPlaying, TakePlayerPosition ...); state changes go through
+// ScheduleGpuState. An edit produces a new scene plan, never a graph.
+// Start failure or supervisor give-up: show a notice (OnGpuFailed) and auto-retry after a few seconds; a second consecutive failure
+// retries on WARP (slow but functional); a failure there waits for Reload Player.
 
 public partial class MainWindow
 {
@@ -20,27 +19,25 @@ public partial class MainWindow
     private bool _startingGpu;
     private bool _gpuPointerHooked;
 
-    // The engine's failures in a row (a start that came to nothing, or a worker its supervisor gave up on), when the last
-    // engine started, whether the next start is on the processor (WARP, after the card failed twice), and whether it has
-    // stopped trying until Reload Player.
+    // Consecutive failures (failed start or supervisor give-up), last start time, next start on WARP (after two hardware failures), and
+    // gave-up state awaiting Reload Player.
     private int _gpuFailures;
     private long _gpuStartedAt;
     private bool _gpuOnWarp, _gpuGaveUp;
 
-    // A stopped engine starts again this long after it stopped; one that had run this long fails as if for the first time.
+    // Retry delay after a stop; an engine that ran at least GpuSteadyMs resets the failure count.
     private const int GpuRetrySeconds = 3;
     private const long GpuSteadyMs = 5 * 60 * 1000;
     private readonly System.Windows.Threading.DispatcherTimer _gpuRetry = new() { Interval = TimeSpan.FromSeconds(GpuRetrySeconds) };
     private bool _gpuRetryHooked;
 
     /// <summary>
-    /// Starts the GPU engine on the video surface (after Frame 1, off the UI thread), then opens what is loaded in it.
-    /// Nothing to do while it runs or starts, before anything wants it, while it waits to start again after a failure, and
-    /// once it has stopped trying (see <see cref="OnGpuFailed"/>).
+    /// Starts the GPU engine on the video surface (after Frame 1, off the UI thread), then opens the loaded media. No-op while running or
+    /// starting, before the player is needed, during a retry wait, or after giving up (<see cref="OnGpuFailed"/>).
     /// </summary>
     private void EnsureGpuEngine()
     {
-        // Saves bake the engine's picture of the Sequence into the project from now on (none while it is not running).
+        // Enable project thumbnail capture on save (returns none while the engine is not running).
         if (_viewModel.CaptureThumbnail is null)
             _viewModel.CaptureThumbnail = CaptureProjectThumbnailAsync;
         if (_gpu is not null || _startingGpu || !_shellDrawn || _gpuRetry.IsEnabled || _gpuGaveUp || _windowClosing.IsCancellationRequested)
@@ -55,7 +52,7 @@ public partial class MainWindow
         _ = StartGpuAsync(surface);
     }
 
-    /// <summary>The window's inputs to the player engine now (<see cref="Services.PlayerInputs"/>).</summary>
+    /// <summary>Current window-side engine inputs (<see cref="Services.PlayerInputs"/>).</summary>
     private PlayerInputs PlayerInputs() =>
         new((float)(_viewModel.Volume / 100.0), _viewModel.IsPlayerMuted, _viewModel.PlaybackRate, _playerZoom, _playerPanX, _playerPanY, GradeCompareNow, _gradeWipe);
 
@@ -72,7 +69,7 @@ public partial class MainWindow
             _startingGpu = false;
         }
 
-        // The window closed while it started: nothing will ever close it but this.
+        // Window closed during start: dispose here, since nothing else owns the engine.
         if (_windowClosing.IsCancellationRequested)
         {
             engine?.Dispose();
@@ -85,8 +82,7 @@ public partial class MainWindow
             return;
         }
 
-        // Reload Player asked for the graphics card while this start was on the processor (WARP): the card's start follows (once this
-        // engine is gone: the teardown is on the pool, and the next start waits for it).
+        // Reload Player requested hardware during a WARP start: dispose this engine (pool teardown) and start on hardware once it completes.
         if (warp is not null && !_gpuOnWarp)
         {
             _ = engine.DisposeInBackground();
@@ -97,7 +93,7 @@ public partial class MainWindow
         _gpu = engine;
         _gpuStartedAt = Environment.TickCount64;
 
-        // The side windows' Live Video Previews mirror this engine's picture (5.4C), at the shape it tells.
+        // Side windows' Live Video Previews mirror this engine at its reported aspect.
         engine.MirrorAspectChanged += aspect => Dispatcher.BeginInvoke(() => TakeMirrorAspect(engine, aspect));
         ReattachMirrors();
         EngineNotice.Visibility = Visibility.Collapsed;
@@ -105,8 +101,8 @@ public partial class MainWindow
             _viewModel.StatusText = "The GPU preview draws on the processor (WARP), slowly. Reload Player tries the graphics card again.";
         engine.Ended += () => Dispatcher.BeginInvoke(() =>
         {
-            // The end of an emptied engine's plan (the project closed while playing, UnloadGpu): nothing to loop. Play pressed again
-            // before this queued handler ran: the user's Play wins (no stale IsPlaying = false, no Loop restart).
+            // Ignore ends from an emptied plan (project closed while playing, UnloadGpu), and when Play was pressed again before this queued
+            // handler ran (no stale IsPlaying = false, no Loop restart).
             if (!ReferenceEquals(_gpu, engine) || !_viewModel.HasSource || engine.IsPlaying)
                 return;
             _viewModel.IsPlaying = false;
@@ -115,7 +111,7 @@ public partial class MainWindow
             _viewModel.PositionMs = engine.Position * 1000;
             _updatingFromPlayer = false;
 
-            // Wound back to the start (J): the shuttle ends there; Loop is for playing forwards.
+            // Reverse shuttle (J) reached the start: stop shuttling; Loop applies only to forward play.
             if (_shuttle < 0)
             {
                 _shuttle = 0;
@@ -127,45 +123,43 @@ public partial class MainWindow
         });
         engine.Faulted += reason => Dispatcher.BeginInvoke(() => OnGpuFaulted(engine, reason));
 
-        // A started-again engine takes every input at once: the sound's volume, mute and rate, the player's zoom and pan the overlays are
-        // laid with, and the grade's Before/After (Reload Player, a restart after a fault, a compare set before any engine existed).
+        // Push all inputs to a new engine: volume, mute, rate, player zoom/pan (shared with overlays) and grade Before/After (covers Reload
+        // Player, fault restarts, and a compare set before any engine existed).
         engine.Apply(PlayerInputs());
         if (!_gpuPointerHooked)
         {
-            // The player resized (5.4.1A): woken when the native window really has its new size (SizeChanged comes before the host moves
-            // it, so the size read then can be the old one), and on SizeChanged as well; the frame on screen meanwhile is centred, never
-            // stretched (GpuViewport).
+            // Resize: invalidate on SurfaceResized (the child HWND's real new size; SizeChanged fires before the host moves it and may read
+            // the old size) and on SizeChanged. In between, the frame is centred, never stretched (GpuViewport).
             VideoView.SizeChanged += (_, _) => _gpu?.InvalidateView();
             VideoView.SurfaceResized += () => _gpu?.InvalidateView();
 
-            // The moment under the pointer on a timeline (the Timeline's rows and its ruler, the Sequence Overview Scrubber): Instant Seek
-            // decodes it before a click.
+            // Pointer time over the Timeline rows/ruler or Overview Scrubber: Instant Seek pre-decodes it before a click.
             UnifiedTimeline.Surface.PointerSecondsChanged += OnTimelinePointer;
             TimelineSlider.MouseMove += OverviewPointerMoved;
             TimelineSlider.MouseLeave += OverviewPointerLeft;
 
-            // A video likely to be dropped (its Media tile rested on, a drag of it begun): made ready ahead (MainWindow.Drops).
+            // Prewarm a likely drop (Media tile hover dwell or drag start; MainWindow.Drops).
             MediaBrowser.PrewarmRequested += _drops.PrewarmDrop;
 
-            // The captions made again, or the subtitle track's pictures read or retimed: the engine takes them with the sequence.
+            // Caption rebuilds and subtitle bitmap loads/retimes resend the sequence state.
             _viewModel.CaptionsChanged += ScheduleGpuState;
             _gpuPointerHooked = true;
         }
 
         UpdateVideoVisibility();
 
-        // What was loaded while it started, where the playhead is.
+        // Open media loaded during start-up (pending start/pause), else the current playhead paused.
         var (start, paused) = _pendingMedia is { } media ? (media.StartMs, media.Paused) : ((long)_viewModel.PositionMs, true);
         _pendingMedia = null;
         if (_viewModel.HasSource)
         {
-            // A project tab brought back in the 3D view before there was an engine (5.4D review): into it first, as RestoreTabView does.
+            // A tab restored in 3D view before an engine existed: enter 3D first, as RestoreTabView does.
             RestoreExplodedOnEngine();
             GpuOpen(start, paused);
         }
     }
 
-    /// <summary>The engine's worker failed too often in a row and its supervisor gave up: the engine goes, and the player stops where the playhead is.</summary>
+    /// <summary>Worker supervisor gave up after repeated faults: drops the engine and stops the player at the playhead.</summary>
     private void OnGpuFaulted(GpuPreviewEngine engine, string reason)
     {
         if (!ReferenceEquals(_gpu, engine))
@@ -182,16 +176,15 @@ public partial class MainWindow
         _pendingMedia = ((long)_viewModel.PositionMs, true);
         UpdateVideoVisibility();
 
-        // After a long steady run, a failure is a first one again (and the card is tried again before the processor).
+        // After a long stable run, reset the failure count (retry hardware before WARP).
         if (Environment.TickCount64 - _gpuStartedAt > GpuSteadyMs)
             (_gpuFailures, _gpuOnWarp) = (0, false);
         OnGpuFailed(reason);
     }
 
     /// <summary>
-    /// The engine could not start, or stopped: the notice where the picture was says why, and it starts again by itself in
-    /// <see cref="GpuRetrySeconds"/> seconds: on the same card the first time, on the processor (WARP) after a second failure
-    /// in a row. After that it waits for Reload Player.
+    /// Engine start failure or stop: shows the reason in the video notice and auto-retries after <see cref="GpuRetrySeconds"/> s, on the
+    /// same adapter first, on WARP after a second consecutive failure; after that, waits for Reload Player.
     /// </summary>
     private void OnGpuFailed(string reason)
     {
@@ -235,7 +228,7 @@ public partial class MainWindow
         _gpuRetry.Start();
     }
 
-    /// <summary>Reload Player: the failures so far are forgotten, and the engine is tried on the card again, at once.</summary>
+    /// <summary>Reload Player: clears failure state so the next start uses hardware immediately.</summary>
     private void ForgetGpuFailures()
     {
         _gpuRetry.Stop();
@@ -244,7 +237,7 @@ public partial class MainWindow
             (EngineNoticeTitle.Text, EngineNoticeText.Text) = ("Starting the GPU Preview Again...", "");
     }
 
-    /// <summary>The sequence into the engine, at a moment, paused or playing (a file or project opened, the engine just started).</summary>
+    /// <summary>Pushes the sequence and seeks to <paramref name="startMs"/>, paused or playing (after open or engine start).</summary>
     private void GpuOpen(long startMs, bool paused)
     {
         if (_gpu is not { } engine)
@@ -261,11 +254,11 @@ public partial class MainWindow
         TakeGpuPosition();
     }
 
-    // An edit is a new plan; edits that come in a burst (a slider dragged) are taken once per frame drawn, not once each.
+    // Coalesces burst edits (slider drags) into one scene-plan push per ~frame (8 ms, Render priority).
     private readonly System.Windows.Threading.DispatcherTimer _gpuStateTimer = new(System.Windows.Threading.DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(8) };
     private bool _gpuStateTimerHooked;
 
-    /// <summary>Something the picture or the sound is made from changed: the engine gets the sequence again within a frame.</summary>
+    /// <summary>Video or audio inputs changed: schedules a state push within a frame.</summary>
     private void ScheduleGpuState()
     {
         if (_gpu is null)
@@ -286,14 +279,12 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The sequence with the subtitle track's pictures (a PGS or VobSub track: the preview's alone), its sound (the soloed
-    /// tracks are the document's, which the sound engine hears alone) and its captions, into the engine.
+    /// Pushes the sequence state with preview-only bitmap subtitles (PGS/VobSub), audio (solo state from the document) and captions.
     /// </summary>
     private void PushGpuState(GpuPreviewEngine engine)
     {
-        // Interactive Crop or a Draw Target (a rectangle drawn on a clip's picture: the crop, a region's place) shows that clip's
-        // own file (5.2-AuditB: the clip the overlay is drawn on, else the video at the playhead); otherwise always the composite
-        // (5.3-Stage2: the Live Preview switch is gone).
+        // Interactive Crop or a Draw Target overlay shows the overlay clip's source (else the video at the playhead); otherwise the
+        // composite.
         engine.ShowSource(CurrentOverlayMode != OverlayMode.None, _viewModel.ShownSourceClip);
         var state = _viewModel.LivePreviewState();
         if (_viewModel.PreviewPictureSubtitles() is { } pictures)
@@ -305,8 +296,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The project closed (HasSource went false): the engine is emptied, so its worker stops decoding the closed project's
-    /// files and lets them go (5.0-Release review: its last plan's cut hints and the pointer's kept them open and decoding).
+    /// Project closed (HasSource false): clears the pointer hint and empties the engine so the worker releases the closed project's files
+    /// (stale cut and pointer hints would otherwise keep them open and decoding).
     /// </summary>
     private void UnloadGpu()
     {
@@ -314,7 +305,7 @@ public partial class MainWindow
         _gpu?.Unload();
     }
 
-    /// <summary>The playhead to a moment in the engine: always the exact frame (Instant Seek shows the nearest at once meanwhile).</summary>
+    /// <summary>Exact-frame seek (Instant Seek shows the nearest frame meanwhile) and pre-roll around the target.</summary>
     private void GpuSeek(GpuPreviewEngine engine, long positionMs)
     {
         if (!engine.IsPlaying)
@@ -323,7 +314,7 @@ public partial class MainWindow
         engine.PrepareAround(positionMs / 1000.0);
     }
 
-    /// <summary>The engine's clock into the playhead (once per screen refresh while playing, see FollowPlayerByFrame).</summary>
+    /// <summary>Copies the engine clock to the playhead while playing (per display refresh via FollowPlayerByFrame).</summary>
     private void TakeGpuPosition()
     {
         if (_gpu is not { } engine)
@@ -336,7 +327,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Play or pause the engine (the play button, Space, K).</summary>
+    /// <summary>Play/pause (play button, Space, K).</summary>
     private void GpuSetPaused(GpuPreviewEngine engine, bool paused)
     {
         if (paused)
@@ -348,14 +339,14 @@ public partial class MainWindow
         FollowPlayerByFrame(playing);
         if (!playing)
         {
-            // Paused where the clock stopped: that moment is the playhead's.
+            // Sync the playhead to the clock's stop position.
             _updatingFromPlayer = true;
             _viewModel.PositionMs = engine.Position * 1000;
             _updatingFromPlayer = false;
         }
     }
 
-    /// <summary>J, K, L on the engine: its clock runs at so many times, backwards too (silent), no stepping needed.</summary>
+    /// <summary>J/K/L shuttle: sets the engine clock rate (reverse is silent); no frame stepping needed.</summary>
     private void GpuShuttle(GpuPreviewEngine engine, int direction)
     {
         if (direction == 0)
@@ -367,7 +358,7 @@ public partial class MainWindow
             return;
         }
 
-        // At most four times: the sound's clock (the master) runs no faster.
+        // Capped at 4x: the audio master clock runs no faster.
         var speed = Math.Sign(_shuttle) == direction ? Math.Min(Math.Abs(_shuttle) * 2, 4)
             : direction > 0 && _shuttle == 0 && engine.IsPlaying ? 2
             : 1;
@@ -378,26 +369,25 @@ public partial class MainWindow
         _viewModel.StatusText = $"{(direction > 0 ? "Forward" : "Reverse")} {speed}x. K stops; {(direction > 0 ? "L" : "J")} again goes faster.";
     }
 
-    // ----- The pointer over a timeline, told to the engine (Pass 5.0-Release: the user's hover pre-roll) -----
+    // ----- Timeline pointer hints (hover pre-roll) -----
 
-    /// <summary>The pointer's moment is told to the engine at most once in this long, ms (about 30 times a second: the newest wins).</summary>
+    /// <summary>Minimum interval between pointer hints to the engine in ms (~30 Hz; latest wins).</summary>
     private const int PointerHintMs = 33;
 
-    // The newest moment not told yet (NaN: the pointer left), whether there is one, when the engine was told last
-    // (Environment.TickCount64), and the timer that tells it the newest at the end of a burst. Nothing is made per move.
+    // Throttle state: latest unsent time (NaN = pointer left), pending flag, last send (Environment.TickCount64), and the trailing-edge
+    // timer. No per-move allocation.
     private double _pointerPending = double.NaN;
     private bool _pointerOwed;
     private long _pointerToldAt = long.MinValue;
     private System.Windows.Threading.DispatcherTimer? _pointerTimer;
 
     /// <summary>
-    /// The moment under the pointer on a timeline (null when it left): the engine decodes its frame before a click, and once
-    /// it rests a short play-ahead from it. Sampled: told at once when the last telling is a sample's time ago, else the
-    /// newest moment is told when that time is up; the pointer leaving is told at once.
+    /// Timeline pointer time (null on leave): the engine pre-decodes that frame and, at rest, a short pre-roll. Throttled to
+    /// <see cref="PointerHintMs"/> with a trailing send of the latest value; leave is sent immediately.
     /// </summary>
     private void OnTimelinePointer(double? sequenceSeconds)
     {
-        // Nothing open: an empty timeline's moments are no file's (the engine's plan is empty, UnloadGpu).
+        // Nothing open: the engine plan is empty (UnloadGpu), so treat as leave.
         if (!_viewModel.HasSource)
             sequenceSeconds = null;
         if (sequenceSeconds is null)
@@ -430,7 +420,7 @@ public partial class MainWindow
             _pointerTimer.Tick += PointerTimer_Tick;
         }
 
-        // The rest of the sample's time from the last telling.
+        // Remaining throttle interval since the last send.
         _pointerTimer.Interval = TimeSpan.FromMilliseconds(Math.Clamp(PointerHintMs - (now - _pointerToldAt), 1, PointerHintMs));
         _pointerTimer.Start();
     }
@@ -449,7 +439,7 @@ public partial class MainWindow
         _gpu?.SetPointer(double.IsNaN(_pointerPending) ? null : _pointerPending);
     }
 
-    /// <summary>The pointer over the Sequence Overview Scrubber: its moment of the sequence (the slider's track, as a click there seeks).</summary>
+    /// <summary>Overview Scrubber hover: maps the slider track x to sequence time (same mapping as click-seek).</summary>
     private void OverviewPointerMoved(object sender, System.Windows.Input.MouseEventArgs e)
     {
         if (_viewModel.DurationMs <= 0 || TimelineSlider.ActualWidth <= 0)
@@ -460,8 +450,7 @@ public partial class MainWindow
     private void OverviewPointerLeft(object sender, System.Windows.Input.MouseEventArgs e) => OnTimelinePointer(null);
 
     /// <summary>
-    /// Saves the frame at the playhead as a PNG (Export Frame with the GPU engine): drawn once as the export makes it (the
-    /// canvas's size, no bars, no zoom, no 3D view) and read back.
+    /// Export Frame: renders the playhead frame once as export would (canvas size, no bars, zoom or 3D view), reads it back and saves a PNG.
     /// </summary>
     private void GpuSaveFrame(GpuPreviewEngine engine, string path) => Faults.Forget(GpuSaveFrameAsync(engine, path), nameof(GpuSaveFrame));
 
@@ -478,8 +467,8 @@ public partial class MainWindow
         var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
         encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
 
-        // Written beside it first and moved into place: a folder that cannot be written (a read-only share, a full disk)
-        // says so and leaves no half-written picture, and never takes the window down.
+        // Write to .part then move: unwritable targets (read-only share, full disk) report an error, leave no partial file and never
+        // crash the window.
         var part = path + ".part";
         try
         {
@@ -504,9 +493,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The thumbnail a save bakes into the project (MainViewModel.CaptureThumbnail, Pass 5.2D): the Sequence at the
-    /// playhead drawn small on the card (GpuPreviewEngine.CaptureThumbnailAsync), made a JPEG on the thread pool. Null with no engine,
-    /// while playing, or with nothing open. Called on the window's thread; nothing after its first wait needs it (the save holds it).
+    /// Project thumbnail for saves (MainViewModel.CaptureThumbnail): GPU-rendered small playhead frame (GpuPreviewEngine.CaptureThumbnailAsync)
+    /// JPEG-encoded on the thread pool. Null with no engine, while playing, or with nothing open. Starts on the UI thread; nothing after
+    /// the first await needs it.
     /// </summary>
     private async Task<byte[]?> CaptureProjectThumbnailAsync()
     {
@@ -519,7 +508,7 @@ public partial class MainWindow
         return await Task.Run(() => ProjectThumbnail.EncodeJpeg(frame.Bgra, frame.Width, frame.Height)).ConfigureAwait(false);
     }
 
-    /// <summary>The engine closed with the window: at once, on the window's thread (the process is ending).</summary>
+    /// <summary>Window close: disposes the engine synchronously on the UI thread (process is exiting).</summary>
     private void CloseGpuEngine()
     {
         var engine = _gpu;
@@ -528,7 +517,7 @@ public partial class MainWindow
         ForgetMirrors();
     }
 
-    /// <summary>The engine let go of for a new one (Reload Player): its teardown on the pool, which the next start waits for.</summary>
+    /// <summary>Reload Player: releases the engine with pool teardown, which the next start awaits.</summary>
     private void ReleaseGpuEngine()
     {
         var engine = _gpu;
@@ -537,18 +526,18 @@ public partial class MainWindow
         ForgetMirrors();
     }
 
-    // ----- Side windows' Live Video Previews (5.4C): mirrors of the player's picture -----
+    // ----- Side window Live Video Preview mirrors -----
 
-    // The native window each Live Video Preview's mirror is attached to on the engine running now, and the shape the engine last told.
+    // Mirror HWND attached per side window on the current engine, and the last aspect reported by the engine.
     private readonly Dictionary<Docking.SideWindow, IntPtr> _mirrored = [];
     private double _mirrorAspect = 16.0 / 9.0;
 
     private const string MirrorIdleNote = "The Live Video Preview shows the player's picture here once a project or a video is open.";
 
     /// <summary>
-    /// Every Live Video Preview open mirrors the player (GpuPreviewEngine.AttachMirror, its surface's native window), and nothing else
-    /// does: a side window closed or made a Pane Docker lets its mirror go. Each is fitted at the canvas's shape and says when there is
-    /// nothing to show. Asked whenever a side window opens, closes or changes mode, a preview's surface is made, or the engine changes.
+    /// Reconciles mirrors: every open Live Video Preview side window is attached (GpuPreviewEngine.AttachMirror on its surface HWND);
+    /// closed or Pane Docker windows are detached. Applies canvas aspect and idle notes. Called on side window open/close/mode change,
+    /// preview surface creation, or engine change.
     /// </summary>
     private void SyncMirrors()
     {
@@ -574,21 +563,21 @@ public partial class MainWindow
         UpdateMirrorNotes();
     }
 
-    /// <summary>A new engine (started, or started again): every Live Video Preview is attached to it afresh.</summary>
+    /// <summary>New engine: re-attaches every Live Video Preview from scratch.</summary>
     private void ReattachMirrors()
     {
         _mirrored.Clear();
         SyncMirrors();
     }
 
-    /// <summary>The engine has gone (its mirrors with it): the previews say there is nothing to show until the next one starts.</summary>
+    /// <summary>Engine gone (mirrors with it): clears tracking and shows idle notes until the next engine.</summary>
     private void ForgetMirrors()
     {
         _mirrored.Clear();
         UpdateMirrorNotes();
     }
 
-    /// <summary>The shape the engine's mirrors show changed (the canvas's, as the player lays it): every preview is fitted to it.</summary>
+    /// <summary>Mirror aspect (canvas aspect) changed: refits every preview.</summary>
     private void TakeMirrorAspect(GpuPreviewEngine engine, double aspect)
     {
         if (!ReferenceEquals(_gpu, engine))
@@ -599,8 +588,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Each Live Video Preview's note: nothing to mirror with no engine running (the note in place of the picture); the player hidden
-    /// (behind a tab, or no room: it draws nothing new) its last picture kept, said in the title bar.
+    /// Updates preview notes: no engine = idle note in place of the picture; player hidden (inactive tab or too small, so no new frames) =
+    /// last frame kept, flagged in the title bar.
     /// </summary>
     private void UpdateMirrorNotes()
     {

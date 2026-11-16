@@ -4,8 +4,8 @@ using HandPegApp.Models;
 namespace HandPegApp;
 
 /// <summary>
-/// The properties of one layer: corners, opacity, soft edges and drop shadow, which every layer has, and for
-/// the pictures and videos added by hand a chroma key and a custom mask. Its DataContext is the layer itself.
+/// Layer properties: corners, opacity, soft edges and drop shadow (all layers), plus chroma key and custom mask for manually added
+/// images and videos. DataContext is the layer.
 /// </summary>
 public partial class LayerPropertiesDialog : Window
 {
@@ -14,11 +14,11 @@ public partial class LayerPropertiesDialog : Window
         InitializeComponent();
         SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
 
-        // Ctrl+Z and Ctrl+Y take back and redo what is changed here, a press at a time (4.3E).
+        // Dialog-local Ctrl+Z/Ctrl+Y, one step per press.
         _ = new BoundUndo(this);
     }
 
-    /// <summary>Hides or shows the layer's whole track (the main window's, so it is a step of Undo); none: no eye.</summary>
+    /// <summary>Toggles the layer's track visibility via the main window (undoable); null hides the eye button.</summary>
     public Action<Layer>? ToggleVisibility { get; init; }
 
     private void Visibility_Click(object sender, RoutedEventArgs e)
@@ -39,7 +39,7 @@ public partial class LayerPropertiesDialog : Window
             layer.ShadowColor = color;
     }
 
-    /// <summary>The Windows color picker, started from a #RRGGBB colour; the colour chosen, or null when it was cancelled.</summary>
+    /// <summary>Opens the Windows color picker at a #RRGGBB colour; returns the choice, or null on cancel.</summary>
     private static string? PickColor(string current)
     {
         using var picker = new System.Windows.Forms.ColorDialog { FullOpen = true, AnyColor = true };
@@ -49,7 +49,7 @@ public partial class LayerPropertiesDialog : Window
         }
         catch (Exception ex) when (ex is ArgumentException or FormatException)
         {
-            // Whatever is typed in the box is not a color yet; the picker starts from its own default.
+            // Unparseable box text: start the picker at its default.
         }
 
         return picker.ShowDialog() == System.Windows.Forms.DialogResult.OK ? $"#{picker.Color.R:X2}{picker.Color.G:X2}{picker.Color.B:X2}" : null;

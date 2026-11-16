@@ -12,8 +12,7 @@ using static HandPegApp.Native.User32;
 namespace HandPegApp.Docking;
 
 /// <summary>
-/// The shape shown while a pane is dragged: where it will go if let go now. A window of its own, see-through, on top
-/// and never in the way (clicks and the drag pass through it), so that it shows over the player's video too.
+/// Drop preview overlay during pane drags: a transparent, topmost, click-through window so it also shows over the native player.
 /// </summary>
 public sealed partial class DockGuide : Window
 {
@@ -50,7 +49,7 @@ public sealed partial class DockGuide : Window
         };
     }
 
-    /// <summary>Shows the shape over a rectangle of the screen, in its real pixels, with a word on where the pane would go (none for an empty text: 5.4.4, over a button).</summary>
+    /// <summary>Shows the overlay over a screen rect (physical pixels) with a target label (empty text hides it, e.g. over a button).</summary>
     public void ShowAt(Rect pixels, string text)
     {
         _label.Text = text;
@@ -59,7 +58,7 @@ public sealed partial class DockGuide : Window
         Place(pixels, 8);
     }
 
-    /// <summary>Shows a thin upright line in the accent colour: where, among a row of tabs, a tab let go now goes.</summary>
+    /// <summary>Shows a thin vertical accent line marking the tab insertion point.</summary>
     public void ShowLine(Rect pixels)
     {
         (_shape.Background, _shape.BorderThickness, _shape.CornerRadius, _words.Visibility) = (_accent, new Thickness(0), new CornerRadius(1.5), Visibility.Collapsed);
@@ -79,15 +78,12 @@ public sealed partial class DockGuide : Window
 }
 
 /// <summary>
-/// A side window (5.4C: as many as wanted, each for a monitor of its own), in one of two modes chosen in its title bar: a Live Video
-/// Preview (a mirror of the player's picture, fitted at the canvas's shape: MainWindow.SyncMirrors and GpuPreviewEngine.AttachMirror),
-/// or a Pane Docker holding any panes dragged to it, arranged as freely as in the main window. Keys, files dropped and the save
-/// shortcuts are the main window's, as if it had them (MainWindow.HookSideWindow).
-/// <para>Its frame is HandPeg's own (5.4C): WindowChrome and the main window's frame hook (WindowFrame.FrameHook), a dark 26 DIP title
-/// bar (its number, the mode, Minimize, Maximize and Close in the caption buttons' styles), kept inside its monitor while maximized as
-/// the Settings screen is (ApplyFrame). F11, or a double-click on the picture, makes it cover its whole monitor (Escape or F11 again
-/// gives it back). Its place is kept as Windows keeps it (Get/SetWindowPlacement: pixels of the monitor it was on, whatever that one's
-/// scale), and never left off screen (KeepOnScreen).</para>
+/// Side window (any number, e.g. one per monitor) in one of two title-bar modes: Live Video Preview (player mirror fitted to the canvas
+/// aspect; MainWindow.SyncMirrors, GpuPreviewEngine.AttachMirror) or Pane Docker (free pane layout). Keys, drops and save shortcuts route
+/// to the main window (MainWindow.HookSideWindow).
+/// <para>Custom frame: WindowChrome + WindowFrame.FrameHook, 26 DIP dark title bar (ordinal, mode, caption buttons), inset while maximized
+/// (ApplyFrame). F11 or picture double-click toggles full screen (Escape exits). Placement uses Get/SetWindowPlacement (monitor pixels,
+/// DPI-agnostic) and is kept on screen (KeepOnScreen).</para>
 /// </summary>
 public sealed partial class SideWindow : Window
 {
@@ -99,8 +95,7 @@ public sealed partial class SideWindow : Window
         HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(24),
     };
 
-    // The window's parts: the title bar and the body under it (the docker's panes, or the preview), inside a root kept within the
-    // monitor while maximized.
+    // Title bar and body (docker panes or preview) inside a root inset while maximized.
     private readonly Grid _root = new();
     private readonly Grid _titleBar = new();
     private readonly Border _body = new();
@@ -138,13 +133,12 @@ public sealed partial class SideWindow : Window
         _note.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
         _status.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
 
-        // Resources and names are the main window's: the panes were made there and look for them there. Its keys are the
-        // main window's too, handed over by the main window itself (HookSideWindow: its PreviewKeyDown, which is where the
-        // keybind manager answers every shortcut, saving included), so none is bound here but its own F11 and Escape.
+        // Share the main window's resources and name scope (panes resolve them there). Keys are forwarded by the main window
+        // (HookSideWindow -> its PreviewKeyDown keybind handler), so only F11 and Escape are bound here.
         Resources.MergedDictionaries.Add(main.Resources);
         NameScope.SetNameScope(this, NameScope.GetNameScope(main));
 
-        // The frame drawn by HandPeg, as the main window's and the Settings screen's (their WindowChrome), before the window has a handle.
+        // Custom WindowChrome frame (as main window and Settings), set before HWND creation.
         var caption = main.TryFindResource("CaptionBarHeight") is double height ? height : CaptionHeight;
         WindowChrome.SetWindowChrome(this, new WindowChrome
         {
@@ -159,7 +153,7 @@ public sealed partial class SideWindow : Window
         _preview.Children.Add(_note);
         _preview.MouseLeftButtonDown += (_, e) =>
         {
-            // A double-click on the picture: the whole monitor, or back.
+            // Picture double-click toggles full screen.
             if (e.ClickCount == 2)
             {
                 ToggleFullScreen();
@@ -167,8 +161,7 @@ public sealed partial class SideWindow : Window
             }
         };
 
-        // The body is the window's own (never its caption): dragging or double-clicking the picture never moves or maximizes it,
-        // even in full screen with the title bar gone.
+        // Body is client area, not caption: dragging or double-clicking it never moves or maximizes the window (even in full screen).
         WindowChrome.SetIsHitTestVisibleInChrome(_body, true);
         Grid.SetRow(_body, 1);
         _root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -184,7 +177,7 @@ public sealed partial class SideWindow : Window
             var source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
             source?.AddHook(WindowFrame.FrameHook);
 
-            // A taskbar set to hide itself or not to (the working area changes): inset again for where it is now.
+            // Work area changed (taskbar auto-hide toggled): re-inset.
             source?.AddHook((IntPtr _, int message, IntPtr wParam, IntPtr _, ref bool _) =>
             {
                 if (message == 0x001A && wParam == 0x002F)
@@ -223,13 +216,13 @@ public sealed partial class SideWindow : Window
         Closed += (_, _) => DropSurface();
     }
 
-    /// <summary>The title bar's height as designed (CaptionBarHeight, App.xaml), when the main window's resources do not say.</summary>
+    /// <summary>Fallback title bar height (App.xaml CaptionBarHeight) when the main window's resources lack it.</summary>
     public const double CaptionHeight = 26;
 
-    /// <summary>Its id among the side windows (SideWindowState.Id).</summary>
+    /// <summary>Side window id (SideWindowState.Id).</summary>
     public string SideId { get; init; } = "";
 
-    /// <summary>Its number among the side windows open (1 the first): in its title and the menus' "Move to Side Window N".</summary>
+    /// <summary>Ordinal among open side windows (1 = first), shown in the title and "Move to Side Window N".</summary>
     public int Number
     {
         get => _number;
@@ -240,16 +233,16 @@ public sealed partial class SideWindow : Window
         }
     }
 
-    /// <summary>What it shows now.</summary>
+    /// <summary>Current mode.</summary>
     public SideWindowMode Mode => _shown;
 
-    /// <summary>Raised when its mode is chosen in its title bar: the dock manager hands a docker's panes back, then shows the mode (<see cref="ShowMode"/>).</summary>
+    /// <summary>Raised on title-bar mode choice; the dock manager returns docker panes, then calls <see cref="ShowMode"/>.</summary>
     public event Action<SideWindowMode>? ModeRequested;
 
-    /// <summary>Raised when a Live Video Preview's surface has its native window (to attach the mirror to), and when it goes.</summary>
+    /// <summary>Raised when the preview surface HWND is created (attach the mirror) or destroyed.</summary>
     public event Action<SideWindow>? PreviewSurfaceChanged;
 
-    /// <summary>The native window a Live Video Preview's mirror presents into; zero for a Pane Docker, or before it is made.</summary>
+    /// <summary>HWND the mirror presents into; zero for a Pane Docker or before creation.</summary>
     public IntPtr PreviewHandle => _shown == SideWindowMode.LiveVideoPreview && _surface is { } surface ? surface.SurfaceHandle : IntPtr.Zero;
 
     /// <summary>Whether to open under the pointer (on whichever monitor it is), rather than where it was last.</summary>
@@ -324,7 +317,7 @@ public sealed partial class SideWindow : Window
             _titleBar.Children.Add(parts[i]);
         }
 
-        // The caption buttons' styles say so too; set here as well, so they take their clicks before their style is applied.
+        // Also set here (not only in style) so caption buttons are hit-testable before the style applies.
         foreach (var button in CaptionButtons)
             WindowChrome.SetIsHitTestVisibleInChrome(button, true);
     }
@@ -337,8 +330,8 @@ public sealed partial class SideWindow : Window
     }
 
     /// <summary>
-    /// Shows a mode (asked for by the dock manager, which has handed a docker's panes back first): the docker's host (its panes, or
-    /// the hint while it holds none), or the preview (the mirror's surface, made now, at the canvas's shape). The mode box follows.
+    /// Shows a mode (called by the dock manager after returning docker panes): the docker host (panes or empty hint), or the preview
+    /// surface created now at the canvas aspect. Syncs the mode box.
     /// </summary>
     public void ShowMode(SideWindowMode mode)
     {
@@ -350,7 +343,7 @@ public sealed partial class SideWindow : Window
         {
             if (_surface is null)
             {
-                // Its native window lets the pointer through to the preview under it (a double-click there is full screen).
+                // The surface HWND is input-transparent so double-clicks reach the preview (full screen toggle).
                 _surface = new VideoSurface { PassesPointer = true };
                 var made = _surface;
                 made.SurfaceReady += () =>
@@ -373,7 +366,7 @@ public sealed partial class SideWindow : Window
         _status.Text = "";
     }
 
-    /// <summary>The preview's surface goes (a docker, or the window closed): its mirror is let go first (PreviewSurfaceChanged), then its window.</summary>
+    /// <summary>Destroys the preview surface (mode change or close): detaches the mirror first (PreviewSurfaceChanged), then the HWND.</summary>
     private void DropSurface()
     {
         if (_surface is not { } surface)
@@ -384,12 +377,12 @@ public sealed partial class SideWindow : Window
         surface.Dispose();
     }
 
-    /// <summary>The shape the mirror is fitted at (the canvas's width over its height, as the player shows it).</summary>
+    /// <summary>Mirror fit aspect (canvas width/height as shown in the player).</summary>
     public void SetPreviewAspect(double aspect) => _aspect.Aspect = aspect;
 
     /// <summary>
-    /// A Live Video Preview's note in place of its picture (nothing to mirror yet: no player running), or null for the picture. A
-    /// native window covers anything drawn over it, so the surface is hidden while the note shows.
+    /// Placeholder note when there is nothing to mirror (no player), or null to show the picture. The surface is hidden while the note
+    /// shows (native windows cover WPF content).
     /// </summary>
     public void ShowPreviewNote(string? note)
     {
@@ -398,13 +391,13 @@ public sealed partial class SideWindow : Window
         _aspect.Visibility = note is null ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    /// <summary>A short word in the title bar beside the mode (the player hidden: its last picture is kept); null for none.</summary>
+    /// <summary>Short title-bar status beside the mode (e.g. player hidden, last frame kept); null for none.</summary>
     public void SetStatus(string? status) => _status.Text = status ?? "";
 
     // ----- The frame (WindowChrome, WindowFrame.FrameHook) -----
 
-    // Maximized, a window that draws its own frame reaches past the screen's edges by its frame: its content is kept inside (as the
-    // Settings screen's, SettingsWindow.Stage.cs); Windows 11 squares its corners then, and rounds them again restored.
+    // Maximized self-framed windows overhang the screen, so inset content (as SettingsWindow.Stage.cs); corners square when
+    // maximized and round when restored.
     private void ApplyFrame() => ApplyFrame(placeLater: false);
 
     private void ApplyFrame(bool placeLater)
@@ -439,18 +432,18 @@ public sealed partial class SideWindow : Window
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetWindowPlacement(IntPtr window, in WindowPlacement placement);
 
-    // Where it is to open (Place), until its window has a handle; and its place before it went full screen.
+    // Pending open placement (until HWND exists) and pre-full-screen placement.
     private int[]? _placement;
     private bool _wantFullScreen;
     private bool _fullScreen;
     private (int[]? Placement, bool Maximized) _beforeFullScreen;
 
-    /// <summary>Whether it covers its whole monitor now (F11, a double-click on the picture).</summary>
+    /// <summary>Whether full screen is active (F11 or picture double-click).</summary>
     public bool IsFullScreen => _fullScreen;
 
     /// <summary>
-    /// Where it opens, before it is shown: its saved place (<paramref name="placement"/>, Windows' own: set as the window gets its
-    /// handle), else a place in DIPs from before 5.4C, else under the pointer, else over the main window; maximized, or full screen.
+    /// Sets the initial placement before show: saved WINDOWPLACEMENT (<paramref name="placement"/>, applied at HWND creation), else legacy
+    /// DIP bounds, else at the pointer, else over the main window; optionally maximized or full screen.
     /// </summary>
     public void Place(int[]? placement, double[]? bounds, bool maximized, bool fullScreen, bool atPointer)
     {
@@ -468,7 +461,7 @@ public sealed partial class SideWindow : Window
         _wantFullScreen = fullScreen;
     }
 
-    // The saved place, as the window gets its handle (hidden still: SW_HIDE only sets where it will be restored to and shown).
+    // Apply saved placement at HWND creation (still hidden: SW_HIDE only sets the restore/show rect).
     private void ApplyPlacement()
     {
         if (_placement is not [var left, var top, var right, var bottom])
@@ -482,8 +475,7 @@ public sealed partial class SideWindow : Window
     }
 
     /// <summary>
-    /// Its place as Windows keeps it now (the restored place, in workspace pixels; maximized; full screen, with the place it had before),
-    /// to be saved; null before it has a handle.
+    /// Current WINDOWPLACEMENT for saving (restored rect in workspace pixels, maximized, full screen with prior rect); null without an HWND.
     /// </summary>
     public (int[]? Placement, bool Maximized, bool FullScreen)? CurrentPlacement()
     {
@@ -500,7 +492,7 @@ public sealed partial class SideWindow : Window
         return ([normal.Left, normal.Top, normal.Right, normal.Bottom], WindowState == WindowState.Maximized, false);
     }
 
-    /// <summary>The whole monitor, or back to where it was (F11, Escape, a double-click on the picture).</summary>
+    /// <summary>Toggles full screen on the current monitor (F11, Escape, picture double-click).</summary>
     public void ToggleFullScreen() => SetFullScreen(!_fullScreen);
 
     private void SetFullScreen(bool on)
@@ -550,9 +542,8 @@ public sealed partial class SideWindow : Window
     }
 
     /// <summary>
-    /// Puts the window under the pointer if asked, and in any case wholly on one monitor's working area: a place
-    /// kept from a monitor that is no longer there, or a pane let go near a screen's edge, never leaves it off screen.
-    /// All in the screen's own pixels, as Windows counts them for this process. (Maximized, Windows places it.)
+    /// Optionally moves to the pointer, then clamps fully onto one monitor's work area (handles removed monitors and edge drops), in
+    /// this process's physical pixels. Maximized windows are placed by Windows.
     /// </summary>
     private void KeepOnScreen()
     {
@@ -564,7 +555,7 @@ public sealed partial class SideWindow : Window
         if (PlaceAtPointer && GetCursorPos(out var pointer))
             rect = new NativeRect { Left = pointer.X - width / 2, Top = pointer.Y - 40, Right = pointer.X - width / 2 + width, Bottom = pointer.Y - 40 + height };
 
-        // The monitor it is most on (or nearest to), and the room there beside the taskbar.
+        // Monitor with the largest overlap (or nearest) and its work area.
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
         if (!GetMonitorInfo(MonitorFromRect(rect, 2), ref info))
             return;
@@ -578,14 +569,14 @@ public sealed partial class SideWindow : Window
 }
 
 /// <summary>
-/// One child laid out at a shape (its width over its height), as large as fits, centred (5.4C: the Live Video Preview's surface at
-/// the canvas's shape, so the swap chain's stretch to its window is the same both ways).
+/// Lays out a single child at a fixed aspect, maximised and centred (preview surface at the canvas aspect so the swap chain stretch
+/// is uniform).
 /// </summary>
 public sealed class AspectPanel : Panel
 {
     private double _aspect = 16.0 / 9.0;
 
-    /// <summary>The shape, width over height (16:9 until told).</summary>
+    /// <summary>Aspect width/height (default 16:9).</summary>
     public double Aspect
     {
         get => _aspect;
@@ -598,7 +589,7 @@ public sealed class AspectPanel : Panel
         }
     }
 
-    /// <summary>The largest rectangle of a shape inside a room, centred (pure: the golden test checks it).</summary>
+    /// <summary>Largest centred rect of an aspect inside bounds (pure, golden-tested).</summary>
     internal static Rect Fit(Size room, double aspect)
     {
         if (!(room.Width > 0) || !(room.Height > 0) || !double.IsFinite(room.Width) || !double.IsFinite(room.Height) || !(aspect > 0))
@@ -624,7 +615,7 @@ public sealed class AspectPanel : Panel
     }
 }
 
-/// <summary>The order of HandPeg's top-level windows on the screen (5.4C: which side window a dragged tab is over, which one is lowest).</summary>
+/// <summary>Z-order queries over HandPeg's top-level windows (drag target resolution, lowest window).</summary>
 internal static partial class WindowOrder
 {
     private const uint GwHwndNext = 2;
@@ -635,13 +626,13 @@ internal static partial class WindowOrder
     [LibraryImport("user32.dll")]
     private static partial IntPtr GetWindow(IntPtr window, uint command);
 
-    /// <summary>The highest on the screen of some top-level windows; zero when none of them is found.</summary>
+    /// <summary>Topmost of the given windows by Z-order; zero when none found.</summary>
     public static IntPtr Topmost(IReadOnlyCollection<IntPtr> windows) => Walk(windows, highest: true);
 
-    /// <summary>The lowest on the screen of some top-level windows; zero when none of them is found.</summary>
+    /// <summary>Bottommost of the given windows by Z-order; zero when none found.</summary>
     public static IntPtr Lowest(IReadOnlyCollection<IntPtr> windows) => Walk(windows, highest: false);
 
-    // Down the screen's order of top-level windows from the top, until each of them has been met (or the highest, at once).
+    // Walks top-level windows top-down until all are seen (or the first, for topmost).
     private static IntPtr Walk(IReadOnlyCollection<IntPtr> windows, bool highest)
     {
         var found = IntPtr.Zero;

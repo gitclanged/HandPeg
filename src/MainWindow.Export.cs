@@ -7,34 +7,32 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- The Export tab, and Tabs and Panes (Pass 4.1B) -----
-// Every settings tab and every pane but the player and the header can be shown or hidden (AppSettings.HiddenTabs and
-// the panes' own settings), from the Views menu's Tabs and Panes list or the same list on any tab's right-click menu.
+// ----- Export tab and Tabs & Panes visibility -----
+// Every settings tab and pane except the player and header can be shown or hidden (AppSettings.HiddenTabs plus per-pane settings)
+// from the Views menu's Tabs and Panes list or any tab's context menu.
 //
-// The Export tab (5.4B) is three inspector cards, every export setting once: Preset & Format, Quality, Bitrate & Resolution, Audio &
-// Output (ReflowExportColumns stands them side by side or one over the other). The Video tab of before is those cards; the Easy |
-// Advanced switch and its cards are Export Presets. Under the cards, what the Audio tab holds while it is hidden, and in the third
-// card the output: DestinationBar itself, moved into the tab while it is shown and back to the bottom of the window while it is not,
-// so Save As and Start Encode are always somewhere and never twice. The Audio tab's content is made once (from its template, when
-// first wanted) and moved between its own tab and the Export tab: the names the window finds in it (RealizeTabContent) stay the same.
+// The Export tab is three inspector cards holding each export setting once: Preset & Format; Quality, Bitrate & Resolution; Audio &
+// Output (ReflowExportColumns lays them side by side or stacked). Below the cards it hosts the Audio tab's content while that tab is
+// hidden. The third card hosts DestinationBar itself while Export is shown (otherwise it returns to the window bottom), so Save As and
+// Start Encode always exist exactly once. The Audio content is realized once from its template and reparented between its own tab and
+// Export, so names resolved by RealizeTabContent stay valid.
 public partial class MainWindow
 {
-    /// <summary>The tabs whose contents the Export tab holds while they are hidden, in its order, with the word its button shows (5.4B: the Audio tab alone).</summary>
+    /// <summary>Section tabs hosted by Export while hidden, with their button labels (currently Audio only).</summary>
     private static readonly (string Id, string Label)[] SectionTabs = [("Tab:Audio", "Audio")];
 
     private const string ExportId = "Tab:Export";
 
-    // Each section tab's own pane content (a box its content is put into while the tab is shown), and each section's content once made.
+    // Per-section host Border in its own tab, and each section's realized content.
     private readonly Dictionary<string, Border> _sectionSlots = [];
     private readonly Dictionary<string, FrameworkElement> _sectionContents = [];
 
-    // The section the Export tab shows, and where DestinationBar lives at the bottom of the window.
+    // Section shown in Export, and DestinationBar's home slot at the window bottom.
     private string _exportSection = SectionTabs[0].Id;
     private (Panel Parent, int Index)? _destinationHome;
 
-    // The Export tab's named parts, found as its template is made (RealizeTabContent, 5.3-Stage2: the tab is not built with the
-    // window). The three reached before that (UpdateTabVisibility before the first frame, the Settings mirror) are null until then;
-    // the rest are reached only from inside the tab, once it is made.
+    // Export tab parts resolved at realization (RealizeTabContent; not built with the window). The three nullable ones may be queried
+    // earlier (UpdateTabVisibility before Frame 1, Settings mirror); the rest are only touched from inside the realized tab.
     private DockPanel? ExportPanel;
     private Border? ExportBarSlot;
     private StackPanel? ExportSections;
@@ -45,15 +43,15 @@ public partial class MainWindow
 
     private TabItem TabOf(string id) => _tabPanes.First(t => t.Id == id).Tab;
 
-    // ----- Which tabs are shown -----
+    // ----- Tab visibility -----
 
-    /// <summary>The tabs hidden: as saved, or the defaults.</summary>
+    /// <summary>Hidden tab ids: saved, or defaults.</summary>
     private static IReadOnlyList<string> HiddenTabs => AppSettings.Current.HiddenTabs ?? AppSettings.DefaultHiddenTabs;
 
-    /// <summary>Whether a tab is shown: it is not hidden, and (Command Preview) its own setting is on.</summary>
+    /// <summary>True when a tab should show (not hidden; Command Preview uses its own setting).</summary>
     private bool TabWanted(string id) => id == "Tab:Command Preview" ? _viewModel.ShowCommandPreviewTab : !HiddenTabs.Contains(id);
 
-    /// <summary>Shows or hides a tab (Command Preview: its own setting).</summary>
+    /// <summary>Shows or hides a tab (Command Preview via its own setting).</summary>
     private void SetTabShown(string id, bool shown)
     {
         if (id == "Tab:Command Preview")
@@ -69,9 +67,9 @@ public partial class MainWindow
         UpdateTabVisibility();
     }
 
-    // ----- The sections, moved between their own tabs and the Export tab -----
+    // ----- Sections reparented between their own tabs and Export -----
 
-    /// <summary>A section tab's pane content: its box, with the section put in it when the tab is shown.</summary>
+    /// <summary>Section tab pane content: its host Border, filled with the section when the tab is visible.</summary>
     private FrameworkElement SectionSlot(string id)
     {
         if (!_sectionSlots.TryGetValue(id, out var slot))
@@ -81,14 +79,14 @@ public partial class MainWindow
         return slot;
     }
 
-    /// <summary>A section's content, made from its tab's template the first time it is wanted, its data the window's own.</summary>
+    /// <summary>Section content, realized from its tab template on first use with DataContext bound to the window.</summary>
     private FrameworkElement SectionContent(string id)
     {
         if (!_sectionContents.TryGetValue(id, out var content))
         {
             content = RealizeTabContent(TabOf(id));
 
-            // Its data is always the window's: moved, it is out of every window for a moment (as DockManager.Realize does).
+            // Bind DataContext explicitly: while reparenting it is briefly detached from any window (as in DockManager.Realize).
             content.SetBinding(DataContextProperty, new Binding(nameof(DataContext)) { Source = this });
             _sectionContents[id] = content;
         }
@@ -96,7 +94,7 @@ public partial class MainWindow
         return content;
     }
 
-    /// <summary>Puts a section into a box, taking it out of wherever it was.</summary>
+    /// <summary>Reparents a section into a Border, detaching it from its previous host.</summary>
     private void Put(string id, Border into)
     {
         var content = SectionContent(id);
@@ -108,8 +106,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Puts each section where it is shown: in its own tab while that is shown, else (for the one chosen) in the Export
-    /// tab; and the Export tab's buttons for the sections it holds. Nothing is made that is not on screen.
+    /// Places each section in its own tab when visible, else (the selected one) in Export, and updates Export's section buttons. Realizes
+    /// nothing off screen.
     /// </summary>
     private void PlaceSections()
     {
@@ -132,8 +130,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The Export tab's buttons for the sections it holds (none for a single one). They are the tab's: until it is made (5.3-Stage2)
-    /// there is nowhere to put them, and ExportContent makes them with it.
+    /// Builds Export's section buttons (hidden for a single section). No-op until the tab is realized; ExportContent builds them then.
     /// </summary>
     private void FillExportSectionButtons(List<(string Id, string Label)> inExport)
     {
@@ -154,20 +151,20 @@ public partial class MainWindow
             sections.Children.Add(button);
         }
 
-        // A single section needs no button to choose it.
+        // No chooser needed for a single section.
         sections.Visibility = inExport.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     /// <summary>
-    /// Under the Export tab's cards: the chosen section's content while its own tab is hidden, else nothing (nothing made that is
-    /// not on screen; the section stays in its own tab).
+    /// Shows the selected section under Export's cards while its own tab is hidden; otherwise collapses the host (nothing realized off
+    /// screen).
     /// </summary>
     private void FillExportSection()
     {
         if (ExportTab.Visibility != Visibility.Visible)
             return;
 
-        // Every section in its own tab (PlaceSections has put it there): nothing under the cards.
+        // All sections in their own tabs (placed by PlaceSections): nothing under the cards.
         if (SectionTabs.All(s => TabOf(s.Id).Visibility == Visibility.Visible))
         {
             ExportSectionHost.Visibility = Visibility.Collapsed;
@@ -179,17 +176,17 @@ public partial class MainWindow
         }
     }
 
-    // ----- The three columns (5.4B) -----
+    // ----- Card columns -----
 
-    /// <summary>The least width of a card side by side with the others, and the gap between two.</summary>
+    /// <summary>Minimum card width in side-by-side layout, and the inter-card gap (DIPs).</summary>
     internal const double ExportCardMinWidth = 300, ExportCardGap = 12;
 
-    /// <summary>How many columns the Export tab's cards stand in at a width: three while each has its least width, else one (one over the other).</summary>
+    /// <summary>Column count for a width: 3 when each card fits its minimum, else 1 (stacked).</summary>
     internal static int ExportColumnCount(double width) => width >= 3 * ExportCardMinWidth + 2 * ExportCardGap ? 3 : 1;
 
     /// <summary>
-    /// Stands the three cards side by side (three equal columns, a gap between) or one over the other (the full width, a gap under each),
-    /// as the tab is wide (<see cref="ExportColumnCount"/>). Called as the columns' grid is sized: only the places change, not its width.
+    /// Lays the cards out in three equal columns or stacked full width per <see cref="ExportColumnCount"/>. Called from the grid's
+    /// SizeChanged; it only reassigns cells and margins, never the grid width.
     /// </summary>
     private void ReflowExportColumns(double width)
     {
@@ -209,9 +206,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The Export tab's pane content, made when first shown (or at idle; RealizeTabContent finds its parts): its section buttons,
-    /// the destination bar parked until now, and its middle, filled then. The dock counts it as made only once this returns,
-    /// which is why these are called here.
+    /// Realizes the Export tab content on first show or at idle (RealizeTabContent resolves parts), then section buttons, the parked
+    /// DestinationBar and section host. Done here because the dock treats the pane as realized only after this returns.
     /// </summary>
     private FrameworkElement ExportContent()
     {
@@ -229,9 +225,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Save As, Browse, Add to Queue and Start Encode: in the Export tab while it is shown, else at the bottom of the
-    /// window while Export is hidden. While Export is shown but not made yet (5.3-Stage2: made when first shown, or at idle)
-    /// the bar is out of the window, parked, as it was inside the unmade tab before; ExportContent puts it in.
+    /// Places DestinationBar (Save As, Browse, Add to Queue, Start Encode) inside Export while it is shown, else at the window bottom.
+    /// While Export is visible but not yet realized the bar stays parked off-tree; ExportContent inserts it.
     /// </summary>
     private void PlaceDestinationBar()
     {
@@ -239,7 +234,7 @@ public partial class MainWindow
         if (_destinationHome is not { } place)
             return;
 
-        // Out of the window for a moment (parked, or moved): its data stays the window's, as a section's does (SectionContent).
+        // Bind DataContext explicitly since the bar can be detached while parked or moved (as in SectionContent).
         if (DestinationBar.ReadLocalValue(DataContextProperty) == DependencyProperty.UnsetValue)
             DestinationBar.SetBinding(DataContextProperty, new Binding(nameof(DataContext)) { Source = this });
 
@@ -258,7 +253,7 @@ public partial class MainWindow
             if (ExportBarSlot is { } slot && ReferenceEquals(slot.Child, DestinationBar))
                 slot.Child = null;
 
-            // Right under the panes (5.3-Stage2): a hairline apart, no band.
+            // Directly under the panes with a 1 DIP gap.
             DestinationBar.Margin = new Thickness(0, 1, 0, 0);
             place.Parent.Children.Insert(Math.Min(place.Index, place.Parent.Children.Count), DestinationBar);
         }
@@ -266,9 +261,9 @@ public partial class MainWindow
         UpdateBottomBar();
     }
 
-    // ----- Tabs and Panes: one list for the Views menu and a tab's right-click menu -----
+    // ----- Tabs and Panes list (Views menu and tab context menu) -----
 
-    /// <summary>A tab or a pane the menu shows or hides: its name, whether it is shown, how to show or hide it, and what it is.</summary>
+    /// <summary>Visibility toggle entry: name, state getter, setter, description, and optional enabled predicate.</summary>
     private sealed record ViewToggle(string Name, Func<bool> IsOn, Action<bool> Set, string About, Func<bool>? Enabled = null);
 
     private IEnumerable<ViewToggle> TabToggles() => _tabPanes.Select(t => new ViewToggle(
@@ -282,7 +277,7 @@ public partial class MainWindow
             _ => $"The {t.Tab.Header} tab.",
         }));
 
-    /// <summary>The Sequence Overview Scrubber shown or hidden (Tabs and Panes, and the Timeline Settings menu, 5.3): saved, the panes laid out again.</summary>
+    /// <summary>Shows or hides the Overview Scrubber (Tabs and Panes, Timeline Settings menu); saves and rebuilds the dock.</summary>
     private void SetScrubberShown(bool on)
     {
         _viewModel.SavePaneLayout(s => s.ShowMasterTimeline = on);
@@ -318,8 +313,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The Views menu is opening: its one list of tabs and panes (5.4.4-Final: Tabs and Panes merged, two columns) made as things are now,
-    /// the settings tabs first. UI Automation names them as before ("Export Tab", "Keyframes Pane").
+    /// Fills the Views menu's merged Tabs and Panes list from current state, tabs first. UI Automation names keep their suffixes
+    /// ("Export Tab", "Keyframes Pane").
     /// </summary>
     private void FillViewsLists()
     {
@@ -333,7 +328,7 @@ public partial class MainWindow
                     || toggle.Name == ScrubberTitle ? "" : " Pane";
                 AutomationProperties.SetName(box, toggle.Name + kind);
 
-                // Checked and Unchecked, not Click: the keyboard and UI Automation change a box without a click.
+                // Checked/Unchecked rather than Click: keyboard and UI Automation toggle without clicking.
                 box.Checked += (_, _) => toggle.Set(true);
                 box.Unchecked += (_, _) => toggle.Set(false);
                 ViewsPaneList.Children.Add(box);
@@ -344,7 +339,7 @@ public partial class MainWindow
         Fill(PaneToggles(), tabs: false);
     }
 
-    /// <summary>A tab's right-click menu (DockManager.ExtendTabMenu): Tabs and Panes, as in the Views menu.</summary>
+    /// <summary>Adds the Tabs and Panes submenu to a tab context menu (DockManager.ExtendTabMenu), mirroring the Views menu.</summary>
     private void AddTabsAndPanesMenu(ContextMenu menu)
     {
         var root = new MenuItem { Header = "Tabs and Panes" };

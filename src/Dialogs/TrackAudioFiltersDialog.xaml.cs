@@ -8,45 +8,43 @@ using HandPegApp.Models;
 namespace HandPegApp;
 
 /// <summary>
-/// The processing of one sound: compressor, gate, de-noise, Studio Voice and the De-Esser (5.2B), tone, and behind "Show Advanced Filters"
-/// the limiter, the equalizer (its parametric curve over its ten sliders, 5.2B), pitch/tempo and stereo width. Works on a copy, which the
-/// caller takes on OK.
+/// Audio filter editor: compressor, gate, de-noise, Studio Voice, De-Esser, tone, and under "Show Advanced Filters" limiter, 10-band EQ
+/// (parametric curve over the sliders), pitch/tempo and stereo width. Edits a copy the caller takes on OK.
 /// </summary>
 public partial class TrackAudioFiltersDialog : Window
 {
-    // Where Add Mix Key puts a key: seconds from the start of what the filters belong to (the clip's start); null for no playhead to key at.
+    // Add Mix Key time in seconds from the owner's start (clip start); null when no playhead applies.
     private readonly double? _keyTime;
 
-    /// <param name="heading">Which sound the filters are for.</param>
-    /// <param name="filters">Its filters as they are; a copy is edited.</param>
-    /// <param name="keyTime">The playhead, in seconds from the start of what the filters belong to (a clip's: its Start on the Sequence), for Studio Voice's mix keys; null for none.</param>
+    /// <param name="heading">Audio source label.</param>
+    /// <param name="filters">Current filters; a copy is edited.</param>
+    /// <param name="keyTime">Playhead in seconds from the owner's start (clip Start on the Sequence) for Studio Voice mix keys; null for none.</param>
     public TrackAudioFiltersDialog(string heading, TrackAudioFilters filters, double? keyTime = null)
     {
         InitializeComponent();
         SourceInitialized += (_, _) => Services.ThemeManager.ApplyTitleBar(this);
 
-        // Ctrl+Z and Ctrl+Y take back and redo what is changed here, a press at a time, as whole snapshots of the filters: Reset (a new set)
-        // and the mix keys (a list no control is bound to) are steps like any slider.
+        // Local Ctrl+Z/Ctrl+Y over whole filter snapshots, one per press; Reset and mix keys (unbound list) are steps like any slider.
         History = new SnapshotUndo<TrackAudioFilters>(this, () => Filters!.Clone(), ShowFilters, state => JsonSerializer.Serialize(state));
         TrackText.Text = heading;
         _keyTime = keyTime is { } at && double.IsFinite(at) ? Math.Max(at, 0) : null;
         ShowFilters(filters);
 
-        // The curve follows every value it is drawn from (the sliders, the high-pass and the shelves, their switches, Ctrl+Z): it is made again
-        // at the next render, once the bindings have handed the values on.
+        // Redraw the EQ curve on the next render after any source value changes (sliders, high-pass, shelves, switches, undo), once
+        // bindings have propagated.
         AddHandler(RangeBase.ValueChangedEvent, new RoutedPropertyChangedEventHandler<double>((_, _) => EqCurve.Refresh()));
         AddHandler(ToggleButton.CheckedEvent, new RoutedEventHandler((_, _) => EqCurve.Refresh()));
         AddHandler(ToggleButton.UncheckedEvent, new RoutedEventHandler((_, _) => EqCurve.Refresh()));
         EqCurve.BandChanged += CurveBandChanged;
     }
 
-    /// <summary>The filters as edited. Only meaningful once the dialog has been confirmed.</summary>
+    /// <summary>Edited filters; valid only after OK.</summary>
     public TrackAudioFilters Filters { get; private set; } = null!;
 
-    /// <summary>The dialog's own Undo over the filters.</summary>
+    /// <summary>Dialog-local undo over the filters.</summary>
     internal SnapshotUndo<TrackAudioFilters> History { get; }
 
-    // Shows a copy of a set of filters: every control and the curve rebound to it, the mix keys' line told again.
+    // Binds a filter copy: rebinds all controls and the curve, and refreshes the mix key line.
     private void ShowFilters(TrackAudioFilters filters)
     {
         DataContext = Filters = filters.Clone();
@@ -57,13 +55,12 @@ public partial class TrackAudioFiltersDialog : Window
 
     private void Reset_Click(object sender, RoutedEventArgs e) => ResetFilters();
 
-    /// <summary>A fresh set, keeping only whether the advanced part is showing.</summary>
+    /// <summary>Resets to defaults, preserving advanced-section visibility.</summary>
     internal void ResetFilters() => ShowFilters(new TrackAudioFilters { ShowAdvanced = Filters.ShowAdvanced });
 
     private void Ok_Click(object sender, RoutedEventArgs e) => DialogResult = true;
 
-    // A band moved on the curve: its slider shows its gain (the binding hands it back, the same value), and the equalizer is on (a band moved
-    // is meant to be heard).
+    // Curve band drag: syncs its slider gain (binding round-trips the same value) and enables the EQ so the change is audible.
     private void CurveBandChanged(int band)
     {
         if (FindName($"EqSlider{band.ToString(CultureInfo.InvariantCulture)}") is Slider slider && band < Filters.EqualizerGains.Length)
@@ -72,17 +69,17 @@ public partial class TrackAudioFiltersDialog : Window
             EqualizerBox.IsChecked = true;
     }
 
-    // ----- Studio Voice's mix keys (5.2B) -----
+    // ----- Studio Voice mix keys -----
 
     private void AddMixKey_Click(object sender, RoutedEventArgs e) => AddMixKey();
 
-    /// <summary>A mix key at the playhead, with the mix as it is set now (one key a moment).</summary>
+    /// <summary>Adds a mix key at the playhead with the current mix (one key per time).</summary>
     internal void AddMixKey()
     {
         if (_keyTime is not { } at)
             return;
 
-        // One key a moment: a key already there takes the mix as it is set now.
+        // One key per time: an existing key there is updated to the current mix.
         Filters.PutMixKey(at);
         UpdateMixKeys();
     }

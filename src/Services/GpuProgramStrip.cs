@@ -9,16 +9,14 @@ using HandPegApp.Services.Gpu;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// A sheet of the Sequence Overview Scrubber's pictures: <see cref="Count"/> thumbnails of <see cref="CellWidth"/> x
-/// <see cref="CellHeight"/>, <see cref="Columns"/> to a row, left to right and top to bottom, the i-th standing for the
-/// stretch from i x <see cref="IntervalSeconds"/>. The sequence's own (<see cref="GpuProgramStrip"/>, drawn at
-/// <see cref="Moments"/>), or the opened file's key frames (FFmpeg's hover sheet, no moments) where the GPU cannot draw them.
+/// Overview Scrubber thumbnail sheet: <see cref="Count"/> cells of <see cref="CellWidth"/> x <see cref="CellHeight"/>, <see cref="Columns"/>
+/// per row in raster order; cell i covers from i x <see cref="IntervalSeconds"/>. Rendered from the Sequence (<see cref="GpuProgramStrip"/>,
+/// at <see cref="Moments"/>) or, as fallback, the opened file's key frames (FFmpeg hover sheet, no moments).
 /// </summary>
 public sealed record ThumbnailSheet(BitmapSource Picture, int Columns, int Count, int CellWidth, int CellHeight, double IntervalSeconds, double[] Moments)
 {
     /// <summary>
-    /// A sheet still being drawn (5.2-Audit, progressive filling): the pictures drawn so far, each one not drawn yet standing in
-    /// with its nearest drawn neighbour's. The full sheet follows.
+    /// Partial sheet during progressive fill: undrawn cells show their nearest drawn neighbour. The complete sheet follows.
     /// </summary>
     public bool IsPartial { get; init; }
 
@@ -36,30 +34,21 @@ public sealed record ThumbnailSheet(BitmapSource Picture, int Columns, int Count
 }
 
 /// <summary>
-/// The Sequence Overview Scrubber's pictures drawn from the sequence itself (Pass 5.0-Verify, the user's call: the timeline
-/// shows what the GPU engine renders, never one file's frames): every track, placement, crop, mask, effect and blur fill
-/// at evenly spread moments of the sequence, as the player draws them (fades and captions left out: a
-/// thumbnail is the picture), from the live preview's state (proxies where they are made).
+/// Overview Scrubber thumbnails rendered from the Sequence (all tracks, placement, crop, mask, effects, blur fill; no fades or captions)
+/// at evenly spaced times, from the live preview state (proxies when available).
 /// <list type="bullet">
-/// <item><b>Its own compositor.</b> A worker on the background card (the high-performance one when there is no other),
-/// with no standby, a small frame cache and one decode lane, and its own resource tables; never the player's, whose frame
-/// cache is Instant Seek's. Started for the first sheet, ended after <see cref="IdleMilliseconds"/> with nothing to draw:
-/// its process and its video memory go with it.</item>
-/// <item><b>Its own thread.</b> One STA thread plans the state (WPF draws text clips there), bakes masks and stills,
-/// draws and reads back: nothing of it runs on the interface's thread. The newest state wins: a sheet being drawn when an
-/// edit comes in stops between two pictures.</item>
-/// <item><b>Only what changed.</b> Each picture is known by a hash of its scene (the layers' descriptors at that moment
-/// and the recipes of the textures they read): one whose scene is unchanged is taken from the last sheets, so an edit
-/// redraws only the moments it touched, and a worker started again redraws nothing.</item>
-/// <item><b>Started ahead.</b> A file hovered in the Media pane or dragged onto a style (on a fast local drive, DriveKind)
-/// starts the worker and opens the file in it (<see cref="Prewarm"/>), so the sheet a drop asks for begins at its first
-/// picture.</item>
-/// <item><b>One decode a picture.</b> A moment is moved onto a key frame of the file the bottom picture there reads (as the
-/// source strips are, <see cref="GpuFilmstrips.SnapToKeyFrames"/>; 5.2-AuditB: any clip's file): a long recording costs one
-/// decoded frame per picture, never a chase from the key frame before it.</item>
+/// <item><b>Dedicated compositor.</b> Background-adapter worker, no standby, small cache, one decode lane, own resource tables; never the
+/// player's. Started on demand, stopped after <see cref="IdleMilliseconds"/> idle (releasing process and VRAM).</item>
+/// <item><b>Dedicated STA thread.</b> Plans state (WPF text), bakes masks/stills, renders and reads back, all off the UI thread. Newest
+/// state wins: an in-progress sheet stops between cells on a new edit.</item>
+/// <item><b>Incremental.</b> Cells are keyed by a scene hash (layer descriptors plus texture recipes); unchanged cells are reused, so edits
+/// redraw only affected cells and a restarted worker redraws nothing.</item>
+/// <item><b>Prewarm.</b> Hovering or dragging a file on a fast local drive (DriveKind) starts the worker and opens the file
+/// (<see cref="Prewarm"/>) so a drop's first sheet starts immediately.</item>
+/// <item><b>One decode per cell.</b> Times snap to key frames of the bottom clip's file (<see cref="GpuFilmstrips.SnapToKeyFrames"/>).</item>
 /// </list>
-/// <para>Whenever it cannot draw a sheet (the setting, a worker that does not start or answer) it gives none, and the
-/// Sequence Overview Scrubber keeps the opened file's key frames; three faults in a row end it for the session (<see cref="GaveUp"/>).</para>
+/// <para>On failure (disabled, worker unresponsive) no sheet is produced and the scrubber keeps file key frames; three consecutive faults
+/// disable it for the session (<see cref="GaveUp"/>).</para>
 /// </summary>
 public sealed class GpuProgramStrip : IDisposable
 {
@@ -69,35 +58,33 @@ public sealed class GpuProgramStrip : IDisposable
     /// <summary>The pictures to a row of the sheet.</summary>
     public const int Columns = FfmpegRunner.SpriteGridSize;
 
-    /// <summary>A picture fits in a square this many pixels a side (the hover sheet's width): 160 x 90 for a wide frame, 90 x 160 for a tall one.</summary>
+    /// <summary>Cell bounding square (px): 160 x 90 landscape, 90 x 160 portrait.</summary>
     public const int PictureBox = FfmpegRunner.SpriteThumbnailWidth;
 
     /// <summary>With nothing to draw for this long, the worker ends (its process and its video memory with it).</summary>
     public const int IdleMilliseconds = 20_000;
 
-    /// <summary>How long after the last edit of a burst the sheet is drawn again, ms (a slider dragged is drawn once, when it rests).</summary>
+    /// <summary>Debounce (ms) after the last edit before redrawing (a slider drag redraws once at rest).</summary>
     public const int SettleMilliseconds = 350;
 
-    /// <summary>The first sheet of a file just opened (nothing to show yet): drawn this soon after its first state, ms.</summary>
+    /// <summary>Shorter debounce (ms) for the first sheet after opening a file.</summary>
     public const int FirstSettleMilliseconds = 60;
 
     // The worker's frame cache: a picture needs only the frames it shows.
     private const long CacheBytes = 160L << 20;
 
-    // How long a picture may take: the first opens the files (a long recording's index is read), the rest decode a frame or so.
+    // Per-cell timeout: the first opens files (index reads), later cells decode about one frame.
     private const int FirstPictureMs = 15_000, PictureMs = 8_000;
 
     /// <summary>
-    /// How often a sheet being drawn is handed over as it fills, ms (5.2-Audit: a 22-minute recording's first sheet came whole after
-    /// some 100 s; now its first picture shows at once and the rest sharpen in across the whole bar).
+    /// Progressive publish interval (ms) while filling, so long recordings show coverage immediately instead of after the full sheet.
     /// </summary>
     public const int ProgressMilliseconds = 400;
 
     // How far into a key frame a moment moved onto it is taken (container time stamps are rounded to the millisecond).
     private const double KeyLead = 0.001;
 
-    // Each picture is drawn this many times larger at most, then shrunk by whole blocks (the sampler spreads its taps over
-    // at most 8 source pixels per pixel drawn: GpuFilmstrips' rule).
+    // Max supersampling factor before box downsampling (sampler footprint of 8 source px per output px; same rule as GpuFilmstrips).
     private const int SamplerReach = 8, MaxFactor = 4;
 
     private readonly Dispatcher _home;
@@ -134,12 +121,11 @@ public sealed class GpuProgramStrip : IDisposable
         public Action<ThumbnailSheet>? Progress { get; init; }
 
         /// <summary>
-        /// Whether the sheet stops before its next picture to draw (5.4.4: WorkScheduler.PausePoint, captured in its background work); null
-        /// never (DrawNowAsync).
+        /// Pause check captured from background work (WorkScheduler.PausePoint); null never pauses (DrawNowAsync).
         /// </summary>
         public Func<bool>? Pause { get; init; }
 
-        /// <summary>Set by the worker's thread when the sheet stopped for <see cref="Pause"/>: its work waits, then asks again.</summary>
+        /// <summary>Set by the worker thread when paused via <see cref="Pause"/>; the work waits and re-requests.</summary>
         public volatile bool Held;
     }
 
@@ -160,35 +146,32 @@ public sealed class GpuProgramStrip : IDisposable
     }
 
     /// <summary>
-    /// Whether the Sequence Overview Scrubber's pictures are the sequence's: with a background card that is a card (Settings' Background
-    /// GPU is not Processor Only) and a worker that has not failed three times in a row this session.
+    /// True when Sequence-rendered thumbnails are enabled: background adapter is a GPU and fewer than three consecutive worker failures.
     /// </summary>
     public static bool IsWanted => !_gaveUp && AppSettings.Current.BackgroundGpu != -2;
 
     /// <summary>A new sheet of the newest state (the interface's thread).</summary>
     public event Action<ThumbnailSheet>? SheetReady;
 
-    /// <summary>The worker failed three times in a row: the Sequence Overview Scrubber goes back to the opened file's key frames (the interface's thread).</summary>
+    /// <summary>Raised on the UI thread after three consecutive failures; the scrubber reverts to file key frames.</summary>
     public event Action? GaveUp;
 
-    /// <summary>How many pictures the last sheet drew (the rest were unchanged and kept): the golden tests' check that an edit redraws only what it touched.</summary>
+    /// <summary>Cells actually rendered in the last sheet (others reused); goldens verify incremental redraw.</summary>
     public int LastDrawn { get; private set; }
 
     /// <summary>
-    /// The mark the last whole sheet's request carried (Pass 5.4D-TabPerf review: the window's undo mark), set as that sheet is handed to
-    /// <see cref="SheetReady"/>; null after <see cref="Clear"/>. The interface's thread.
+    /// Undo mark of the last complete sheet's request, set when raised via <see cref="SheetReady"/>; null after <see cref="Clear"/>. UI thread.
     /// </summary>
     public object? SheetMark { get; private set; }
 
     /// <summary>
-    /// Whether a sheet newer than the last handed out is still to come (the interface's thread): a request settling, or a sheet being
-    /// drawn. The window keeps a sheet with a project tab put behind only when none is (5.4D-TabPerf review).
+    /// True while a newer sheet is pending (debouncing or rendering). UI thread. Tab deactivation caches a sheet only when false.
     /// </summary>
     public bool IsPending => _waiting is not null || Volatile.Read(ref _drawing) is not null;
 
     /// <summary>
-    /// The sequence as it is now (the interface's thread; a state nothing edits afterwards, as the player's is): drawn
-    /// <see cref="SettleMilliseconds"/> after the last of a burst. <paramref name="mark"/> goes with its sheet (<see cref="SheetMark"/>).
+    /// Submits the current immutable state (UI thread); rendered <see cref="SettleMilliseconds"/> after a burst. <paramref name="mark"/>
+    /// travels with the sheet (<see cref="SheetMark"/>).
     /// </summary>
     public void Request(SequenceExportState state, object? mark = null)
     {
@@ -212,9 +195,8 @@ public sealed class GpuProgramStrip : IDisposable
     }
 
     /// <summary>
-    /// A file a drop is likely to open (the interface's thread; Pass 5.0-Release): the worker is started when it is not
-    /// running, and the file put in its source table and its first frame decoded, so that the sheet the drop asks for
-    /// starts drawing at once. Nothing is drawn or kept for it; the worker ends as ever when nothing more comes.
+    /// Prewarms a likely drop target (UI thread): starts the worker if needed, registers the file and decodes its first frame so the
+    /// drop's sheet starts immediately. Nothing is kept; normal idle shutdown applies.
     /// </summary>
     public void Prewarm(string path)
     {
@@ -237,8 +219,7 @@ public sealed class GpuProgramStrip : IDisposable
     }
 
     /// <summary>
-    /// A sheet of a state drawn now, past the settling and the background lane (the golden tests): null when it was not
-    /// (or a newer one was asked for meanwhile).
+    /// Renders a sheet immediately, bypassing debounce and the background lane (goldens); null on failure or when superseded.
     /// </summary>
     public async Task<ThumbnailSheet?> DrawNowAsync(SequenceExportState state, double settingInterval, bool forStrip, CancellationToken token)
     {
@@ -286,8 +267,7 @@ public sealed class GpuProgramStrip : IDisposable
                         WorkScheduler.GpuDecodeGate.Release();
                     }
 
-                    // Stopped before a picture (5.4.4: the player plays, or a scrub holds background work back): its permit and lane's slot
-                    // given back until that is over, then the sheet again (the pictures drawn so far are found by their keys).
+                    // Paused before a cell (playback or scrub hold): release permit and lane slot, then redo the sheet (drawn cells reused by key).
                     if (!job.Held || work.Token.IsCancellationRequested || asked != Volatile.Read(ref _asked))
                         return drawn;
                     await WorkScheduler.WhenBackgroundMayRunAsync(work.Token);
@@ -451,8 +431,7 @@ public sealed class GpuProgramStrip : IDisposable
     }
 
     /// <summary>
-    /// Opens a file in the worker ahead of a drop (the worker's thread): started when it is not running, the file in its
-    /// source table, and its first frame drawn once, small, so that its decoder is open and its index read.
+    /// Worker-thread prewarm: starts the worker if needed, registers the file and renders one small frame so its decoder and index are ready.
     /// </summary>
     private void OpenAhead(string file)
     {
@@ -489,7 +468,7 @@ public sealed class GpuProgramStrip : IDisposable
         }
     }
 
-    /// <summary>One sheet of the state: planned, each picture drawn (or taken from the last sheets), the sheet made; null when it was not.</summary>
+    /// <summary>Builds one sheet: plan, render or reuse each cell, assemble; null on failure.</summary>
     private ThumbnailSheet? DrawSheet(Job job)
     {
         // A worker that does not start will not start the next time either: the opened file's key frames at once.
@@ -535,15 +514,14 @@ public sealed class GpuProgramStrip : IDisposable
             var moments = Moments(plan, broker, count, interval, duration);
             var clock = Stopwatch.StartNew();
 
-            // The worker takes up a changed source table as it begins a frame, after waiting for that frame's exact
-            // pictures: an empty frame first, so that the first picture waits for its frames as every other does.
+            // Publish an empty frame first so the worker loads the new source table before the first real cell waits for exact frames.
             client.ClearScene();
             ref var blank = ref client.Scene;
             (blank.CanvasWidth, blank.CanvasHeight, blank.OutputWidth, blank.OutputHeight, blank.ViewScale) = (canvasWidth, canvasHeight, drawWidth, drawHeight, 1);
             if (!client.WaitForFrame(client.Publish(), FirstPictureMs))
                 return Fault("the compositor drew nothing in time");
 
-            // Coarse to fine: the bar fills across its whole width at once and sharpens (see DrawingOrder), handed over as it does.
+            // Coarse-to-fine order (DrawingOrder) with progressive publishing.
             var drawnNow = 0;
             var placed = new bool[count];
             var (placedCount, handedOver, lastHanded) = (0, 0, 0L);
@@ -562,7 +540,7 @@ public sealed class GpuProgramStrip : IDisposable
                 var key = KeyOf(header, layers[..on], broker, drawWidth, drawHeight);
                 if (!_pictures.TryGetValue(key, out var picture))
                 {
-                    // A picture to draw while the player plays or a scrub is held (5.4.4): stopped, its work asks again once that is over.
+                    // Pause during playback or scrub hold; the work re-requests afterwards.
                     if (!MayGoOn(job))
                     {
                         job.Held = !job.Token.IsCancellationRequested;
@@ -649,12 +627,12 @@ public sealed class GpuProgramStrip : IDisposable
         }
     }
 
-    /// <summary>How long a sheet stopped before a picture waits where it is before it lets go of its lane and permit, ms (5.4.4).</summary>
+    /// <summary>In-place pause wait (ms) before releasing lane slot and permit.</summary>
     private const int PausedInPlaceMs = 1500;
 
     /// <summary>
-    /// Whether a sheet draws its next picture (5.4.4): yes unless it is paused (Job.Pause); paused, it waits in place up to
-    /// <see cref="PausedInPlaceMs"/> and goes on if that is over, else stops (false), at once when it is cancelled or a newer sheet was asked for.
+    /// True to render the next cell. When paused (Job.Pause), waits up to <see cref="PausedInPlaceMs"/>; false on timeout, cancellation or a
+    /// newer request.
     /// </summary>
     private bool MayGoOn(Job job)
     {
@@ -690,8 +668,7 @@ public sealed class GpuProgramStrip : IDisposable
     // ----- Where and what -----
 
     /// <summary>
-    /// The order a sheet's pictures are drawn in (5.2-Audit): the first, then the one halfway along, then those a quarter of the
-    /// way between, and so on (every picture once), so a sheet handed over half drawn covers the whole sequence evenly.
+    /// Coarse-to-fine cell order (first, middle, quarters, ...; each once) so partial sheets cover the Sequence evenly.
     /// </summary>
     public static int[] DrawingOrder(int count)
     {
@@ -715,11 +692,8 @@ public sealed class GpuProgramStrip : IDisposable
     }
 
     /// <summary>
-    /// The moments the pictures are drawn at: each in the middle of its stretch, moved onto the nearest key frame of the file
-    /// the bottom picture there reads (5.2-AuditB: whichever clip's, every file alike; before or after where that
-    /// moment reads it, however far: key frames only, the user's call in 5.0-Release, since a key frame is one decode and a
-    /// moment between two is a chase through up to a whole GOP), when HandPeg knows its key frames and the move lands on that
-    /// key frame in the same clip. Only a picture whose clip holds no key frame is drawn where it is.
+    /// Cell times: interval centres snapped to the nearest key frame (either direction, any distance) of the bottom clip's file when key
+    /// frames are known and the snap stays within that clip; one decode per cell instead of a GOP chase. Clips without a key frame keep the centre.
     /// </summary>
     private double[] Moments(GpuScenePlan plan, GpuResourceBroker broker, int count, double interval, double duration)
     {
@@ -787,7 +761,7 @@ public sealed class GpuProgramStrip : IDisposable
         return null;
     }
 
-    /// <summary>A picture's key: the scene at its moment (the canvas, the background, each layer's descriptor and the recipes of the textures it reads) and its size.</summary>
+    /// <summary>Cell cache key: scene hash (canvas, background, layer descriptors, texture recipes) plus size.</summary>
     private static long KeyOf(in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, GpuResourceBroker broker, int width, int height)
     {
         var hash = default(GpuHash).Add(header.CanvasWidth).Add(header.CanvasHeight).Add(width).Add(height)

@@ -60,8 +60,7 @@ public static class Timecode
     }
 
     /// <summary>
-    /// FF's format: as many digits as the rate's highest frame number needs, at least two (5.3.2): above 100 fps every frame number
-    /// is three digits (00:32:01:059 .. 00:32:01:359), so the text never changes length within a second.
+    /// FF digit count: enough for the highest frame number, minimum two (above 100 fps always three, e.g. 00:32:01:059), so width is stable.
     /// </summary>
     public static string FrameDigits(double frameRate) => MaxFrame(frameRate) switch
     {

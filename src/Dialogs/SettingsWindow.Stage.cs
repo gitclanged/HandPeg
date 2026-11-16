@@ -15,16 +15,15 @@ using HandPegApp.Shell;
 
 namespace HandPegApp;
 
-// The full-window settings screen (Pass 4.3-0B): the window over the editor, the category rail, and the live preview
-// stage that shows what the option under the pointer or with the focus does.
+// Full-window settings screen: covers the editor, with a category rail and a live preview stage for the hovered/focused option.
 public partial class SettingsWindow
 {
     // ----- Over the editor, as a full-window screen -----
 
-    /// <summary>Takes the editor's place on the screen: its bounds, and maximized when it is (on its monitor).</summary>
+    /// <summary>Matches the editor's bounds and maximized state on its monitor.</summary>
     public void CoverWindow(Window owner)
     {
-        // A maximized window's Left, Top, Width and Height are its restored ones: on the same monitor, which is where this maximizes too.
+        // Maximized windows report restored bounds, which are on the same monitor this window maximizes to.
         var bounds = owner.WindowState == WindowState.Normal ? new Rect(owner.Left, owner.Top, owner.ActualWidth, owner.ActualHeight) : owner.RestoreBounds;
         if (bounds.IsEmpty || !double.IsFinite(bounds.Width) || !double.IsFinite(bounds.Height))
             return;
@@ -34,8 +33,8 @@ public partial class SettingsWindow
         WindowState = owner.WindowState == WindowState.Maximized ? WindowState.Maximized : WindowState.Normal;
     }
 
-    // Escape goes back to the editor, saving, as Back does; in the search box with words in it, it clears them first. An open
-    // list, a cell being edited or the like takes its own Escape (handled), and this never sees it.
+    // Escape saves and returns like Back; in a non-empty search box it clears first. Controls handling their own Escape (open lists,
+    // cell edits) mark it handled.
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         if (e.Key != Key.Escape)
@@ -50,12 +49,11 @@ public partial class SettingsWindow
 
     private void Cancel_Click(object sender, RoutedEventArgs e) => DialogResult = false;
 
-    // ----- The title bar (4.4): the editor's, with its status and progress mirrored -----
+    // ----- Title bar (mirrors the editor's status and progress) -----
 
     /// <summary>
-    /// The screen's own title bar, which lies on the editor's: hidden until it has a frame to show, kept inside the screen
-    /// while maximized, and showing the editor's status and the progress of the work under way as the editor's bar does. Its
-    /// frame has the editor's window hook (WindowFrame.FrameHook, 5.3): never a classic caption or frame painted by Windows.
+    /// Title bar overlaying the editor's: hidden until a frame exists, inset while maximized, mirroring status and work progress.
+    /// Uses WindowFrame.FrameHook so Windows never paints a classic caption or frame.
     /// </summary>
     private void InitializeTitleBar()
     {
@@ -65,8 +63,7 @@ public partial class SettingsWindow
             var source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
             source?.AddHook(WindowFrame.FrameHook);
 
-            // A taskbar set to hide itself or not to (the working area changes): Windows places the screen anew, and its content is inset
-            // for where it is now, once it has (as the editor's TitleBarHook does).
+            // Work area change (taskbar auto-hide toggled): re-inset after Windows repositions, as the editor's TitleBarHook does.
             source?.AddHook((IntPtr _, int message, IntPtr wParam, IntPtr _, ref bool _) =>
             {
                 if (message == 0x001A && wParam == 0x002F)
@@ -77,12 +74,12 @@ public partial class SettingsWindow
         };
         ContentRendered += (_, _) => ThemeManager.SetCloaked(this, false);
 
-        // CoverWindow maximizes the screen before it has a window handle: its frame is known only from here on.
+        // CoverWindow maximizes before the HWND exists; frame metrics are only available from here.
         Loaded += (_, _) => ApplyFrame();
         StateChanged += (_, _) => ApplyFrame(placeLater: true);
         DpiChanged += (_, _) => ApplyFrame();
 
-        // Maximized and moved to another monitor (Win+Shift+Arrow): inset again for where it is now, once Windows has placed it.
+        // Maximized move to another monitor (Win+Shift+Arrow): re-inset after placement.
         LocationChanged += (_, _) =>
         {
             if (WindowState == WindowState.Maximized)
@@ -94,15 +91,15 @@ public partial class SettingsWindow
             UpdateTitleProgress();
         };
 
-        // The work summary lives as long as HandPeg: its handler goes with the screen, or the screen would never be let go.
+        // The work summary is app-lifetime: unsubscribe on close or this window leaks.
         WorkScheduler.Summary.PropertyChanged += WorkSummary_PropertyChanged;
         Closed += (_, _) => WorkScheduler.Summary.PropertyChanged -= WorkSummary_PropertyChanged;
         UpdateTitleStatus();
     }
 
-    // Maximized, a window that draws its own frame reaches past the screen's edges by its frame: its content is kept inside; beside a
-    // taskbar that hides itself it is placed short of it instead (5.3, WindowFrame.MaximizedPlace; made maximized before its hook was
-    // there: CoverWindow). Windows 11 squares its corners then, and rounds them again restored (ThemeManager.ApplyCorners, 5.3).
+    // Maximized self-framed windows overhang the screen, so content is inset; with an auto-hide taskbar it is placed short instead
+    // (WindowFrame.MaximizedPlace; CoverWindow maximizes before the hook). Corners square when maximized and round when restored
+    // (ThemeManager.ApplyCorners).
     private void ApplyFrame() => ApplyFrame(placeLater: false);
 
     // placeLater: from a state change, inside WM_SIZE (WindowFrame.KeepClearOfHiddenTaskbarNow).
@@ -135,7 +132,7 @@ public partial class SettingsWindow
             UpdateTitleStatus();
     }
 
-    /// <summary>The middle of the bar, as on the editor's: the work under way (MainWindow.TitleWorkText), or else the editor's last status.</summary>
+    /// <summary>Centre text: current work (MainWindow.TitleWorkText), else the editor's last status.</summary>
     private void UpdateTitleStatus()
     {
         var work = WorkScheduler.Summary;
@@ -147,8 +144,8 @@ public partial class SettingsWindow
     }
 
     /// <summary>
-    /// The dim fill and the accent rail under it: as far across as the work has got, or (work that cannot say) the whole bar, fainter. As
-    /// the editor's own bar draws them (5.4D, MainWindow.UpdateTitleProgress).
+    /// Progress wash and accent rail: proportional to progress, or full-width and fainter when indeterminate (as
+    /// MainWindow.UpdateTitleProgress).
     /// </summary>
     private void UpdateTitleProgress()
     {
@@ -162,10 +159,10 @@ public partial class SettingsWindow
         TitleProgressRail.Opacity = work.IsIndeterminate ? TitleProgressRailFaint : 1;
     }
 
-    // The wash's strength (and while the work cannot say how far it has got), and the rail's then: the editor's (MainWindow.TitleBar.cs).
+    // Wash and rail opacities (determinate/indeterminate), matching MainWindow.TitleBar.cs.
     private const double TitleProgressStrength = 0.16, TitleProgressFaint = 0.08, TitleProgressRailFaint = 0.5;
 
-    // The status stays in the middle of the bar, between what is at its two ends, never under them.
+    // Keep the status centred between the end elements without overlapping them.
     private void FitTitleStatus() =>
         TitleStatus.MaxWidth = Math.Max(0, TitleBar.ActualWidth - 2 * Math.Max(TitleLeft.ActualWidth, TitleRight.ActualWidth));
 
@@ -263,8 +260,8 @@ public partial class SettingsWindow
         ["Tools & Backup"] = "The programs HandPeg downloads and where they come from, SponsorBlock, and getting settings and projects in and out.",
     };
 
-    // The part of the editor (MainWindow.StageMirror's regions) shown live on the stage for a category's section, or for the
-    // category itself while no option is looked at (a null section). A section not named here shows only its picture.
+    // Editor region (MainWindow.StageMirror) mirrored for each category section (null section = category default); unlisted
+    // sections show only their picture.
     private static readonly Dictionary<(string Category, string? Section), string> StageMirrors = new()
     {
         [("General", null)] = "Window",
@@ -296,8 +293,8 @@ public partial class SettingsWindow
     };
 
     /// <summary>
-    /// Where the stage finds the editor's parts, live (MainWindow.StageMirror, given by MainWindow.OpenSettings): a part's
-    /// element when it is on show, else null. Without it the stage shows its drawn pictures only.
+    /// Live editor region lookup (MainWindow.StageMirror, set by MainWindow.OpenSettings): the element when visible, else null.
+    /// Without it the stage shows drawn pictures only.
     /// </summary>
     internal Func<string, (FrameworkElement Source, Rect View, ImageSource? Video, Rect VideoRect)?>? MirrorSource { get; init; }
 
@@ -338,7 +335,7 @@ public partial class SettingsWindow
     private TabItem? _stageTab;
     private bool _stageWide, _stageRefreshQueued;
 
-    /// <summary>Makes the rail, and has every option show itself on the stage when it is pointed at or given the focus.</summary>
+    /// <summary>Builds the rail and wires hover/focus of every option to the stage.</summary>
     private void InitializeScreen()
     {
         // The keys' page fills its hosts first (SettingsWindow.Keybinds.cs), so they are options like any other below.
@@ -373,11 +370,8 @@ public partial class SettingsWindow
             RefreshStageSoon();
         };
 
-        // The theme chosen is put into effect in every window (the editor behind, and its picture on the stage, show it
-        // too): picked from the open list, as the list closes; stepped through with the arrow keys on the closed box, once
-        // the keys rest (the stage shows every step meanwhile, through the bound setting), so the whole app is not
-        // re-themed at each step. Closed, the screen leaves the saved theme in effect: the one chosen when Save wrote it,
-        // the one there was when not (4.4: a theme chosen here used to wait for a restart).
+        // Apply the chosen theme app-wide: on dropdown close, or after arrow-key stepping settles (the stage previews each step via
+        // the binding) to avoid re-theming per step. On close the saved theme stays in effect (new if saved, else the original).
         _themeTimer.Tick += (_, _) => ApplyChosenTheme();
         ThemeBox.SelectionChanged += (_, _) =>
         {
@@ -392,7 +386,7 @@ public partial class SettingsWindow
                 ThemeManager.Apply();
         };
 
-        // The editor on the stage is asked for again when it is hidden, shown or resized, and let go of when the screen closes.
+        // Re-query the mirrored editor on hide/show/resize; release it on close.
         StagePreview.MirrorChanged += () => Dispatcher.InvokeAsync(RefreshMirror, DispatcherPriority.Background);
         _mirrorTimer.Tick += (_, _) => RefreshMirror();
         Closed += (_, _) =>
@@ -430,7 +424,7 @@ public partial class SettingsWindow
         return null;
     }
 
-    /// <summary>The stage for an option of a tab: its name, where it is, its default, what it does and its picture; for the tab itself when none.</summary>
+    /// <summary>Stage content for an option (name, location, default, description, picture), or for the tab when none.</summary>
     private void ShowStage(TabItem? tab, FrameworkElement? option)
     {
         if (tab is null)
@@ -455,8 +449,8 @@ public partial class SettingsWindow
     }
 
     /// <summary>
-    /// The header keeps the description to the three lines it has room for (its end cut with an ellipsis); a longer one is
-    /// given in full under the card, and as the description's tool tip, so that the card itself never moves.
+    /// Clamps the header description to three lines with ellipsis; longer text appears in full below the card and as a tooltip so
+    /// the card never shifts.
     /// </summary>
     private void FitStageDescription()
     {
@@ -523,7 +517,7 @@ public partial class SettingsWindow
         StageCardTitle.Visibility = StageCardTitle.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         StageKeybindsHost.Visibility = kind == StageKind.Keybinds ? Visibility.Visible : Visibility.Collapsed;
 
-        // 5.6A: the GPU and NPU role cards (clickable: one home for the roles' picture, SettingsStagePreview draws none) on Export & Hardware.
+        // Clickable GPU/NPU role cards on Export & Hardware (their single home; SettingsStagePreview draws none).
         StageHardwarePanel.Visibility = kind == StageKind.Hardware ? Visibility.Visible : Visibility.Collapsed;
         ShowStageRoles();
 
@@ -547,9 +541,8 @@ public partial class SettingsWindow
     }
 
     /// <summary>
-    /// The part of the editor the option looked at is about, live on the stage (4.4), when the editor has it on show: an
-    /// option's own part, else its section's, else (no option) its category's. A pane that is closed, hidden or behind
-    /// another tab is never made or shown for it (MainWindow.StageMirror). The card shows while it has anything to show.
+    /// Mirrors the relevant visible editor region (option's, else section's, else category's). Closed, hidden or background panes are
+    /// never created or shown (MainWindow.StageMirror). The card is visible only with content.
     /// </summary>
     private void RefreshMirror()
     {
@@ -606,8 +599,7 @@ public partial class SettingsWindow
         LayOutStage();
     }
 
-    // The Keybinds page's Show Quick-Start Tour: saves, as Back does, and starts the tour in the editor once this screen has
-    // gone (it walks the editor, which the screen covers). Nothing is started when the settings could not be saved.
+    // Show Quick-Start Tour: save like Back, then start the tour in the editor after this screen closes; skipped if saving fails.
     private void ShowQuickStartTour_Click(object sender, RoutedEventArgs e)
     {
         if (Owner is not MainWindow editor)
@@ -619,8 +611,7 @@ public partial class SettingsWindow
     }
 
     /// <summary>
-    /// The options and the stage share the window 55 / 45, or 35 / 65 with the stage widened (by its button, or by a
-    /// category whose tab's Tag is "WideStage": the visual tools to come); a window too narrow for both shows no stage.
+    /// Splits options/stage 55/45, or 35/65 when widened (button, or a tab tagged "WideStage"); hides the stage when too narrow.
     /// </summary>
     private void LayOutStage()
     {
@@ -724,7 +715,7 @@ public partial class SettingsWindow
         }
     }
 
-    /// <summary>What an option is when nothing has been changed: a number box's declared default, else the built-in setting its box shows.</summary>
+    /// <summary>Option default: a number box's declared default, else the built-in setting value.</summary>
     private static string? DefaultOf(FrameworkElement option)
     {
         // A folded section is many options: each shows its own default when it is pointed at.

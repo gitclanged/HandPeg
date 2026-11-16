@@ -23,16 +23,11 @@ namespace HandPegApp;
 public partial class MainWindow
 {
     // ----- Blocks in time -----
-    // Every row of the timeline (4.4: one drawn surface, UnifiedTimelineControl; its rows are made in
-    // MainWindow.UnifiedTimeline.cs) has what it stands for as blocks: a track's clips, each from when it appears to when
-    // it goes (5.2-AuditB: a file's streams are Sub-Lanes of sound clips like any other); a video clip's own sound, while it
-    // is unlinked from its picture; the captions. Everything is placed by one sum:
-    // seconds times the surface's pixels per second. While a block is being dragged only that block is moved; what it
-    // stands for is changed when it is let go, which is also when everything else (the command, the player, Undo) hears of it.
-    //
-    // The rows are made again after a change, and when the zoom changes the scale; as the video plays only the playhead
-    // slides. The pictures in a block (its file's frames, its sound) are cut from pictures already in memory and laid on
-    // the file's own time, so they stay where they are in the file as the block is trimmed, and slide as it is slipped.
+    // Each UnifiedTimelineControl row (built in MainWindow.UnifiedTimeline.cs) holds blocks for its model items: a track's clips (file
+    // streams are ordinary audio Sub-Lane clips), an unlinked video clip's own audio, and captions. x = seconds * pixels-per-second.
+    // A drag moves only its block; the model, command, player and Undo change once on release.
+    // Rows rebuild after edits and zoom changes; playback moves only the playhead. Block thumbnails and waveforms are cut from cached
+    // images in file time, so they stay fixed in the media under trims and slide under slips.
 
     private static readonly Brush LayerClipBrush = Frozen(Color.FromArgb(0xD0, 0x8E, 0x5A, 0xB8));
     private static readonly Brush LayerAudioBrush = Frozen(Color.FromArgb(0xD0, 0x3C, 0x9A, 0x5F));
@@ -42,46 +37,43 @@ public partial class MainWindow
     private static readonly Brush SubtitleClipBrush = Frozen(Color.FromArgb(0xD0, 0x2E, 0x7D, 0x6B));
     private static readonly Brush MainUnderBrush = Frozen(Color.FromArgb(0x48, 0x2F, 0x6F, 0xB5));
 
-    /// <summary>Where a clip's keyframes fall along its block, in pixels; nothing while their diamonds are switched off.</summary>
-    /// <param name="shift">How far the moment the keyframes are counted from lies from the start of the block, in seconds.</param>
+    /// <summary>Keyframe x offsets along a clip's block in pixels; empty while keyframe diamonds are hidden.</summary>
+    /// <param name="shift">Offset of the keyframe time origin from the block start, in seconds.</param>
     private IEnumerable<double>? ClipKeys(Layer clip, double shift, double scale) =>
         _viewModel.ShowClipKeyframes && clip.IsAnimated ? clip.KeyTimes.Select(t => (t + shift) * scale) : null;
 
-    /// <summary>A video layer's own sound, as something that can be selected.</summary>
+    /// <summary>Selectable wrapper for a video layer's own audio.</summary>
     private sealed record LayerSound(Layer Layer);
 
-    // What is selected: a Layer (one clip, or the blur fill's settings row), a LayerSound.
-    // 5.0: clips selected together (Ctrl + click, Shift + click) are the view model's SelectedClips; this is the primary one of
-    // them, what the inspector, the Crop boxes and the Keyframes pane show. The group holds only while it does.
+    // Primary selection: a Layer (one clip, or the blur fill's settings row) or a LayerSound. Multi-selection (Ctrl/Shift+click) lives in
+    // the view model's SelectedClips; this item drives the inspector, Crop boxes and Keyframes pane, and must belong to that group.
     private object? _selectedClip;
 
-    // Nothing picked out, which stands for the video clip at the playhead (SelectClip(null)).
+    // Empty selection = the video clip at the playhead (SelectClip(null)).
     private bool _playheadVideoSelected;
     private bool _clipRedrawQueued;
 
-    // What a press on a block left to its click (5.0): a Ctrl or Shift click on a clip already selected, or a plain click on
-    // one of a group (narrowing it to that clip), decided as it is let go without moving; a drag of the group goes on instead.
-    // 5.0-Verify (the user's Q2, A): Ctrl on the edge of a clip not selected is a ripple trim of it alone when dragged, and
-    // adds it to the selection only when let go where it was (Add).
+    // Selection change deferred to a no-move release: Ctrl/Shift+click on a selected clip, or a plain click narrowing a group to one clip;
+    // a drag cancels it. Ctrl on an unselected clip's edge ripple-trims it alone when dragged and only joins the selection (Add) on a
+    // no-move release.
     private enum ClickGesture { Toggle, Range, Narrow, Add }
 
     private (Layer Clip, ClickGesture Gesture)? _clickGesture;
 
-    // Where a Shift + click range starts: the clip selected before the first Shift + click (held while the group is its own).
+    // Shift+click range anchor: the clip selected before the first Shift+click (valid while the group is the range it made).
     private Layer? _rangeAnchor;
 
-    // The rows on the surface are older than the timeline (an edit, an undo, a change of scale since they were made): made
-    // again at background priority, or at once by the next press on the timeline or the end of a drag (4.4 BugHunt).
+    // Rows are stale (edit, undo or scale change since built): rebuilt at Background priority, or synchronously by the next timeline
+    // press or drag end.
     private bool _rowsStale;
 
-    // A block was pressed, with either button: it is what is selected now (a right-click selects it too, so that the menu that opens is about it).
-    // 5.0: Ctrl + click adds a clip to the selection (or, clicked again, takes it out), Shift + click selects every clip from
-    // the one selected to it, across time and tracks; a press on one of a group keeps the group (dragged, it all goes).
+    // Block press (either button; right-click selects so its menu targets the block). Ctrl+click toggles a clip in the selection,
+    // Shift+click selects the range from the anchor across time and tracks; pressing a group member keeps the group (a drag moves all).
     private void Timeline_BlockPressed(TimelineRow row, TimelineBlock block, MouseButtonEventArgs e)
     {
         _clickGesture = null;
 
-        // An effect's block (5.2): its clip, selected, with its effects in the Effects pane; an unlocked one is dragged as it is pressed.
+        // Effect block: selects its clip and shows its effects in the Effects pane; an unlocked one starts dragging on press.
         if (block.Clip is EffectBlock effectBlock)
         {
             if (LiveClip(effectBlock.Clip) is { } owner && !IsSelected(owner))
@@ -89,9 +81,8 @@ public partial class MainWindow
             return;
         }
 
-        // A subtitle on the captions' row is not a clip of its own: a press on any of them selects the captions (their place,
-        // size and style in the inspector, their box over the player and on the Canvas; 5.0-Verify, the user's bug 3). Their
-        // words and times are the Subtitle Studio's: a double-click opens it.
+        // Caption blocks are not clips: any press selects the caption track (position, size and style in the inspector; box on the player
+        // and Canvas). Text and timing belong to the Subtitle Studio, opened by double-click.
         if (block.Clip is SubtitleRef)
         {
             SelectClip(_viewModel.CaptionLayer);
@@ -106,8 +97,8 @@ public partial class MainWindow
             var (ctrl, shift) = (modifiers.HasFlag(ModifierKeys.Control), modifiers.HasFlag(ModifierKeys.Shift));
             if (e.ChangedButton == MouseButton.Left && !modifiers.HasFlag(ModifierKeys.Alt) && (ctrl || shift))
             {
-                // Not selected yet: in at once, so that a drag that follows takes it along. Selected: decided as it is let go.
-                // Ctrl on an edge is a ripple trim of the clip alone: it joins the selection only if let go without a drag.
+                // Unselected: add now so a following drag includes it. Selected: decide on release. Ctrl on an edge ripple-trims the
+                // clip alone and joins the selection only on a no-move release.
                 if (!IsSelected(clip))
                 {
                     if (ctrl && UnifiedTimeline.Surface.PressRipples)
@@ -127,8 +118,7 @@ public partial class MainWindow
 
             if (_viewModel.IsInClipGroup(clip) && GroupHolds)
             {
-                // One of the group: the group stays (a drag takes it all, a right-click's menu is about it all); it is the
-                // one the panes show. Clicked and let go without a drag, it alone is selected.
+                // Group member: keep the group (drag and context menu apply to all) and make it primary; a no-move release narrows to it.
                 SelectClip(clip, keepGroup: true);
                 if (e.ChangedButton == MouseButton.Left)
                     _clickGesture = (clip, ClickGesture.Narrow);
@@ -145,10 +135,10 @@ public partial class MainWindow
         CrashReporter.Note("timeline", "refused: a drag");
     }
 
-    /// <summary>A subtitle drawn on the captions' row.</summary>
+    /// <summary>Block Data for one subtitle on the caption row.</summary>
     private sealed record SubtitleRef(double Start);
 
-    // A click on a row beside its blocks, or below every row, moves the playhead to that moment.
+    // Click on empty row space or below all rows: seek the playhead to that time.
     private void Timeline_EmptyPressed(TimelineRow? row, double seconds, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left && _viewModel.DurationMs > 0)
@@ -156,8 +146,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Lays the timeline's rows out again once, however many things have just changed (never under a drag: its end lays
-    /// them out). Until then they are owed: the next press on the timeline lays them out first (<see cref="FlushClipRedraw"/>).
+    /// Coalesces row rebuilds into one Background-priority pass (never mid-drag; drag end rebuilds). Until it runs the rows are stale and
+    /// the next timeline press rebuilds first (<see cref="FlushClipRedraw"/>).
     /// </summary>
     private void ScheduleClipRedrawUnlessLook()
     {
@@ -181,9 +171,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Lays the timeline's rows out now when they are owed (4.4 BugHunt): before a press on the timeline is looked at (the
-    /// queued layout waits behind input, so a clip split a moment ago would still be one block under the pointer, and its
-    /// split-off part dragged as the whole), and as a drag ends. Never under a drag.
+    /// Rebuilds stale rows synchronously before a timeline press is hit-tested (the queued rebuild runs after input, so a just-split clip
+    /// would still be one block and drag as a whole) and at drag end. Never mid-drag.
     /// </summary>
     private void FlushClipRedraw()
     {
@@ -198,7 +187,7 @@ public partial class MainWindow
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            // Said and logged once, and tried again at the next change: never a loop of failing layouts.
+            // Report and log once; retry on the next change (never a loop of failing rebuilds).
             _rowsStale = false;
             AppLog.Write($"Timeline: laying out the rows failed: {ex}");
             CrashReporter.Note("timeline", $"rows failed: {ex.GetType().Name}");
@@ -207,8 +196,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Runs what a timeline menu item or tool does (4.4 BugHunt): a fault in it becomes a status line and a note in the
-    /// log, never an exception that ends the app; the rows are laid out again from the timeline either way.
+    /// Runs a timeline menu/tool action; a fault becomes a status line and a log entry instead of crashing. Rows rebuild either way.
     /// </summary>
     private void RunGuarded(string what, Action action)
     {
@@ -222,7 +210,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>A fault in an edit made on the timeline: logged (with where), noted for a crash report (its kind only), said in the status bar.</summary>
+    /// <summary>Handles a timeline edit fault: logged with its site, recorded for crash reports (type only), shown in the status bar.</summary>
     private void TimelineFault(string what, Exception ex)
     {
         AppLog.Write($"Timeline: {what} failed: {ex}");
@@ -232,10 +220,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The view of the clip a block was made for, as the timeline has it now (4.4 BugHunt): found again by its id (an undo
-    /// makes every view afresh), and, given where the block showed it (<paramref name="built"/>, seconds), still there. Null
-    /// when it is gone or was changed meanwhile (an undo, another edit), or while a step is being put back: the status says
-    /// why (unless <paramref name="quiet"/>) and nothing is edited.
+    /// Re-resolves a block's clip by id (undo recreates views) and verifies it still matches the block's <paramref name="built"/> times.
+    /// Null when gone, changed (undo, another edit) or during an undo restore; the status explains unless <paramref name="quiet"/>.
     /// </summary>
     private Layer? LiveClip(Layer view, (double Start, double End)? built = null, bool quiet = false)
     {
@@ -261,13 +247,12 @@ public partial class MainWindow
         return live;
     }
 
-    // Within this of the parent's edge (seconds), a child shares it: the model's own reach.
+    // Edge-sharing tolerance in seconds: a child within this of a parent edge shares it (matches the model).
     private const double FamilySlack = 1e-6;
 
     /// <summary>
-    /// Where a clip's block stands in its family (4.4 BugHunt), in seconds from the model: known by the clip's id; its
-    /// parent's id while that parent is on the timeline; whether a move of the parent carries it (it overlaps the parent, on
-    /// a track that is not locked: the model's own rule); which of the parent's edges it shares.
+    /// A block's family info from the model (seconds): clip id, parent id while the parent is on the timeline, whether parent moves carry
+    /// it (overlaps the parent on an unlocked track: the model's rule), and which parent edges it shares.
     /// </summary>
     private BlockFamily? FamilyOf(Models.Timeline.TimelineClip? clip)
     {
@@ -284,14 +269,12 @@ public partial class MainWindow
         return new BlockFamily(clip.Id, parent.Id, rides, edges);
     }
 
-    // Every block of a clip can be dragged: this says so, once for all of them.
+    // Shared drag capability for every clip block.
     private static readonly Func<bool> AlwaysDraggable = static () => true;
 
     /// <summary>
-    /// Fills a row of the timeline with its blocks, at the surface's scale (pixels per second), by what the row stands for
-    /// (its Data): the clips of a track (a video or sound track), the captions, or the blur fill's settings row. Returns the
-    /// blocks of the track's clips' sound that is unlinked from their pictures (each dragged on its own), for a lane of their own
-    /// under the row; null when there is none.
+    /// Fills a row with blocks at the surface scale (px/s) according to its Data: a track's clips, captions, or the blur fill row. Returns
+    /// the track's unlinked-audio blocks (independently draggable) for a lane beneath the row, or null.
     /// </summary>
     private List<TimelineBlock>? BuildRowBlocks(TimelineRow row, double scale, double seconds)
     {
@@ -302,16 +285,15 @@ public partial class MainWindow
         var perPixel = 1 / scale;
         switch (row.Data)
         {
-            // The captions: each from when it is shown to when it goes. Not dragged here: they follow the sound they were
-            // heard in through every cut, and are reworded and retimed in the Subtitle Studio (right-click, Edit Captions...).
+            // Captions span their display times. Not draggable: they follow their source audio through cuts and are edited in the
+            // Subtitle Studio (right-click, Edit Captions...).
             case Layer { IsCaptions: true }:
                 foreach (var (from, to, text, _) in _viewModel.GetSubtitleSegments())
                     row.Blocks.Add(new TimelineBlock { Left = from * scale, Width = Math.Max((to - from) * scale, 3), Name = text, Fill = SubtitleClipBrush, Clip = new SubtitleRef(from) });
 
                 return null;
 
-            // The blur fill's settings (5.2-AuditB: each video's own, this row their look): for as long as the sequence. Selected,
-            // the inspector shows its blur.
+            // Blur fill settings row (per-video fills share this look): spans the sequence; selecting it shows the blur in the inspector.
             case Layer { IsBackground: true } background:
                 row.Blocks.Add(new TimelineBlock
                 {
@@ -324,12 +306,11 @@ public partial class MainWindow
 
                 return null;
 
-            // An empty track: nothing on it yet (its row says to drop something there).
+            // Empty track: no blocks (the row shows a drop hint).
             case Layer { IsEmptyTrack: true }:
                 return null;
 
-            // A track: its clips, each from when it appears to when it goes (4.3C): moved, trimmed from either edge, rolled,
-            // slipped, rippled, put on another track, on any track.
+            // Track clips: movable, trimmable from either edge, rollable, slippable, rippleable, and movable across tracks.
             case Layer layer:
                 return AddTrackBlocks(row, layer, scale, perPixel, seconds);
         }
@@ -337,7 +318,7 @@ public partial class MainWindow
         return null;
     }
 
-    /// <summary>The blocks of a track's clips on its row; returns the blocks of their unlinked sound (see BuildRowBlocks).</summary>
+    /// <summary>Adds a track's clip blocks to its row; returns their unlinked-audio blocks (see BuildRowBlocks).</summary>
     private List<TimelineBlock>? AddTrackBlocks(TimelineRow row, Layer layer, double scale, double perPixel, double seconds)
     {
         List<TimelineBlock>? sounds = null;
@@ -345,17 +326,16 @@ public partial class MainWindow
         var settings = AppSettings.Current;
         var gainLines = settings.ShowClipGainLines;
 
-        // The Timeline Settings switches (5.3): the blocks' frames and their waveforms (a sound clip's, a video clip's own, an unlinked
-        // sound's, and so the closed sound stack's one bar, which draws its lanes' sound) are left off the blocks while they are off.
+        // Timeline Settings toggles: when off, blocks omit thumbnails / waveforms (audio clips, video clips' own, unlinked audio, and hence
+        // the closed audio stack's summary bar).
         var (filmstrips, waveforms) = (settings.ShowClipFilmstrips, settings.ShowClipWaveforms);
 
-        // A waveform is as tall as it is heard (5.3-Stage2): its clip's gain and its track's together, as the sound engine mixes it, so a
-        // lane's own waveform and its share of its video's (StackSound) agree.
+        // Waveform height = clip gain * track gain, as mixed, so a lane's waveform matches its share of the video's StackSound.
         var trackModel = _viewModel.TrackOfRow(layer);
         var trackGainDb = trackModel?.GainDb ?? 0;
         foreach (var clip in clipsOnTrack)
         {
-            // The clip as the timeline has it, resolved once for every per-block question below.
+            // Resolve the clip's timeline view once for all per-block checks below.
             var model = _viewModel.ClipOf(clip);
             var (from, to) = clip.GetSpan(seconds);
             var duration = to - from;
@@ -364,16 +344,13 @@ public partial class MainWindow
             var slip = linked ? 0 : MainViewModel.ClipAudioSlip(model);
             var split = MainViewModel.ClipAudioSplit(model);
 
-            // Its sound is drawn in its block while it is linked to its picture (a sound clip's always): a video clip's own.
-            // Unlinked, it has a block of its own (below).
+            // Linked audio draws inside the block (always for audio clips); unlinked video audio gets its own block (below).
             var showsSound = !clip.IsHidden && (clip.IsAudio || (linked && _viewModel.ShowLinkedAudio && clip.CarriesSound));
             var gainLine = showsSound && !clip.IsLoading && gainLines;
             var name = clip.IsLoading ? "Loading..." : clip.IsHidden ? "hidden" : clip.IsAudio ? clip.Name : "";
 
-            // The clip as the timeline has it (4.4 BugHunt): what its block is known by and carries along in a drag, and
-            // where it was when the block was made. A let-go edits the clip as it is then (found by its id), only while it is
-            // still where the block showed it, and measures from the block's change: a block drawn wider than its clip (3 px
-            // at least) never stretches it.
+            // Block identity and build-time position: a release re-resolves the clip by id, edits only if it is unchanged, and applies the
+            // block's delta (so a block drawn wider than its clip, min 3 px, never stretches it).
             (double Start, double End) built = model is null ? (from, to) : (model.Start, model.End);
             var (left, width) = (from * scale, Math.Max(duration * scale, 3));
             row.Blocks.Add(new TimelineBlock
@@ -385,7 +362,7 @@ public partial class MainWindow
                 Clip = clip,
                 Family = FamilyOf(model),
 
-                // Its frames, from its file's strip, and its sound: both laid on the file's own time.
+                // Thumbnails (from the file's strip) and waveform, both in file time.
                 Film = clip.IsHidden || !filmstrips ? null
                     : clip.IsVideoFile && !clip.IsLoading ? FilmOf(_viewModel.FilmstripOf(clip), clip.ImageWidth, clip.ImageHeight, clip.MediaOffset, clip.MediaDuration, speed)
                     : null,
@@ -396,16 +373,16 @@ public partial class MainWindow
                 CanDrag = AlwaysDraggable,
                 Resizable = true,
 
-                // Its own switches (5.2): On/Off for this clip alone (its children keep theirs), and a child's Lock to its parent clip.
+                // Per-clip switches: On/Off for this clip only (children keep theirs) and a child's Lock to its parent.
                 IsOn = model is null || clip.IsLoading ? null : MainViewModel.IsClipOn(model),
                 SwitchIsSound = clip.IsAudio,
                 IsLocked = model is null || clip.IsLoading || (trackModel ?? _viewModel.Document.TrackOf(model)) is not { } onTrack ? null : _viewModel.ClipLock(model, onTrack),
                 Switched = which => BlockSwitched(clip, which),
 
-                // Let go a little over the clip it meets: a crossfade instead (see CommitClipMove).
+                // Released slightly overlapping the adjacent clip: creates a crossfade instead (see CommitClipMove).
                 Commit = (newLeft, newWidth) => CommitClip(clip, built, left, width, newLeft, newWidth, perPixel),
 
-                // Its left edge, the cut it shares with the next clip (a roll), Alt inside it (a slip), Ctrl on an edge (a ripple).
+                // Edge trims, shared cut with the next clip (roll), Alt inside (slip), Ctrl on an edge (ripple).
                 TrimmableStart = clip.Duration > 0.001 && !clip.IsLoading,
                 Slippable = clip.Duration > 0.001 && (clip.IsVideoFile || clip.IsAudio),
                 Edit = done => EditClip(clip, built, done, left, width, perPixel),
@@ -416,8 +393,8 @@ public partial class MainWindow
                         _viewModel.SetClipGain(live, done.GainDb);
                 },
 
-                // Its fades, at its top corners: picture and sound, over whatever is under it. And a crossfade from
-                // the clip before it on its track, as a pill across their cut.
+                // Fade handles at the top corners (video and audio over lower layers), plus a crossfade pill across the cut with the
+                // previous clip on the track.
                 Fades = clip.IsLoading || clip.IsHidden ? null : (clip.FadeInSeconds, clip.FadeOutSeconds, clip.FadeInStyle, clip.FadeOutStyle),
                 FadeEdit = (fadeIn, fadeSeconds) =>
                 {
@@ -431,8 +408,8 @@ public partial class MainWindow
                         _viewModel.SetCrossfade(live, seconds);
                 },
 
-                // Dragged up or down onto another row: onto that track (an empty one, or one of its kind with room). A sound (5.2: an
-                // unpacked stream too) also onto a video row: a lane of its own in that track's audio stack, at its own time.
+                // Vertical drag onto another row: moves to that track (empty, or same kind with room). Audio (incl. unpacked streams) may
+                // also drop on a video row, becoming a lane in its audio stack at the same time.
                 CanMoveTo = (target, at) =>
                     target is Layer track && LiveClip(clip, built, quiet: true) is { } live
                     && (_viewModel.CanMoveClipToTrack(live, track, StartOf(built, left, at, perPixel)) || (clip.IsAudio && _viewModel.CanMoveSoundUnder(live, track))),
@@ -448,7 +425,7 @@ public partial class MainWindow
                         _viewModel.MoveClipToTrack(live, track, StartOf(built, left, at, perPixel));
                 },
 
-                // Dragged to a seam above, below or between the picture tracks (5.4A): onto a new track there, its family with it.
+                // Drag onto a seam above, below or between video tracks: creates a new track there and moves the clip and its family.
                 CanMoveToNewTrack = clip.IsAudio ? null : (beside, above, at) =>
                     beside is Layer track && LiveClip(clip, built, quiet: true) is { } live
                     && _viewModel.CanMoveClipToNewTrack(live, track, above, StartOf(built, left, at, perPixel)),
@@ -461,8 +438,8 @@ public partial class MainWindow
                     _viewModel.MoveClipToNewTrack(live, track, above, StartOf(built, left, at, perPixel));
                 },
 
-                // Let go on the bottom edge of a clip it overlaps on another lane (5.5A, the tether; with Alt pressed during the drag, anywhere
-                // on it): that clip's child, at the time it was let go. The pill names the parent (a picture block's own Name is empty).
+                // Tether: released on the bottom edge of an overlapped clip on another lane (with Alt, anywhere on it) becomes that clip's
+                // child at the release time. The pill shows the parent's name (a video block's own Name is empty).
                 CanAttachTo = model is null || clip.IsLoading ? null : (parentBlock, at) =>
                     parentBlock.Clip is Layer parentView && LiveClip(clip, built, quiet: true) is { } live && LiveClip(parentView, quiet: true) is { } parent
                     && _viewModel.CanAttachClip(live, parent, StartOf(built, left, at, perPixel)) ? parent.Name : null,
@@ -475,7 +452,7 @@ public partial class MainWindow
                     _viewModel.AttachClip(live, parent, StartOf(built, left, at, perPixel));
                 },
 
-                // A J/L cut: its sound reaching out past its picture's edges; Alt on the lower half of an edge makes or changes one.
+                // J/L cut: audio extending past the video edges; Alt on an edge's lower half creates or adjusts it.
                 AudioSplit = split is { } cut && (Math.Abs(cut.LeadIn) > 1e-6 || Math.Abs(cut.TailOut) > 1e-6) ? cut : null,
                 AudioSplitEdit = split is null || clip.IsLoading ? null : (lead, tail) =>
                 {
@@ -483,13 +460,12 @@ public partial class MainWindow
                         _viewModel.SetClipAudioSplit(live, lead, tail);
                 },
 
-                // An edge at a seam of folded dead air (Q11): dragged outward it shows the fold again, inward it folds more.
+                // Edge at a folded dead-air seam: dragging outward unfolds, inward folds more.
                 SeamRange = model is null || clip.IsLoading ? null : startEdge => SeamRangeOf(clip, startEdge),
                 SeamTrim = model is null || clip.IsLoading ? null : (startEdge, outward) => TrimAtSeam(clip, built, startEdge, outward),
             });
 
-            // A video clip's own sound, unlinked from its picture: starting where its picture does, or wherever it was slipped
-            // to. It goes with its picture in a drag of it (moved, or trimmed with either edge).
+            // Unlinked video audio: starts with its video or at its slipped offset; follows the video's moves and edge trims.
             if (clip is { IsVideoFile: true, CarriesSound: true, IsLoading: false } && !linked)
             {
                 (sounds ??= []).Add(new TimelineBlock
@@ -521,42 +497,36 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The stretch of a sound a block shows, by time: its file's sound from <paramref name="mediaFrom"/> on, for
-    /// <paramref name="seconds"/> of the timeline at <paramref name="speed"/>, drawn as tall as its gain makes it. Null while
-    /// the file's sound is not known yet (it is drawn when it is: the rows are made again then).
+    /// A block's waveform slice: the file's audio from <paramref name="mediaFrom"/> for <paramref name="seconds"/> of timeline at
+    /// <paramref name="speed"/>, scaled by gain. Null until the waveform is built (rows rebuild when it arrives).
     /// </summary>
     private static WaveWindow? SoundOf(ImageSource? picture, double mediaFrom, double seconds, double speed, double gainDb) =>
         Waveforms.DataOf(picture) is { } data ? new WaveWindow(data, mediaFrom, mediaFrom + Math.Max(seconds, 0) * speed, speed, DecibelScale(gainDb)) : null;
 
-    /// <summary>A gain in decibels as how many times as tall its sound is drawn (1 for 0 dB), within reason.</summary>
+    /// <summary>Converts a dB gain to a clamped waveform height multiplier (1 at 0 dB).</summary>
     private static double DecibelScale(double gainDb) => Math.Clamp(Math.Pow(10, gainDb / 20), 0, 8);
 
-    // ----- A video's sound stack as one waveform (5.3-Stage2) -----
-    // A video clip with a sound stack (its file's streams on Sub-Lanes, its unlinked sound) shows what that stack plays as one
-    // waveform across its block (the user's call, where 5.1 showed its pictures alone): its audible lanes' sound combined, the most
-    // any of them reaches (WaveformData.Combine), each at its clip's and its track's gain. Worked out on the rows once they are in
-    // their stacks, by the rules the closed stack's one bar draws by: a lane not muted (its own switch, or its video track's master
-    // mute), a block with a sound. A parent hidden or switched off still shows it: its lanes keep playing (its switch and its track's
-    // eye leave its Sub-Lanes' sound as it is). Combined on the parent's own file time: with every lane under the whole of its clip,
-    // every clip of one file shares one combined sound across splits and zooms while the gains and shifts stay the same, and its
-    // waveform tiles are drawn again after an edit, never made again; with a lane under part of its clip, the combined sound is that
-    // clip's stretch of the file alone (Law 2: no clip holds a whole file's sound of its own).
+    // ----- Combined audio-stack waveform -----
+    // A video clip with an audio stack (file streams on Sub-Lanes, unlinked audio) draws one waveform: the per-sample max of its audible
+    // lanes (WaveformData.Combine), each at clip * track gain, using the closed stack bar's rules (lane not muted by itself or the video
+    // track's master mute). Hidden/disabled parents still show it (their lanes keep playing). Computed in the parent's file time: when
+    // every lane spans the whole clip, all clips of that file share one result across splits and zooms (tiles redraw, never rebuild);
+    // otherwise only the clip's own file range is combined (Law 2: no clip holds a whole file's audio).
 
-    // The combined sounds by what they were made of: those the last layout of the rows drew (looked in first, so a timeline of more
-    // files than the few kept never makes them all again at every edit) and those this one draws, and a few kept besides (an hour of
-    // one is about 2.6 MB, Law 2).
+    // Combined waveforms keyed by their inputs: the previous layout's set (checked first, so large timelines never rebuild all per edit),
+    // this layout's set, and a small LRU (about 2.6 MB per hour of audio, Law 2).
     private static Dictionary<StackSoundKey, WaveformData> _stackSoundsDrawn = [], _stackSoundsDrawing = [];
     private static readonly LruCache<StackSoundKey, WaveformData> StackSounds = new(12);
 
     /// <summary>
-    /// One part of a combined stack sound as it is kept: its peaks (by identity), its gain in thousandths, its shift in pairs, and the
-    /// stretch of its own pairs it plays (from First up to End; int.MinValue and int.MaxValue for all of it, a lane under the whole block).
+    /// Cache-key part of a combined waveform: peaks (by reference), gain in thousandths, shift in peak pairs, and the played pair range
+    /// [First, End) (int.MinValue/int.MaxValue for a lane spanning the whole block).
     /// </summary>
     private readonly record struct StackSoundPart(WaveformData Data, int GainMilli, int ShiftPairs, int First, int End);
 
     /// <summary>
-    /// What a combined stack sound is made of, part by part in order, and the stretch of the parent's file it covers in its pairs (From up
-    /// to To; null for all of it, while every part is a lane under the whole block): two are the same when every part and the stretch are.
+    /// Cache key of a combined waveform: ordered parts plus the parent-file pair window [From, To) (null when every lane spans the whole
+    /// block). Equal when all parts and the window are equal.
     /// </summary>
     private sealed class StackSoundKey(StackSoundPart[] parts, (int From, int To)? window) : IEquatable<StackSoundKey>
     {
@@ -579,12 +549,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Gives each video block with a sound stack what that stack plays, as one sound (<see cref="TimelineBlock.StackSound"/>), once the
-    /// rows are in their stacks (BuildTimelineRows, while the waveforms and Show Linked Audio are on): from the blocks of its audible
-    /// lanes, each found by its Family's parent (its clip's parent clip), at <paramref name="scale"/> pixels a second on a sequence of
-    /// <paramref name="seconds"/>. Every mute, gain or waveform that changes lays the rows out again (ScheduleClipRedraw), so this
-    /// follows them with nothing of its own to watch. A parent hidden or switched off keeps its stack sound (its lanes still play). What
-    /// the last pass drew and this one does not is let go (no rows: all of it, an empty timeline's too).
+    /// Sets <see cref="TimelineBlock.StackSound"/> on each video block with an audio stack, after BuildTimelineRows stacks the rows (only
+    /// with waveforms and Show Linked Audio on), from its audible lane blocks matched by Family parent, at <paramref name="scale"/> px/s
+    /// over <paramref name="seconds"/>. Mute/gain/waveform changes already trigger ScheduleClipRedraw, so no extra subscriptions. Entries
+    /// unused by this pass are evicted (all of them with no rows).
     /// </summary>
     internal static void GiveStacksTheirSound(IReadOnlyList<TimelineRow> rows, double scale, double seconds)
     {
@@ -599,8 +567,8 @@ public partial class MainWindow
 
         void Give(TimelineRow row)
         {
-            // The audible lanes' blocks, by the clip they belong to: a lane not muted (a muted video track mutes them all), each block
-            // with a sound and not muted by its own switch (an unlinked sound's).
+            // Audible lane blocks grouped by parent clip: lane not muted (a muted video track mutes all), block has audio and is not
+            // individually muted (unlinked audio's switch).
             Dictionary<object, List<(double Start, WaveWindow Sound)>>? heard = null;
             if (row.Kind == TimelineRowKind.Video && (row.State & RowSwitches.Muted) == 0)
             {
@@ -622,7 +590,7 @@ public partial class MainWindow
                 }
             }
 
-            // Each video block whose clip they belong to, hidden or switched off as well (its lanes are heard all the same).
+            // Every parent video block, including hidden or disabled ones (their lanes still play).
             if (heard is not null)
             {
                 foreach (var block in row.Blocks)
@@ -641,14 +609,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A video block's stack sound (<see cref="TimelineBlock.StackSound"/>): its lanes' sounds combined on its own file time, its file
-    /// from <paramref name="mediaFrom"/> on for <paramref name="duration"/> seconds of the timeline at <paramref name="speed"/>, the block
-    /// starting at <paramref name="start"/> (seconds). Each child is where its block starts (seconds) and the sound it shows. One at
-    /// another speed is left out (never resampled: a file's streams take their video's speed), and so is one playing nowhere under the
-    /// block. While every lane is under the whole block, the combined sound is of their whole files, so every clip of a file shares one;
-    /// with one under part of it, the combined sound covers only the block's own stretch of its file (laid from there), each lane cut to
-    /// what it plays in it, so no clip holds a whole file's for itself (Law 2). The same parts give the same combined sound, kept
-    /// (StackSounds). Null for nothing audible.
+    /// Computes a video block's <see cref="TimelineBlock.StackSound"/> in its file time: file from <paramref name="mediaFrom"/> for
+    /// <paramref name="duration"/> timeline seconds at <paramref name="speed"/>, block at <paramref name="start"/>. Children at another speed
+    /// (never resampled) or not overlapping are skipped. Full-span lanes combine whole files (shared per file); partial lanes combine only
+    /// the block's file range, each lane clipped (Law 2). Results are cached by parts (StackSounds); null when nothing is audible.
     /// </summary>
     internal static WaveWindow? StackSoundOf(double start, double mediaFrom, double speed, double duration, IReadOnlyList<(double Start, WaveWindow Sound)> children)
     {
@@ -664,7 +628,7 @@ public partial class MainWindow
             if (data.Count == 0 || Math.Abs(sound.Speed - speed) > 1e-6 || !(sound.GainScale > 0))
                 continue;
 
-            // The parent's file second s is the lane's own s + shift; where the lane plays, on the parent's file time.
+            // Parent file time = lane file time + shift; the lane's played range mapped to parent file time.
             var shift = sound.MediaFrom - mediaFrom - (childStart - start) * speed;
             var (playsFrom, playsTo) = (sound.MediaFrom - shift, sound.MediaTo - shift);
             if (!(playsTo > mediaFrom && playsFrom < mediaTo) || !(Math.Abs(shift * pairsPerSecond) < 1 << 30))
@@ -679,8 +643,7 @@ public partial class MainWindow
         if (parts is null)
             return null;
 
-        // With a lane under part of the block, the block's own stretch of its file alone: from its pair at mediaFrom up to the one at
-        // mediaTo (counted at the first part's rate), the combined pair 0 being the first of them.
+        // Partial lane: window = block's file range, pairs [mediaFrom, mediaTo) at the first part's rate; combined pair 0 = window start.
         (int From, int To)? window = null;
         var laidFrom = 0.0;
         if (parts.Exists(p => p.First != int.MinValue))
@@ -705,8 +668,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A stack sound made: each part at its gain and shift; with a stretch of the parent's file (the key's Window: a lane under part of
-    /// its block), each part cut first to the pairs of its own stretch that play in it.
+    /// Builds a combined waveform: each part at its gain and shift; with a key Window (partial lane), each part is first clipped to the
+    /// pairs it plays inside that window.
     /// </summary>
     private static WaveformData? CombinedStackSound(StackSoundKey key)
     {
@@ -720,9 +683,8 @@ public partial class MainWindow
                 continue;
             }
 
-            // Its pairs from first up to end (all of them for a lane under the whole block) that play in the stretch: the combined
-            // pair i is the parent's pair window.From + i, its own pair window.From + shift + i. One at another rate than the stretch
-            // was counted at is left out, as Combine leaves it out.
+            // Part pairs [first, end) inside the window: combined pair i = parent pair window.From + i = own pair window.From + shift + i.
+            // A part at a different rate is skipped, matching Combine.
             if (pairsPerSecond != key.Parts[0].Data.PairsPerSecond)
                 continue;
 
@@ -738,12 +700,12 @@ public partial class MainWindow
         return WaveformData.Combine(parts);
     }
 
-    /// <summary>How many times as fast as recorded a clip runs; 1 for a clip that has no speed of its own.</summary>
+    /// <summary>Clip playback speed multiplier; 1 when it has none.</summary>
     private static double ClipSpeed(Layer clip) => clip.HasSpeed ? Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
 
     /// <summary>
-    /// A block's tag: its speed when that is not 1 ("2x"), how far its unlinked sound was slipped ("+120 ms"), and how many effects it
-    /// has (5.2: "fx 2", its effect lanes shown or not; 5.3: the cards its lanes would show, <see cref="BadgeEffects"/>); null for none.
+    /// A block's badge text: speed when not 1 ("2x"), unlinked-audio slip ("+120 ms"), and effect count ("fx 2", from
+    /// <see cref="BadgeEffects"/>, shown whether or not effect lanes are visible); null for none.
     /// </summary>
     internal static string? BadgeOf(double speed, double slip, int effects = 0)
     {
@@ -754,43 +716,40 @@ public partial class MainWindow
         return string.Join("  ", parts) is { Length: > 0 } text ? text : null;
     }
 
-    // ----- Which cards a clip's effect lanes and its badge show (5.3) -----
-    // Every Cutout is made with two cards of its own, its Mask and its Rounded & Feathered Edges (Layer.EnsureEffect, as its mask and its
-    // feather go on): on the lanes they were two thin purple bars under every Cutout of a Game Preset, saying nothing (the user's report).
-    // So a Cutout's own two are left off its lanes and its "fx N" badge unless Show Built-In Mask & Edge Lanes on Cutouts is on; they stay
-    // in the Effects pane, as editable as ever. The same cards on any other clip (a Mask a user put on a video clip) are its effects.
+    // ----- Effect lane and badge card filtering -----
+    // Every Cutout carries two structural cards, Mask and Rounded & Feathered Edges (Layer.EnsureEffect). They are excluded from its lanes
+    // and "fx N" badge unless Show Built-In Mask & Edge Lanes on Cutouts is on, and remain editable in the Effects pane. The same cards on
+    // any non-Cutout clip count as ordinary effects.
 
-    /// <summary>A Cutout's own structural cards (5.3): its mask and its rounded / feathered edges, which every Cutout is made with.</summary>
+    /// <summary>The structural cards every Cutout is created with: Mask and Rounded / Feathered Edges.</summary>
     internal static bool IsStructuralCard(EffectInstance effect) => effect.Type is EffectRegistry.Mask or EffectRegistry.Edges;
 
     /// <summary>
-    /// Whether a clip is a Cutout for its effect lanes (5.3): a video clip of the same file as its parent clip, or one unlocked from it and
-    /// still in its stack (MainViewModel.IsCutoutOrFreed: its Lock switch, or a trim that left it outside its clip, unlinks it, and its own
-    /// Mask and Edges must not come back as lanes and "fx 2" for that), or a piece cut from the video's frame with a mask of the whole frame
+    /// Cutout test for lane filtering: a video clip sharing its parent's file, one freed from it but still in its stack
+    /// (MainViewModel.IsCutoutOrFreed: unlocking or trimming outside must not resurface its Mask/Edges), or a whole-frame mask piece
     /// (Layer.UsesFrameMask).
     /// </summary>
     internal static bool CountsAsCutout(MainViewModel viewModel, Layer clip) => viewModel.IsCutoutOrFreed(clip) || clip.UsesFrameMask;
 
     /// <summary>
-    /// The cards a clip's effect lanes show (5.3), in its stack's order: none while the Timeline's effect lanes are off, none for a sound
-    /// or the captions; a Cutout's own Mask and Edges only with <see cref="AppSettings.ShowBuiltInMaskEffectLanes"/>. The k-th lane of a
-    /// track shows each clip's k-th card of this list.
+    /// A clip's lane cards in stack order: none with effect lanes off or for audio/captions; Cutout Mask/Edges only with
+    /// <see cref="AppSettings.ShowBuiltInMaskEffectLanes"/>. Lane k of a track shows each clip's k-th card.
     /// </summary>
     internal static List<EffectInstance> LaneCards(Layer clip, bool isCutout, AppSettings settings) =>
         !settings.ShowTimelineEffectLanes || clip.IsAudio || clip.IsCaptions ? []
         : clip.Effects.Where(effect => ShowsCard(effect, isCutout, settings.ShowBuiltInMaskEffectLanes)).ToList();
 
     /// <summary>
-    /// How many effects a clip's "fx N" badge counts (5.3): the cards its lanes would show were they on, so a plain Cutout shows no
-    /// badge unless its own Mask and Edges have lanes; the badge stays while the lanes are off.
+    /// "fx N" badge count: the cards its lanes would show if enabled (a plain Cutout has no badge unless its Mask/Edges get lanes); the
+    /// badge remains while lanes are off.
     /// </summary>
     internal static int BadgeEffects(Layer clip, bool isCutout, AppSettings settings) =>
         clip.IsAudio || clip.IsCaptions ? 0 : clip.Effects.Count(effect => ShowsCard(effect, isCutout, settings.ShowBuiltInMaskEffectLanes));
 
-    // A card a clip's lanes show: one HandPeg knows, and not a Cutout's own Mask or Edges unless those are asked for.
+    // Lane-visible card: a known effect, excluding Cutout Mask/Edges unless enabled.
     private static bool ShowsCard(EffectInstance effect, bool isCutout, bool builtIns) => !effect.IsMissing && (builtIns || !isCutout || !IsStructuralCard(effect));
 
-    // A block's own switch pressed (5.2): its On/Off, this clip's alone; a child's Lock to its parent clip.
+    // Block switch pressed: On/Off for this clip only, or a child's Lock to its parent.
     private void BlockSwitched(Layer clip, BlockSwitch which)
     {
         if (LiveClip(clip) is not { } live)
@@ -806,12 +765,12 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // ----- The effects' lanes (5.2) -----
+    // ----- Effect lanes -----
 
-    /// <summary>A track's effect lane: what its row stands for (the track's row, and which of each clip's cards it shows).</summary>
+    /// <summary>Row Data for a track's effect lane: the owning track row and the card index it shows per clip.</summary>
     internal sealed record EffectLane(Layer Track, int Index);
 
-    /// <summary>One effect card of a clip, as its block on an effect lane: the same object for as long as the card is, so a block made again is found again.</summary>
+    /// <summary>Block Data for one effect card: stable for the card's lifetime so a rebuilt block resolves to the same object.</summary>
     internal sealed class EffectBlock(Layer clip, EffectInstance effect)
     {
         public Layer Clip { get; } = clip;
@@ -830,12 +789,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A picture track's effects as lanes in its stack (5.2, the user's call: an effect added to a clip shows on the Timeline above it, like
-    /// its Cutouts): each clip's first card on the first lane, its second on the second, each over the stretch it works in (its clip's
-    /// span; once unlocked a stretch of its own, dragged and trimmed along the clip). Its On/Off is the card's, its Lock frees it to that
-    /// stretch. A crossfade on the clips' row is not on these lanes: it never stands between a click and an effect.
-    /// 5.3 (the user's call): the lanes take no room until the track's own stack is opened (HidesWhenClosed), there are none while the
-    /// Timeline's effect lanes are switched off, and a Cutout's own Mask and Edges cards are not on them unless asked for (LaneCards).
+    /// Builds a video track's effect lanes in its stack: lane k holds each clip's k-th card over its active range (the clip span, or once
+    /// unlocked its own range dragged/trimmed within the clip); the block's switches are the card's On/Off and Lock. Crossfades stay on the
+    /// clip row. Lanes collapse until the stack opens (HidesWhenClosed), vanish with effect lanes off, and filter via LaneCards.
     /// </summary>
     private List<TimelineRow> EffectRows(Layer track, double scale)
     {
@@ -870,11 +826,11 @@ public partial class MainWindow
                     IsLocked = locked,
                     Switched = which => EffectSwitched(clip, effect, which),
 
-                    // Locked it is its clip's span, moved and trimmed with it; unlocked its block is dragged and trimmed along the clip.
+                    // Locked: spans its clip and follows it. Unlocked: draggable and trimmable within the clip.
                     CanDrag = locked ? null : AlwaysDraggable,
                     Resizable = !locked,
                     TrimmableStart = !locked,
-                    // Dragged past its clip (more than a few pixels), it leaves it: an Effect Clip of its own (5.2-Audit, the user's Q2).
+                    // Dragged a few pixels past its clip: detaches into a standalone Effect Clip.
                     Commit = locked ? null : (newLeft, newWidth) =>
                     {
                         if (LiveClip(clip) is not { } live)
@@ -887,7 +843,7 @@ public partial class MainWindow
                             _viewModel.SetEffectRange(live, effect, newFrom - start, newTo - start);
                     },
 
-                    // Or let go on a picture track's row: an Effect Clip on that track.
+                    // Released on a video track row: becomes an Effect Clip on that track.
                     CanMoveTo = locked ? null : (target, _) => target is Layer { IsAudio: false, IsCaptions: false, IsBackground: false },
                     MoveTo = locked ? null : (target, at) =>
                     {
@@ -904,8 +860,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A track's k-th effect lane (from 0) as its row, before EffectRows puts the clips' cards on it as blocks: what it stands for, its name
-    /// and height, and that it takes no room until the track's own stack is opened (5.3, the user's call: <see cref="TimelineRow.HidesWhenClosed"/>).
+    /// Creates the row for a track's k-th effect lane (0-based) before EffectRows fills its blocks: Data, name, height, and
+    /// <see cref="TimelineRow.HidesWhenClosed"/> so it takes no room until the stack opens.
     /// </summary>
     internal static TimelineRow EffectLaneRow(Layer track, int k) => new()
     {
@@ -920,15 +876,15 @@ public partial class MainWindow
     };
 
     /// <summary>
-    /// Whether the Timeline's picture tracks take their effect lanes into their stacks (5.3, BuildTimelineRows): not while the effect lanes are
-    /// switched off (<see cref="AppSettings.ShowTimelineEffectLanes"/>), when a clip's effects show only as the "fx N" badge on its block.
+    /// Whether BuildTimelineRows adds effect lanes to video track stacks: false with <see cref="AppSettings.ShowTimelineEffectLanes"/> off
+    /// (effects then show only as the "fx N" badge).
     /// </summary>
     internal static bool AdoptsEffectLanes(AppSettings settings) => settings.ShowTimelineEffectLanes;
 
-    /// <summary>A track's k-th effect lane's name (from 0): "Effects", then "Effects 2", "Effects 3"...</summary>
+    /// <summary>Name of effect lane k (0-based): "Effects", "Effects 2", "Effects 3", ...</summary>
     internal static string EffectLaneName(int k) => k == 0 ? "Effects" : string.Create(CultureInfo.InvariantCulture, $"Effects {k + 1}");
 
-    // An effect block's switch pressed: the card's On/Off, or its Lock to its clip's span.
+    // Effect block switch pressed: the card's On/Off or its Lock to the clip span.
     private void EffectSwitched(Layer clip, EffectInstance effect, BlockSwitch which)
     {
         if (LiveClip(clip) is not { } live)
@@ -944,7 +900,7 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // An effect block's menu (5.2): its switches, the Effects pane, and taking it away.
+    // Effect block context menu: switches, open in Effects pane, remove.
     private void FillEffectMenu(ItemsControl menu, EffectBlock? block)
     {
         if (block is null || LiveClip(block.Clip) is not { } clip)
@@ -966,15 +922,15 @@ public partial class MainWindow
         AddTrackItem(menu, "Remove Effect", () => _viewModel.RemoveEffect(clip, effect));
     }
 
-    // The single frames of a filmstrip, cut from it once and kept for as long as the strip is.
+    // Per-strip frame splits, cached for the strip's lifetime.
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<BitmapSource, ImageSource[]> StripFrames = [];
 
     /// <summary>
-    /// A video block's pictures: its file's strip cut into its frames, which lie evenly along the whole file, laid on the
-    /// file's own time from <paramref name="mediaOffset"/> on at <paramref name="speed"/> (the surface draws as many as fit,
-    /// each the frame nearest that moment). Null while there is no strip yet, or while the file's shape is not known.
+    /// A video block's thumbnails: the file's filmstrip split into evenly spaced frames, mapped in file time from
+    /// <paramref name="mediaOffset"/> at <paramref name="speed"/> (the surface draws as many as fit, nearest frame each). Null until the
+    /// strip exists and the frame size is known.
     /// </summary>
-    /// <param name="pixelWidth">The video's own size: a frame of the strip has its shape.</param>
+    /// <param name="pixelWidth">Source video width; strip frames share the source aspect ratio.</param>
     private static FilmWindow? FilmOf(ImageSource? filmstrip, int pixelWidth, int pixelHeight, double mediaOffset, double mediaDuration, double speed)
     {
         if (filmstrip is not BitmapSource strip || strip.PixelHeight <= 0 || strip.PixelWidth <= 0 || pixelWidth <= 0 || pixelHeight <= 0
@@ -983,14 +939,14 @@ public partial class MainWindow
             return null;
         }
 
-        // A file whose length is not known shows its first frame throughout.
+        // Unknown duration: show the first frame throughout.
         var perFrame = mediaDuration > 0.05 ? mediaDuration / frames.Length : 1e9;
         return new FilmWindow(frames, perFrame, Math.Max(mediaOffset, 0), speed);
     }
 
     /// <summary>
-    /// The frames of a strip, cut once by their count and kept with it (4.4: cut by the strip's own size and the file's shape,
-    /// so a caller that once guessed the shape wrong can no longer leave a file with no frames for the session).
+    /// Strip frames split once and cached with the strip; the count derives from the strip's own size and the file's aspect, so a wrong
+    /// aspect guess by a caller cannot leave a file frameless for the session.
     /// </summary>
     private static ImageSource[]? FramesOf(BitmapSource strip, double aspect)
     {
@@ -1015,9 +971,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// How many frames a strip holds: they lie side by side, each of the file's shape at the strip's height (rounded to an
-    /// even width), so the strip's width over a frame's gives the count to within a fraction, and the strip's width is a
-    /// whole number of frames: the nearest count that divides it is the one.
+    /// Frame count of a strip: frames sit side by side at strip height with the file's aspect (even-rounded width), so stripWidth /
+    /// frameWidth is approximate; the nearest count that divides stripWidth exactly is the answer.
     /// </summary>
     private static int FrameCount(int stripWidth, int stripHeight, double aspect)
     {
@@ -1029,7 +984,7 @@ public partial class MainWindow
         return guess > 1 && stripWidth % (guess - 1) == 0 ? guess - 1 : guess;
     }
 
-    /// <summary>Slides the playheads (the surface's, the ruler's): nothing else changes as the video plays, and nothing else is drawn again.</summary>
+    /// <summary>Moves the surface and ruler playheads; the only per-frame timeline update during playback.</summary>
     private void MoveClipPlayheads()
     {
         var seconds = _viewModel.DurationMs / 1000;
@@ -1042,15 +997,15 @@ public partial class MainWindow
         FollowPlayhead();
     }
 
-    // Every caption block is outlined while the captions are what is selected (5.0-Verify).
+    // All caption blocks are outlined while the caption track is selected.
     private bool IsSelected(object? clip) => clip is null ? _playheadVideoSelected && _selectedClip is null
         : Equals(clip, _selectedClip) || (clip is Layer layer && GroupHolds && _viewModel.IsInClipGroup(layer))
         || clip is SubtitleRef && ReferenceEquals(_selectedClip, _viewModel.CaptionLayer);
 
-    /// <summary>Whether the clips selected together are the selection (5.0): its primary clip is one of them (any other selection made since ends the group).</summary>
+    /// <summary>True while the multi-selection is current: the primary item is one of its clips (any other selection ends the group).</summary>
     private bool GroupHolds => _selectedClip is Layer primary && _viewModel.IsInClipGroup(primary);
 
-    /// <summary>The clips selected together, while they are the selection; else the one clip selected (when it could be one of a group), or none.</summary>
+    /// <summary>The multi-selection while current; else the single selected clip (if groupable), or empty.</summary>
     private IReadOnlyList<Layer> SelectedGroup()
     {
         if (GroupHolds)
@@ -1059,27 +1014,26 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Selects one thing (a clip, a clip's sound; null: the video at the playhead). The
-    /// clips selected together are let go, unless <paramref name="keepGroup"/> (5.0: the clip is one of them, made the one
-    /// the panes show).
+    /// Selects one item (clip, clip audio; null = video at the playhead) and clears the multi-selection unless <paramref name="keepGroup"/>
+    /// (the item is a group member being made primary).
     /// </summary>
     private void SelectClip(object? clip, bool keepGroup = false)
     {
         (_selectedClip, _playheadVideoSelected) = (clip, clip is null);
 
-        // The clip the Keyframes and Effects panes work on: a picture clip on the timeline. The captions are not one (they take
-        // no keyframes and few effects), nor is a view no clip has any more: the panes keep the clip they had (5.0-Verify).
+        // Keyframes/Effects target: a video clip on the timeline. Captions (no keyframes, few effects) and orphaned views are not; the
+        // panes then keep their previous clip.
         _viewModel.KeyLayer = clip switch
         {
             Layer { IsPicture: true, IsCaptions: false } layer when _viewModel.Layers.Contains(layer) => layer,
             _ => _viewModel.KeyLayer,
         };
 
-        // The blur fill's settings row (5.0-Release): no clip, and the Effects pane's all the same while its row or block is selected.
+        // Blur fill row: no clip, but the Effects pane stays bound while its row or block is selected.
         _viewModel.BackgroundSelected = clip is Layer { IsBackground: true };
 
-        // A sound clip is the Effects pane's target (5.6A review: its Speed & Pitch and SOUND cards), told to the pane alone: the key layer
-        // above stays the picture the Keyframes pane, the keyframe buttons, the text tools and the crop work on. Anything else lets it go.
+        // An audio clip targets only the Effects pane (Speed & Pitch, SOUND cards); the key layer stays the video used by Keyframes, keyframe
+        // buttons, text tools and crop. Any other selection clears the audio target.
         EffectsView.SelectSound(clip as Layer);
         if (!keepGroup)
         {
@@ -1087,8 +1041,8 @@ public partial class MainWindow
             _viewModel.ClearClipGroup();
         }
 
-        // The outline is drawn by the surface from what is selected; the inspector shows the selection's values, and the
-        // player's boxes outline it (the captions' too, which the key layer never is).
+        // The surface draws the outline from the selection; the inspector shows its values and the player boxes outline it (captions
+        // included, though they are never the key layer).
         UnifiedTimeline.Surface.Redraw();
         UpdateTimelineInspector();
         if (clip is Layer { IsCaptions: true })
@@ -1096,7 +1050,7 @@ public partial class MainWindow
         UpdatePlayerSelection();
     }
 
-    /// <summary>Nothing is selected any more (after a split, a delete, an undo): the video at the playhead is what the tools work on.</summary>
+    /// <summary>Clears the selection (after split, delete, undo); tools fall back to the video at the playhead.</summary>
     private void ClearClipSelection()
     {
         (_selectedClip, _playheadVideoSelected) = (null, false);
@@ -1107,9 +1061,9 @@ public partial class MainWindow
         UpdatePlayerSelection();
     }
 
-    // ----- Clips selected together (5.0) -----
+    // ----- Multi-selection -----
 
-    /// <summary>Ctrl + click on a clip not selected: it joins the selection (the one selected before with it), and is the one the panes show.</summary>
+    /// <summary>Ctrl+click on an unselected clip: adds it (with the previous selection) and makes it primary.</summary>
     private void AddToClipGroup(Layer clip)
     {
         var group = SelectedGroup().ToList();
@@ -1120,7 +1074,7 @@ public partial class MainWindow
         CrashReporter.Note("timeline", $"select: {_viewModel.SelectedClips.Count} clips");
     }
 
-    /// <summary>Ctrl + click on a clip selected: it leaves the selection; the last one chosen of those left is the one the panes show.</summary>
+    /// <summary>Ctrl+click on a selected clip: removes it; the most recently added remaining clip becomes primary.</summary>
     private void RemoveFromClipGroup(Layer clip)
     {
         var group = SelectedGroup().Where(c => !ReferenceEquals(c, clip)).ToList();
@@ -1136,9 +1090,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Shift + click: every clip from the one selected (where the range began, on a run of Shift + clicks) to the one clicked,
-    /// across the time from the earlier's start to the later's end and the tracks between them, is selected; the clip clicked
-    /// is the one the panes show. With nothing to begin from, the clip alone.
+    /// Shift+click: selects every clip in the time span (earlier start to later end) and track span between the anchor and the clicked
+    /// clip, which becomes primary. With no anchor, selects the clicked clip alone.
     /// </summary>
     private void SelectClipRange(Layer clip)
     {
@@ -1160,7 +1113,7 @@ public partial class MainWindow
         CrashReporter.Note("timeline", $"select: a range of {_viewModel.SelectedClips.Count} clips");
     }
 
-    // A block clicked and let go where it was (5.0): what its press left to the click.
+    // No-move release on a block: applies the selection change deferred by the press.
     private void Timeline_BlockClicked(TimelineRow row, TimelineBlock block)
     {
         if (_clickGesture is not { } pending || !ReferenceEquals(pending.Clip, block.Clip))
@@ -1184,7 +1137,7 @@ public partial class MainWindow
         }
     }
 
-    // The group changed in the view model (an edit took its clips away, an undo, a choice made): the outlines follow it.
+    // View-model multi-selection changed (edit removed clips, undo, new choice): refresh outlines.
     private void ClipGroup_Changed()
     {
         UnifiedTimeline.Surface.Redraw();
@@ -1192,10 +1145,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A clip's block let go after a trim of its start, a roll, a slip or a ripple (see UnifiedTimelineControl): the view model
-    /// makes the edit, or says why it cannot, and the bars are drawn again either way. The clip is the one the timeline has
-    /// now (by its id), only while it is still where its block was made from (<paramref name="built"/>); each edge is
-    /// measured from the block's change, so an edge let go where it was is the clip's own, to the frame.
+    /// Commits a start trim, roll, slip or ripple released on a block (UnifiedTimelineControl) through the view model, which reports a
+    /// refusal; rows rebuild either way. The clip is re-resolved by id and must match <paramref name="built"/>; each edge applies the block's
+    /// delta, so an unmoved edge keeps the clip's exact frame.
     /// </summary>
     private void EditClip(Layer clip, (double Start, double End) built, BlockEditDone done, double left, double width, double perPixel)
     {
@@ -1233,9 +1185,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A clip's block let go after a move along its row, or a drag of its right edge: the clip (as the timeline has it now,
-    /// while it is still where the block showed it) starts where the block's left edge was let go and ends at its right edge,
-    /// each as it was when that edge did not move (so a move never trims a clip drawn wider than it is).
+    /// Commits a horizontal move or right-edge trim: the re-resolved clip (must match the block's build) takes the released edges, each
+    /// edge unchanged if it did not move (so a move never trims a clip drawn wider than its duration).
     /// </summary>
     private void CommitClip(Layer clip, (double Start, double End) built, double left, double width, double newLeft, double newWidth, double perPixel)
     {
@@ -1251,15 +1202,15 @@ public partial class MainWindow
         _viewModel.CommitClipMove(live, start, length);
     }
 
-    /// <summary>Where a clip dragged onto another row starts: where it was let go, or (its block not moved along) where it was.</summary>
+    /// <summary>Start time for a cross-row drop: the released position, or the original start if not moved horizontally.</summary>
     private static double StartOf((double Start, double End) built, double left, double at, double perPixel) =>
         Math.Abs(at - left) <= 0.5 ? built.Start : at * perPixel;
 
-    /// <summary>How far an edge of a clip at a seam of folded dead air can be dragged (Q11): out, showing the fold again; in, folding more. Null when it is at none.</summary>
+    /// <summary>Drag range of an edge at a folded dead-air seam (out unfolds, in folds more); null when the edge is at no seam.</summary>
     private (double Reveal, double Fold)? SeamRangeOf(Layer clip, bool startEdge) =>
         LiveClip(clip, quiet: true) is { } live && _viewModel.FoldAtEdge(live, startEdge) is not null ? _viewModel.SeamEdgeRange(live, startEdge) : null;
 
-    /// <summary>An edge of a clip let go at a seam of folded dead air, so many seconds outward (inward, negative): the fold shown again, or more folded into it (one step of Undo).</summary>
+    /// <summary>Commits a dead-air seam edge drag of <paramref name="outward"/> seconds (negative = inward): unfolds or folds more, as one Undo step.</summary>
     private void TrimAtSeam(Layer clip, (double Start, double End) built, bool startEdge, double outward)
     {
         if (LiveClip(clip, built) is not { } live)
@@ -1272,8 +1223,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A drag on the timeline still held is let go, put back and committed to nothing (4.4 BugHunt), before an edit made
-    /// another way (a key, a tool, a menu) changes what it was dragging: its let-go would edit a clip that is no longer so.
+    /// Cancels an active timeline drag (reverted, nothing committed) before a key, tool or menu edit changes its target; its release
+    /// would otherwise edit a stale clip.
     /// </summary>
     private void LetGoOfDrag()
     {
@@ -1286,14 +1237,14 @@ public partial class MainWindow
 
     // ----- The editing tools: each works on whatever is selected -----
 
-    /// <summary>The razor: cuts the selected block in two at the playhead. Nothing selected means the video there.</summary>
+    /// <summary>Razor: splits the selected block at the playhead (empty selection = the video there).</summary>
     private void SplitSelectedClip()
     {
         LetGoOfDrag();
         var at = _viewModel.PositionMs / 1000;
         CrashReporter.Note("timeline", string.Create(CultureInfo.InvariantCulture, $"split at {at:0.000} s"));
 
-        // The captions selected: the caption under the playhead is split at its word there (5.1-Polish), not refused.
+        // Captions selected: split the caption under the playhead at that word instead of refusing.
         if (_selectedClip is Layer { IsCaptions: true })
         {
             SplitCaptionAt(at);
@@ -1315,7 +1266,7 @@ public partial class MainWindow
                 _viewModel.SplitLayer(sound.Layer, at);
                 break;
             default:
-                // Nothing selected: the video at the playhead is what is split.
+                // Empty selection: split the video at the playhead.
                 _viewModel.SplitLayer(_viewModel.PlayheadVideo, at);
                 break;
         }
@@ -1326,7 +1277,7 @@ public partial class MainWindow
 
     private void TrimSelectedClip(bool start)
     {
-        // A clip's sound is trimmed as its clip is; nothing selected, the video at the playhead.
+        // Clip audio trims with its clip; empty selection targets the video at the playhead.
         LetGoOfDrag();
         if (NotAClip(_selectedClip, "trimmed") is { } refusal)
         {
@@ -1340,8 +1291,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Why the selection is not something to cut (the captions, selected from their row since 5.0-Verify, and the blur fill's
-    /// settings row are no clips): never the video at the playhead in their place. Null for a clip, or nothing selected.
+    /// Refusal reason when the selection is not a clip (caption track, blur fill row); the playhead video is never substituted. Null for
+    /// a clip or an empty selection.
     /// </summary>
     private static string? NotAClip(object? selected, string what) => selected switch
     {
@@ -1351,11 +1302,11 @@ public partial class MainWindow
     };
 
     /// <summary>
-    /// Delete: a clip goes. Clips selected together (5.0) all go, one step of Undo.
+    /// Delete: removes the selected clip, or every multi-selected clip, as one Undo step.
     /// </summary>
     private void DeleteSelectedClip()
     {
-        // A crossfade's box selected: Delete takes it away, and leaves its clips.
+        // Crossfade selected: Delete removes it, keeping its clips.
         if (UnifiedTimeline.Surface.SelectedCrossfade is Layer faded)
         {
             UnifiedTimeline.Surface.SelectedCrossfade = null;
@@ -1391,16 +1342,16 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // ----- The clip clipboard (5.2A): Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+D, Ctrl+Alt+V on what is selected -----
+    // ----- Clip clipboard: Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+D, Ctrl+Alt+V -----
 
-    /// <summary>The clips the clipboard's keys work on: the clips selected together, or the one selected (a clip's sound standing for its clip).</summary>
+    /// <summary>Clipboard targets: the multi-selection, or the single selection (clip audio maps to its clip).</summary>
     private IReadOnlyList<Layer> ClipboardSelection() => _selectedClip is LayerSound sound && !GroupHolds
         ? _viewModel.CanGroup(sound.Layer) ? [sound.Layer] : []
         : SelectedGroup();
 
     private void CopySelectedClips() => _viewModel.CopyClips(ClipboardSelection());
 
-    /// <summary>Ctrl+X: the selected clips copied, then deleted (to the recycle bin) as Delete does: one step of Undo.</summary>
+    /// <summary>Ctrl+X: copies the selected clips, then deletes them as Delete does, in one Undo step.</summary>
     private void CutSelectedClips()
     {
         if (_viewModel.CopyClips(ClipboardSelection()) > 0)
@@ -1414,12 +1365,12 @@ public partial class MainWindow
             ScheduleClipRedraw();
     }
 
-    /// <summary>Whether Alt+Up / Alt+Down have a clip to move (5.4A): a selected picture clip that can go onto a track of its own.</summary>
+    /// <summary>Whether Alt+Up / Alt+Down apply: a selected video clip that can move to its own track.</summary>
     private bool CanMoveSelectedToNewTrack() => _viewModel.CanMoveClipsToNewTrack(ClipboardSelection());
 
     /// <summary>
-    /// The selected clips onto a track above or below (5.4A): with the keys (<paramref name="ontoNeighbour"/>) onto the next track that
-    /// way where it is free, otherwise a new track; the clip menu's items always a new track. One step of Undo, the selection kept.
+    /// Moves the selected clips up or down a track: with <paramref name="ontoNeighbour"/> (keys) onto the adjacent track where free, else a
+    /// new track; the clip menu always creates a new track. One Undo step; selection preserved.
     /// </summary>
     private void MoveSelectedToNewTrack(bool above, bool ontoNeighbour = false)
     {
@@ -1428,7 +1379,7 @@ public partial class MainWindow
             ScheduleClipRedraw();
     }
 
-    /// <summary>Ctrl+Alt+V: what of the copied clip goes onto the selected clips, chosen in the Paste Attributes dialog.</summary>
+    /// <summary>Ctrl+Alt+V: applies the attributes chosen in the Paste Attributes dialog from the copied clip to the selected clips.</summary>
     private void PasteAttributesToSelection()
     {
         var targets = ClipboardSelection();
@@ -1450,7 +1401,7 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // Undo and Redo let go of a drag first (what it drew would be committed onto the timeline put back under it).
+    // Undo/Redo cancel an active drag first (its release would commit onto the restored timeline).
     private void Undo_Click(object sender, RoutedEventArgs e)
     {
         LetGoOfDrag();
@@ -1467,8 +1418,7 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // Raised when either chain button is switched, by a click, a key or a screen reader; and, to no effect,
-    // when a button merely follows the other one.
+    // Raised when either chain button toggles (click, key or screen reader); a no-op when one button merely mirrors the other.
     private void LinkAudio_Click(object sender, RoutedEventArgs e)
     {
         if (_viewModel is null || sender is not System.Windows.Controls.Primitives.ToggleButton button || (button.IsChecked == true) == _viewModel.AudioLinked)
@@ -1476,7 +1426,7 @@ public partial class MainWindow
 
         _viewModel.SetAudioLinked(button.IsChecked == true);
 
-        // The button shows what is so, not what was clicked: the question may have been answered with no.
+        // Reflect the actual state, not the click: the confirmation may have been declined.
         if ((button.IsChecked == true) != _viewModel.AudioLinked)
             button.SetCurrentValue(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, _viewModel.AudioLinked);
         ScheduleClipRedraw();

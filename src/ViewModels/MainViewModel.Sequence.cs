@@ -7,19 +7,15 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The sequence: a timeline with a clock of its own, on which every file is clips like any other (the document's, see
-// MainViewModel.Document.cs); and motion, the keyframes that move, size and turn a layer as that clock runs.
+// Sequence clock, I-frame layout, recycle bin and motion keyframes (placement, size, rotation over sequence time).
 public partial class MainViewModel
 {
     // ----- The sequence clock -----
-    // The timeline is no file's. It is as long as whatever reaches furthest along it, and a file is clips on it like any
-    // other: one to begin with, more once it has been split, each moved, trimmed and deleted on its own. Everything on the
-    // timeline is in the sequence's time.
+    // The timeline belongs to no file: its length is the furthest clip end, and all positions are in sequence time.
 
     /// <summary>
-    /// How long the file last opened is, in seconds: as its probe says, else (a recording never finished: its recorder
-    /// stopped mid-write, and nothing says how long it is) to one GOP past its last I-frame once they are listed; 0 while
-    /// neither is known.
+    /// Last opened file duration (s): the probed value, else for unfinished recordings one GOP past the last listed I-frame;
+    /// 0 while unknown.
     /// </summary>
     private double MainMediaSeconds => _mediaInfo?.DurationSeconds > 0 ? _mediaInfo.DurationSeconds : UnfinishedFileSeconds();
 
@@ -31,14 +27,12 @@ public partial class MainViewModel
         return Math.Max(_sourceIFrames[^1] - _mediaInfo.ContainerStartSeconds + gop, 0);
     }
 
-    // The I-frames of the file last opened (its length, while its probe says none), and how the clips that show files' pictures
-    // lay (and which of their files' I-frames were known) when the I-frames were last put along the sequence.
+    // Last opened file's I-frames (length fallback) and the picture-clip layout signature at the last I-frame layout.
     private List<double> _sourceIFrames = [];
     private int _iFrameLayout;
 
     /// <summary>
-    /// How the clips that show files' pictures lie, and how many of their files' I-frames are known, as a number that changes when
-    /// either does: read from the document (cheap, asked after every change), so the I-frames are laid out again only then.
+    /// Cheap hash of picture-clip layout plus known I-frame counts, checked after every change so I-frames re-layout only when it changes.
     /// </summary>
     private int GetPictureLayout()
     {
@@ -52,7 +46,7 @@ public partial class MainViewModel
             hash.Add(span.Speed);
             hash.Add(span.Path, StringComparer.OrdinalIgnoreCase);
 
-            // (A run of clips of one file asks about it once: a long recording cut at its silences is thousands of clips.)
+            // Query once per run of same-file clips (silence-cut recordings can be thousands of clips).
             if (!string.Equals(span.Path, file, StringComparison.OrdinalIgnoreCase))
                 (file, known) = (span.Path, MediaProbe.KnownSeekIndex(span.Path)?.IFrames.Length ?? 0);
             hash.Add(known);
@@ -62,8 +56,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Takes the I-frame index of the file last opened, and lays the I-frames along the sequence. A file with no length of its own
-    /// gets its clip now that its I-frames say how long it is.
+    /// Stores the last opened file's I-frame index and lays I-frames on the sequence; a file with unknown length gets its clip now.
     /// </summary>
     private void SetSourceIFrames(List<double> iFrames)
     {
@@ -74,9 +67,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Lays the I-frames along the sequence (5.2-AuditB): each clip that shows a file's picture puts its own file's where it shows
-    /// them (MediaProbe.KnownSeekIndex: the I-frames on the file's own clock, its picture's first frame its moment 0), at its speed.
-    /// A file whose I-frames are not listed yet puts none (they are laid out again once they are).
+    /// Maps each picture clip's file I-frames (MediaProbe.KnownSeekIndex, file clock with first frame at 0) onto the sequence at
+    /// the clip's speed. Files without an index yet contribute none until it arrives.
     /// </summary>
     private void PlaceIFrames()
     {
@@ -107,7 +99,7 @@ public partial class MainViewModel
         UpdateIFrameMarks();
     }
 
-    /// <summary>Brings the length of the timeline, and what is drawn along it, up to date with the clips.</summary>
+    /// <summary>Recomputes the timeline length and its overlays from the clips.</summary>
     private void RefreshSequence()
     {
         var milliseconds = SequenceSeconds * 1000;
@@ -124,25 +116,24 @@ public partial class MainViewModel
     }
 
     // ----- The recycle bin -----
-    // A clip that is deleted is not thrown away. It is taken off the timeline (so nothing of it is rendered)
-    // and kept, as it was, in the bin; from there it can be put back where it came from.
+    // Deleted clips leave the timeline (not rendered) and are kept intact in the bin for restore to their origin.
 
     /// <summary>The deleted clips, the latest first.</summary>
     public System.Collections.ObjectModel.ObservableCollection<BinItem> RecycleBin { get; } = [];
 
     public bool HasDeleted => RecycleBin.Count > 0;
 
-    /// <summary>What the trash can says beside it: how many clips are in the bin, or nothing.</summary>
+    /// <summary>Bin count label beside the trash icon, or empty.</summary>
     public string RecycleBinText => RecycleBin.Count > 0 ? RecycleBin.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
 
-    /// <summary>A clip about to be deleted, as the bin keeps it: a copy of it as it is now, its track, and a picture of it.</summary>
+    /// <summary>Bin entry: a snapshot copy of the clip, its track and a thumbnail.</summary>
     private (DeletedClip Clip, System.Windows.Media.ImageSource? Preview) Binned(TimelineClip clip, TimelineTrackModel track, Layer? view)
     {
         FlushLooks();
         return (new DeletedClip(CopyOfClip(clip), track.Id, track.Kind, Document.Tracks.IndexOf(track)) { TrackParentId = track.ParentTrackId }, view is null ? null : FilmstripOf(view) ?? WaveformOf(view));
     }
 
-    /// <summary>A copy of a clip that nothing done to it reaches, the same id (it is put back as itself), its look shared (never changed in place).</summary>
+    /// <summary>Isolated clip copy with the same id (restored as itself), sharing its immutable look.</summary>
     private static TimelineClip CopyOfClip(TimelineClip clip) =>
         System.Text.Json.JsonSerializer.Deserialize<TimelineClip>(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(clip, BinOptions), BinOptions)!;
 
@@ -172,13 +163,10 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(RecycleBinText));
     }
 
-    /// <summary>A picture already made of a layer's file this session: frames of its video, or failing that nothing.</summary>
+    /// <summary>Cached session thumbnail for a layer's file (video frames), or null.</summary>
     private System.Windows.Media.ImageSource? GetLayerPicture(string path) => ClipPictures.Film(path);
 
-    /// <summary>
-    /// Deletes a clip: it leaves the timeline, its time left empty, and waits in the recycle bin with what went with it
-    /// (4.4: the children the delete took off too). One step of Undo.
-    /// </summary>
+    /// <summary>Deletes a clip (leaving a gap) into the recycle bin together with the children removed with it. One undo step.</summary>
     private bool MoveToBin(Layer view, string? label = null)
     {
         if (ClipOf(view) is not { } clip || Document.TrackOf(clip) is not { } track)
@@ -189,13 +177,13 @@ public partial class MainViewModel
         if (!Edit(label ?? $"delete {view.Name}", edit => edit.DeleteClip(clip)))
             return false;
 
-        // Of its children (and theirs) as they were, those the delete took off the timeline: the ones that lay with it.
+        // Descendants (pre-delete state) that the delete removed from the timeline.
         var gone = kin.Where(k => Document.TrackOf(k.Clip) is null).Select(k => k.Kept).ToList();
         AddToBin(gone.Count == 0 ? deleted.Clip : deleted.Clip with { Children = gone }, view.Name, deleted.Preview);
         return true;
     }
 
-    /// <summary>A clip's children, theirs and so on (each once), each with what the bin would keep of it: a copy as it is now, and its track.</summary>
+    /// <summary>All descendants of a clip (each once) as bin snapshots: copy plus track.</summary>
     private List<(TimelineClip Clip, DeletedClip Kept)> BinnedKin(TimelineClip clip)
     {
         var kin = new List<(TimelineClip Clip, DeletedClip Kept)>();
@@ -213,16 +201,15 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts a deleted clip back on the timeline where it was, and what went with it (4.4), each on its own track when that is
-    /// still there and free for it, otherwise on a new track of its kind at the place its own had in the stack. Their links
-    /// hold: a clip whose id has been taken since comes back with a new one, and those that went with it name that.
+    /// Restores a deleted clip and its removed descendants to their tracks when present and free, else to new tracks of the same
+    /// kind at the original stack position. Links are preserved: an id taken since is reassigned and references updated.
     /// </summary>
     public void RestoreFromBin(BinItem item)
     {
         if (!RecycleBin.Contains(item))
             return;
 
-        // Copies are put back, so the bin's own stay as they were (an undo step can bring them back to the bin).
+        // Restore copies so bin entries stay pristine (undo can return them to the bin).
         var clips = new List<(TimelineClip Clip, DeletedClip From)> { (CopyOfClip(item.Clip.Clip), item.Clip) };
         foreach (var child in item.Clip.Children ?? [])
             clips.Add((CopyOfClip(child.Clip), child));
@@ -242,7 +229,7 @@ public partial class MainViewModel
                 clip.ParentClipId = now;
         }
 
-        // A track that is gone is made again once, for everything of it that comes back.
+        // Recreate each missing track once for all items returning to it.
         var madeFor = new Dictionary<Guid, TimelineTrackModel>();
         if (!Edit($"restore {item.Name}", edit =>
             {
@@ -260,9 +247,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts a clip from the bin back on its track when that is still there, unlocked and free for it, otherwise on a new
-    /// track of its kind at the place its own had in the stack: one for each track that is gone (<paramref name="madeFor"/>,
-    /// by the old track's id), lying under the track its own lay under (made again as well, when that is gone too).
+    /// Restores a bin clip to its track if present, unlocked and free; otherwise to a recreated track of its kind at the original
+    /// stack position (one per missing track via <paramref name="madeFor"/>, keyed by old id, under its recreated parent).
     /// </summary>
     private void PutBack(ITimelineTransaction edit, TimelineClip clip, DeletedClip from, Dictionary<Guid, TimelineTrackModel> madeFor)
     {
@@ -278,7 +264,7 @@ public partial class MainViewModel
             }
             catch (TimelineEditException)
             {
-                // No room there now: a track of its own.
+                // No room: new track.
             }
         }
 
@@ -295,7 +281,7 @@ public partial class MainViewModel
             edit.SetTrackParent(made, id);
     }
 
-    /// <summary>Empties the recycle bin: what was in it is gone for good (Ctrl+Z aside).</summary>
+    /// <summary>Empties the recycle bin (recoverable only via undo).</summary>
     public void EmptyBin()
     {
         if (RecycleBin.Count == 0)
@@ -310,9 +296,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Lets go of what is held in memory for files that no clip on the timeline uses any more: the strips of
-    /// frames and the waveforms drawn for their blocks. (Ctrl+Z can still bring such a clip back; its pictures
-    /// are then simply made again.) Returns how many files that was.
+    /// Releases filmstrips and waveforms of files no timeline clip uses (rebuilt if undo restores a clip). Returns the file count.
     /// </summary>
     private int ReleaseUnusedLayerPictures()
     {
@@ -323,30 +307,23 @@ public partial class MainViewModel
     }
 
     // ----- Keyframes -----
-    // A keyframe is one thing: a moment at which a clip's place, size and turn are all pinned at once.
-    // Between two keyframes the clip moves in straight lines; before the first and after the last it holds.
-    // (The I-frames of the video's encoding are another matter altogether, and are called that.)
+    // A keyframe pins placement, size and rotation at one time; motion interpolates linearly between keys and holds outside them.
+    // (Unrelated to encoder I-frames.)
 
-    /// <summary>
-    /// Whether moving, sizing or turning a clip writes keyframes. Off, a clip that has keyframes takes its
-    /// whole motion with it when it is moved, and one that has none is simply moved.
-    /// </summary>
+    /// <summary>Whether transforms write keyframes; off, a keyed clip's whole motion path is offset instead.</summary>
     [ObservableProperty] private bool _keyframesEnabled;
 
-    /// <summary>
-    /// What a move writes while keyframes are enabled: the keyframe nearest the playhead (true), or a new
-    /// one at the playhead (false).
-    /// </summary>
+    /// <summary>With keyframing on: update the nearest keyframe (true) or create one at the playhead (false).</summary>
     [ObservableProperty] [NotifyPropertyChangedFor(nameof(KeyframesCreate))] private bool _keyframesSnap;
 
-    /// <summary>The other of the two: a move sets a new keyframe at the playhead.</summary>
+    /// <summary>Inverse of the snap option: a move creates a keyframe at the playhead.</summary>
     public bool KeyframesCreate
     {
         get => !KeyframesSnap;
         set => KeyframesSnap = !value;
     }
 
-    /// <summary>With keyframes enabled, a change by hand keys only the property that changed; off, every motion property (Key All).</summary>
+    /// <summary>With keyframing on, key only the changed property; off, key every motion property (Key All).</summary>
     [ObservableProperty] private bool _keyChangedOnly = AppSettings.Current.KeyChangedOnly;
 
     partial void OnKeyChangedOnlyChanged(bool value) => SaveView(s => s.KeyChangedOnly = value);
@@ -361,32 +338,32 @@ public partial class MainViewModel
             ? $"Keyframes on: moving, resizing or turning a clip {(KeyframesSnap ? "changes its keyframe nearest the playhead" : "sets a keyframe at the playhead")}."
             : "Keyframes off: a clip that is moved takes its whole motion with it.";
 
-    /// <summary>The clip whose keyframes the Keyframes pane shows and the keyframe buttons work on: the one last selected, or the video at the playhead.</summary>
+    /// <summary>Keyframes pane target: the last selected clip, else the playhead video.</summary>
     [ObservableProperty] private Layer? _keyLayer;
 
-    // The video clip the keyframe controls last showed, with nothing selected (see OnPositionMsChanged).
+    // Playhead video last targeted by keyframe controls with no selection (OnPositionMsChanged).
     private Layer? _playheadVideoShown;
 
-    /// <summary>The clip the keyframe controls work on: the one selected, else the video at the playhead (<see cref="PlayheadVideo"/>).</summary>
+    /// <summary>Keyframe control target: the selection, else <see cref="PlayheadVideo"/>.</summary>
     public Layer ActiveKeyLayer => KeyLayer is { } layer && Layers.Contains(layer) && layer.IsPicture && !layer.IsEmptyTrack ? layer : PlayheadVideo;
 
     /// <summary>
-    /// What the keyframe controls, the Effects pane and a split work on with nothing selected (5.2-AuditB: where the main video's clip
-    /// at the playhead was): the lowest shown top-level video clip at the playhead, or the first; a hidden stand-in while there is none.
+    /// Default target with no selection (keyframes, Effects, split): lowest visible top-level video at the playhead, else the first;
+    /// a hidden stand-in when none.
     /// </summary>
     public Layer PlayheadVideo => VideoViewAt(PositionMs / 1000) ?? FirstVideoView() ?? _noVideo;
 
-    // What stands for the video at the playhead while there is none on the timeline.
+    // Stand-in used when the timeline has no video.
     private readonly Layer _noVideo = new() { Kind = LayerKind.VideoFile, Name = "No Video", IsHidden = true };
 
-    /// <summary>The text layer that is selected, whose words and font the Text Settings panel edits; null when what is selected is not one.</summary>
+    /// <summary>Selected text layer edited by Text Settings; null otherwise.</summary>
     public Layer? SelectedTextLayer => KeyLayer is { IsText: true } layer && Layers.Contains(layer) ? layer : null;
 
     public bool IsTextLayerSelected => SelectedTextLayer is not null;
 
     partial void OnKeyLayerChanged(Layer? value)
     {
-        // Another clip to work on (a selection, a layer just added): the Effects pane leaves the blurred background for it.
+        // New target (selection or added layer): the Effects pane switches away from the blur fill row.
         if (value is not null)
             BackgroundSelected = false;
         OnPropertyChanged(nameof(ActiveKeyLayer));
@@ -395,9 +372,8 @@ public partial class MainViewModel
         RefreshSelectedKey();
     }
 
-    // ----- The selected keyframe, and its easing -----
-    // The keyframe that is selected is the one the playhead is on, of the clip the Keyframes pane shows:
-    // stepping onto a keyframe (the previous and next buttons, or a click on its diamond) selects it.
+    // ----- Selected keyframe and easing -----
+    // The selected keyframe is the Keyframes pane target's key under the playhead (stepping or clicking a diamond selects it).
 
     /// <summary>The easings a keyframe can have, for the Keyframes pane's drop-down.</summary>
     public IReadOnlyList<EasingChoice> EasingChoices => EasingChoice.All;
@@ -408,21 +384,20 @@ public partial class MainViewModel
     public bool HasSelectedKeyframe => _selectedKey.Has;
 
     /// <summary>
-    /// How the clip moves on from the selected keyframe to the next one; null while none is selected.
-    /// Setting it changes the keyframe (place, size and turn leave it the same way), as one step that can be undone.
+    /// Outgoing easing of the selected keyframe (applies to placement, size and rotation); null when none. Setting it is one undo step.
     /// </summary>
     public EasingType? SelectedKeyEasing
     {
         get => _selectedKey.Has ? _selectedKey.Easing : null;
         set
         {
-            // A drop-down's echo while a step is being put back, or its bindings settle, is no change of the user's (4.4-BugHunt).
+            // Ignore binding echoes during undo/redo and its settle.
             if (value is not { } easing || !_selectedKey.Has || easing == _selectedKey.Easing || IsRestoringTimeline)
                 return;
 
             var layer = ActiveKeyLayer;
 
-            // Several keyframes selected in the Keyframes pane (4.1.1-B): each of them takes the easing, as one step.
+            // Multi-selection in the Keyframes pane: apply to all in one step.
             if (SelectedLaneKeys.Count > 1)
             {
                 Checkpoint($"change the easing of {SelectedLaneKeys.Count} keyframes of {layer.Name}");
@@ -433,15 +408,14 @@ public partial class MainViewModel
 
             Checkpoint($"change the easing of a keyframe of {layer.Name}");
 
-            // The keyframes changing is what redraws the clip and writes the command again. On the All row every motion
-            // property leaves the keyframe that way; on a property's or an effect value's row, that one alone.
+            // Keyframe changes trigger redraw and command rebuild. The All row sets every motion property; other rows set only theirs.
             if (SetLaneEasing(layer, easing, null))
                 Log($"Easing of the {LaneName(SelectedKeyLane)} keyframe at {TimeDisplay.Format(PositionMs / 1000)} set to {EasingChoice.All.First(c => c.Type == easing).Name} ({layer.Name})");
         }
     }
 
-    /// <summary>Looks again at whether the playhead is on a keyframe of the selected row, and says so only when that has changed.</summary>
-    /// <param name="force">Announce it even when it looks the same (a Bezier's handles changed).</param>
+    /// <summary>Re-evaluates whether the playhead is on a keyframe of the selected row; raises only on change.</summary>
+    /// <param name="force">Raise even if unchanged (e.g. Bezier handles edited).</param>
     private void RefreshSelectedKey(bool force = false)
     {
         var layer = ActiveKeyLayer;
@@ -462,7 +436,7 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(SelectedBezierPreset));
     }
 
-    // Which panes are open beside the player, and whether clips show their keyframes: remembered.
+    // Persisted view toggles: side panes and keyframe diamonds.
 
     /// <summary>The Keyframes pane beside the player.</summary>
     [ObservableProperty] private bool _showKeyframesPane = AppSettings.Current.ShowKeyframesPane;
@@ -479,7 +453,7 @@ public partial class MainViewModel
 
     // ----- The playback bar -----
 
-    /// <summary>Which controls the playback bar shows, chosen in the Views menu's Playback Bar column (5.4.4).</summary>
+    /// <summary>Playback bar controls chosen in the Views menu's Playback Bar column.</summary>
     public PlaybackControlSet PlaybackControls { get; } = new();
 
     /// <summary>Playback starts again at the end: of the selected cut segment, or of the whole sequence.</summary>
@@ -488,7 +462,7 @@ public partial class MainViewModel
     /// <summary>The action-safe and title-safe areas are outlined over the picture.</summary>
     [ObservableProperty] private bool _showSafeMargins;
 
-    /// <summary>Clips are moved, resized and turned on the player itself (Settings, the Canvas, the playback bar; 4.1.1-B).</summary>
+    /// <summary>On-player transform gizmo (toggled from Settings, the Canvas or the playback bar).</summary>
     public bool EditLayersOnPlayer
     {
         get => AppSettings.Current.EditLayersOnPlayer;
@@ -508,7 +482,7 @@ public partial class MainViewModel
     /// <summary>The player is silent (the export is not affected).</summary>
     [ObservableProperty] private bool _isPlayerMuted;
 
-    /// <summary>Takes up the playback bar's choice of controls, and saves it whenever it changes.</summary>
+    /// <summary>Loads the playback bar control set and persists changes.</summary>
     private void LoadPlaybackControls()
     {
         PlaybackControls.Changed -= SavePlaybackControls;
@@ -529,12 +503,12 @@ public partial class MainViewModel
         RaiseTimelineChanged();
     }
 
-    /// <summary>Remembers where a pane was put or how large it was made, for the mode in use.</summary>
+    /// <summary>Persists a pane's position or size for the current mode.</summary>
     public void SavePaneLayout(Action<AppSettings> set) => SaveView(set);
 
     /// <summary>
-    /// A view setting of the mode in use changed from the window's Tabs and Panes menu (Pass 4.1B): saved, and the
-    /// properties that show it raised (they read the settings: ShowAdvancedPlayback, ShowCommandPreviewTab...).
+    /// Persists a view setting changed in the Tabs and Panes menu and raises the settings-backed properties (ShowAdvancedPlayback,
+    /// ShowCommandPreviewTab, ...).
     /// </summary>
     public void SetViewSetting(Action<AppSettings> set, params string[] properties)
     {
@@ -543,7 +517,7 @@ public partial class MainViewModel
             OnPropertyChanged(property);
     }
 
-    /// <summary>Reset Panes Layout: every pane back where this mode starts with it. The window then lays them out again.</summary>
+    /// <summary>Reset Panes Layout: restores the mode's default pane layout; the window then relays out.</summary>
     public void ResetPaneLayout()
     {
         SaveView(settings => settings.ResetPaneLayout());
@@ -553,12 +527,11 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Auto-Duck from a track's right-click menu: the sound is turned down while a voice speaks, or (the other
-    /// box) it is the voice the ducked sounds make room for. Says what that comes to, because ducking takes
-    /// two: a sound to turn down, and a voice to turn it down for.
+    /// Track menu Auto-Duck / Voiceover toggles: marks audio to duck under voice, or marks it as the voice. Reports the resulting
+    /// state, since ducking needs both a ducked sound and a voice.
     /// </summary>
-    /// <param name="sound">A clip that carries sound (5.2-AuditB: a file's streams are clips on Sub-Lanes).</param>
-    /// <param name="voice">Whether it is the Voiceover / Dialogue box that was clicked, not Auto-Duck.</param>
+    /// <param name="sound">An audio-carrying clip (stream lanes are clips on Sub-Lanes).</param>
+    /// <param name="voice">True for the Voiceover / Dialogue toggle, false for Auto-Duck.</param>
     public void ToggleDucking(object sound, bool voice)
     {
         if (sound is not Layer layer)
@@ -569,7 +542,7 @@ public partial class MainViewModel
         bool on;
         if (voice)
         {
-            // A clip marked as the voice is what Auto-Captions listen to from now on (4.4).
+            // A voice-marked clip becomes the Auto-Captions source.
             on = layer.IsVoice = !layer.IsVoice;
             ListenToVoice(layer);
         }
@@ -610,13 +583,12 @@ public partial class MainViewModel
         RefreshSelectedKey();
     }
 
-    // Scale first: a picture grows about its anchor, so its corner follows from its size.
+    // Scale first: pictures scale about their anchor, so the corner derives from the size.
     private static readonly KeyProperty[] KeyOrder = [KeyProperty.Scale, KeyProperty.X, KeyProperty.Y, KeyProperty.Rotation, KeyProperty.Opacity, KeyProperty.TiltX, KeyProperty.TiltY];
 
     partial void OnPositionMsChanged(double value)
     {
-        // With nothing selected, the keyframe controls and the Effects pane work on the video clip at the playhead: the
-        // playhead crossing into another clip is another clip to show.
+        // With no selection, keyframe controls and Effects follow the playhead video, so crossing clips retargets them.
         if (KeyLayer is null && !_applyingKeys && !ReferenceEquals(PlayheadVideo, _playheadVideoShown))
         {
             _playheadVideoShown = PlayheadVideo;
@@ -627,9 +599,8 @@ public partial class MainViewModel
         if (!_anyKeys)
             return;
 
-        // While playing, the boxes and the layout pane follow the motion fifteen times a second, not at the
-        // player's frame rate: they are there to be read, and every change re-lays them out. They come to rest on
-        // the exact frame when playback stops (OnIsPlayingChanged).
+        // During playback, boxes and the layout pane update at 15 Hz (each update relayouts), snapping to the exact frame on stop
+        // (OnIsPlayingChanged).
         if (IsPlaying && Environment.TickCount64 - _keysAppliedAt < KeyEchoIntervalMs)
             return;
 
@@ -643,7 +614,7 @@ public partial class MainViewModel
 
     partial void OnIsPlayingChanged(bool value)
     {
-        // Background work waiting to start waits while the player plays (Settings, Performance).
+        // Pending background work is held during playback (Settings, Performance).
         if (!_isBackgroundWorker)
             WorkScheduler.IsPlaying = value;
 
@@ -654,12 +625,11 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Set while the clips are being shown as they are at the playhead (their keyframes applied): nothing is being changed.</summary>
+    /// <summary>Set while applying keyframed values at the playhead for display; not an edit.</summary>
     public bool IsApplyingKeys => _applyingKeys;
 
     /// <summary>
-    /// Shows every animated clip as it is at the playhead: its row, the Keyframes pane and its box in the
-    /// layout pane follow the motion. Nothing is changed by it, so nothing is rebuilt.
+    /// Updates animated clips' displayed values (row, Keyframes pane, layout box) at the playhead; display-only, no rebuild.
     /// </summary>
     private void ApplyKeyframes()
     {
@@ -678,8 +648,7 @@ public partial class MainViewModel
                 if (!layer.IsAnimated)
                     return;
 
-                // The size first, about the anchor point: a place with no keyframes of its own is the anchor's, and is
-                // moved with it (as the graph places it); a place with keyframes is then set from them.
+                // Size first about the anchor; unkeyed position follows the anchor (as the renderer does), keyed position then applies.
                 var time = seconds - layer.StartTime;
                 foreach (var property in KeyOrder)
                 {
@@ -695,14 +664,13 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A clip was moved, sized or turned by hand. With keyframes enabled that is written into a keyframe: a
-    /// new one at the playhead holding the clip as it now is, or (snapping) the nearest one. Otherwise a clip
-    /// with keyframes takes its whole motion along by as much as it was moved.
+    /// Handles a manual transform: with keyframing on, writes a key at the playhead (or the nearest key when snapping); otherwise
+    /// offsets a keyed clip's whole motion path by the delta.
     /// </summary>
-    /// <param name="at">The moment of the clip to record it at, in seconds from its start, when not the playhead's.</param>
+    /// <param name="at">Clip-relative time (s) to record at instead of the playhead.</param>
     private void RecordKey(Layer layer, string? propertyName, double? at = null)
     {
-        // (Nor while a step is being put back, or its bindings settle: its keys come back with it. 4.4-BugHunt.)
+        // Skipped during undo/redo and its settle: keys are restored with the step.
         if (_applyingKeys || _recordingKey || _commandDeferrals > 0 || IsRestoringTimeline || Layer.GetKeyProperty(propertyName) is not { } property || !HasSource)
             return;
 
@@ -733,7 +701,7 @@ public partial class MainViewModel
     /// <summary>Whether the clip has a keyframe at the playhead.</summary>
     public bool HasKeyframeAtPlayhead(Layer layer) => layer.HasKeyAt(PositionMs / 1000 - layer.StartTime);
 
-    /// <summary>Sets a keyframe at the playhead, holding the clip's place, size and turn as they are there.</summary>
+    /// <summary>Adds a keyframe at the playhead with the current placement, size and rotation.</summary>
     public void AddKeyframe(Layer layer)
     {
         if (!HasSource)
@@ -751,7 +719,7 @@ public partial class MainViewModel
             : $"Added keyframe at {TimeDisplay.Format(PositionMs / 1000)} ({layer.Name})");
     }
 
-    /// <summary>Takes away the clip's keyframe at the playhead.</summary>
+    /// <summary>Removes the clip's keyframe at the playhead.</summary>
     public void RemoveKeyframe(Layer layer)
     {
         var time = PositionMs / 1000 - layer.StartTime;
@@ -790,7 +758,7 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>Takes every keyframe off a clip: it stays as it is shown now.</summary>
+    /// <summary>Removes all keyframes, freezing the clip at its current displayed values.</summary>
     public void ClearKeys(Layer layer)
     {
         if (!layer.IsAnimated)

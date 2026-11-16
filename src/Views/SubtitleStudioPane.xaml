@@ -10,10 +10,10 @@
              Focusable="True" FocusVisualStyle="{x:Null}"
              AutomationProperties.Name="Subtitle Studio Pane">
     <!--
-        The Subtitle Studio (5.4C, a dock pane; a modal window of its own until then): the subtitle track's cues on a strip of
-        their own, its transport, and the selected cue's words and times. It has no clock and no preview of its own: its playhead is
-        the main player's, and the main player draws the captions. Its narrow form (the Vertical & Shorts Studio's left column) wraps
-        the transport and keeps the strip as tall as the pane allows.
+        Subtitle Studio dock pane: the subtitle track's cues on a dedicated strip, a transport, and the selected cue's text and
+        times. No own clock or preview: the playhead follows the main player, which also renders the captions. In a narrow layout
+        (e.g. the Vertical & Shorts Studio's left column) the transport wraps and the strip takes the remaining height.
+        Edits commit to the main Undo history.
     -->
     <DockPanel>
         <docking:PaneTitleRow DockPanel.Dock="Top" Margin="0,0,0,6">
@@ -24,7 +24,7 @@
 
         <TextBlock x:Name="HintText" DockPanel.Dock="Bottom" Margin="0,8,0,0" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" FontSize="11" />
 
-        <!-- The selected cue: its words, and its times to the millisecond. -->
+        <!-- Selected cue: text, and start/end times to the millisecond. -->
         <Grid DockPanel.Dock="Bottom" Margin="0,8,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" MinWidth="120" />
@@ -52,7 +52,7 @@
             </Grid>
         </Grid>
 
-        <!-- Transport, and what is done to the cues: one row while it fits, wrapped in a narrow pane. -->
+        <!-- Transport and cue actions: one row when it fits, wrapping in a narrow pane. -->
         <WrapPanel x:Name="Transport" DockPanel.Dock="Bottom" Margin="0,6,0,0">
             <Button x:Name="PlayButton" Content="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="13" Padding="10,5" Margin="0,2,0,2" Click="Play_Click"
                     ToolTip="Play or pause the player (Space)." AutomationProperties.Name="Play or Pause" />
@@ -72,8 +72,8 @@
         </WrapPanel>
 
         <!--
-            The strip. Its two ends fade out: the mask is opaque across the middle and see-through at the edges, so the strip seems to
-            come out of nothing on one side and go into it on the other.
+            Cue strip with faded ends: an opacity mask opaque in the middle and transparent at the edges, so the strip appears
+            to emerge from and vanish into its sides.
         -->
         <Border MinHeight="56">
             <Border.OpacityMask>

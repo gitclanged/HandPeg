@@ -4,21 +4,21 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Compositor;
 
-// ----- Pass 5.1-GpuFx: the game-engine effects, slots 22 to 29 -----
-// Shaders: Motion.hlsl, Light.hlsl, Vfx.hlsl, PSFrostedGlass in Core.hlsl. Everything here works on the layer's working texture (a Look card) or as the layer is laid
-// on (its rim, its glass, its shutter); nothing here asks the decoders for anything, so no effect can make a frame late for want of a frame: the Motion Blur reads what
-// the FrameCache already holds, and an effect without what it needs draws the picture as it is.
+// ----- Game-engine effects (slots 22-29) -----
+// Shaders: Motion.hlsl, Light.hlsl, Vfx.hlsl, PSFrostedGlass in Core.hlsl. Effects run on the layer's working texture (Look effects) or at
+// composite time (rim, glass, shutter). None request decoder frames, so no effect can make a frame late: Motion Blur reads only what the
+// FrameCache already holds, and an effect missing its inputs passes the picture through.
 internal sealed unsafe partial class SceneRenderer
 {
-    // ----- The dual-Kawase pyramid -----
+    // ----- Dual-Kawase pyramid -----
 
     private readonly GpuTexture?[] _kawase = new GpuTexture?[KawaseMostLevels];
 
     private const int KawaseMostLevels = 6;
 
     /// <summary>
-    /// How many halvings a blur reaching so many texels takes on a picture this size, and the taps' offset: its reach is about offset x 2^levels, so any
-    /// reach between two whole levels is its own. A picture is never halved below about 4 texels. CompositorReference.Fx.cs takes the same numbers.
+    /// Downsample levels and tap offset for a blur of <paramref name="reach"/> texels at this size: reach ~ offset x 2^levels, so fractional
+    /// reaches are continuous. Never halves below ~4 texels. CompositorReference.Fx.cs mirrors these numbers.
     /// </summary>
     internal static (int Levels, float Offset) KawaseShape(float reach, int width, int height)
     {
@@ -28,12 +28,12 @@ internal sealed unsafe partial class SceneRenderer
         return (levels, Math.Clamp(reach / (1 << levels), 0.5f, 2));
     }
 
-    /// <summary>A pass of the pyramid's size: half of the one before, at least 2 x 2.</summary>
+    /// <summary>Next pyramid level size: half the previous, at least 2 x 2.</summary>
     internal static int KawaseSide(int side) => Math.Max(side / 2, 2);
 
     /// <summary>
-    /// A blur reaching <paramref name="reach"/> texels: a new texture half the size of <paramref name="source"/> (or smaller by <paramref name="keep"/> more
-    /// halvings, the way back up stopped short: a light spread so wide loses nothing by it), which is left as it was.
+    /// Blurs <paramref name="source"/> (unchanged) by <paramref name="reach"/> texels into a new half-size texture, or <paramref name="keep"/>
+    /// levels smaller (upsampling stops early; very wide light spreads lose nothing).
     /// </summary>
     private GpuTexture Kawase(GpuTexture source, float reach, int timedAs, int keep = 0)
     {
@@ -69,7 +69,7 @@ internal sealed unsafe partial class SceneRenderer
         _timer.End();
     }
 
-    /// <summary>The bright part of a picture in linear light, at half its size: what a glow and a lens's streaks start from.</summary>
+    /// <summary>Bright-pass of a picture in linear light at half size: the input for glow and lens streaks.</summary>
     private GpuTexture Highlights(GpuTexture work, float threshold, int width, int height, int timedAs)
     {
         var bright = _gpu.Textures.Rent(width, height);
@@ -83,11 +83,11 @@ internal sealed unsafe partial class SceneRenderer
 
     // ----- Film Halation & Glow (slot 23) -----
 
-    /// <summary>How far a Spread reaches, in px of a 1080-wide frame: a stop of light's spread a step of the slider.</summary>
+    /// <summary>Spread reach in px of a 1080-wide frame (one slider step per stop of light spread).</summary>
     internal static float GlowReach(float spread) => MathF.Pow(2, Math.Clamp(spread, 1, 8));
 
-    // Its second packet (5.2B), its Audio Reactive Pulse's own (marked, sent only while the pulse is in use: else none): the pulse (Q0) and its
-    // band (Q1), which lift the glow's amount (P0). A pulse's packet alone (Q7 the marker, under 0.05 as a Mix) draws nothing.
+    // Optional second packet for the Audio Reactive Pulse (marked; sent only while the pulse is used): pulse (Q0) and band (Q1) scale the
+    // glow amount (P0). A lone pulse packet (Q7 marker, below 0.05 as Mix) draws nothing.
     private GpuTexture Glow(GpuEffectPacket packet, GpuEffectPacket second, GpuTexture work)
     {
         if (GpuEffectPacket.IsPulsePacket(second) && PulseOf(second.P0, second.P1) is var lift && lift != 1)
@@ -104,17 +104,16 @@ internal sealed unsafe partial class SceneRenderer
         return output;
     }
 
-    // ----- The Impact Shockwave and the Anamorphic Lens (slot 25) -----
+    // ----- Impact Shockwave and Anamorphic Lens (slot 25) -----
 
-    /// <summary>How far apart the streaks' taps go, pass by pass: each pass three times the last, so seven taps reach far.</summary>
+    /// <summary>Streak tap spacing per pass: each pass triples the last, so seven taps reach far.</summary>
     internal const int StreakPasses = 3;
 
-    // The Impact Shockwave (its second packet, 5.2B, its Audio Reactive Pulse's own: marked, sent only while the pulse is in use, the pulse in
-    // Q0 and its band in Q1, which lift its ripple and shake), or the Anamorphic Lens (P7 its variant; its second packet's Q0 the flares'
-    // Rotation, 5.2).
+    // Impact Shockwave (optional marked pulse packet: pulse Q0 and band Q1 scale ripple and shake) or Anamorphic Lens (P7 variant; second
+    // packet's Q0 is the flare Rotation).
     private GpuTexture Lens(GpuEffectPacket packet, GpuEffectPacket second, GpuTexture work)
     {
-        // A pulse's packet alone (its card's first not before it) draws nothing.
+        // A pulse packet without its effect's first packet draws nothing.
         if (GpuEffectPacket.IsPulsePacket(packet))
             return work;
         if (packet.P7 < 0.5f)
@@ -148,14 +147,13 @@ internal sealed unsafe partial class SceneRenderer
         return lensed;
     }
 
-    // ----- The procedural effects (slots 26 to 29) -----
+    // ----- Procedural effects (slots 26-29) -----
 
     /// <summary>
-    /// Whether a packet goes with the next one, of its slot: a generator's two, as Color Balance's do, the Anamorphic Lens's (5.2: its Rotation
-    /// in a second packet; P7 its variant, which the Impact Shockwave leaves 0), and since 5.2B a Glow's or an Impact Shockwave's with its
-    /// Audio Reactive Pulse's own packet, only when the next is marked as one (GpuEffectPacket.PulseMarker; sent only while the pulse is in
-    /// use): two cards of one slot side by side at a pulse of 0 are each drawn alone, as before. A packet of one of these slots alone (as a
-    /// test writes one) is drawn alone.
+    /// True when a packet pairs with the next one of its slot: generators (two packets, like Color Balance), the Anamorphic Lens (Rotation in a
+    /// second packet; P7 variant, 0 for Impact Shockwave), and Glow/Impact Shockwave with a pulse packet only when the next is marked
+    /// (GpuEffectPacket.PulseMarker; sent only while the pulse is used), so two adjacent same-slot effects at pulse 0 draw separately. A lone
+    /// packet of these slots (as tests write) draws alone.
     /// </summary>
     private static bool Paired(in GpuEffectPacket packet, in GpuEffectPacket next) =>
         next.Slot == packet.Slot && packet.Slot switch
@@ -172,12 +170,12 @@ internal sealed unsafe partial class SceneRenderer
         switch (packet.Slot)
         {
             case GpuShaderSlot.Explosion when packet.P0 is > 0 and < 1:
-                // At half the size: a soft thing, and the costliest of them.
+                // Half resolution: soft content, and the most expensive generator.
                 return Generator("PSExplosion", packet, second, work, second.P0, shrink: 2, lut: Noise3D());
             case GpuShaderSlot.Sparks when packet.P0 is > 0 and < 1:
                 return Sparks(packet, second, work);
             case GpuShaderSlot.AnimeLines:
-                // (5.2B: its second packet's last two lanes, the audio-reactive pulse and its band, lift the lines' weight and opacity.)
+                // The second packet's last two lanes (audio-reactive pulse and band) scale line weight and opacity.
                 if (PulseOf(second.P6, second.P7) is var lift && lift != 1)
                     packet = packet with { P4 = packet.P4 * lift, P7 = packet.P7 * lift };
                 return packet.P7 < 0.05f ? work : Generator("PSAnimeLines", packet, second, work, second.P3, shrink: 1);
@@ -188,7 +186,7 @@ internal sealed unsafe partial class SceneRenderer
         }
     }
 
-    /// <summary>An effect's picture, drawn from nothing, laid over the input with its light.</summary>
+    /// <summary>Renders a generator effect from scratch and composites it over the input with its light spill.</summary>
     private GpuTexture Generator(string shader, GpuEffectPacket packet, GpuEffectPacket second, GpuTexture work, float spill, int shrink, nint lut = 0)
     {
         if (!_shaders.Has(shader))
@@ -212,7 +210,7 @@ internal sealed unsafe partial class SceneRenderer
         return constants;
     }
 
-    /// <summary>Sparks and debris: the shards laid over, then the sparks added; each particle six vertices worked out from its index (no buffer).</summary>
+    /// <summary>Sparks and debris: shards blended, then sparks added; each particle is six vertices generated from its index (no vertex buffer).</summary>
     private GpuTexture Sparks(GpuEffectPacket packet, GpuEffectPacket second, GpuTexture work)
     {
         var fx = _gpu.Textures.Rent(work.Width, work.Height);
@@ -233,7 +231,7 @@ internal sealed unsafe partial class SceneRenderer
         return Lit(fx, work, second.P4, (int)GpuShaderSlot.Sparks);
     }
 
-    /// <summary>The Light Spill: the effect's picture, blurred very wide, lights what is under it; the effect itself over that.</summary>
+    /// <summary>Light Spill: a very wide blur of the effect lights the underlying picture, then the effect is composited over it.</summary>
     private GpuTexture Lit(GpuTexture fx, GpuTexture work, float spill, int timedAs)
     {
         var output = _gpu.Textures.Rent(work.Width, work.Height);
@@ -256,7 +254,7 @@ internal sealed unsafe partial class SceneRenderer
 
     private nint _noise3D, _noiseView;
 
-    /// <summary>The Explosion's noise (32 cubed, four tiling fractal noises): baked once, the first time one goes off, in a few milliseconds; half a megabyte at most.</summary>
+    /// <summary>Explosion noise volume (32^3 RGBA8, four tiling fractal noises, 128 KB): baked once on first use in a few milliseconds.</summary>
     private nint Noise3D()
     {
         if (_noiseView != 0)
@@ -312,7 +310,7 @@ internal sealed unsafe partial class SceneRenderer
         var (fx, fy, fz) = (Smooth(px - ix), Smooth(py - iy), Smooth(pz - iz));
         float At(int a, int b, int c)
         {
-            // A small integer hash of the lattice point, wrapped so the noise tiles.
+            // Integer hash of the lattice point, wrapped by period so the noise tiles.
             var h = (uint)(((a + ix) % period) * 73856093 ^ ((b + iy) % period) * 19349663 ^ ((c + iz) % period) * 83492791 ^ seed * 2654435);
             h = (h ^ (h >> 13)) * 1274126177u;
             return ((h ^ (h >> 16)) & 0xFFFF) / 65535f;
@@ -325,11 +323,11 @@ internal sealed unsafe partial class SceneRenderer
 
     private static float Lerp(float a, float b, float t) => a + (b - a) * t;
 
-    // ----- The Motion Blur (slot 22): what moves inside the picture -----
+    // ----- Motion Blur (slot 22): in-picture motion -----
 
     /// <summary>
-    /// The optical flow of a frame of a source, or of a canvas under an adjustment layer: kept a while, since a video, its Cutouts and a redraw while
-    /// paused all ask for one and the same.
+    /// Optical flow of a source frame, or of the canvas under an adjustment layer; cached because a video, its Cutouts and paused redraws
+    /// all request the same flow.
     /// </summary>
     private sealed class FlowEntry : IDisposable
     {
@@ -349,17 +347,17 @@ internal sealed unsafe partial class SceneRenderer
     private readonly List<FlowEntry> _flows = [];
     private readonly GpuTexture?[] _flowThis = new GpuTexture?[FlowLevels], _flowBefore = new GpuTexture?[FlowLevels];
 
-    /// <summary>The pyramid's levels, and the most flows kept: four sources or adjustment layers at a time, about a megabyte each.</summary>
+    /// <summary>Flow pyramid levels, and maximum cached flows (four sources or adjustment layers, about 1 MB each).</summary>
     private const int FlowLevels = 4, MostFlows = 4;
 
-    /// <summary>The flow's size for a picture: a quarter of it, at most 480 wide, at least 16 high.</summary>
+    /// <summary>Flow resolution for a picture: a quarter size, at most 480 wide, at least 16 high.</summary>
     private static (int Width, int Height) FlowSize(int width, int height)
     {
         var across = Math.Min(Math.Max(width / 4, 32), 480);
         return (across & ~1, Math.Max((int)MathF.Round((float)across * height / Math.Max(width, 1)) & ~1, 16));
     }
 
-    /// <summary>A free entry of the flow's size: a new one, or the one used longest ago.</summary>
+    /// <summary>Returns a reset flow entry of this size: new, or the least recently used.</summary>
     private FlowEntry TakeFlow(int width, int height)
     {
         FlowEntry? entry = null;
@@ -385,7 +383,7 @@ internal sealed unsafe partial class SceneRenderer
         return entry;
     }
 
-    /// <summary>The solve from coarse to fine, this frame and the one before at the flow's size, into <paramref name="into"/>. Both given back to the pool.</summary>
+    /// <summary>Coarse-to-fine flow solve between this frame and the previous (both at flow size) into <paramref name="into"/>; both are returned to the pool.</summary>
     private void SolveFlow(GpuTexture now, GpuTexture before, GpuTexture into)
     {
         var slot = (int)GpuShaderSlot.MotionBlur;
@@ -404,7 +402,7 @@ internal sealed unsafe partial class SceneRenderer
         GpuTexture? above = null;
         for (var level = levels - 1; level >= 0; level--)
         {
-            // The finest level is solved twice: its first solve's warp is what makes the second exact.
+            // Solve the finest level twice: the first solve's warp makes the second accurate.
             for (var run = level == 0 ? 2 : 1; run > 0; run--)
             {
                 var (here, was) = (_flowThis[level]!, _flowBefore[level]!);
@@ -435,7 +433,7 @@ internal sealed unsafe partial class SceneRenderer
         _gpu.Textures.Return(above!);
     }
 
-    /// <summary>The flow of a media layer's frame from the frame the cache holds before it. False when there is none (a clip's first frame, a frozen moment).</summary>
+    /// <summary>Flow of a media layer's frame from the preceding cached frame. False when none exists (clip's first frame, freeze frame).</summary>
     private bool MediaFlow(in GpuLayerDescriptor layer, out GpuTexture flow, out float perFrame)
     {
         (flow, perFrame) = (null!, 0);
@@ -453,9 +451,9 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The flow of a frame of a source from a frame before it (this(x) = before(x - f), in flow texels), solved once and kept by the later frame
-    /// (Motion Blur's measure of a frame and Smooth Slow-Mo's in-between before it share one solve). <paramref name="before"/> null: the frame
-    /// the cache holds before it (no demand). Null when there is none; <paramref name="gap"/> the seconds between the two frames it was solved on.
+    /// Flow of a source frame from an earlier frame (this(x) = before(x - f), in flow texels), solved once and cached by the later frame (Motion
+    /// Blur and Smooth Slow-Mo's preceding in-between share one solve). Null <paramref name="before"/> uses the preceding cached frame (no
+    /// demand). Returns null when none; <paramref name="gap"/> is the seconds between the two solved frames.
     /// </summary>
     private GpuTexture? FlowOf(CachedFrame frame, CachedFrame? before, out double gap)
     {
@@ -487,7 +485,7 @@ internal sealed unsafe partial class SceneRenderer
         return entry.Field;
     }
 
-    /// <summary>The flow of the canvas under an adjustment layer (or the Sequence Output) from the last one it was drawn on, while frames come in order.</summary>
+    /// <summary>Flow of the canvas under an adjustment layer (or Sequence Output) from its previous draw, while frames arrive in order.</summary>
     private bool CanvasFlow(in GpuLayerDescriptor layer, GpuTexture work, out GpuTexture flow)
     {
         flow = null!;
@@ -513,7 +511,7 @@ internal sealed unsafe partial class SceneRenderer
 
         entry.LastFrame = _frame;
 
-        // A redraw of the same moment changes nothing.
+        // Redrawing the same time reuses the existing flow.
         if (!double.IsNaN(entry.Moment) && Math.Abs(entry.Moment - _time) < step * 0.5)
         {
             flow = entry.Field!;
@@ -528,7 +526,7 @@ internal sealed unsafe partial class SceneRenderer
         Step("PSCopy", work, now, ref copy, slot);
         if (inOrder)
         {
-            // The frame kept goes to the solve, this one takes its place.
+            // The stored frame feeds the solve; this frame replaces it.
             var was = _gpu.Textures.Rent(width, height);
             Step("PSCopy", entry.Previous!, was, ref copy, slot);
             Step("PSCopy", now, entry.Previous!, ref copy, slot);
@@ -545,7 +543,7 @@ internal sealed unsafe partial class SceneRenderer
         return inOrder;
     }
 
-    /// <summary>The picture smeared along what moves in it, across the shutter (two passes of the samples: their square, without its cost).</summary>
+    /// <summary>Smears the picture along its motion across the shutter (two sample passes: squared sample count at linear cost).</summary>
     private GpuTexture MotionBlur(in GpuLayerDescriptor layer, GpuEffectPacket packet, GpuTexture work)
     {
         if (packet.P0 < 0.5f || packet.P2 < 0.5f || packet.P4 < 0.5f || !_shaders.Has("PSMotionBlur"))
@@ -563,8 +561,8 @@ internal sealed unsafe partial class SceneRenderer
         var samples = Math.Clamp((int)MathF.Round(packet.P1), 8, 16);
         var longest = Math.Clamp(packet.P5, 0.1f, 50) / 100;
 
-        // The Amount's top half reaches further (MotionBoost.Span, 2.5 times at 100 %), and its longest streak with it (at most half the
-        // picture); the samples and passes stay, so it costs nothing more. Up to 50 % nothing here changes, to the bit.
+        // Amounts above 50 % extend reach (MotionBoost.Span, 2.5x at 100 %) and the longest streak (at most half the picture) with the same
+        // samples and passes, at no extra cost. Up to 50 % output is bit-identical.
         if (packet.P4 > MotionBoost.Plain)
         {
             var span = (float)MotionBoost.Span(packet.P4);
@@ -590,11 +588,11 @@ internal sealed unsafe partial class SceneRenderer
         return work;
     }
 
-    // ----- The Motion Blur: what the layer itself does -----
+    // ----- Motion Blur: layer transform motion -----
 
     /// <summary>
-    /// Sub-frames of the laid-on picture, summed along the way from the shutter's opening to its closing (the plan's lanes): a picture of the whole target, laid on as the
-    /// layer is. Exact: every sub-frame is the layer where it really is at that moment (linearly between the two: a shutter's moment is short).
+    /// Sums sub-frames of the composited layer from shutter open to close (the plan's lanes) into a full-target texture placed like the layer.
+    /// Each sub-frame uses the layer's actual transform at that time (linear between the endpoints; a shutter interval is short).
     /// </summary>
     private (GpuTexture Work, (float X, float Y, float W, float H) Box, float AnchorX, float AnchorY, float Rotation) Shutter(
         in GpuLayerDescriptor layer, GpuEffectPacket shutter, GpuTexture work, (float X, float Y, float W, float H) box, float anchorX, float anchorY, GpuEffectPacket? wipe)
@@ -604,7 +602,7 @@ internal sealed unsafe partial class SceneRenderer
         var target = _gpu.Textures.Rent(_outWidth, _outHeight);
         _gpu.Context.ClearRenderTargetView(target.Rtv, 0, 0, 0, 0);
 
-        // The point the layer is placed by, on the canvas as drawn now (a rim's room or a slide has moved the box: the shutter's way is added to where it is).
+        // The layer's pivot on the canvas as currently drawn (rim padding or a slide may have moved the box; shutter motion is relative to it).
         var (pivotX, pivotY) = (box.X + anchorX * box.W, box.Y + anchorY * box.H);
         var (fromW, toW) = (layer.ShutterFromWidth / Math.Max(MathF.Abs(layer.Width), 1e-3f), layer.ShutterToWidth / Math.Max(MathF.Abs(layer.Width), 1e-3f));
         var (fromH, toH) = (layer.ShutterFromHeight / Math.Max(MathF.Abs(layer.Height), 1e-3f), layer.ShutterToHeight / Math.Max(MathF.Abs(layer.Height), 1e-3f));
@@ -635,18 +633,17 @@ internal sealed unsafe partial class SceneRenderer
         return (target, (0, 0, _outWidth, _outHeight), 0.5f, 0.5f, 0);
     }
 
-    // ----- The audio-reactive pulse (Pass 5.2B) -----
-    // The Sequence's sound at the frame's moment in three bands (FrameSceneHeader.AudioBass / AudioMid / AudioHigh, 0 to 1: Services/Audio/
-    // AudioReactive.cs). The Glow, the Neon Rim, the Shockwave and the Anime Lines carry an Audio Reactive Pulse (%) and a band in lanes after
-    // their own; their strength is multiplied here, before the shader reads it, by 1 + pulse x that band's energy: the glow's amount, the rim's
-    // strength, the ring's ripple and the shake, the lines' weight and opacity. A pulse of 0 (or silence) is a factor of exactly 1, and the
-    // packet goes to the shader untouched.
+    // ----- Audio-reactive pulse -----
+    // Sequence audio energy at the frame time in three bands (FrameSceneHeader.AudioBass/AudioMid/AudioHigh, 0-1; Services/Audio/
+    // AudioReactive.cs). Glow, Neon Rim, Shockwave and Anime Lines carry an Audio Reactive Pulse (%) and band in extra lanes; their strength
+    // (glow amount, rim strength, ripple and shake, line weight and opacity) is scaled here by 1 + pulse x band energy before the shader. Pulse 0
+    // or silence gives exactly 1 and the packet is passed through untouched.
 
     private float _audioBass, _audioMid, _audioHigh;
 
     private static float Band(float energy) => float.IsFinite(energy) ? Math.Clamp(energy, 0, 1) : 0;
 
-    /// <summary>What an effect's strength is multiplied by this frame: 1 + its pulse (0 to 100 %) times its band's energy (0 Bass, 1 Mid, 2 High, 3 the loudest).</summary>
+    /// <summary>Strength multiplier this frame: 1 + pulse (0-100 %) x band energy (0 Bass, 1 Mid, 2 High, 3 loudest band).</summary>
     private float PulseOf(float pulse, float band)
     {
         if (!(pulse > 0))
@@ -662,14 +659,14 @@ internal sealed unsafe partial class SceneRenderer
         return energy > 0 ? 1 + Math.Min(pulse, 100) / 100 * energy : 1;
     }
 
-    // ----- The Neon Rim Light and Frosted Glass (slot 24) -----
+    // ----- Neon Rim Light and Frosted Glass (slot 24) -----
 
-    /// <summary>How far a rim's light reaches from its shape, in texels.</summary>
+    /// <summary>Rim light reach beyond the shape, in texels.</summary>
     private float RimRoom(GpuEffectPacket rim) => Math.Clamp(MathF.Ceiling((Math.Max(rim.P3, 0) / 2 + Math.Max(rim.P4, 0) * 1.5f) * _pixelScale) + 2, 3, 512);
 
     /// <summary>
-    /// The rim on the working picture, on a larger one with room round it for its glow, and the box grown to match (about the same point of the picture). Its distance
-    /// field by jump flooding, a pass for each halving of how far it must reach; at half the size for a large picture, where a glow loses nothing by it.
+    /// Draws the rim around the working picture into a larger texture padded for the glow, growing the box to match (pivot preserved). The
+    /// distance field uses jump flooding, one pass per halving of the reach, at half size for large pictures (no visible loss in a glow).
     /// </summary>
     private (GpuTexture Work, (float X, float Y, float W, float H) Box, float AnchorX, float AnchorY) NeonRim(GpuEffectPacket rim, GpuTexture work,
         (float X, float Y, float W, float H) box, float anchorX, float anchorY, float pictureShare)
@@ -718,8 +715,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// Frosted Glass: the canvas under the layer's shape, blurred, tinted and lit along its edge, laid down before the layer's picture (at what share of it stays). The
-    /// canvas is copied and blurred whole, so a turned layer and its neighbours read it the same way.
+    /// Frosted Glass: the canvas under the layer's shape, blurred, tinted and edge-lit, drawn before the layer's picture (at its remaining
+    /// share). The whole canvas is copied and blurred, so rotated layers and their neighbours sample it consistently.
     /// </summary>
     private void DrawFrostedGlass(GpuEffectPacket glass, GpuTexture work, (float X, float Y, float W, float H) box, float rotation, float anchorX, float anchorY, float alpha, GpuEffectPacket? wipe,
         (float X, float Y) tilt = default)
@@ -752,7 +749,7 @@ internal sealed unsafe partial class SceneRenderer
         Com.Release(ref _noise3D);
     }
 
-    /// <summary>Flows not used for two seconds' worth of frames go (their textures are only worth keeping while a source plays).</summary>
+    /// <summary>Evicts flows unused for 120 frames (their textures are only worth keeping while a source plays).</summary>
     private void ForgetOldFlows()
     {
         for (var k = _flows.Count - 1; k >= 0; k--)

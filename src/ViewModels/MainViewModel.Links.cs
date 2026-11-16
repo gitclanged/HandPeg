@@ -4,17 +4,16 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Links, places and blur fills of clips, for the timeline's rows and menus (4.4) -----
-// A track can be a child of another (its mini-stack: a style's HUD cut-outs under their video's track), and a clip a child
-// of the clip it lies over; edits of the parent carry its children along (TimelineTransaction). A clip's place, crop and
-// blur fill are its own, as all of its look is: these give one clip's place to its track, fit a clip to the frame, and set
-// its blur fill, each as one step of Undo.
+// ----- Clip links, placement and blur fill (timeline rows and menus) -----
+// Tracks can nest under another track (mini-stack, e.g. a style's HUD Cutouts under their video track) and clips under the clip
+// they overlay; parent edits carry children (TimelineTransaction). Placement, crop and blur fill are per clip like all look data;
+// these helpers copy placement across a track, fit to frame and toggle blur fill, each in one undo step.
 public partial class MainViewModel
 {
-    /// <summary>The document track's id behind a row (a track's view: its first clip's, or an empty track's); null for the stand-ins.</summary>
+    /// <summary>Document track id behind a row view (first clip's or empty-track view); null for placeholders.</summary>
     public Guid? TrackIdOf(Layer row) => TrackOfRow(row)?.Id;
 
-    /// <summary>The row (the view standing for a track) a track's row is a child of, or null when its track is no track's child.</summary>
+    /// <summary>Parent track's row view, or null for top-level tracks.</summary>
     public Layer? ParentRowOf(Layer row)
     {
         if (TrackOfRow(row) is not { ParentTrackId: { } parentId } track)
@@ -24,16 +23,15 @@ public partial class MainViewModel
         return parent is null || ReferenceEquals(parent, track) ? null : RowOf(parent);
     }
 
-    /// <summary>The view standing for a track as its row: its first clip's, or the stand-in of a track with no clips.</summary>
+    /// <summary>Row view for a track: its first clip's view, or the empty-track placeholder.</summary>
     private Layer? RowOf(TimelineTrackModel track) => track.Clips.Count > 0 ? ViewOf(track.Clips[0]) : _emptyTrackViews.GetValueOrDefault(track.Id);
 
-    /// <summary>Whether a clip is a child of another clip that is on the timeline.</summary>
+    /// <summary>Whether a clip has a parent clip on the timeline.</summary>
     public bool HasParentClip(Layer clip) => ClipOf(clip) is { ParentClipId: { } parentId } && Document.FindClip(parentId) is not null;
 
     /// <summary>
-    /// Takes a clip out of its parent's keeping, and a row (the view standing for its track: its first clip's, an empty
-    /// track's) out of its parent track's mini-stack, its clips with it: edits of the parent no longer carry them. One step
-    /// of Undo; nothing when neither is linked.
+    /// Unlinks a clip from its parent and its row's track (with its clips) from the parent mini-stack so parent edits no longer carry
+    /// them. One undo step; no-op when neither is linked.
     /// </summary>
     public void UnlinkFromParent(Layer clipOrRow)
     {
@@ -66,12 +64,12 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Whether the frame around a clip is filled with a blurred copy of it: its own say (<see cref="Layer.BlurFill"/>; null is none, 5.2-AuditB).</summary>
+    /// <summary>Whether the clip has a blurred self-copy background fill (<see cref="Layer.BlurFill"/>; null = off).</summary>
     public bool IsBlurFilled(Layer clip) => clip.BlurFill ?? false;
 
     /// <summary>
-    /// Fills the frame around a clip with a blurred copy of it, or stops: a video from a file is given a blurred copy of its whole
-    /// picture under it (one more decoder while it plays, skipped while the clip covers the frame). One step of Undo.
+    /// Toggles blur fill: a blurred full-frame copy of a file video beneath it (one extra decoder during playback, skipped when the
+    /// clip covers the frame). One undo step.
     /// </summary>
     public void SetBlurFill(Layer clip, bool on)
     {
@@ -91,8 +89,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Gives every other clip on a clip's track its place (4.4: a clip's place is its own): its corner, size and shape, its
-    /// turn and anchor, and its crop. Their looks, timing and keyframes stay theirs. One step of Undo.
+    /// Copies a clip's placement (position, size, aspect, rotation, anchor, crop) to every other clip on its track; looks, timing
+    /// and keyframes are untouched. One undo step.
     /// </summary>
     public void ApplyPlacementToTrack(Layer source)
     {
@@ -111,7 +109,7 @@ public partial class MainViewModel
             {
                 foreach (var other in others)
                 {
-                    // The size first, by the corner (a layer grows about its middle), then the place.
+                    // Size first via the corner (layers scale about their centre), then position.
                     other.LockAspectRatio = source.LockAspectRatio;
                     other.FromCorner(() =>
                     {
@@ -122,7 +120,7 @@ public partial class MainViewModel
                     (other.TiltX, other.TiltY) = (source.TiltX, source.TiltY);
                     (other.CropLeft, other.CropTop, other.CropRight, other.CropBottom) = (source.CropLeft, source.CropTop, source.CropRight, source.CropBottom);
 
-                    // Kept about its middle from the frame as it is (met afresh).
+                    // Keep centred relative to the current frame (recomputed).
                     _placedFor.Remove(other);
                 }
             }
@@ -131,7 +129,7 @@ public partial class MainViewModel
                 (_settingQuietly, _placingViews) = (false, false);
             }
 
-            // The Crop boxes show what their clip has now.
+            // Refresh Crop boxes for their clip.
             _cropShown = null;
             ShowCropTarget();
             GenerateCommand();
@@ -140,7 +138,7 @@ public partial class MainViewModel
         StatusText = $"Every clip on {source.Name}'s track has its place now. Ctrl+Z puts theirs back.";
     }
 
-    /// <summary>Puts a clip's middle on the frame's; its size stays. One step of Undo.</summary>
+    /// <summary>Centres a clip on the frame without resizing. One undo step.</summary>
     public void CenterClipOnFrame(Layer clip)
     {
         if (ClipOf(clip) is null || FrameWidth <= 0 || FrameHeight <= 0)
@@ -151,8 +149,7 @@ public partial class MainViewModel
         (clip.PositionX, clip.PositionY) = ((FrameWidth - width) / 2.0 / FrameWidth, (FrameHeight - height) / 2.0 / FrameHeight);
     }
 
-    /// <summary>A clip back as a new clip starts: sized to the frame in its middle, not turned, nothing cropped. This clip alone. One step of Undo.</summary>
-    /// <summary>A clip's crop taken off (its menu's Crop, Reset Crop; 5.4B): one step of Undo.</summary>
+    /// <summary>Clears a clip's crop (context menu Crop > Reset Crop). One undo step.</summary>
     public void ResetClipCrop(Layer clip)
     {
         if (ClipOf(clip) is null || (clip.CropLeft, clip.CropTop, clip.CropRight, clip.CropBottom) == (0, 0, 0, 0))
@@ -163,8 +160,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Interactive Crop on a clip (its menu's Crop; 5.4B, the Video tab's toggle before): the clip selected, so the Crop boxes and the
-    /// player's rectangle stand for it (CropTarget), and the drawing mode switched on; or off again.
+    /// Toggles interactive Crop for a clip (context menu Crop): selects it so the Crop boxes and player rectangle target it
+    /// (CropTarget) and enables the drawing mode, or disables it.
     /// </summary>
     public void CropInteractively(Layer clip, bool on)
     {
@@ -185,8 +182,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The blur fill's settings row's eye (5.2-AuditB: the Background switch): shown, every top-level video clip is given a blur
-    /// fill; hidden, none is. One step of Undo. It stays what a file opened from now on is given (PlaceOpenedFile).
+    /// Blur fill row eye (Background switch): on applies blur fill to every top-level video clip, off removes it. One undo step; also
+    /// the default for newly opened files (PlaceOpenedFile).
     /// </summary>
     public void SetBackgroundShown(bool shown)
     {
@@ -207,10 +204,7 @@ public partial class MainViewModel
             : $"No video is filled around with a blurred copy of itself{(videos.Count > 0 ? "" : " already")}; videos opened from now on are not either.";
     }
 
-    /// <summary>
-    /// Sizes a clip to the frame and puts its middle on the frame's: fitted (the whole picture shows, touching the frame on
-    /// one side) or filling it (the frame covered, what reaches past it off its edges). One step of Undo.
-    /// </summary>
+    /// <summary>Centres and scales a clip to Fit (letterboxed, whole picture visible) or Fill (frame covered, overflow cropped). One undo step.</summary>
     public void FitClipToFrame(Layer clip, bool fill)
     {
         if (ClipOf(clip) is null || FrameWidth <= 0 || FrameHeight <= 0)

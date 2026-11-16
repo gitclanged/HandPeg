@@ -12,24 +12,23 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- Project tabs: the paused still over the player, and the tabs kept live in memory (split from MainWindow.ProjectTabs.cs, 5.4.1-M5) -----
+// ----- Project tabs: paused still overlay, live in-memory tabs, cache writes, crash recovery -----
 public partial class MainWindow
 {
-    // ----- The paused still over the player -----
-    // The player is a native window, which nothing of WPF's draws over but the window kept over it (PlayerOverlay): the still lies there,
-    // under everything else of it, until the engine has presented a scene made since the tab came back (5.4.2A: GpuPreviewEngine.MarkScene,
-    // never a scene of the tab put behind still on its way; its exact frames, or after a moment whatever it has), or two and a half seconds
-    // at most. A bounded watch of a few frames, only after a switch.
+    // ----- Paused still overlay -----
+    // The player is a native HWND (airspace), so the still is drawn at the bottom of PlayerOverlay until the engine presents a scene
+    // marked after activation (GpuPreviewEngine.MarkScene; never an in-flight scene of the outgoing tab): exact frames first, any frame
+    // after a grace period, 2.5 s at most. A bounded per-frame watch, active only after a switch.
 
     private Image? _tabStill;
     private bool _stillWatching;
     private long _stillSince, _stillMark;
     private int _stillSeen;
 
-    /// <summary>How long the still waits for the engine's exact frames before any frame of the tab will do, and how long it stays at most, ms.</summary>
+    /// <summary>Still overlay timing in ms: grace period for exact frames before any frame is accepted, and maximum lifetime.</summary>
     private const long StillExactWaitMs = 600, StillLongestMs = 2500;
 
-    /// <summary>A BGRA8 picture as a frozen bitmap (its alpha meaningless: Bgr32).</summary>
+    /// <summary>Wraps BGRA8 pixels as a frozen Bgr32 bitmap (alpha ignored).</summary>
     private static BitmapSource StillOf(byte[] bgra, int width, int height)
     {
         var still = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgr32, null, bgra, width * 4);
@@ -65,7 +64,7 @@ public partial class MainWindow
         _tabStill.Visibility = Visibility.Collapsed;
     }
 
-    /// <summary>The still stays until the engine has presented a scene made since now (see the section above).</summary>
+    /// <summary>Keeps the still up until the engine presents a scene marked after this call (see section header).</summary>
     private void WatchForFirstFrame()
     {
         if (_tabStill is not { Visibility: Visibility.Visible })
@@ -74,14 +73,14 @@ public partial class MainWindow
         (_stillMark, _stillSince, _stillSeen) = (_gpu?.MarkScene() ?? 0, Environment.TickCount64, 0);
         if (!_stillWatching)
         {
-            // Looked at on every frame WPF renders while the still is up (5.4.3; a 16 ms timer before): hooked only for this watch.
+            // Polled on CompositionTarget.Rendering, subscribed only while the still is up.
             _stillWatching = true;
             CompositionTarget.Rendering += StillWatch_Rendering;
         }
     }
 
-    // The still goes one render tick after the viewport put the tab's frame on the swap chain (5.4.3: IDXGISwapChain::Present, so the
-    // desktop has composed it by then), its exact frames or, after a moment, whatever it has.
+    // Removes the still one render tick after the viewport presented the tab's frame (IDXGISwapChain::Present, so DWM has composed it):
+    // exact frames, or any frame after the grace period.
     private void StillWatch_Rendering(object? sender, EventArgs e)
     {
         var waited = Environment.TickCount64 - _stillSince;
@@ -99,86 +98,84 @@ public partial class MainWindow
         CompositionTarget.Rendering -= StillWatch_Rendering;
     }
 
-    // ----- Tabs kept live in memory (Pass 5.4D-TabPerf) -----
-    // A tab put behind keeps everything of it in memory (a TabViewContext, by its id): the view model's part (its live Sequence, history,
-    // fingerprints, what was made of its file) and the window's (its still, overview sheet, selection, player zoom and pan, the Timeline's
-    // open stacks). It comes back by a swap of references (AttachHydrated). Its cache file is written after the switch from a frozen copy
-    // (QueueTabWrite), each tab's disk work after the last (ProjectTabs.Enqueue), so a crash, a close or the memory valve finds it there.
-    // The valve (LetGoForMemory) lets the least recently used go back to its file only when the computer's free memory runs short (5.4.2A:
-    // all tabs warm, however many).
+    // ----- Live in-memory tabs -----
+    // A deactivated tab keeps a TabViewContext by id: the view model part (live Sequence, history, fingerprints, derived file data) and the
+    // window part (still, overview sheet, selection, player zoom/pan, open Timeline stacks); AttachHydrated restores it by reference swap.
+    // Its cache file is written after the switch from a frozen copy (QueueTabWrite, serialized per tab by ProjectTabs.Enqueue) for crash,
+    // close and valve use. All tabs stay warm; the valve (LetGoForMemory) evicts the LRU tab to its file only when free RAM runs short.
 
-    /// <summary>How long closing HandPeg, a save from memory or a close waits for a tab's cache file still being written, ms.</summary>
+    /// <summary>Max wait in ms for a pending tab cache write during app exit, save-from-memory or tab close.</summary>
     private const int IoWaitMs = 5000;
 
-    /// <summary>The computer's free memory (AvailPhys) under which the valve lets tabs kept live go back to their files (5.4.2A: 2.5 GB).</summary>
+    /// <summary>Free physical memory (AvailPhys) floor below which the valve evicts live tabs to their files (2.5 GB).</summary>
     internal const long AvailableFloorBytes = Compositor.CompositorWorker.AvailableFloorBytes;
 
-    /// <summary>How often the memory valve looks again while tabs are kept live, ms.</summary>
+    /// <summary>Memory valve poll interval in ms while live tabs exist.</summary>
     private const int ValveTickMs = 30_000;
 
-    /// <summary>The tabs behind the one in front kept live in memory, by id (the one in front is the view model's).</summary>
+    /// <summary>Live inactive tabs by id (the active tab lives in the view model). UI thread only.</summary>
     private readonly Dictionary<string, TabViewContext> _hydrated = new(StringComparer.Ordinal);
 
-    // The cache files queued and not written yet: written as they are should HandPeg fall over first (WriteUnwrittenTabs). Any thread.
+    // Queued, not-yet-written cache writes; flushed by the crash handler (WriteUnwrittenTabs). Accessed from any thread.
     private readonly List<TabWrite> _unwritten = [];
     private bool _crashWritesHooked, _letGoing, _memoryHooked;
     private DispatcherTimer? _valveTimer;
 
-    /// <summary>A still's moment: the undo mark, the playhead and the 3D view it was taken at (a stale one only covers the player until its first frame),
-    /// and whether it is the soft frame drawn smaller while playing (5.4.4: kept only until a whole one is read).</summary>
+    /// <summary>Capture context of a still: undo mark, playhead and 3D state (a stale still only covers the player until its first frame),
+    /// and whether it is a reduced-resolution playback frame (kept only until a full one is read).</summary>
     private readonly record struct StillMark(object? UndoMark, double PositionMs, bool Shown3D, bool Soft = false);
 
-    /// <summary>A tab put behind, kept live in memory (see the section above). Made on the window's thread and used only there.</summary>
+    /// <summary>A live inactive tab (see section header). Created and used on the UI thread only.</summary>
     private sealed class TabViewContext(MainViewModel.TabProjectContext project)
     {
-        /// <summary>The view model's part: its live Sequence, history and fingerprints, its frozen copy.</summary>
+        /// <summary>View model part: live Sequence, history, fingerprints and frozen copy.</summary>
         public MainViewModel.TabProjectContext Project { get; } = project;
 
-        /// <summary>Its paused picture as last kept fresh (MainWindow.TabStill.cs), and when it was taken; null for none yet.</summary>
+        /// <summary>Latest paused still (MainWindow.TabStill.cs) and its capture context; null if none yet.</summary>
         public BitmapSource? Still { get; init; }
 
         /// <summary>
-        /// Its hover card's picture when it went behind with no still (5.4.1-M3: playing, or a moment after a change): the overview sheet's
-        /// picture at its playhead, so the card has one at once. Never shown over the player.
+        /// Hover-card fallback when deactivated without a still (playing, or just edited): the overview sheet frame at the playhead.
+        /// Never shown over the player.
         /// </summary>
         public BitmapSource? Preview { get; init; }
 
-        /// <summary>Its Timeline's rows as they were (5.4.1-M3): given back as it comes back, not made again.</summary>
+        /// <summary>Timeline rows at deactivation, reused on activation instead of rebuilt.</summary>
         public KeptRows? Rows { get; init; }
 
         public StillMark StillMark { get; init; }
 
-        /// <summary>The overview sheet it showed (whole), and the undo mark its Sequence was at.</summary>
+        /// <summary>The full overview sheet and the Sequence's undo mark at that time.</summary>
         public ThumbnailSheet? ProgramSheet { get; init; }
 
         public object? ProgramSheetMark { get; init; }
 
-        /// <summary>What was selected on its Timeline: its views of before, followed by their clips' ids as it comes back.</summary>
+        /// <summary>Timeline selection as the old views; re-resolved by clip id on activation.</summary>
         public object? SelectedClip { get; init; }
 
         public Layer? RangeAnchor { get; init; }
 
         public bool PlayheadVideoSelected { get; init; }
 
-        /// <summary>The player's zoom and pan (Keybinds' navigation).</summary>
+        /// <summary>Player zoom and pan (Keybinds navigation).</summary>
         public (double Zoom, double PanX, double PanY) PlayerView { get; init; }
 
-        /// <summary>The Timeline's mini-stacks open (their rows' keys are any project's: "captions", a track's number).</summary>
+        /// <summary>Open Timeline mini-stacks (row keys like "captions" or a track number repeat across projects).</summary>
         public IReadOnlyList<(object Key, ChildStack Stack)> Expansion { get; init; } = [];
 
-        /// <summary>Its cache file's write after it went behind.</summary>
+        /// <summary>The post-deactivation cache write.</summary>
         public TabWrite? Write { get; set; }
 
-        /// <summary>About how much memory it holds, in bytes (the memory valve's measure).</summary>
+        /// <summary>Estimated memory footprint in bytes (the valve's metric).</summary>
         public long ApproxBytes { get; set; }
 
-        /// <summary>Its cache file could not be written: never let go to it (its work is only here).</summary>
+        /// <summary>Cache write failed: never evict (memory holds the only copy).</summary>
         public bool MustStay { get; set; }
     }
 
     /// <summary>
-    /// A tab's cache file to write after a switch (5.4D-TabPerf): from its frozen copy, with its header as it went behind; the exact dot
-    /// worked out on the thread pool. Its state moves on the thread pool (and on a thread falling over): read under its own lock.
+    /// A pending post-switch cache write: frozen copy plus header at deactivation; the exact dot is computed on the thread pool. State
+    /// changes on pool and crash threads, so all access goes through its lock.
     /// </summary>
     private sealed class TabWrite(ProjectTabHeader tab, TabViewContext live, string header, BitmapSource? thumbnailFrom)
     {
@@ -191,18 +188,18 @@ public partial class MainWindow
 
         public TabViewContext Live { get; } = live;
 
-        /// <summary>The header as the tab went behind (its dot the cheap one).</summary>
+        /// <summary>Header at deactivation (with the fingerprint-free dot).</summary>
         public string Header { get; } = header;
 
-        /// <summary>The flat still a project never saved takes its thumbnail from (5.4B), or null.</summary>
+        /// <summary>Flat still used as the thumbnail of a never-saved project, or null.</summary>
         public BitmapSource? ThumbnailFrom { get; } = thumbnailFrom;
 
-        /// <summary>The thumbnail made of it on the thread pool (null for none), and the file's length once written.</summary>
+        /// <summary>Pool-encoded thumbnail (null for none) and the written file length.</summary>
         public byte[]? Jpeg { get; set; }
 
         public long Bytes { get; set; }
 
-        /// <summary>Its last try is over: written, or failed (<see cref="Failed"/>); false again while it is tried once more.</summary>
+        /// <summary>Last attempt finished, successfully or not (<see cref="Failed"/>); false again during a retry.</summary>
         public bool IsDone
         {
             get
@@ -212,7 +209,7 @@ public partial class MainWindow
             }
         }
 
-        /// <summary>Its last try failed or faulted: the tab has no recovery copy yet (tried again: 5.4D-TabPerf review).</summary>
+        /// <summary>Last attempt failed or faulted: no recovery copy exists yet (it will be retried).</summary>
         public bool Failed
         {
             get
@@ -222,7 +219,7 @@ public partial class MainWindow
             }
         }
 
-        /// <summary>Not to be written any more (its tab closed): nothing of it may come back at the next start.</summary>
+        /// <summary>Cancelled (tab closed): must not be written, so nothing reappears at the next start.</summary>
         public bool IsCancelled
         {
             get
@@ -232,7 +229,7 @@ public partial class MainWindow
             }
         }
 
-        /// <summary>Whether it is still to be written: not written whole (a failed one still is), not cancelled.</summary>
+        /// <summary>Still pending: not fully written (failures stay pending) and not cancelled.</summary>
         public bool IsWanted
         {
             get
@@ -242,7 +239,7 @@ public partial class MainWindow
             }
         }
 
-        /// <summary>The exact dot (whether it has unsaved changes), once written; null before, or once a save made it out of date.</summary>
+        /// <summary>Exact dirty flag once written; null before, or after a save made it stale.</summary>
         public bool? Dirty
         {
             get
@@ -253,9 +250,8 @@ public partial class MainWindow
         }
 
         /// <summary>
-        /// The write claimed by one writer (any thread, 5.4D-TabPerf review: the thread pool, the crash writer, the clean close): true when it is
-        /// still wanted and nobody is writing it, and it is that writer's to <see cref="Finish"/> or <see cref="Fail"/> now (a failed one is
-        /// tried once more). False when it is written, cancelled or being written: two copies of one tab's file are never written at once.
+        /// Claims the write for one writer (pool, crash writer or clean close; any thread). True when pending and unclaimed; the caller must
+        /// then <see cref="Finish"/> or <see cref="Fail"/>. False when written, cancelled or in progress, so one file is never written twice concurrently.
         /// </summary>
         public bool TryStart()
         {
@@ -274,7 +270,7 @@ public partial class MainWindow
                 (_running, _done, _failed, _dirty) = (false, true, false, dirty);
         }
 
-        /// <summary>The claimed try failed (nothing once it finished: a writer calls it on its way out whatever happened).</summary>
+        /// <summary>Marks the claimed attempt failed; a no-op after Finish (writers call it unconditionally on exit).</summary>
         public void Fail()
         {
             lock (_gate)
@@ -290,7 +286,7 @@ public partial class MainWindow
                 _cancelled = true;
         }
 
-        /// <summary>A save while it was behind (SaveTabInPlace): its dot is the save's now, whatever this write found.</summary>
+        /// <summary>An inactive save (SaveTabInPlace) supersedes this write's dot result.</summary>
         public void Superseded()
         {
             lock (_gate)
@@ -299,16 +295,16 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The tab in front taken into a context of its own, kept live (5.4D-TabPerf; its header brought up to date first): the view model
-    /// lets go of it (MainViewModel.DetachForTab), and the window's part goes with it. <paramref name="write"/> is its cache file to write.
+    /// Detaches the active tab into a live TabViewContext (header refreshed first): MainViewModel.DetachForTab releases it, with the window
+    /// part. <paramref name="write"/> is its pending cache write.
     /// </summary>
     private TabViewContext DetachActive(ProjectTabHeader tab, out TabWrite write)
     {
         TakeHeaderForTab(tab);
         var sheetMark = _viewModel.UndoMark;
         var (still, stillMark) = (_liveStill, _liveStillMark);
-        // Its overview's picture at the playhead as well when its still is the 3D one (5.4.2A): that is never written to its cache file (below),
-        // so a tab left in 3D that goes cold (the valve, or a restart) still has a picture for its hover card.
+        // With a 3D still, also keep the flat overview frame at the playhead: 3D stills are never written to the cache file, so a cold 3D tab
+        // (valve or restart) still has a hover-card image.
         var preview = (still is null || stillMark.Shown3D) && OverviewSheet is { Count: > 0 } overview ? overview.Cell(overview.IndexAt(_viewModel.PositionMs / 1000)) : null;
         var rows = KeepRows();
         var live = new TabViewContext(_viewModel.DetachForTab(tab.Title))
@@ -328,8 +324,8 @@ public partial class MainWindow
 
         (_liveStill, _liveStillMark) = (null, default);
 
-        // A project with no thumbnail yet (never saved) keeps its paused still as one (5.4B), so its hover card has a picture once it is
-        // cold too: made a JPEG on the thread pool, with the write. Never a 3D still (5.4D): a project's picture is flat.
+        // A never-saved project uses its paused still as thumbnail (JPEG-encoded on the pool with the write) so a cold tab has a hover image.
+        // Never a 3D still: project thumbnails are flat.
         write = new TabWrite(tab, live, ProjectTabs.HeaderJson(tab), still is not null && !stillMark.Shown3D ? still : preview);
         live.Write = write;
         live.ApproxBytes = ApproxBytesOf(live, 0, _viewModel.ClipPictures);
@@ -337,30 +333,27 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A tab kept live brought back to the front (5.4D-TabPerf; it is in front already, its layout laid out), at once: its still over the
-    /// player, its project swapped into the view model (MainViewModel.AttachTab), its overview sheet, selection, open stacks and player view
-    /// as it left them, its view and playhead restored now (not after an open), the engine opened on it. Its cache file goes, after its
-    /// write (the tab in front keeps none). False when the view model is held by an operation or a recording (nothing changed: the caller
-    /// takes the tab put behind back). A fault leaves the tab in front as one not brought back (what it holds kept in memory to try again).
+    /// Synchronously reactivates a live tab (already active, layout applied): still overlay, MainViewModel.AttachTab, overview sheet,
+    /// selection, open stacks, player view, playhead, then engine open. Its cache file is deleted after its write. Returns false when an
+    /// operation or recording holds the view model (no change; caller reverts). A fault leaves it active as failed-resume, kept in memory.
     /// </summary>
     private bool AttachHydrated(ProjectTabHeader tab, TabViewContext live)
     {
-        // What its header says of its file and first save is the latest (a save or a rename while it was behind).
+        // The header's file and first-save name are newest (a save or rename while inactive).
         var project = live.Project;
         (project.ProjectPath, project.NewProjectName, project.NewProjectFolder) = (tab.ProjectPath, tab.NewProjectName, tab.NewProjectFolder);
 
-        // Its still only when it is the picture it comes back to (5.4D-TabPerf review): taken at its playhead (within a frame), flat or in
-        // 3D as it is now; a still from before playback or from the other view covers nothing.
+        // Show the still only if it matches: within a frame of the playhead and the same flat/3D mode; otherwise it is skipped.
         var stillFits = StillFits(live.StillMark.PositionMs, live.StillMark.Shown3D, tab.PlayheadMs, tab.ExplodedOpen, tab.FrameRate);
         if (stillFits)
             ShowTabStill(live.Still);
         else
             ShowTabStill(tab.ExplodedOpen ? null : FallbackStill(live, tab.PlayheadMs));
 
-        // Its selection as its views of before: the restore follows them by their clips' ids (Timeline_Restored).
+        // Selection as the old views; Timeline_Restored re-resolves them by clip id.
         (_selectedClip, _rangeAnchor, _playheadVideoSelected) = (live.SelectedClip, live.RangeAnchor, live.PlayheadVideoSelected);
 
-        // Its rows given back as they were (5.4.1-M3) by the layouts the attach asks for, unless its Sequence or their shape changed.
+        // Reuse the saved rows for the layouts the attach triggers, unless the Sequence or row shape changed.
         _rowsToTakeBack = live.Rows;
         try
         {
@@ -374,8 +367,7 @@ public partial class MainWindow
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             _rowsToTakeBack = null;
-            // Part of it may be the view model's now: an empty project instead (its own Sequence never touched again), and the tab keeps
-            // what it holds in memory to try once more.
+            // Partially attached: install an empty project (never touching its Sequence again); the context stays in memory for a retry.
             AppLog.Write("Project tabs: a tab kept in memory could not be brought back", ex);
             HideTabStill();
             _viewModel.ParkDocument();
@@ -385,9 +377,8 @@ public partial class MainWindow
             return true;
         }
 
-        // In front again: its cache file is not written now (a write still to come is let go) and goes after any under way. Pass 5.5A final
-        // review (AD-1): one written whole with unsaved changes stays as the tab in front's crash-recovery copy instead (the work as it comes
-        // back, as ResumeTabAsync keeps one: the tick writes it anew once the history moves, and lets it go once the tab is clean).
+        // Active again: cancel a pending write and delete the file after any in-progress one. A fully written dirty file is kept as the active
+        // crash-recovery copy instead (as ResumeTabAsync does; the tick rewrites it on history change and deletes it once clean).
         _hydrated.Remove(tab.Id);
         _unresumed.Remove(tab.Id);
         tab.WaitingTemplate = null;
@@ -404,23 +395,23 @@ public partial class MainWindow
         RestorePlayerView(live.PlayerView);
         (_liveStill, _liveStillMark) = stillFits ? (live.Still, live.StillMark) : (null, default);
 
-        // Left in the 3D view: waiting for its view to be restored (5.4D review), as a tab read from its file does.
+        // Deactivated in 3D: mark it waiting for view restore, as a file resume does.
         if (tab.ExplodedOpen)
             _explodedWaitingTab = tab;
         RestoreTabView(tab);
         _viewModel.BackgroundSelected = _selectedClip is Layer { IsBackground: true };
-        // A sound clip selected is the Effects pane's target again (5.6A review: EffectsPane.SelectSound; null gives it back to the key
-        // layer), told once the attach has put the tab's own views and key layer back (before it, Layers holds none of them).
+        // Re-target the Effects pane to a selected audio clip (EffectsPane.SelectSound; null reverts to the key layer), after the attach
+        // has restored the tab's views and key layer.
         EffectsView.SelectSound(_selectedClip as Layer);
         UpdateTimelineInspector();
         UpdatePlayerSelection();
         KeptTabsChanged();
 
-        // No still that fits: one is taken once it settles (5.4.1-M3), so its hover card has one as soon as it goes behind again.
+        // No matching still: capture one once settled, so the next deactivation has a hover image.
         if (!stillFits)
             NoteStillStale();
 
-        // Its rows are laid out at the next layout: the scroll is looked at again then (it is held to the rows there are).
+        // Rows lay out on the next pass; the scroll offset is re-clamped to them then.
         _ = Dispatcher.BeginInvoke(() =>
         {
             _rowsToTakeBack = null;
@@ -431,21 +422,20 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A flat tab coming back with no still of its playhead (5.4.3): its overview sheet's picture there, or the one kept beside a 3D still, so
-    /// the player is never uncovered before its first frame; null when it has neither.
+    /// Fallback cover for a flat tab without a matching still: the overview sheet frame at the playhead, or the flat frame kept beside a 3D
+    /// still, so the player is never bare before its first frame; null if neither exists.
     /// </summary>
     private static BitmapSource? FallbackStill(TabViewContext live, double playheadMs) =>
         live.ProgramSheet is { Count: > 0 } sheet ? sheet.Cell(sheet.IndexAt(playheadMs / 1000)) : live.Preview;
 
     /// <summary>
-    /// Whether a tab's kept still is the picture it comes back to (pure, 5.4D-TabPerf review: the goldens' project-tabs-tabperf-review): taken
-    /// within a frame of its playhead (<paramref name="frameRate"/> its Project Settings', 30 fps while it is not known), in the 3D view
-    /// exactly when it comes back in it.
+    /// Pure (golden project-tabs-tabperf-review): true when a kept still matches the resume state: within one frame of the playhead
+    /// (<paramref name="frameRate"/> from Project Settings, 30 if unknown) and the same flat/3D mode.
     /// </summary>
     internal static bool StillFits(double stillMs, bool still3D, double playheadMs, bool exploded, double frameRate) =>
         still3D == exploded && Math.Abs(stillMs - playheadMs) <= 1000.0 / (frameRate > 0 ? frameRate : 30);
 
-    /// <summary>The player's zoom and pan a tab kept, put back (none: fitted, as a project opened is; the Canvas's view fitted with it).</summary>
+    /// <summary>Restores a tab's player zoom/pan (none = fit, as on open; the Canvas view is fitted too).</summary>
     private void RestorePlayerView((double Zoom, double PanX, double PanY) view)
     {
         ResetNavigationViews();
@@ -458,11 +448,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A tab put behind's cache file written on the thread pool (5.4D-TabPerf), after the switch and after the tab's other disk work: its
-    /// frozen copy (a thumbnail made of its still first when it has none), its saved state's fingerprint when it has unsaved changes, and
-    /// its header with the exact dot (worked out there: MainViewModel.FrozenStateDiffers), which the strip then shows. A failure is written
-    /// down, and the tab stays in memory (never let go to a file it has not got) and listed as one with no recovery copy yet: the crash
-    /// writer writes it too, and the valve's tick and the next tab put behind try it again (5.4D-TabPerf review). Nothing for null.
+    /// Queues a deactivated tab's cache write on the pool after its other disk work: frozen copy (thumbnail from the still if none), saved
+    /// fingerprint when dirty, header with the exact dot (MainViewModel.FrozenStateDiffers) for the strip. On failure it is logged, the tab
+    /// stays in memory unevictable and listed as unwritten (crash writer, valve tick and next deactivation retry). No-op for null.
     /// </summary>
     private void QueueTabWrite(TabWrite? write)
     {
@@ -479,7 +467,7 @@ public partial class MainWindow
         _ = _tabs.Enqueue(write.Id, () => WriteTabNow(write));
     }
 
-    /// <summary>The tabs kept live whose cache file could not be written, tried again (5.4D-TabPerf review: the valve's tick, a tab put behind).</summary>
+    /// <summary>Retries failed cache writes of live tabs (called by the valve tick and on deactivation).</summary>
     private void RetryFailedTabWrites()
     {
         foreach (var live in _hydrated.Values)
@@ -490,8 +478,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// One tab's cache file written (the thread pool; see <see cref="QueueTabWrite"/>), then told to the window's thread. Claimed first
-    /// (5.4D-TabPerf review): one the crash writer took, or a retry under way, is never written beside it.
+    /// Pool worker for one cache write (see <see cref="QueueTabWrite"/>), then posts the result to the UI thread. Claims first so it never
+    /// races the crash writer or a retry.
     /// </summary>
     private void WriteTabNow(TabWrite write)
     {
@@ -502,8 +490,7 @@ public partial class MainWindow
         {
             var project = write.Live.Project;
 
-            // The frozen copy itself is never written to here (5.4D-TabPerf review: a save or the crash writer may be reading it this
-            // moment): the thumbnail made of the still goes into a copy of it.
+            // Never mutate the frozen copy (a save or the crash writer may be reading it): put the thumbnail into a clone.
             var frozen = project.Frozen;
             if (write.ThumbnailFrom is { } still && frozen.ThumbnailJpeg is null)
             {
@@ -531,7 +518,7 @@ public partial class MainWindow
         }
         finally
         {
-            // Not written whole (failed, or faulted with anything at all): still listed, to be written as HandPeg falls over and tried again.
+            // Not fully written (failure or any fault): stays listed for the crash writer and later retries.
             write.Fail();
             if (!write.IsWanted)
             {
@@ -544,7 +531,7 @@ public partial class MainWindow
             _ = Dispatcher.BeginInvoke(() => TabWritten(write), DispatcherPriority.Background);
     }
 
-    /// <summary>A tab's cache file written (or not), on the window's thread: its exact dot, its thumbnail, its size for the memory valve.</summary>
+    /// <summary>UI-thread completion of a cache write: applies exact dot, thumbnail and size estimate for the valve.</summary>
     private void TabWritten(TabWrite write)
     {
         var (tab, live) = (write.Tab, write.Live);
@@ -570,10 +557,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// About how much memory a tab kept live holds, in bytes (the valve's measure, 5.4D-TabPerf): its project's objects about three times
-    /// its cache file (its live Sequence, its frozen copy, its history; 4 MB until the file is written), and the pictures it keeps: its
-    /// still and overview sheet, and (the 5.4D-TabPerf review) its clips' views' filmstrips and waveforms, its tracks' waveforms and the
-    /// timeline's, each picture once (<see cref="PictureBytes"/>).
+    /// Estimated bytes held by a live tab (valve metric): ~3x its cache file size for project objects (live Sequence, frozen copy, history;
+    /// 4 MB before the file exists) plus its images (still, overview sheet, clip filmstrips/waveforms, track and timeline waveforms),
+    /// each counted once (<see cref="PictureBytes"/>).
     /// </summary>
     private static long ApproxBytesOf(TabViewContext live, long fileBytes, ClipPictures clipPictures)
     {
@@ -583,7 +569,7 @@ public partial class MainWindow
         return (fileBytes > 0 ? 3 * fileBytes : 4L << 20) + pictures;
     }
 
-    /// <summary>The files a tab kept live uses: its clips' views' and its opened file's (ClipPictures keeps their pictures while it is open).</summary>
+    /// <summary>Source files used by a live tab (clip views plus opened file); ClipPictures keeps their images while it is open.</summary>
     private static IEnumerable<string> FilesOf(TabViewContext live)
     {
         var project = live.Project;
@@ -592,8 +578,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// What pictures hold in memory (pure, 5.4D-TabPerf review: the goldens' project-tabs-tabperf-review): each bitmap's width x height x 4
-    /// bytes, each object once however many hold it (one file's filmstrip on all its clips' views); nulls and drawings count nothing.
+    /// Pure (golden project-tabs-tabperf-review): sums width * height * 4 bytes per distinct bitmap (reference-deduplicated, e.g. one
+    /// filmstrip shared by many clip views); nulls and drawings count 0.
     /// </summary>
     internal static long PictureBytes(IEnumerable<ImageSource?> pictures)
     {
@@ -609,8 +595,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A tab's three files deleted after its other disk work (5.4D-TabPerf: a write still queued is never undone by it, nor done after it).
-    /// Pass 5.5A: a crash-recovery file written of it in front goes with them (<see cref="KeepFrontRecovery"/> writes one again when wanted).
+    /// Queues deletion of a tab's three files after its other disk work (so a queued write is neither lost nor applied afterwards); its active
+    /// crash-recovery file goes too (<see cref="KeepFrontRecovery"/> rewrites one when needed).
     /// </summary>
     private void DeleteTabFiles(string id)
     {
@@ -619,7 +605,7 @@ public partial class MainWindow
         _ = _tabs.Enqueue(id, () => _tabs.DeleteFiles(id));
     }
 
-    /// <summary>A tab closed: what it kept in memory let go, and its cache file's write, if it was still to come, never made.</summary>
+    /// <summary>Tab closed: drops its live context and cancels any pending cache write.</summary>
     private void ForgetKeptTab(string id)
     {
         ForgetLayoutNotTaken(id);
@@ -631,8 +617,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A write cancelled (its tab came back or closed) taken off the list of those not written yet (5.4D-TabPerf review): one that failed
-    /// stays listed until written, and would otherwise hold its tab's frozen copy for the rest of the session. Nothing for null.
+    /// Cancels a write (tab reactivated or closed) and removes it from the unwritten list; otherwise a failed one would pin its frozen copy
+    /// for the session. No-op for null.
     /// </summary>
     private void ForgetUnwritten(TabWrite? write)
     {
@@ -642,13 +628,13 @@ public partial class MainWindow
             _unwritten.Remove(write);
     }
 
-    /// <summary>A tab behind's paused picture: the one it keeps in memory, else the one the tabs keep for the most recent of those in their files.</summary>
+    /// <summary>An inactive tab's still: from its live context, else from the recent-still cache for file-only tabs.</summary>
     private BitmapSource? StillOfTab(ProjectTabHeader tab) =>
         _hydrated.TryGetValue(tab.Id, out var live) && (live.Still ?? live.Preview) is { } still ? still : _tabs.StillOf(tab);
 
     /// <summary>
-    /// The tabs kept live changed (5.4D-TabPerf): the timeline keeps waveform tiles for them too (256, and 128 more for each, at most
-    /// 1024), and the memory valve looks again every 30 s while any is kept.
+    /// Live-tab set changed: resize the timeline waveform tile cache (256 + 128 per live tab, max 1024) and run the valve every 30 s
+    /// while any are live.
     /// </summary>
     private void KeptTabsChanged()
     {
@@ -676,8 +662,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// What the memory hygiene asks before a compacting collection (5.4D-TabPerf, set once, after the first frame): nothing playing,
-    /// recording, being dragged on the Timeline or switching tabs. Asked from any thread: looked at on the window's.
+    /// MemoryHygiene quiet gate (set once after Frame 1): not playing, recording, dragging on the Timeline or switching tabs. Callable
+    /// from any thread; evaluated on the UI thread.
     /// </summary>
     private void HookTabMemory()
     {
@@ -689,8 +675,8 @@ public partial class MainWindow
             : Dispatcher.Invoke(QuietForMemory, DispatcherPriority.Background, CancellationToken.None, TimeSpan.FromMilliseconds(500));
     }
 
-    /// <summary>One compacting collection of the managed heap asked for, once the editor is quiet (a tab closed or let go to its file,
-    /// the media browser at rest, the start-up warm-up done), with the process heap compacted too when asked.</summary>
+    /// <summary>Requests one compacting managed-heap collection at the next quiet point (tab closed/evicted, media browser idle, start-up
+    /// warm-up done), optionally also compacting the process heap.</summary>
     private void CompactWhenQuiet(string reason, bool compactProcessHeap = false)
     {
         HookTabMemory();
@@ -698,15 +684,14 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Called once from ContentRendered (after Frame 1, Law 1): the media browser's at-rest give-back goes through the same quiet gate as
-    /// the tabs' (hooked lazily on its first ask), so no blocking collection runs while anything plays, scrubs, records or switches tabs.
+    /// Called once from ContentRendered (after Frame 1, Law 1): routes the media browser's idle release through the same quiet gate (hooked
+    /// lazily) so no blocking collection runs during play, scrub, record or tab switch.
     /// </summary>
     private void HookMediaMemory() => MediaBrowser.AskCompact = reason => CompactWhenQuiet(reason, compactProcessHeap: true);
 
     /// <summary>
-    /// Every pane realized after start-up: one compacting collection (large-object heap included) and a process-heap compaction, through
-    /// the quiet gate. A start allocates little after Frame 1, so without it the collector keeps the start-up garbage committed for a long
-    /// time (about 40 MB measured at the 10 s reading of Law 2). The working set is not trimmed: Law 2 reads private bytes.
+    /// After all panes realize: one compacting collection (including LOH) plus process-heap compaction via the quiet gate. Little allocates
+    /// after Frame 1, so start-up garbage would otherwise stay committed (~40 MB at Law 2's 10 s reading). No working-set trim (Law 2 reads private bytes).
     /// </summary>
     private void GiveBackStartupMemory() => CompactWhenQuiet("start-up warm-up done", compactProcessHeap: true);
 
@@ -714,10 +699,9 @@ public partial class MainWindow
         !_viewModel.IsPlaying && _gpu is not { IsPlaying: true } && !_switchingTab && !TimelineDragHeld && !_viewModel.IsRecording;
 
     /// <summary>
-    /// Which tab kept live the memory valve lets go back to its cache file now (pure, 5.4D-TabPerf: the goldens' tab-perf-valve), or null.
-    /// 5.4.2A, all tabs warm (the user's rule): every open tab stays in memory, however many, until the computer's free memory (AvailPhys)
-    /// falls under <see cref="AvailableFloorBytes"/> (<paramref name="memoryShort"/>); then the least recently in front of them goes, never
-    /// one of the two used last (the tab in front and the one before it) nor one that must stay (its file not written).
+    /// Pure (golden tab-perf-valve): the live tab to evict, or null. All tabs stay warm until AvailPhys drops below
+    /// <see cref="AvailableFloorBytes"/> (<paramref name="memoryShort"/>); then the least recently active goes, never the two most recent
+    /// (active and previous) nor one whose file is unwritten.
     /// </summary>
     internal static string? TabToLetGo(IReadOnlyList<ProjectTabHeader> tabs, IReadOnlyDictionary<string, long> keptBytes, IReadOnlySet<string> mustStay,
         bool memoryShort)
@@ -731,9 +715,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The memory valve (5.4D-TabPerf), after a tab went behind and every 30 s while tabs are kept live: the tab <see cref="TabToLetGo"/>
-    /// picks goes back to its cache file once that is written (its still kept while it is among the most recent), and the heap is compacted
-    /// once the editor is quiet (MemoryHygiene). Then it looks again.
+    /// Memory valve, run after each deactivation and every 30 s while tabs are live: evicts the <see cref="TabToLetGo"/> pick once its file
+    /// is written (keeping its still while recent), requests a quiet-time heap compaction (MemoryHygiene), then re-evaluates.
     /// </summary>
     private void LetGoForMemory() => Faults.Forget(LetGoForMemoryAsync(), nameof(LetGoForMemory));
 
@@ -761,7 +744,7 @@ public partial class MainWindow
                 AppLog.Write("Project tabs: a tab's disk work failed before it was let go to its file", ex);
             }
 
-            // Brought back, closed or written badly meanwhile: kept as it is.
+            // Reactivated, closed or write failed meanwhile: skip.
             if (!ReferenceEquals(_hydrated.GetValueOrDefault(id), live) || ReferenceEquals(tab, _tabs.Active))
                 return;
             if (live.Write is not { IsDone: true, Failed: false })
@@ -790,8 +773,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// As HandPeg closes (5.4D-TabPerf): every tab's disk work done first (5 s at most), and the dots of the tabs kept live made the exact
-    /// ones their writes found (their tell to the window's thread may not have come yet).
+    /// On exit: drains all tab disk work (5 s max) and applies the exact dots found by live tabs' writes (their UI-thread posts may be pending).
     /// </summary>
     private void FinishTabWrites()
     {
@@ -800,7 +782,7 @@ public partial class MainWindow
         TakeWrittenDots();
     }
 
-    /// <summary>The dots of the tabs kept live made the exact ones their writes found (their tell to the window's thread may not have come yet).</summary>
+    /// <summary>Applies the exact dots found by live tabs' writes (their UI-thread posts may be pending).</summary>
     private void TakeWrittenDots()
     {
         foreach (var live in _hydrated.Values)
@@ -811,9 +793,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// As HandPeg closes keeping the tabs behind with unsaved changes (5.4D-TabPerf review): the disk work still under way for any tab that
-    /// may be kept waited for to its end, however long (the title says "Saving tabs..."), so its file is never written a second time beside
-    /// it nor cut off as the process ends; their dots the exact ones then.
+    /// Exit while keeping dirty inactive tabs: waits without timeout (title shows "Saving tabs...") for in-progress disk work of any tab
+    /// that may be kept, so no file is double-written or truncated at process end; then applies exact dots.
     /// </summary>
     private void WaitForKeptTabWrites()
     {
@@ -829,9 +810,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The tabs kept live that HandPeg keeps for the next start as it closes (<paramref name="keep"/>), written now on this thread when their
-    /// write after the switch failed or never ran (5.4D-TabPerf): their work is only in memory otherwise. Claimed first (the review): one
-    /// written, or being written, is never written again beside it.
+    /// On exit, synchronously writes live tabs kept for next start (<paramref name="keep"/>) whose post-switch write failed or never ran
+    /// (memory holds the only copy). Claims first, so a written or in-progress file is never written twice.
     /// </summary>
     private void WriteKeptTabsNow(Func<ProjectTabHeader, bool> keep)
     {
@@ -856,7 +836,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The writes of the tabs kept live that HandPeg does not keep for the next start let go as it closes (none is made after now).</summary>
+    /// <summary>On exit, cancels pending writes of live tabs not kept for next start (no write happens after this).</summary>
     private void CancelTabWrites(Func<ProjectTabHeader, bool> keep)
     {
         foreach (var (id, live) in _hydrated)
@@ -866,7 +846,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The cache files not written yet are written should HandPeg fall over (hooked with the first one queued, never before the first frame).</summary>
+    /// <summary>Hooks the crash handler that flushes unwritten cache files (on first queue, never before Frame 1).</summary>
     private void HookTabCrashWrites()
     {
         if (_crashWritesHooked)
@@ -879,14 +859,13 @@ public partial class MainWindow
         };
     }
 
-    /// <summary>How long HandPeg falling over waits, in all, for tabs' cache files being written on the thread pool, ms.</summary>
+    /// <summary>Total ms the crash handler waits for in-progress pool cache writes.</summary>
     private const int CrashIoWaitMs = 3000;
 
     /// <summary>
-    /// HandPeg falling over (any thread, 5.4D-TabPerf): the tabs put behind whose cache file was queued and not written yet (or failed) are
-    /// written now from their frozen copies (nothing of the window's thread is touched), so the next start offers them. The review: one
-    /// being written on the thread pool is waited for (3 s at most in all), never written a second time beside it; a write is claimed
-    /// first (<see cref="TabWrite.TryStart"/>). Nothing escapes from here.
+    /// Crash handler (any thread): writes queued/failed cache files from frozen copies without touching UI-thread state, so the next start
+    /// offers them. In-progress pool writes are awaited (3 s total) rather than duplicated; each write is claimed first
+    /// (<see cref="TabWrite.TryStart"/>). Never throws.
     /// </summary>
     private void WriteUnwrittenTabs()
     {
@@ -901,7 +880,7 @@ public partial class MainWindow
                 if (!write.IsWanted)
                     continue;
 
-                // Its disk work under way (this write, or work asked before it): waited for, then written here only if it still is not.
+                // Await in-progress disk work (this write or earlier queued work), then write here only if still unwritten.
                 if (_tabs.IsBusyWith(write.Id))
                     WaitForTabIo(write.Id, until);
                 if (!write.TryStart())
@@ -925,7 +904,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>A tab's disk work waited for until <paramref name="until"/> (Environment.TickCount64) at most; a failure is its writer's to note.</summary>
+    /// <summary>Waits for a tab's disk work until <paramref name="until"/> (Environment.TickCount64); failures are logged by the writer.</summary>
     private void WaitForTabIo(string id, long until)
     {
         try
@@ -937,24 +916,20 @@ public partial class MainWindow
         }
     }
 
-    // ----- The tab in front's crash-recovery file (Pass 5.5A) -----
-    // The tab in front lives in the view model and keeps no cache file (5.4A): a crash or a power cut took its unsaved work with it unless
-    // autosave was on (off at first). On the 20 s autosave tick (Autosave_Tick), whatever the autosave setting says, and never while playing,
-    // scrubbing, dragging or switching tabs, a tab in front with unsaved changes whose undo position moved since the last such write is
-    // written to its cache file as a tab put behind is (<id>.hptab, its header, its saved state's fingerprint), two actions back when it can
-    // be (MainViewModel.Recovery.cs: N-2, with N-1 and N on its Redo). It goes on the tab's own queue (ProjectTabs.Enqueue) like every other
-    // write of its files, so a later exact write (put behind, kept for the next start) always lands after it, and a delete (brought back to
-    // the front, closed) after it too. A clean tab in front (saved, or undone back to the save) keeps none. A tab in front that could not be
-    // brought back is never touched: its file is its work. Closing HandPeg carries its plan out over this file as over any tab's; a crash
-    // leaves it, and the next start takes it in as a tab of its own (TakeLeftBehind) that opens at N-2.
+    // ----- Active-tab crash-recovery file -----
+    // The active tab has no cache file of its own. On the 20 s tick (Autosave_Tick; regardless of the autosave setting; skipped while
+    // playing, scrubbing, dragging or switching) a dirty active tab whose undo position moved is written like a deactivated tab (<id>.hptab,
+    // header, saved fingerprint), lagged two actions when possible (MainViewModel.Recovery.cs: N-2 with N-1 and N on Redo). It uses the
+    // tab's queue (ProjectTabs.Enqueue), so later exact writes and deletes always land after it. Clean tabs keep none; a failed-resume tab
+    // is never touched. Exit applies its plan to this file; after a crash the next start imports it (TakeLeftBehind), opening at N-2.
 
-    /// <summary>The tick's last look at the tab in front (Pass 5.5A): which tab, its undo position then, and whether a recovery file of it was written.</summary>
+    /// <summary>The tick's last observation of the active tab: tab, undo position, and whether a recovery file was written.</summary>
     private readonly record struct FrontLook(string Id, (object? Newest, int Undo, int Redo) At, bool Written);
 
-    // The last look (null: none yet, or the tab's files went since): a position looked at already costs no fingerprint again.
+    // Last observation (null: none yet, or the tab's files were deleted); an unchanged position skips the fingerprint.
     private FrontLook? _frontRecovery;
 
-    /// <summary>What the tick does with the tab in front's crash-recovery file (Pass 5.5A).</summary>
+    /// <summary>Tick action for the active tab's crash-recovery file.</summary>
     internal enum FrontRecoveryStep
     {
         None,
@@ -963,9 +938,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// What the tick does with the tab in front's crash-recovery file (pure: autosave-lag-front-tab): nothing for a tab in front that could
-    /// not be brought back (its file is its work); for a clean tab, the file deleted when one was written; for a tab with unsaved changes, the
-    /// file written when none is yet or its undo position moved since.
+    /// Pure (golden autosave-lag-front-tab): none for a failed-resume tab (its file is its work); clean tab: delete if one was written;
+    /// dirty tab: write if none exists or the undo position moved.
     /// </summary>
     internal static FrontRecoveryStep FrontRecoveryFor(bool unresumed, bool written, bool dirty, bool moved) =>
         unresumed ? FrontRecoveryStep.None
@@ -974,10 +948,9 @@ public partial class MainWindow
         : FrontRecoveryStep.None;
 
     /// <summary>
-    /// The 20 s tick's look at the tab in front's crash-recovery file (Autosave_Tick, which skips it while playing, scrubbing, dragging or switching,
-    /// and, Pass 5.5A review, while <see cref="FrontRecoveryHeld"/>). Skipped while the view model opens, loads or rewrites the Sequence
-    /// (BusyWithDocument: never caught half done); 5.5.0 (the user's Q9 b): written during an export, the queue or captions, so what is
-    /// edited while they run is kept too.
+    /// Tick handler for the active recovery file (Autosave_Tick skips it while playing, scrubbing, dragging, switching or
+    /// <see cref="FrontRecoveryHeld"/>). Also skipped while the Sequence is being opened/loaded/rewritten (BusyWithDocument); still runs
+    /// during export, queue or captions so edits made meanwhile are protected.
     /// </summary>
     private void KeepFrontRecovery()
     {
@@ -985,14 +958,13 @@ public partial class MainWindow
         {
             var tab = _tabs.Active;
 
-            // A look at another tab: that one went behind (its exact write followed on its queue) or closed (its files went with it).
+            // Observation is of another tab: it was deactivated (exact write queued after) or closed (files deleted); reset.
             if (_frontRecovery is { } last && last.Id != tab.Id)
                 _frontRecovery = null;
             if (_viewModel.BusyWithDocument || _viewModel.IsRecording)
                 return;
 
-            // The fingerprint only when the history moved since the last look: unmoved, the tab is as that look found it (a save since
-            // clears MayHaveUnsavedChanges by itself), so an idle project costs nothing.
+            // Fingerprint only if the history moved (a save clears MayHaveUnsavedChanges itself), so an idle project costs nothing.
             var position = _viewModel.HistoryPosition;
             var written = _frontRecovery is { Written: true };
             var moved = _frontRecovery is not { } seen || !Equals(seen.At, position);
@@ -1018,9 +990,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The tab in front's crash-recovery file queued (Pass 5.5A): its state (a copy of its own) and the lag's packed steps taken here on the
-    /// window's thread, its header as it would go behind now (on a copy: the strip's own is left as the settling look keeps it), then made two
-    /// actions back and written on the tab's queue. One that fails is tried again at the next tick.
+    /// Queues the active recovery write: captures a state copy and packed lag steps on the UI thread plus a header copy (the strip's header
+    /// is untouched), then rewinds two actions and writes on the tab's queue. Failures retry on the next tick.
     /// </summary>
     private void WriteFrontRecovery(ProjectTabHeader tab, (object? Newest, int Undo, int Redo) position)
     {
@@ -1035,7 +1006,7 @@ public partial class MainWindow
             if (WriteRecoveryFile(_tabs, id, state, lag, saved, json) is not null)
                 return;
 
-            // Still taken as written (what an earlier write left is deleted once the tab is clean), at a position that never matches: tried again.
+            // Record as written (so a clean tab deletes any earlier file) at a never-matching position, forcing a retry.
             _ = Dispatcher.BeginInvoke(() =>
             {
                 if (_frontRecovery is { } look && look.Id == id && Equals(look.At, position))
@@ -1045,12 +1016,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A tab's crash-recovery file written (Pass 5.5A; any thread: the tab's queue, or a golden): <paramref name="state"/> two actions back when
-    /// <paramref name="lag"/> is given and its steps can be read, else as it is, with its header (ProjectTabs.WriteTab). True when written two
-    /// actions back, false when written as it is, null when it could not be written (logged).
-    /// Pass 5.5A review: written as it is, with its saved state's fingerprint (<paramref name="saved"/>) and a header saying it is exact
-    /// (StepsBack 0). Written two actions back, with no fingerprint at all, so it comes back unsaved until it is saved (N-2 can be the saved state
-    /// itself: two edits since the save, and the last two then live on its Redo alone), and a header saying how far back (StepsBack 2).
+    /// Writes a recovery file (any thread: tab queue or golden) via ProjectTabs.WriteTab: <paramref name="state"/> rewound two actions when
+    /// <paramref name="lag"/> steps are readable, else as-is. As-is: with <paramref name="saved"/> fingerprint, header StepsBack 0. Lagged:
+    /// no fingerprint (resumes dirty, since N-2 may equal the saved state), StepsBack 2. Returns true (lagged), false (as-is), null (failed, logged).
     /// </summary>
     internal static bool? WriteRecoveryFile(ProjectTabs tabs, string id, ProjectState state, MainViewModel.RecoveryLag? lag, string? saved, string header)
     {
@@ -1070,7 +1038,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The tab in front's crash-recovery file let go at once (Pass 5.5A): the tab was saved, undone back to the save, or emptied.</summary>
+    /// <summary>Deletes the active recovery file immediately (tab saved, undone to the save point, or emptied).</summary>
     private void DropFrontRecovery(ProjectTabHeader tab)
     {
         if (_frontRecovery is { Written: true } look && look.Id == tab.Id && !_unresumed.Contains(tab.Id))
@@ -1078,11 +1046,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The project in front written to its project file (Pass 5.5A review: MainViewModel.ProjectSaved, raised by every save of it, never by an
-    /// open): its crash-recovery file goes at once, on its queue after any write of it still under way, whatever holds back the settling look
-    /// and the tick (playing, a drag). Left there, a copy older than the save would be taken in after a crash and could be saved over the file.
-    /// Pass 5.5A final review (C-4a): the project and its file are the same now, so the tab carries the file's stamp (<see cref="StampProjectFileAsync"/>:
-    /// Pass 5.5A fix round 3, S-R1, taken off the tab's queue, so never behind the recovery write let go here).
+    /// MainViewModel.ProjectSaved (every save, never an open): deletes the recovery file on the tab queue after any in-progress write, even
+    /// while playing or dragging (a pre-save copy could otherwise be recovered over the saved file). Then stamps the file
+    /// (<see cref="StampProjectFileAsync"/>, off the queue, so never queued after that delete).
     /// </summary>
     private void ViewModel_ProjectSaved()
     {
@@ -1092,8 +1058,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The tab in front's project file as the view model has it now (RefreshActiveTab, TakeHeaderForTab), and, Pass 5.5A final review (C-4a), the
-    /// stamp it carried let go when that is another file (a New Project, an open, a Save As): a stamp is only ever of the header's own file.
+    /// Syncs the active header's project file from the view model (RefreshActiveTab, TakeHeaderForTab), dropping its stamp when the file
+    /// changed (New Project, open, Save As): a stamp always refers to the header's own file.
     /// </summary>
     private static void TakeProjectPath(ProjectTabHeader tab, string path)
     {
@@ -1103,15 +1069,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A project just opened into <paramref name="tab"/> (Pass 5.5A final review, C-4a: OpenProjectInTabAsync): the project and its file are the
-    /// same now, so the tab carries the file's stamp. Nothing when the open put no project file in the view model (<paramref name="before"/>: the
-    /// one there before; it failed, or opened work tied to no file: an autosave, a newer format) or the tab is no longer in front. Pass 5.5A fix
-    /// round 3 (S-R1): the stamp <paramref name="stamp"/> of <paramref name="stamped"/> taken before the open read it (off this thread; asked as
-    /// <paramref name="asked"/>), never after the open, whose media looks can take seconds: a file saved over from another PC meanwhile would
-    /// be stamped as the project read. A change between the stamp and the read only leaves an older stamp, so the tab reads its file as it
-    /// comes back (the safe side). None either for a project the open took from another file (a bundle opens the project unpacked beside it:
-    /// its tab reads that file as it comes back), nor once another stamp was asked for the tab (a converted project written back as it opened:
-    /// that save's own stamp is the one).
+    /// After OpenProjectInTabAsync: applies <paramref name="stamp"/> of <paramref name="stamped"/> (taken off-thread before the read, as request
+    /// <paramref name="asked"/>) to <paramref name="tab"/>. Taken before, not after (media probing can take seconds), so a concurrent change only
+    /// yields an older stamp and a safe re-read on resume. Skipped when the open set no new project file (<paramref name="before"/>: failed,
+    /// autosave, newer format), the tab is inactive, the project came from another file (bundle), or a newer stamp was requested.
     /// </summary>
     private void StampOpenedProject(ProjectTabHeader tab, string before, string stamped, (long Ticks, long Length) stamp, int asked)
     {
@@ -1122,16 +1083,11 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The stamp of a tab's project file (Pass 5.5A final review, C-4a, C-4c), taken as the tab's project and that file are known to be the same: a
-    /// project opened into it, the tab in front saved (<see cref="ViewModel_ProjectSaved"/>), a tab behind saved from its cache (SaveTabInPlace).
-    /// A tab read back from its file takes the stamp that read took (ResumeTabAsync), and one read back from its cache keeps the one it carried.
-    /// The header then carries it as its file is written (ProjectTabs.Stamped never looks at the disk: the close's waited write cannot stall on
-    /// a share gone away, nor take the stamp of a file changed since for the project kept). The stamp it carried goes at once (it was of the
-    /// file before); the new one is taken away from this thread, and dropped when the tab's project file is another by then (or the tab is
-    /// gone). A tab behind has its header file written again with it. Pass 5.5A fix round 3 (S-R1): taken off the tab's queue (Task.Run): it
-    /// needs no order with the tab's cache writes (each file write it follows is done before it is asked), so it never waits behind a
-    /// recovery write under way, a wait in which the file could change and be stamped as the one saved; and, as two can then land out of
-    /// order, it lands only while it is still the last asked for the tab (<see cref="ProjectTabHeader.StampsAsked"/>).
+    /// Stamps a tab's project file when project and file are known identical (open, active save via <see cref="ViewModel_ProjectSaved"/>,
+    /// inactive SaveTabInPlace); resumes reuse the read's or carried stamp. The header persists it (ProjectTabs.Stamped never touches disk,
+    /// so exit cannot stall on a dead share). Clears the old stamp at once; the new one is taken via Task.Run (not the tab queue, to avoid
+    /// waiting on a recovery write while the file changes) and applied only if the file is unchanged and it is the latest request
+    /// (<see cref="ProjectTabHeader.StampsAsked"/>). Inactive tabs rewrite their header file with it.
     /// </summary>
     private async Task StampProjectFileAsync(ProjectTabHeader tab, string path)
     {
@@ -1147,7 +1103,7 @@ public partial class MainWindow
             if (asked != tab.StampsAsked || !_tabs.Tabs.Contains(tab) || !string.Equals(now, path, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            // (The tab in front's header takes its file now too, so the next look at it, RefreshActiveTab, finds it its own.)
+            // Also set the active header's file now so the next RefreshActiveTab sees it as its own.
             (tab.ProjectPath, tab.ProjectFileTicks, tab.ProjectFileLength) = (now, ticks, length);
             if (KeptInFile(tab))
                 WriteTabHeader(tab);
@@ -1159,15 +1115,14 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Whether the 20 s tick leaves the tab in front's crash-recovery copy for the next one (Pass 5.5A review): a press or a drag anywhere (the
-    /// player's handles, the 3D view, a slider, the key lanes: the capture is the whole state, taken on this thread), a modal dialog up, or a
-    /// close under way.
+    /// True when the tick defers the active recovery copy: a press or drag anywhere (player handles, 3D view, slider, key lanes; the capture
+    /// is a full UI-thread state copy), a modal dialog, or a close in progress.
     /// </summary>
     private bool FrontRecoveryHeld =>
         System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed || System.Windows.Input.Mouse.Captured is not null
         || System.Windows.Interop.ComponentDispatcher.IsThreadModal || _closeAsked;
 
-    /// <summary>The status line for a tab brought back from a crash-recovery copy written <paramref name="steps"/> actions back (pure, Pass 5.5A review).</summary>
+    /// <summary>Pure: status text for a tab restored from a recovery copy <paramref name="steps"/> actions back.</summary>
     internal static string StepsBackLine(int steps) =>
         $"Opened {steps} action{(steps == 1 ? "" : "s")} back from where HandPeg stopped: Ctrl+Y {steps switch { 1 => "once", 2 => "twice", _ => $"{steps} times" }} brings the last edits back.";
 }

@@ -10,9 +10,9 @@ using static HandPegApp.Native.User32;
 namespace HandPegApp;
 
 /// <summary>
-/// The X-Ray HUD (4.4), shown while Tab is held: every pane of the window outlined with its id, and a panel of what the
-/// editor is doing (the UI's frame time, memory, the work lanes, the player, the live graph, undo, the timeline's view). It
-/// takes no input: the popup it is drawn in lets every click through to the window under it. Nothing it shows is logged.
+/// X-Ray HUD shown while Tab is held: outlines every pane with its id plus a diagnostics panel (UI frame time, memory, work lanes,
+/// player, live graph, undo, Timeline view). Input-transparent: its popup passes all clicks through to the window beneath. Nothing
+/// shown is logged.
 /// </summary>
 public sealed partial class XRayOverlay : FrameworkElement
 {
@@ -39,7 +39,7 @@ public sealed partial class XRayOverlay : FrameworkElement
         Focusable = false;
     }
 
-    /// <summary>What to show: the panes' places in this element's coordinates with their ids, and the panel's lines.</summary>
+    /// <summary>Sets pane bounds (in this element's coordinates) with ids, and the diagnostics panel lines.</summary>
     public void Show(IReadOnlyList<(Rect Bounds, string Id)> panes, IReadOnlyList<string> lines)
     {
         (_panes, _lines) = (panes, lines);
@@ -47,8 +47,8 @@ public sealed partial class XRayOverlay : FrameworkElement
     }
 
     /// <summary>
-    /// Lets the pointer through the popup's window (layered and click-through), so a click while X-Ray shows lands on the
-    /// window under it. Called once the popup is open (its window exists then).
+    /// Makes the popup window layered and click-through so clicks during X-Ray reach the window beneath. Call after the popup opens
+    /// (its HWND exists only then).
     /// </summary>
     public void MakeClickThrough()
     {
@@ -81,7 +81,7 @@ public sealed partial class XRayOverlay : FrameworkElement
         if (_lines.Count == 0)
             return;
 
-        // The panel: at the top right, clear of the title bar's buttons.
+        // Diagnostics panel: top right, below the title bar buttons.
         var texts = new FormattedText[_lines.Count];
         var height = 2 * PanelPadding;
         for (var i = 0; i < texts.Length; i++)

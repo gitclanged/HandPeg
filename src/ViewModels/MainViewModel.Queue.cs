@@ -7,17 +7,17 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The batch encoding queue.
+// Batch encoding queue.
 public partial class MainViewModel
 {
     public ObservableCollection<QueueJob> Queue { get; } = [];
 
     public string QueueButtonText => $"Queue ({Queue.Count(j => j.Status == QueueJob.Pending)})";
 
-    /// <summary>Set by Pause Queue: the running job finishes, then the queue stops.</summary>
+    /// <summary>Pause Queue flag: the running job completes, then the queue stops.</summary>
     [ObservableProperty] private bool _isQueuePauseRequested;
 
-    /// <summary>The pending job whose settings are loaded in the main window for editing, if any.</summary>
+    /// <summary>Pending job currently loaded into the main window for editing, if any.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsEditingQueuedJob))]
     [NotifyCanExecuteChangedFor(nameof(UpdateQueuedJobCommand))]
@@ -25,15 +25,15 @@ public partial class MainViewModel
 
     public bool IsEditingQueuedJob => EditingJob is not null;
 
-    // Marks a job that has already been moved to a software encoder once.
+    // Note marking a job already retried on a software encoder.
     private const string FallbackNote = "Hardware fallback:";
 
-    /// <summary>Where queued jobs keep their own copy of the cuts list.</summary>
+    /// <summary>Directory for per-job copies of the cuts list.</summary>
     private static string QueueFolder => SessionPaths.Queue;
 
     private void InitializeQueue() => Queue.CollectionChanged += (_, _) => OnQueueChanged();
 
-    /// <summary>The queue does not outlive the session, so neither do its working files.</summary>
+    /// <summary>Deletes queue working files; the queue is session-scoped.</summary>
     private static void DeleteQueueFiles()
     {
         try
@@ -43,13 +43,13 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Still in use by an encode that is shutting down; the files are tiny and can stay.
+            // Locked by an encode still shutting down; the files are tiny, so leave them.
         }
     }
 
     private void OnQueueChanged()
     {
-        // A job that was removed, or has started encoding, can no longer be edited.
+        // Removed or started jobs are no longer editable.
         if (EditingJob is { } editing && (!Queue.Contains(editing) || editing.Status != QueueJob.Pending))
             EditingJob = null;
 
@@ -59,10 +59,7 @@ public partial class MainViewModel
         EditQueueJobCommand.NotifyCanExecuteChanged();
     }
 
-    /// <summary>
-    /// Builds a job from the command in the Command Preview box and the current state of the window.
-    /// Returns null, with the reason in the status bar, when there is nothing to queue.
-    /// </summary>
+    /// <summary>Builds a job from the Command Preview text and current state; null (reason in status bar) when nothing to queue.</summary>
     private QueueJob? CreateQueueJob()
     {
         var command = CommandPreview;
@@ -72,21 +69,21 @@ public partial class MainViewModel
             return null;
         }
 
-        // A Copy export that cannot cut is not queued to fail later (5.2-Arm64AndNpu, the user's call): refused now, with the reason.
+        // Refuse an uncuttable Copy export now (with reason) instead of queuing a job that will fail.
         if (CopyRefusal() is { } refused)
         {
             StatusText = refused;
             return null;
         }
 
-        // The cuts and chapters lists are rewritten whenever the settings change, so the job gets copies of its own.
+        // Cuts and chapters files are rewritten on every settings change, so snapshot per-job copies.
         CaptionJob? captions = null;
         string? ownCaptions = null;
         var copies = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         try
         {
-            // The caption file likewise is the job's own (its state names it: the compositor draws it). Nothing is listened to here. Captions that are a subtitle track's cues are written at once, being
-            // only written; ones that have to be heard are left to the job, which transcribes when it runs.
+            // Per-job caption file (named in its export state; drawn by the compositor). No transcription here: subtitle-track cues are
+            // written now, and transcribed captions are deferred to job run time.
             if (CommandUsesCaptions(command))
             {
                 Directory.CreateDirectory(QueueFolder);
@@ -99,7 +96,7 @@ public partial class MainViewModel
                 }
                 else
                 {
-                    // Heard when the job runs, in the source's own time; shown through the clips as they are now (4.4).
+                    // Transcribed at run time in source time, mapped through the clip layout snapshotted now.
                     var source = ResolveCaptionSource();
                     (captions, var problem) = source is null ? (null, "There is nothing to make captions from.") : CreateCaptionJob(source, own, 0);
                     if (captions is null)
@@ -110,7 +107,7 @@ public partial class MainViewModel
                 }
             }
 
-            // The voiceover too: the next recording would otherwise replace it under the job.
+            // Snapshot the voiceover too, or the next recording would overwrite it under the job.
             foreach (var shared in new[] { CutsFilePath, ChaptersFilePath, VoiceoverPath })
             {
                 var heard = captions is not null && string.Equals(captions.AudioPath, shared, StringComparison.OrdinalIgnoreCase);
@@ -124,7 +121,7 @@ public partial class MainViewModel
                 command = command.Replace(shared, copy, StringComparison.OrdinalIgnoreCase);
                 copies[shared] = copy;
 
-                // And it is that copy the job's captions are heard from.
+                // Job captions transcribe from that copy.
                 if (heard)
                     captions = captions! with { AudioPath = copy };
             }
@@ -141,9 +138,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The sequence a job is made from, its captions, cuts, chapters and voiceover the job's own copies (CreateQueueJob), for the
-    /// GPU compositor to draw the job by (RunExportAsync, 5.2-Audit: the only renderer, a command edited by hand encoding its frames
-    /// with its own arguments). Null only when it cannot be gathered.
+    /// Snapshot export state for a job (sequence plus per-job captions, cuts, chapters, voiceover from CreateQueueJob) for the GPU
+    /// compositor in RunExportAsync, the sole renderer (hand-edited commands still encode its frames with their own arguments). Null
+    /// only when it cannot be gathered.
     /// </summary>
     private SequenceExportState? JobExportState(string command, string? captions, IReadOnlyDictionary<string, string> copies)
     {
@@ -166,7 +163,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Starts following a job's status, so the queue count and buttons stay right as it runs.</summary>
+    /// <summary>Subscribes to a job's status so the queue count and buttons stay current.</summary>
     private QueueJob Follow(QueueJob job)
     {
         job.PropertyChanged += (_, e) =>
@@ -178,13 +175,13 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Queues the current settings as a new job. While editing a job, this makes a second one. It happens at
-    /// once, whatever else is running: a job with captions to transcribe only notes that, and does it when it runs.
+    /// Queues current settings as a new job (a second one while editing a job). Immediate regardless of other work; transcription is
+    /// deferred to run time.
     /// </summary>
     [RelayCommand]
     private async Task AddToQueueAsync()
     {
-        // What the job will need when it runs is asked for now, while somebody is there to say yes; so is a command the project file brought.
+        // Prompt for run-time dependencies and project-supplied command approval now, while the user is present.
         if (!await RequireForCommandAsync("Add to Queue"))
             return;
         if (!ConfirmFileCommand(CommandPreview))
@@ -203,8 +200,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Turns a saved project into a pending job without touching the window: a background instance loads
-    /// the project, builds its command, and hands the job over. Used when the window is busy encoding.
+    /// Queues a saved project without touching the window: a background VM loads it, builds its command and returns the job. Used
+    /// while the window is encoding.
     /// </summary>
     private async Task QueueProjectInBackgroundAsync(ProjectState state, string projectName)
     {
@@ -213,13 +210,13 @@ public partial class MainViewModel
         {
             await worker.RestoreStateAsync(state, "");
 
-            // No one can confirm a command the file carries here: it is left out, and the job runs the command made from the project.
+            // A file-supplied command cannot be confirmed here: drop it and use the command generated from the project.
             var dropped = worker.DropFileCommand();
             if (worker.CreateQueueJob() is { } job)
             {
                 Queue.Add(Follow(job));
 
-                // The running operation owns the status bar; this only shows when nothing else is writing to it.
+                // The running operation owns the status bar; only write when it is idle.
                 if (!IsBusy)
                     StatusText = dropped
                         ? $"Project \"{projectName}\" was added to the queue without its own FFmpeg command (open it to review that command)."
@@ -238,7 +235,7 @@ public partial class MainViewModel
 
     private bool CanEditQueueJob(QueueJob? job) => !IsBusy && job is { Status: QueueJob.Pending };
 
-    /// <summary>Loads a pending job's source, cuts and settings back into the main window.</summary>
+    /// <summary>Loads a pending job's source, cuts and settings into the main window.</summary>
     [RelayCommand(CanExecute = nameof(CanEditQueueJob))]
     private async Task EditQueueJobAsync(QueueJob? job)
     {
@@ -247,7 +244,7 @@ public partial class MainViewModel
 
         await RestoreStateAsync(job.State, $"Editing queued job: {Path.GetFileName(job.Target)}. Update Queued Job saves the changes.", fromFile: false);
 
-        // Only once the job's source really is the one on screen.
+        // Only after the job's source is confirmed loaded.
         if (Queue.Contains(job) && job.Status == QueueJob.Pending
             && string.Equals(LocalMediaPath, job.State.LocalMediaPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -255,7 +252,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Replaces the job being edited with the current settings, keeping its place in the queue.</summary>
+    /// <summary>Replaces the edited job with current settings, preserving queue position.</summary>
     [RelayCommand(CanExecute = nameof(IsEditingQueuedJob))]
     private void UpdateQueuedJob()
     {
@@ -270,7 +267,7 @@ public partial class MainViewModel
             return;
         }
 
-        // The job's target may already exist: overwrite it, pick another name, or back out.
+        // Existing target: overwrite, rename or cancel.
         if (!ResolveOverwrite())
         {
             StatusText = "The queued job was left as it was.";
@@ -280,7 +277,7 @@ public partial class MainViewModel
         if (CreateQueueJob() is not { } job || !Queue.Contains(editing))
             return;
 
-        // Cleared first: replacing the job would otherwise look like its removal.
+        // Clear first so the replacement is not treated as a removal.
         EditingJob = null;
         Queue[Queue.IndexOf(editing)] = Follow(job);
         StatusText = $"Queued job updated: {Path.GetFileName(job.Target)}";
@@ -288,7 +285,7 @@ public partial class MainViewModel
 
     private bool CanStartQueue() => !IsBusy && Queue.Any(j => j.Status == QueueJob.Pending);
 
-    /// <summary>Runs the pending jobs one after another. A failed job does not stop the ones behind it.</summary>
+    /// <summary>Runs pending jobs sequentially; a failure does not stop later jobs.</summary>
     [RelayCommand(CanExecute = nameof(CanStartQueue))]
     private Task StartQueueAsync() => RunOperationAsync("Encoding the queue", WorkLane.Foreground, async cancellationToken =>
     {
@@ -305,9 +302,8 @@ public partial class MainViewModel
             IsProgressIndeterminate = true;
             SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState.Normal);
 
-            // First the job's captions, when it has any to make: transcribed now, as it was set when it was
-            // queued, and written to the file its command draws. A failure here is the captions' and not the
-            // encoder's, so it is kept apart from the encode, whose failures may be retried in software.
+            // Transcribe pending captions first (queue-time settings) into the job's caption file. Caption failures are kept separate
+            // from encode failures, which may be retried in software.
             if (job is { Captions: { } captions, CaptionsReady: false })
             {
                 job.Status = QueueJob.Transcribing;
@@ -319,8 +315,7 @@ public partial class MainViewModel
                         if (job.Status == QueueJob.Transcribing)
                             job.Progress = percent;
                     });
-                    // Heard in the source's own time: shown through the clips that played it when the job was made (4.4).
-                    // Grouped window by window (5.1-Polish): no caption runs across a cut.
+                    // Source-time words mapped through the queue-time clip layout, grouped per visible window so no caption spans a cut.
                     var lines = CaptionProjection.ProjectLines(words, captions.Spans, captions.Style);
                     CaptionGenerator.WriteAss([.. lines.SelectMany(l => l)], captions.Style, captions.Width, captions.Height,
                         captions.TextScale, captions.AssPath, captions.TimeOffset, lines);
@@ -328,7 +323,7 @@ public partial class MainViewModel
                 }
                 catch (OperationCanceledException)
                 {
-                    // A cancelled job was not at fault: it goes back in line.
+                    // Cancelled jobs are requeued (not failures).
                     job.Status = QueueJob.Pending;
                     job.Progress = 0;
                     SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState.None);
@@ -354,7 +349,7 @@ public partial class MainViewModel
             var expected = job.ExpectedDuration;
             var progress = new Progress<FfmpegProgress>(report =>
             {
-                // Reports are posted, so a late one can arrive after its job has ended.
+                // Progress is posted asynchronously; ignore reports arriving after the job ends.
                 if (!_acceptProgressReports || job.Status != QueueJob.Encoding)
                     return;
 
@@ -374,14 +369,14 @@ public partial class MainViewModel
 
             try
             {
-                // For a crash report: the encoders, the output's kind and length, never the files (their names included).
+                // Crash-report context: encoders, output kind and duration; never file paths or names.
                 CrashReporter.KeepOut(job.Source, job.Target);
                 var jobSummary = CrashSummaries.Command(job.Command, expected);
                 CrashReporter.SetContext("export", "queue job: " + jobSummary);
                 CrashReporter.Note("queue", "job started: " + jobSummary);
 
-                // A job is its finished command line (perhaps edited by hand), and the sequence it was made from when that
-                // makes the line exactly (QueueJob.ExportState): the GPU compositor draws it then, FFmpeg's graph otherwise.
+                // A job is its final (possibly hand-edited) command plus, when reproducible, its sequence (QueueJob.ExportState): the GPU
+                // compositor renders it then, FFmpeg's graph otherwise.
                 await RunExportAsync(job.Command, job.ExportState, progress, cancellationToken);
                 CrashReporter.Note("queue", "job finished");
                 job.Status = QueueJob.Complete;
@@ -390,7 +385,7 @@ public partial class MainViewModel
             }
             catch (OperationCanceledException)
             {
-                // A cancelled job was not at fault: it goes back in line.
+                // Cancelled jobs are requeued (not failures).
                 job.Status = QueueJob.Pending;
                 job.Progress = 0;
                 SetTaskbarProgress(System.Windows.Shell.TaskbarItemProgressState.None);
@@ -402,8 +397,7 @@ public partial class MainViewModel
                 && !job.Detail.StartsWith(FallbackNote, StringComparison.Ordinal)
                 && HardwareFallback.TryRewrite(job.Command, out _, out _, out _))
             {
-                // The hardware encoder failed: put the job back in line with the software encoder for the same codec.
-                // The note on the job stops it from being rewritten a second time.
+                // Hardware encoder failed: requeue with the same codec's software encoder; the job note prevents a second rewrite.
                 HardwareFallback.TryRewrite(job.Command, out var rewritten, out var hardware, out var software);
                 AppLog.Write($"{hardware} failed for {name} and {software} is tried instead", ex);
                 job.Command = rewritten;

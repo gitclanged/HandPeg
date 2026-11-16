@@ -88,6 +88,7 @@ public static class Program
         run.One("portable-bootstrap", PortableBootstrapTests.Run);
         run.Suite("TimelineErgonomicsTests", TimelineErgonomicsTests.All);
         run.Suite("TimelineInputTests", TimelineInputTests.All);
+        run.Suite("StudioCaptureTests", StudioCaptureTests.All);
         run.Suite("TimelineLaneTests", TimelineLaneTests.All);
         run.Suite("TimelineSettingsTests", TimelineSettingsTests.All);
         run.Suite("TimelineStackSoundTests", TimelineStackSoundTests.All);

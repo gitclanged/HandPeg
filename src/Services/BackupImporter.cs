@@ -11,10 +11,8 @@ public static class BackupImporter
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     /// <summary>
-    /// Settings that belong to this PC or decide what HandPeg runs and where its data goes: never taken from a backup (another PC's, or
-    /// one someone else made), never written into one. The tools HandPeg runs and where they are downloaded from (a release address of
-    /// one's own turns pinning off), the crash-report endpoint, folders and files on this PC's drives, and the devices and cards chosen
-    /// here.
+    /// Machine-specific or security-relevant keys never imported from or exported to backups: tool paths and download sources (a custom
+    /// release URL disables pinning), the crash-report endpoint, local folders and files, and selected devices and adapters.
     /// </summary>
     public static IReadOnlyList<string> ProtectedKeys { get; } =
     [
@@ -28,13 +26,11 @@ public static class BackupImporter
     ];
 
     /// <summary>
-    /// Replaces appsettings.json and presets.json with the ones in a settings export. Nothing is touched
-    /// unless the whole file is sound: both parts are checked and written out as new files first, and only
-    /// then swapped in, each leaving the file it replaces behind as a.bak. The <see cref="ProtectedKeys"/> keep
-    /// this PC's values (or stay unset): a backup never changes which programs HandPeg runs.
+    /// Replaces appsettings.json and presets.json from a settings export, all-or-nothing: both parts are validated and staged as new
+    /// files, then swapped in, leaving .bak copies. <see cref="ProtectedKeys"/> keep local values, so imports never change executed tools.
     /// </summary>
-    /// <returns>How many presets the file held.</returns>
-    /// <exception cref="InvalidDataException">Not a settings export, or one made by a newer HandPeg (a higher major schema version).</exception>
+    /// <returns>Number of presets imported.</returns>
+    /// <exception cref="InvalidDataException">Not a settings export, or a higher major schema version.</exception>
     public static int ImportSettingsAndPresets(string path)
     {
         if (ParseObject(File.ReadAllText(path)) is not { } root
@@ -92,10 +88,8 @@ public static class BackupImporter
     }
 
     /// <summary>
-    /// Copies project files into the projects folder. A file written by Export All Projects is taken apart
-    /// into the projects it holds. A project whose name is already taken is added beside it under a
-    /// numbered name; nothing already in the folder is replaced. Projects of a format this version does not open
-    /// (formats 1 to 4: HandPeg 4.2 and earlier) are left out and counted as skipped.
+    /// Imports projects into the projects folder, unpacking Export All Projects archives. Name collisions get numbered names; nothing is
+    /// replaced. Unsupported legacy formats (1-4) are skipped and counted.
     /// </summary>
     public static (int Imported, int Skipped) ImportProjects(IEnumerable<string> paths)
     {
@@ -121,7 +115,7 @@ public static class BackupImporter
                 }
                 else if (root is not null && GetBundledProjects(root) is { Count: > 0 } bundled)
                 {
-                    // Each project of a format this version opens is brought in; one of an older format is left out, and the rest still come.
+                    // Import supported formats; skip legacy ones without aborting the rest.
                     foreach (var (name, project) in bundled)
                     {
                         if (project is JsonObject readable && IsProject(readable) && AddProject(name, readable.ToJsonString(JsonOptions)))
@@ -159,9 +153,7 @@ public static class BackupImporter
     }
 
     /// <summary>
-    /// The projects in a file written by Export All Projects, by name; empty when the file is something else. Each says it
-    /// is a .hproj project, of whatever format (the caller leaves out those this version does not open). The version
-    /// marker beside them is not a project and is passed over.
+    /// Projects in an Export All Projects file by name (any format; the caller filters); empty for other files. The version marker is skipped.
     /// </summary>
     private static List<KeyValuePair<string, JsonNode?>> GetBundledProjects(JsonObject root)
     {
@@ -169,13 +161,12 @@ public static class BackupImporter
         return entries.All(entry => entry.Value is JsonObject project && SaysItIsAProject(project)) ? entries : [];
     }
 
-    /// <summary>Whether JSON says it is a .hproj project, of any format: it names the format (HandPeg 1.x's projects did not).</summary>
+    /// <summary>True when the JSON declares a .hproj format (any version; the earliest projects declared none).</summary>
     private static bool SaysItIsAProject(JsonObject node) =>
         node["format"] is JsonValue format && format.TryGetValue<string>(out var name) && name == ProjectFile.FormatName;
 
     /// <summary>
-    /// A .hproj project of a format this version opens (format 5) says that it is one and can be read as such. One of a newer
-    /// format is taken as it is (its file is copied unchanged, and asks before it opens).
+    /// True for a readable supported-format project; newer formats are accepted as-is (copied unchanged, prompting on open).
     /// </summary>
     private static bool IsProject(JsonObject node)
     {
@@ -213,7 +204,7 @@ public static class BackupImporter
         return true;
     }
 
-    /// <summary>The backup's <see cref="ProtectedKeys"/> replaced by this PC's: from its settings file, else the settings in effect.</summary>
+    /// <summary>Overwrites the backup's <see cref="ProtectedKeys"/> with local values (settings file, else current settings).</summary>
     private static void KeepThisPcsValues(JsonObject imported)
     {
         var here = File.Exists(AppSettings.FilePath) ? ParseObject(File.ReadAllText(AppSettings.FilePath)) : null;

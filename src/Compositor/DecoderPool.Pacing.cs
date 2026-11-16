@@ -6,38 +6,36 @@ using HandPegApp.Native;
 
 namespace HandPegApp.Compositor;
 
-// ----- Pacing while playing, by a rate budget -----
-// The Desktop's 500 Hz on-screen trace (AvSync session --onscreen, 2026-11-13): while playing, a background chase decoding 200 frames a
-// second or more backed the card up, and the editor's swap chain waited 20-100 ms for its turn (Present to vblank) in 54-100 % of 100 ms
-// windows; under 100 frames a second, in 2 %. The 5.0 rule (decode for a slice after each frame drawn, then wait for the next) let a
-// chase run at 200-760 fps. So work ahead while playing now shares one budget of frames a second across the lanes (BudgetFps), and a
-// cut that cannot make its moment within the budget is given the rate it needs (a quarter over it), or the card's full speed when only
-// that makes it. Its cuts are also read earlier on a card of its own (CutReadAhead), so the budget is enough for most of them.
+// ----- Playback decode pacing by a shared rate budget -----
+// A 500 Hz on-screen trace showed background chases decoding >= 200 fps backing up the GPU, so the editor's Present waited 20-100 ms
+// in most 100 ms windows (2 % at under 100 fps); per-draw slice pacing let chases run at 200-760 fps. Work ahead during playback now
+// shares one frames-per-second budget across lanes (BudgetFps); a cut that cannot reach its time within budget gets the rate it needs
+// (+25 %), or full speed when only that suffices. Discrete adapters open cuts earlier (CutReadAhead) so the budget covers most of them.
 internal sealed partial class DecoderPool
 {
-    /// <summary>Work ahead's shared budget while playing, frames a second (the trace: under 100 the turns kept to their refresh).</summary>
+    /// <summary>Shared work-ahead budget during playback, frames per second (below 100 fps presents kept their refresh in traces).</summary>
     internal const double PaceBudgetFps = 100;
 
-    /// <summary>The seconds a cut's chase keeps in hand before its moment, as its rate is worked out.</summary>
+    /// <summary>Seconds of slack a cut chase keeps before its time when its rate is computed.</summary>
     internal const double PaceMargin = 0.25;
 
-    /// <summary>How long a lane waits for its slot at most before it looks again (a lane's demand may have been cancelled meanwhile).</summary>
+    /// <summary>Maximum wait for a pacing slot before re-checking (the demand may have been cancelled meanwhile).</summary>
     private const double MostPaceWait = 0.1;
 
-    /// <summary>How far ahead (sequence seconds, times the play rate) the hints name cuts: GpuHintWriter.Horizon.</summary>
+    /// <summary>Cut look-ahead in sequence seconds (times the play rate); matches GpuHintWriter.Horizon.</summary>
     internal const double CutReadAheadSeconds = 3.0;
 
     /// <summary>
-    /// The budget in effect: <see cref="PaceBudgetFps"/>, or HANDPEG_DECODE_BUDGET_FPS (read once: the A/B runs' knob, inherited by the
-    /// worker from the editor); 0 or less brings back the 5.0 slices.
+    /// Effective budget: <see cref="PaceBudgetFps"/>, or HANDPEG_DECODE_BUDGET_FPS (read once; A/B knob inherited by the worker);
+    /// a value &lt;= 0 restores per-draw slice pacing (Paced/WaitForNextDraw).
     /// </summary>
     internal static readonly double BudgetFps = ReadBudget();
 
-    // The shared budget's next slot (QPC ticks); a lane's own last frame when its cut is paced outside the budget.
+    // Next shared slot (QPC ticks); _ownNext is a lane's own schedule when its cut is paced outside the budget.
     private long _paceNext;
     [ThreadStatic] private static long _ownNext;
 
-    // Each lane's high-resolution waitable timer (Thread.Sleep and Monitor.Wait wake on the 15.6 ms tick here), closed with the pool.
+    // Per-lane high-resolution waitable timer (Thread.Sleep and Monitor.Wait wake on the 15.6 ms tick); all closed with the pool.
     [ThreadStatic] private static nint _paceTimer;
     [ThreadStatic] private static DecoderPool? _paceTimerPool;
     private readonly List<nint> _paceTimers = [];
@@ -49,10 +47,10 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// The seconds between a demand's frames while playing (pure): the budget's (1 / <paramref name="budgetFps"/>) for work with no cut to
-    /// make; for a cut <paramref name="framesLeft"/> frames from its first, <paramref name="secondsLeft"/> seconds away, the rate it needs
-    /// (keeping <see cref="PaceMargin"/> in hand) times 1.25 when that is more than the budget; 0 (the full speed) when it needs at least
-    /// 80 % of <paramref name="fullSpeedFps"/>, or its margin is gone.
+    /// Interval between a demand's frames during playback (pure): 1 / <paramref name="budgetFps"/> for work without a cut deadline; for a
+    /// cut <paramref name="framesLeft"/> frames and <paramref name="secondsLeft"/> seconds away, 1 / (1.25 x needed rate, keeping
+    /// <see cref="PaceMargin"/>) when that exceeds the budget; 0 (full speed) when it needs >= 80 % of <paramref name="fullSpeedFps"/>
+    /// or the margin is gone.
     /// </summary>
     internal static double PaceInterval(double framesLeft, double secondsLeft, double budgetFps, double fullSpeedFps)
     {
@@ -71,17 +69,17 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// How near (sequence seconds) a cut into a file the playback reads may be before a decoder is opened or sought for it (pure): on
-    /// unified memory <see cref="CutSoon"/> (the Adreno's one decoder lock); on a card of its own as far as the hints reach
-    /// (<see cref="CutReadAheadSeconds"/> times the play rate), so a chase has the time the budget needs.
+    /// How close (sequence seconds) a cut may get before its decoder is opened or sought (pure): <see cref="CutSoon"/> on unified memory
+    /// (single shared decoder lock on Adreno); on discrete adapters the hint horizon (<see cref="CutReadAheadSeconds"/> x play rate) so
+    /// chases fit the budget.
     /// </summary>
     internal static double CutReadAhead(bool unifiedMemory, double rate) =>
         unifiedMemory ? CutSoon : Math.Max(CutSoon, CutReadAheadSeconds * Math.Max(rate, 1));
 
     /// <summary>
-    /// Waits, if it must, before a lane decodes its next frame (a lane's own thread, after each frame): only while playing, for work ahead
-    /// (never what is shown or read ahead of it, nor a read such a frame waits on, never an export's exact frames). Work with the budget's
-    /// interval takes the shared budget's next slot; a cut paced faster keeps its own; the full speed waits for nothing.
+    /// Optional wait before a lane decodes its next frame (lane thread): only during playback and only for work ahead (never visible or
+    /// play-ahead frames, reads they wait on, or exact export frames). Budget-rate work takes the shared slot; faster cuts keep their own
+    /// schedule; full speed never waits.
     /// </summary>
     private void Pace(Demand demand, MfVideoDecoder decoder)
     {
@@ -118,9 +116,8 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Whether a frame shown or read ahead waits on this lane's read: MostUrgent passed it over for this reader
-    /// (ReadByAnotherLane: a pre-roll that was on a lane when play began, reading up through the playhead). The read then runs unpaced,
-    /// as the playback's own would; once the reader is past what the playback waits for, the budget applies again (a lane's thread).
+    /// True when a visible or play-ahead frame waits on this lane's read (MostUrgent deferred it to this reader via ReadByAnotherLane,
+    /// e.g. a pre-roll reading through the playhead when play began). Such reads run unpaced until past what playback needs (lane thread).
     /// </summary>
     private bool ServesPlayback(Demand demand, MfVideoDecoder decoder)
     {
@@ -138,8 +135,8 @@ internal sealed partial class DecoderPool
     }
 
     /// <summary>
-    /// Takes the shared budget's next slot (any thread): the later of now and the slot after the last one taken, the one after it moved on by
-    /// <paramref name="step"/>. Two lanes taking slots in turn decode at the budget's rate together, not each.
+    /// Takes the next shared slot (any thread, lock-free): max(now, next), advancing next by <paramref name="step"/>. Lanes taking turns
+    /// decode at the budget rate combined, not each.
     /// </summary>
     internal static long TakeSlot(ref long next, long now, long step)
     {
@@ -153,7 +150,7 @@ internal sealed partial class DecoderPool
         return slot;
     }
 
-    /// <summary>A cut's frames still to decode to the end of its stretch, and the seconds until its moment at the play rate (a lane's thread).</summary>
+    /// <summary>Frames left to decode up to a cut's target and seconds until its time at the play rate (lane thread).</summary>
     private (double Frames, double Seconds) CutLeft(Demand demand, MfVideoDecoder decoder)
     {
         var read = decoder.ReadTime;
@@ -165,7 +162,7 @@ internal sealed partial class DecoderPool
         return (frames, seconds);
     }
 
-    /// <summary>Sleeps a lane for so many seconds on its high-resolution timer (Thread.Sleep without one), waking early when the pool stops.</summary>
+    /// <summary>Sleeps the lane on its high-resolution timer (Thread.Sleep fallback), waking early when the pool stops.</summary>
     private unsafe void PaceWait(double seconds)
     {
         if (!ReferenceEquals(_paceTimerPool, this) || _paceTimer == 0)
@@ -198,7 +195,7 @@ internal sealed partial class DecoderPool
         Kernel32.WaitForMultipleObjects(2, handles, 0, (uint)Math.Ceiling(seconds * 1000) + 20);
     }
 
-    /// <summary>The lanes' timers closed (Dispose, after the lanes stopped).</summary>
+    /// <summary>Closes the lanes' timers (Dispose, after the lanes have stopped).</summary>
     private void ClosePaceTimers()
     {
         lock (_paceTimers)

@@ -3,29 +3,23 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Services.Gpu;
 
-// ----- The subtitle track's pictures (5.0-Verify) -----
-// A PGS or VobSub track (PictureSubtitles.cs), or an export's burned subtitles (BurnedSubtitles), as libmpv drew it: each
-// cue's picture over the picture of the clip it is shown in, under the captions, from its cue's start (in) to its end (not).
-// A cue's picture is handed to the worker as a still while the playhead is near it (PrepareAround, as captions are drawn),
-// and let go by its last use alone.
+// ----- Picture subtitle track -----
+// Draws a PGS/VobSub track (PictureSubtitles.cs) or an export's burned subtitles (BurnedSubtitles): each cue's bitmap over the clip
+// it belongs to, beneath captions, over [start, end). Cue bitmaps are uploaded as stills while the playhead is near (PrepareAround,
+// like captions) and evicted on last use.
 public sealed partial class GpuScenePlan
 {
     private static readonly long PictureSubtitlesKey = default(GpuHash).Add("picture-subtitles").Value;
 
     /// <summary>
-    /// The entry of the subtitle track's pictures. Each cue is laid through the clip it is shown in (5.2-AuditB: any clip's
-    /// video, where it was the main video's box): the clip its cue names (burned subtitles: the clip of the file whose stream
-    /// they are, that its piece of the cue was placed by), else the bottom video of <paramref name="streamSource"/> (the file
-    /// whose subtitle streams the settings name) on in the cue's middle, else at its start. The stream's canvas is laid on
-    /// that clip's own picture at the scale that fills it, centred (a film cropped or scaled from the frame its subtitles
-    /// were drawn for is the middle of that frame; a DVD's anamorphic canvas is the picture's own pixels), then placed as the
-    /// clip is: the part its crop keeps filling its box. A picture is not cut by the crop or the box: a line under a
-    /// letterbox that was cropped off is still there to read, below the picture, as a player shows it. A cue with no such
-    /// clip is laid on the frame the same way.
+    /// Builds the picture-subtitle entry. Each cue is placed through its clip: the clip it names (burned subtitles), else the bottom
+    /// <paramref name="streamSource"/> video visible at the cue's middle, else at its start. The stream canvas is fill-fitted and centred
+    /// on that clip's source picture (anamorphic canvases map to source pixels), then follows the clip's crop and box. Cues are not
+    /// clipped by the crop or box, so a line in a cropped-off letterbox stays readable. Cues without a clip are fitted to the frame.
     /// </summary>
     private static Entry PictureSubtitlesEntry(PictureSubtitleTrack track, IReadOnlyList<Entry> entries, string streamSource, int width, int height)
     {
-        // The videos, by their clips' keys, and those of the stream's file, bottom first.
+        // File entries by clip key, and the stream source's entries bottom first.
         var source = streamSource.Trim().Trim('"');
         var (byKey, ofSource) = (new Dictionary<long, Entry>(), new List<Entry>());
         foreach (var entry in entries)
@@ -52,7 +46,7 @@ public sealed partial class GpuScenePlan
         return new Entry { Kind = EntryKind.PictureSubtitles, Pictures = lane, Name = "Picture Subtitles", ClipKey = PictureSubtitlesKey };
     }
 
-    /// <summary>The first (bottom) of some video entries that is on at a moment (its clip's stretch); null for none.</summary>
+    /// <summary>The bottom-most video entry visible at <paramref name="t"/>; null when none.</summary>
     private static Entry? OnAt(List<Entry> videos, double t)
     {
         foreach (var video in videos)
@@ -65,8 +59,8 @@ public sealed partial class GpuScenePlan
     }
 
     /// <summary>
-    /// A stream's canvas laid on a clip's picture (its own size, the frame's while that is not known; its crop's part filling
-    /// its box), as a scale and a shift each way.
+    /// Stream canvas placement on a clip's picture (source size, else frame size; crop region filling the box), as scale and shift
+    /// per axis.
     /// </summary>
     private static CuePlace PlaceOn(PictureSubtitleTrack track, (float X, float Y, float Width, float Height) box, Layer layer, int width, int height)
     {
@@ -78,16 +72,16 @@ public sealed partial class GpuScenePlan
         return CanvasOn(track, sourceWidth, sourceHeight, (box.X, box.Y, box.Width, box.Height), (left, top, right, bottom));
     }
 
-    /// <summary>A stream's canvas laid on the frame, filling it about its middle.</summary>
+    /// <summary>Stream canvas fill-fitted to the whole frame, centred.</summary>
     private static CuePlace PlaceOn(PictureSubtitleTrack track, int width, int height) => CanvasOn(track, width, height, (0, 0, width, height), default);
 
-    /// <summary>A stream's canvas on a picture of a size whose crop's part fills a box on the frame (the box, the crop's fractions).</summary>
+    /// <summary>Stream canvas on a source picture whose crop region (fractions) fills <paramref name="box"/> on the frame.</summary>
     private static CuePlace CanvasOn(PictureSubtitleTrack track, int sourceWidth, int sourceHeight, (double X, double Y, double Width, double Height) box,
         (double Left, double Top, double Right, double Bottom) crop)
     {
         var (left, top, right, bottom) = crop;
 
-        // The canvas on the source's picture, in its pixels; then the source's pixels on the frame.
+        // Canvas in source pixels (fill-fit, centred), then source pixels onto the frame.
         var fill = Math.Max((double)sourceWidth / track.CanvasWidth, (double)sourceHeight / track.CanvasHeight);
         var (canvasLeft, canvasTop) = ((sourceWidth - track.CanvasWidth * fill) / 2, (sourceHeight - track.CanvasHeight * fill) / 2);
         var (perX, perY) = (box.Width / (sourceWidth * (1 - left - right)), box.Height / (sourceHeight * (1 - top - bottom)));
@@ -95,10 +89,10 @@ public sealed partial class GpuScenePlan
         return new CuePlace((float)(fill * perX), (float)(originX + canvasLeft * perX), (float)(fill * perY), (float)(originY + canvasTop * perY));
     }
 
-    /// <summary>Where a cue's canvas's pixels fall on the frame: a scale and a shift each way.</summary>
+    /// <summary>Maps cue canvas pixels to frame pixels: scale and shift per axis.</summary>
     private readonly record struct CuePlace(float ScaleX, float ShiftX, float ScaleY, float ShiftY);
 
-    /// <summary>The cue's picture up at a moment, as a still where its canvas's pixels fall on the frame.</summary>
+    /// <summary>Writes the cue visible at <paramref name="t"/> as a still layer at its frame rect; 0 when none is ready.</summary>
     private int WritePictureSubtitle(Entry e, double t, ref GpuLayerDescriptor d)
     {
         if (_resources is null || e.Pictures is not { } lane || !lane.At(t, _resources, out var cue, out var still))
@@ -110,17 +104,15 @@ public sealed partial class GpuScenePlan
     }
 
     /// <summary>
-    /// The subtitle track's pictures in a plan: its cues by their start, where each cue's canvas's pixels fall on the frame
-    /// (a scale and a shift each way, through the clip it is shown in), and the still each cue's picture was handed over as.
-    /// The stills are written on the UI thread (<see cref="Prepare"/>) and read lock-free by the thread that evaluates;
-    /// nothing else changes after it is made.
+    /// A plan's picture-subtitle lane: cues sorted by start, their canvas placements, and each cue's uploaded still. Stills are written
+    /// on the UI thread (<see cref="Prepare"/>) and read lock-free by the evaluating thread; everything else is immutable.
     /// </summary>
     private sealed class PictureLane(PictureSubtitleCue[] cues, CuePlace[] places)
     {
-        // Each cue's still: its id + 1 in the high half and its serial in the low; 0 while it has none.
+        // Packed still per cue: (id + 1) in the high 32 bits, serial in the low; 0 when none.
         private readonly long[] _stills = new long[cues.Length];
 
-        /// <summary>The cue up at a moment (its index) and its still, when that is there to be drawn with (allocation-free).</summary>
+        /// <summary>Index of the cue visible at <paramref name="t"/> and its still; true only when the still is ready (allocation-free).</summary>
         public bool At(double t, GpuResourceBroker resources, out int cue, out GpuResourceRef still)
         {
             (cue, still) = (UpAt(t), GpuResourceRef.None);
@@ -131,7 +123,7 @@ public sealed partial class GpuScenePlan
             return !still.IsNone && resources.StateOf(still) == GpuResourceState.Ready;
         }
 
-        /// <summary>A cue's picture's box on the frame: its place on the canvas, scaled and moved as the cue's canvas is.</summary>
+        /// <summary>Cue bitmap rect on the frame: its canvas position mapped through the cue's placement.</summary>
         public (float X, float Y, float Width, float Height) Place(int cue)
         {
             var (picture, place) = (cues[cue].Picture, places[cue]);
@@ -139,9 +131,9 @@ public sealed partial class GpuScenePlan
         }
 
         /// <summary>
-        /// Hands over the pictures of the cues within <see cref="TextRasterizer.PrepareWindowSeconds"/> of a moment that are
-        /// not in the resource table (nearest first, for about <see cref="TextRasterizer.PrepareBudgetMs"/> a call; the rest
-        /// on the next call), and keeps those that are from being let go. Returns whether a cue's still changed.
+        /// Uploads cue bitmaps within <see cref="TextRasterizer.PrepareWindowSeconds"/> of <paramref name="t"/> that are not yet in the
+        /// resource table (nearest first, ~<see cref="TextRasterizer.PrepareBudgetMs"/> per call, the rest next call) and touches resident
+        /// ones so they are not evicted. Returns true when any cue's still changed.
         /// </summary>
         public bool Prepare(GpuResourceBroker resources, double t)
         {
@@ -154,12 +146,12 @@ public sealed partial class GpuScenePlan
             var at = Math.Max(LastBegunBy(t), 0);
             for (var step = 0; step < 2 * cues.Length; step++)
             {
-                // Outwards from the moment: at, at + 1, at - 1, at + 2...
+                // Spiral outward from the current cue: at, at + 1, at - 1, at + 2, ...
                 var i = at + (step % 2 == 0 ? step / 2 : -(step / 2 + 1));
                 if (i < 0 || i >= cues.Length || cues[i].From > t + Window || cues[i].To < t - Window)
                     continue;
 
-                // Found again by its content when it is in the table (and touched there); unpacked and handed over when not.
+                // Content-hash lookup touches a resident still; otherwise decode and upload it.
                 var picture = cues[i].Picture;
                 var made = !resources.Has(picture.Hash);
                 var still = resources.Still(picture.Hash, () => (picture.Pixels(), picture.Width, picture.Height), pinned: false);
@@ -183,7 +175,7 @@ public sealed partial class GpuScenePlan
             return packed == 0 ? GpuResourceRef.None : new GpuResourceRef((int)(packed >> 32) - 1, (int)packed);
         }
 
-        /// <summary>The cue up at a moment: the latest begun that has not ended (a few earlier are looked at too, for cues retimed over one another); -1 for none.</summary>
+        /// <summary>Cue visible at <paramref name="t"/>: the latest started and not yet ended (checks up to 8 back for overlapping retimed cues); -1 when none.</summary>
         private int UpAt(double t)
         {
             var last = LastBegunBy(t);
@@ -196,7 +188,7 @@ public sealed partial class GpuScenePlan
             return -1;
         }
 
-        /// <summary>The last cue that begins at or before a moment; -1 for none.</summary>
+        /// <summary>Last cue starting at or before <paramref name="t"/> (binary search); -1 when none.</summary>
         private int LastBegunBy(double t)
         {
             int low = 0, high = cues.Length - 1, found = -1;

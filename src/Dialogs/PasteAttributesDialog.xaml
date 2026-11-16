@@ -4,7 +4,7 @@
         Title="Paste Attributes" Width="400" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-    <!-- Ctrl+Alt+V (5.2A): which parts of the copied clip's look go onto the selected clips. The last choice is remembered. -->
+    <!-- Ctrl+Alt+V: choose which look parts of the copied clip apply to the selection; last choice remembered. -->
     <StackPanel Margin="16">
         <TextBlock x:Name="IntroText" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10" />
         <StackPanel x:Name="Choices" AutomationProperties.Name="Attributes to Paste">

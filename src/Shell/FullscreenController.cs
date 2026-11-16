@@ -11,42 +11,41 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp.Shell;
 
-/// <summary>What the Fullscreen Preview needs of the window that owns the player.</summary>
-/// <param name="Owner">The main window (its keys, activation, closing and first frame).</param>
-/// <param name="ViewModel">Its view model (the playhead and the transport's texts).</param>
-/// <param name="Video">The player's surface, lifted into the preview's window and put back.</param>
-/// <param name="VideoPane">The pane's decorator the surface lives in (VideoBorder).</param>
-/// <param name="Hud">The layer over the player that holds the HUD (PlayerHud: never zoomed with the picture nor hidden by the 3D view).</param>
-/// <param name="ExplodedToggle">The 3D view's toggle (the bar's button follows it both ways).</param>
-/// <param name="CanToggleExploded">Whether the 3D view can be toggled now.</param>
-/// <param name="ScrubHeld">Whether a scrub is held (the bar stays while one is).</param>
-/// <param name="SwitchingTab">Whether a project tab is being switched (the player hides only for a moment then).</param>
-/// <param name="HookKeys">Gives a side window the editor's keys (Esc, F11, Space, the 3D view's own).</param>
-/// <param name="UnhookKeys">Takes them away again.</param>
-/// <param name="PlayPause">The play/pause button's click.</param>
-/// <param name="ScrubTo">A scrub step to a playhead time, ms.</param>
-/// <param name="ScrubEnded">The scrub let go at a time, ms.</param>
-/// <param name="RunGuarded">Runs a command so a fault is a status line and a log entry, never a crash.</param>
+/// <summary>Host services the Fullscreen Preview needs from the player's owner window.</summary>
+/// <param name="Owner">Main window (keys, activation, closing, Frame 1).</param>
+/// <param name="ViewModel">Its view model (playhead, transport text).</param>
+/// <param name="Video">Player surface, re-parented into the preview window and back.</param>
+/// <param name="VideoPane">Pane decorator hosting the surface (VideoBorder).</param>
+/// <param name="Hud">HUD layer over the player (PlayerHud: never zoomed with the picture or hidden by 3D view).</param>
+/// <param name="ExplodedToggle">3D view toggle (two-way synced with the bar button).</param>
+/// <param name="CanToggleExploded">Whether the 3D view can toggle now.</param>
+/// <param name="ScrubHeld">Whether a scrub is held (keeps the bar visible).</param>
+/// <param name="SwitchingTab">Whether a project tab switch is in progress (transient player hide).</param>
+/// <param name="HookKeys">Routes editor keys (Esc, F11, Space, 3D view keys) to a side window.</param>
+/// <param name="UnhookKeys">Removes that routing.</param>
+/// <param name="PlayPause">Play/pause click handler.</param>
+/// <param name="ScrubTo">Scrub step to a playhead time (ms).</param>
+/// <param name="ScrubEnded">Scrub release at a time (ms).</param>
+/// <param name="RunGuarded">Runs a command with faults reported to status bar and log, never crashing.</param>
 internal sealed record FullscreenHost(
     Window Owner, MainViewModel ViewModel, VideoSurface Video, Decorator VideoPane, Grid Hud, ToggleButton ExplodedToggle,
     Func<bool> CanToggleExploded, Func<bool> ScrubHeld, Func<bool> SwitchingTab, Action<Window> HookKeys, Action<Window> UnhookKeys,
     RoutedEventHandler PlayPause, Action<double> ScrubTo, Action<double> ScrubEnded, Action<string, Action> RunGuarded);
 
 /// <summary>
-/// The player's HUD and the Fullscreen Preview. Over the player (in the HUD layer): a Fullscreen button that comes up as the pointer
-/// moves over the picture and goes once it rests; and the Fullscreen Preview, the player's own surface lifted into a borderless window
-/// over its monitor (<see cref="PlayerFullscreenWindow"/>) with a transport bar that comes up the same way.
+/// Player HUD and Fullscreen Preview: a Fullscreen button in the HUD layer that appears on pointer motion and hides at rest, and a
+/// borderless monitor-covering window (<see cref="PlayerFullscreenWindow"/>) hosting the player surface with an auto-hiding transport bar.
 /// </summary>
 /// <remarks>
-/// The docking is never touched: the pane keeps its place, with a note where the picture was, and the surface goes back into it exactly
-/// as it left. F11 toggles; Esc, the bar's Exit, the window closing, the player hidden and a change of displays leave. Nothing is made
-/// before the first frame: the hooks at the first idle moment after it, the rest at first use. The window's thread only.
+/// Docking is untouched: the pane keeps its slot with a placeholder and the surface returns exactly as it left. F11 toggles; Esc, Exit,
+/// window close, player hide and display changes exit. Nothing is built before Frame 1: hooks at first idle after it, the rest on first
+/// use. UI thread only.
 /// </remarks>
 internal sealed class FullscreenController
 {
     private static readonly SolidColorBrush NoteInk = UiBrushes.Frozen(0x90, 0xFF, 0xFF, 0xFF);
 
-    // Alpha 1: the guard strip takes the pointer while drawing nothing visible.
+    // Alpha-1 guard strip: hit-testable but visually invisible.
     private static readonly SolidColorBrush HitOnly = UiBrushes.Frozen(0x01, 0, 0, 0);
 
     private readonly FullscreenHost _host;
@@ -59,12 +58,12 @@ internal sealed class FullscreenController
     private DispatcherTimer? _hudTimer;
     private Debounce? _fullscreenRecheck;
 
-    // Where the pointer last moved over the player (a move WPF makes up after a layout change is at the same point) and when.
+    // Last pointer position and time over the player (WPF's synthetic post-layout moves repeat the same point).
     private Point _hudPointer = new(double.NaN, double.NaN);
     private long _hudMovedAt;
     private bool _hudHooked, _hudShown, _fullscreenTimeHooked;
 
-    /// <summary>Hooks only the owner's first frame (Law 1); the HUD's own hooks follow at the first idle moment after it.</summary>
+    /// <summary>Hooks only the owner's Frame 1 (Law 1); HUD hooks attach at the first idle after it.</summary>
     public FullscreenController(FullscreenHost host)
     {
         _host = host;
@@ -74,7 +73,7 @@ internal sealed class FullscreenController
     /// <summary>Whether the Fullscreen Preview is open.</summary>
     public bool IsOpen => _fullscreen is not null;
 
-    /// <summary>The keybind (F11), the player menu: into the Fullscreen Preview, or out of it.</summary>
+    /// <summary>Toggles the Fullscreen Preview (F11, player menu).</summary>
     public void Toggle()
     {
         if (_fullscreen is not null)
@@ -83,7 +82,7 @@ internal sealed class FullscreenController
             Enter();
     }
 
-    /// <summary>Out of the Fullscreen Preview: the surface back into the pane exactly where it was, the window closed (not kept).</summary>
+    /// <summary>Exits the Fullscreen Preview: restores the surface to its pane and closes (does not cache) the window.</summary>
     public void Exit() => Leave(activateOwner: true);
 
     private void Owner_ContentRendered(object? sender, EventArgs e)
@@ -92,7 +91,7 @@ internal sealed class FullscreenController
         _host.Owner.Dispatcher.BeginInvoke(HookPlayerHud, DispatcherPriority.ApplicationIdle);
     }
 
-    // (Also as the preview is first entered: F11 pressed before that idle moment.)
+    // Also called on first entry if F11 arrives before that idle.
     private void HookPlayerHud()
     {
         if (_hudHooked)
@@ -102,7 +101,7 @@ internal sealed class FullscreenController
         _host.Hud.PreviewMouseMove += PlayerHud_PreviewMouseMove;
         _host.Hud.MouseLeave += PlayerHud_MouseLeave;
 
-        // After every handler the window had from its start: one of them may keep it open (and the preview with it).
+        // Subscribed after the startup handlers so e.Cancel reflects them (a cancelled close keeps the preview open).
         _host.Owner.Closing += (_, e) =>
         {
             if (!e.Cancel)
@@ -125,7 +124,7 @@ internal sealed class FullscreenController
 
         HookPlayerHud();
 
-        // The monitor the player is on (the one with most of it), whichever window holds it.
+        // Monitor containing most of the player, whichever window hosts it.
         var corner = video.PointToScreen(new Point(0, 0));
         var far = video.PointToScreen(new Point(video.ActualWidth, video.ActualHeight));
         var fullscreen = new PlayerFullscreenWindow(PlayerFullscreenWindow.MonitorAround(new Rect(corner, far))) { Owner = owner };
@@ -135,7 +134,7 @@ internal sealed class FullscreenController
         fullscreen.Activate();
         _fullscreen = fullscreen;
 
-        // The surface into the window (the engine draws on, at the window's size); the pane keeps a note where it was.
+        // Move the surface into the window (rendering continues at the new size); the pane shows a placeholder.
         _host.VideoPane.Child = null;
         fullscreen.Host.Children.Add(video);
         _host.VideoPane.Child = _fullscreenNote ??= new TextBlock
@@ -147,13 +146,13 @@ internal sealed class FullscreenController
             VerticalAlignment = VerticalAlignment.Center,
         };
 
-        // Its keys are the editor's (Esc, F11, Space, the 3D view's own), and so are its mouse buttons.
+        // Route editor keys (Esc, F11, Space, 3D view) and mouse buttons.
         _host.HookKeys(fullscreen);
         video.IsVisibleChanged += FullscreenVideo_IsVisibleChanged;
         fullscreen.IsVisibleChanged += FullscreenVideo_IsVisibleChanged;
         owner.Activated += FullscreenOwner_Activated;
 
-        // The dock's hover tab on the player (its top left) is no way to start a dock drag from here.
+        // Suppress the dock hover tab (top-left) so no dock drag can start from fullscreen.
         if (_fullscreenGuard is null)
         {
             _fullscreenGuard = new Border
@@ -166,13 +165,13 @@ internal sealed class FullscreenController
 
         _fullscreenGuard.Visibility = Visibility.Visible;
 
-        // The Fullscreen button goes; the bar comes up for a moment, so it is seen to be there.
+        // Hide the Fullscreen button; flash the bar briefly for discoverability.
         HideHud(instant: true);
         _hudMovedAt = Environment.TickCount64;
         ShowHud();
     }
 
-    // (The main window closing is not brought forward.)
+    // A closing main window is not re-activated.
     private void Leave(bool activateOwner)
     {
         if (_fullscreen is not { } fullscreen)
@@ -194,14 +193,13 @@ internal sealed class FullscreenController
         if (wasActive && activateOwner)
             owner.Activate();
 
-        // Closed once the surface is settled in its pane again (its window over the video has gone back to its owner).
+        // Close only after the surface is re-seated in its pane (its video overlay window re-owned).
         fullscreen.LetClose();
         owner.Dispatcher.BeginInvoke(DispatcherPriority.Background, fullscreen.Close);
     }
 
-    // The player hidden while fullscreen (UpdateVideoVisibility: nothing loaded any more, the engine stopped): back, once it is clear it
-    // stays so. A project tab being switched hides it for a moment: looked at again once the switch is over. The window minimized (the
-    // preview with it, as an owned window) is no reason: looked at again as it comes back.
+    // Exit when the player is persistently hidden (UpdateVideoVisibility: nothing loaded, engine stopped). Tab switches hide it
+    // transiently (recheck after the switch); minimizing (owned preview minimizes too) is ignored and rechecked on restore.
     private void FullscreenVideo_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) =>
         _host.Owner.Dispatcher.BeginInvoke(CheckFullscreenVideo, DispatcherPriority.ApplicationIdle);
 
@@ -219,8 +217,8 @@ internal sealed class FullscreenController
         Exit();
     }
 
-    // The main window brought forward on the monitor the preview covers (a dialog closed, Alt+Tab): the preview takes it back, so the
-    // taskbar stays down and its keys stay the preview's.
+    // When the main window activates on the preview's monitor (dialog closed, Alt+Tab), re-activate the preview so the taskbar stays
+    // hidden and keys stay routed to it.
     private void FullscreenOwner_Activated(object? sender, EventArgs e)
     {
         var owner = _host.Owner;
@@ -236,7 +234,7 @@ internal sealed class FullscreenController
 
     // ----- The HUD: the Fullscreen button, the bar -----
 
-    // A move over the player: the HUD comes up and stays while the pointer moves (a time and a compare per move, nothing else).
+    // Pointer move over the player shows the HUD and keeps it up (one timestamp and compare per move).
     private void PlayerHud_PreviewMouseMove(object sender, MouseEventArgs e)
     {
         var at = e.GetPosition(_host.Hud);
@@ -249,7 +247,7 @@ internal sealed class FullscreenController
             ShowHud();
     }
 
-    // Off the docked player: its button goes at once. (Fullscreen, the bar waits for its rest.)
+    // Leaving the docked player hides its button immediately (fullscreen bar waits for the rest timeout).
     private void PlayerHud_MouseLeave(object sender, MouseEventArgs e)
     {
         _hudPointer = new Point(double.NaN, double.NaN);
@@ -286,14 +284,14 @@ internal sealed class FullscreenController
         _hudShown = false;
         _hudTimer?.Stop();
 
-        // (One already going or gone is left to it, unless it is to go at once.)
+        // Leave an in-progress or completed fade alone unless an immediate hide is requested.
         if (_fullscreenButton is { } button && (instant || button.IsHitTestVisible))
             HudChrome.Fade(button, shown: false, instant);
         if (_fullscreenBar is { } bar && (instant || bar.IsHitTestVisible))
             HudChrome.Fade(bar, shown: false, instant);
     }
 
-    // The rest after the last move ran out: the HUD goes, unless the pointer is on it or something of it is held (looked at again shortly).
+    // Rest timeout elapsed: hide the HUD unless hovered or a control is held (then recheck shortly).
     private void HudTimer_Tick(object? sender, EventArgs e)
     {
         var since = Environment.TickCount64 - _hudMovedAt;
@@ -335,7 +333,7 @@ internal sealed class FullscreenController
         bar.Exit.Click += (_, _) => _host.RunGuarded("Fullscreen Preview", Exit);
         bar.Exploded.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(ToggleButton.IsChecked)) { Source = _host.ExplodedToggle, Mode = BindingMode.TwoWay });
 
-        // The scrubber as the rulers scrub (MainWindow.Scrub.cs): a drag moves the lines and the player at once, the playhead once a frame.
+        // Scrubs like the rulers (MainWindow.Scrub.cs): drag updates lines and player immediately, the playhead once per frame.
         bar.SoughtTo += ms =>
         {
             if (Math.Abs(ms - viewModel.PositionMs) >= 1)
@@ -344,7 +342,7 @@ internal sealed class FullscreenController
         bar.ScrubbedTo += ms => _host.ScrubTo(ms);
         bar.ScrubEnded += ms => _host.ScrubEnded(ms);
 
-        // Its time follows the playhead only while it is shown.
+        // Time readout tracks the playhead only while visible.
         if (!_fullscreenTimeHooked)
         {
             _fullscreenTimeHooked = true;

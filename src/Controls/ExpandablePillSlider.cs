@@ -11,57 +11,53 @@ using System.Windows.Threading;
 
 namespace HandPegApp;
 
-/// <summary>What an <see cref="ExpandablePillSlider"/> shows as its icon (vector strokes, drawn in OnRender).</summary>
+/// <summary>Icon kind of an <see cref="ExpandablePillSlider"/> (vector strokes drawn in OnRender).</summary>
 public enum PillIcon
 {
-    /// <summary>A speaker whose waves follow the level; crossed out while its toggle is on (muted) or the value is at its least.</summary>
+    /// <summary>Speaker with level-dependent waves; crossed out when muted or at minimum.</summary>
     Speaker,
-    /// <summary>A magnifier.</summary>
+    /// <summary>Magnifier.</summary>
     Magnifier,
     /// <summary>
-    /// No picture: the readout's words where the icon goes (5.4.4, the playback speed's "1x"), so the value shows while it is closed;
-    /// the open pill then has no readout of its own. Give it a <see cref="ExpandablePillSlider.CollapsedWidth"/> its widest words fit.
+    /// Text face: the readout replaces the icon (e.g. speed "1x") so the value is visible while collapsed; the open pill has no separate
+    /// readout. Set a <see cref="ExpandablePillSlider.CollapsedWidth"/> that fits the widest text.
     /// </summary>
     Readout,
 }
 
 /// <summary>
-/// A slider that is only its icon until the pointer is on it (Pass 5.4.4): then it opens into a pill with a track, a thumb and a
-/// readout of its value, over its neighbours and never moving them (its layout size is always the collapsed one). The Monitor Volume
-/// and the Playback Speed of the transport row (the speed's face its value, its thumb snapping to the seven speeds: <see cref="Detent"/>)
-/// and the Timeline Zoom of the timeline's corner. Drawn in OnRender: no child visuals, nothing made for the open pill before it first opens.
+/// Icon-only slider that expands on hover into a pill (track, thumb, readout) drawn over its neighbours without moving them (layout
+/// size is always the collapsed slot). Used for Monitor Volume, Playback Speed (text face, <see cref="Detent"/> snapping to seven speeds)
+/// and Timeline Zoom. Rendered in OnRender with no child visuals; open-state resources are created lazily.
 /// <para>
-/// It opens on the pointer, on the keyboard's focus (Tab) and while dragged, in 140 ms, and closes 250 ms after the pointer leaves (2.5 s
-/// after the last touch). A press on the track jumps there and drags; Shift drags finely (a tenth as fast); the wheel steps by
-/// <see cref="SmallChange"/>; a double-click puts <see cref="DefaultValue"/> back; a click on the icon switches <see cref="IsIconChecked"/>
-/// (the speaker's mute). While it has the keyboard it keeps the arrows, Page Up / Down, Home, End and Enter (IOwnsKeys). Theme brushes are
-/// read as it draws, and it draws again when a theme is put into effect, so every theme (the light one too) shows it right; a pill on a
-/// surface of its own whatever the theme (the fullscreen bar) sets <see cref="IconBrush"/> and its kin instead.
+/// Opens on hover, keyboard focus (Tab) or drag in 140 ms; closes 250 ms after pointer leave (2.5 s after last touch). Track press jumps
+/// and drags; Shift drags at 1/10 speed; wheel steps <see cref="SmallChange"/>; double-click restores <see cref="DefaultValue"/>; icon click
+/// toggles <see cref="IsIconChecked"/> (mute). While focused it owns arrows, Page Up/Down, Home, End and Enter (IOwnsKeys). Theme brushes
+/// are read at render and it redraws on theme change; fixed-surface hosts (fullscreen bar) set <see cref="IconBrush"/> and related brushes.
 /// </para>
 /// </summary>
 public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
 {
-    /// <summary>How long the pill takes to open or close, eased out (ms).</summary>
+    /// <summary>Open/close animation duration in ms (ease-out).</summary>
     internal const double OpenMs = 140;
 
-    /// <summary>How long after the pointer leaves the pill closes (ms); after the last touch, <see cref="TouchCloseMs"/>.</summary>
+    /// <summary>Close delay after pointer leave in ms (<see cref="TouchCloseMs"/> after the last touch).</summary>
     internal const double CloseDelayMs = 250, TouchCloseMs = 2500;
 
-    /// <summary>A Shift drag moves the value this much of what a plain drag would.</summary>
+    /// <summary>Shift-drag speed factor relative to a normal drag.</summary>
     internal const double FineFactor = 0.1;
 
-    // The open pill's parts (DIPs): the thumb, the track's thickness, room between the thumb's end stop and the icon, between the track
-    // and the readout, after the readout, and the least room the readout gets.
+    // Open pill metrics (DIPs): thumb size, track thickness, gaps icon-to-thumb stop, track-to-readout and after readout, and min readout width.
     private const double ThumbRadius = 5, TrackThickness = 3, IconRoom = 3, ReadoutGap = 6, EndPad = 9, LeastReadout = 26, ReadoutSize = 11;
     private const double IconBox = 16, IconStroke = 1.3;
 
     /// <summary>
-    /// A readout face's type size (the bar's text, 12 DIPs), the least room either side of its words in the slot, and the least size words
-    /// too wide for the slot are drawn down to (5.5A: the speed pill is the Volume pill's 24 x 22 now, so "0.25x" is drawn smaller to fit).
+    /// Text face metrics: font size (bar text, 12 DIPs), min horizontal padding in the slot, and min shrink size for text too wide for the
+    /// 24 x 22 slot (e.g. "0.25x").
     /// </summary>
     internal const double FaceFontSize = 12, FacePad = 2, FaceLeastSize = 7;
 
-    // A detent's dot on the open track (a little wider than the track), and the most detents drawn apart (5.4.4).
+    // Detent dot size (slightly wider than the track) and the max number of detents drawn.
     private const double DetentRadius = 2;
     private const int MostDetentsShown = 32;
 
@@ -134,28 +130,27 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     public static readonly RoutedEvent IconClickEvent = EventManager.RegisterRoutedEvent(nameof(IconClick), RoutingStrategy.Bubble,
         typeof(RoutedEventHandler), typeof(ExpandablePillSlider));
 
-    // How far open the pill is (0 the icon alone, 1 open), animated; drawn and hit-tested as it is.
+    // Animated openness 0 (icon only) to 1 (open); rendering and hit-testing use the current value.
     private static readonly DependencyProperty OpenProperty = DependencyProperty.Register("Open", typeof(double), typeof(ExpandablePillSlider),
         new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
-    // The opening and closing (made at the first opening, frozen, shared by every pill) and their ease.
+    // Open/close animations and easing: created on first open, frozen, shared by all instances.
     private static CubicEase? _ease;
     private static DoubleAnimation? _opening, _closing;
 
-    // Whether it is open or opening; the close after the pointer leaves; whether the last input was a touch, and whether the keyboard
-    // opened it (Tab, or a key pressed while it has the keyboard: it then stays open while it keeps the keyboard); and its opening once
-    // the pointer rests on it, when its slot lies under a neighbour's open pill (5.4.4).
+    // Open/opening flag; delayed-close timer; last-input-was-touch; opened-by-keyboard (Tab or a key while focused: stays open while
+    // focused); and the hover-dwell open timer used when the slot lies under a neighbour's open pill.
     private bool _wantOpen, _touch, _keyOpened;
     private DispatcherTimer? _closeTimer, _openTimer;
 
-    // A drag on the track (where the pointer last was, and a Shift drag's start: the pointer and the value), and a press on the icon.
+    // Track drag state (last pointer; Shift-drag origin pointer and value) and a pending icon press.
     private bool _dragging, _fine, _iconPressed;
     private double _lastX;
     private (double X, double Value) _fineFrom;
     private int _wheel;
 
-    // What it draws with, made as it is first needed: the icons (by kind and waves), their pen; the open pill's edge, focus ring and
-    // readout (the widest readout since it opened keeps the pill from twitching as the value changes).
+    // Lazily created render resources: icon geometries (by kind and waves) and pen; open-pill border, focus ring and readout (the widest
+    // readout since opening is kept so the pill does not jitter as the value changes).
     private readonly StreamGeometry?[] _icons = new StreamGeometry?[5];
     private Size _iconsFor;
     private Pen? _iconPen, _edgePen, _focusPen;
@@ -164,7 +159,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     private Brush? _readoutBrush;
     private double _readoutWidth;
 
-    // A readout face's words as drawn (5.4.4), made at its first drawing and again only when they, their brush or the screen's scale change.
+    // Cached text-face FormattedText, rebuilt only when text, brush or DPI scale changes.
     private FormattedText? _face;
     private string? _faceText;
     private Brush? _faceBrush;
@@ -176,8 +171,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         Focusable = true;
         FocusVisualStyle = null;
 
-        // A theme put into effect swaps the brushes it reads as it draws, which nothing else tells it of: it draws again then (5.4.4),
-        // and when it comes back into a window, in case the theme changed while it was out of one.
+        // Theme changes swap the brushes read during render without notification: redraw on theme apply and on reattach to a window.
         Loaded += (_, _) =>
         {
             Services.ThemeManager.Applied -= ThemeApplied;
@@ -191,10 +185,10 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         };
     }
 
-    // The pens and the readout are made again for a new brush (they are kept by it), so drawing again is all a theme needs.
+    // Pens and readout are cached per brush, so a redraw is sufficient after a theme change.
     private void ThemeApplied() => InvalidateVisual();
 
-    /// <summary>The value, <see cref="Minimum"/> to <see cref="Maximum"/> (two-way by default).</summary>
+    /// <summary>Value in [<see cref="Minimum"/>, <see cref="Maximum"/>] (binds two-way by default).</summary>
     public double Value
     {
         get => (double)GetValue(ValueProperty);
@@ -213,21 +207,21 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         set => SetValue(MaximumProperty, value);
     }
 
-    /// <summary>What a double-click on the track sets (NaN: no reset).</summary>
+    /// <summary>Double-click reset value (NaN disables reset).</summary>
     public double DefaultValue
     {
         get => (double)GetValue(DefaultValueProperty);
         set => SetValue(DefaultValueProperty, value);
     }
 
-    /// <summary>A wheel notch, an arrow key.</summary>
+    /// <summary>Step per wheel notch or arrow key.</summary>
     public double SmallChange
     {
         get => (double)GetValue(SmallChangeProperty);
         set => SetValue(SmallChangeProperty, value);
     }
 
-    /// <summary>Page Up, Page Down.</summary>
+    /// <summary>Step per Page Up / Page Down.</summary>
     public double LargeChange
     {
         get => (double)GetValue(LargeChangeProperty);
@@ -240,42 +234,42 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         set => SetValue(IconProperty, value);
     }
 
-    /// <summary>Whether a click on the icon switches <see cref="IsIconChecked"/> (the speaker's mute).</summary>
+    /// <summary>Icon click toggles <see cref="IsIconChecked"/> (speaker mute).</summary>
     public bool IsIconToggle
     {
         get => (bool)GetValue(IsIconToggleProperty);
         set => SetValue(IsIconToggleProperty, value);
     }
 
-    /// <summary>The icon's switch (two-way by default): muted, for the speaker.</summary>
+    /// <summary>Icon toggle state (two-way by default); muted for the speaker.</summary>
     public bool IsIconChecked
     {
         get => (bool)GetValue(IsIconCheckedProperty);
         set => SetValue(IsIconCheckedProperty, value);
     }
 
-    /// <summary>The icon's name for UI Automation ("Mute Player").</summary>
+    /// <summary>Automation name of the icon toggle ("Mute Player").</summary>
     public string IconAutomationName
     {
         get => (string)GetValue(IconAutomationNameProperty);
         set => SetValue(IconAutomationNameProperty, value);
     }
 
-    /// <summary>The readout's format of the value ("{0:0}%"); <see cref="ReadoutFor"/>, when set, is asked instead.</summary>
+    /// <summary>Readout format string ("{0:0}%"); <see cref="ReadoutFor"/> overrides when set.</summary>
     public string ReadoutFormat
     {
         get => (string)GetValue(ReadoutFormatProperty);
         set => SetValue(ReadoutFormatProperty, value);
     }
 
-    /// <summary>How long the open pill's track is (DIPs).</summary>
+    /// <summary>Open track length in DIPs.</summary>
     public double TrackLength
     {
         get => (double)GetValue(TrackLengthProperty);
         set => SetValue(TrackLengthProperty, value);
     }
 
-    /// <summary>Whether the pill opens to the left of its icon (the icon stays where it is), not to the right.</summary>
+    /// <summary>Expand leftward from the fixed icon instead of rightward.</summary>
     public bool ExpandsLeft
     {
         get => (bool)GetValue(ExpandsLeftProperty);
@@ -283,8 +277,8 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     }
 
     /// <summary>
-    /// The icon's and the readout's brush in place of the theme's text (5.4.4); null, the theme's. With <see cref="SurfaceBrush"/>,
-    /// <see cref="EdgeBrush"/> and <see cref="TrackBrush"/> for a pill on a surface of its own whatever the theme (the fullscreen bar).
+    /// Icon/readout brush override (null = theme text). Used with <see cref="SurfaceBrush"/>, <see cref="EdgeBrush"/> and
+    /// <see cref="TrackBrush"/> on theme-independent surfaces (fullscreen bar).
     /// </summary>
     public Brush? IconBrush
     {
@@ -292,21 +286,21 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         set => SetValue(IconBrushProperty, value);
     }
 
-    /// <summary>The well under the icon and the open pill's fill in place of the theme's hover fill (5.4.4); null, the theme's.</summary>
+    /// <summary>Icon well and open-pill fill override (null = theme hover fill).</summary>
     public Brush? SurfaceBrush
     {
         get => (Brush?)GetValue(SurfaceBrushProperty);
         set => SetValue(SurfaceBrushProperty, value);
     }
 
-    /// <summary>The open pill's edge in place of the theme's control border (5.4.4); null, the theme's.</summary>
+    /// <summary>Open-pill border override (null = theme control border).</summary>
     public Brush? EdgeBrush
     {
         get => (Brush?)GetValue(EdgeBrushProperty);
         set => SetValue(EdgeBrushProperty, value);
     }
 
-    /// <summary>The track's groove in place of the theme's muted text (5.4.4); null, the theme's.</summary>
+    /// <summary>Track groove override (null = theme muted text).</summary>
     public Brush? TrackBrush
     {
         get => (Brush?)GetValue(TrackBrushProperty);
@@ -314,9 +308,8 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     }
 
     /// <summary>
-    /// The collapsed pill's width, its width in layout (DIPs, 5.4.4); NaN, the icon's square (its height and 2). A readout face
-    /// (<see cref="PillIcon.Readout"/>) keeps one width whatever the value, so nothing beside it moves; its words wider than the slot are
-    /// drawn smaller to fit it (5.5A).
+    /// Collapsed (layout) width in DIPs; NaN = icon square (height + 2). A <see cref="PillIcon.Readout"/> face keeps a fixed width for all
+    /// values so neighbours never shift; text wider than the slot is drawn smaller.
     /// </summary>
     public double CollapsedWidth
     {
@@ -325,8 +318,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     }
 
     /// <summary>
-    /// The spacing of the detents from <see cref="Minimum"/> that every value from the user's hand snaps to (5.4.4: the speed's one step
-    /// apart), each a dot on the open track; 0, none: any value.
+    /// Detent spacing from <see cref="Minimum"/>; user-set values snap to detents (drawn as dots on the track). 0 = continuous.
     /// </summary>
     public double Detent
     {
@@ -334,7 +326,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         set => SetValue(DetentProperty, value);
     }
 
-    /// <summary>The readout's words for each detent from the least (5.4.4: the speeds, "0.25x" to "2x"); null, the value in <see cref="ReadoutFormat"/>.</summary>
+    /// <summary>Readout labels per detent from the minimum (e.g. "0.25x".."2x"); null uses <see cref="ReadoutFormat"/>.</summary>
     public IReadOnlyList<string>? DetentLabels
     {
         get => (IReadOnlyList<string>?)GetValue(DetentLabelsProperty);
@@ -342,8 +334,8 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     }
 
     /// <summary>
-    /// The room between the slot and the open track's near end (DIPs, 5.4.4), kept clear for a neighbour's slot the open pill passes over
-    /// (the Volume pill's beside the Playback Speed's, raised over it): no detent, thumb or press on the track lies under it. 0, none.
+    /// Gap in DIPs between the slot and the track's near end, kept clear over a neighbour's slot that the open pill covers (Volume beside
+    /// Playback Speed): no detent, thumb or track hit lies there. 0 = none.
     /// </summary>
     public double TrackInset
     {
@@ -351,10 +343,10 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         set => SetValue(TrackInsetProperty, value);
     }
 
-    /// <summary>The readout's words for a value, asked only while the pill is open or its face is the readout (the Timeline's "2.4x", which is not the slider's own value).</summary>
+    /// <summary>Custom readout text for a value, queried only while open or for a text face (e.g. Timeline "2.4x", not the raw value).</summary>
     public Func<double, string>? ReadoutFor { get; set; }
 
-    /// <summary>Whether the pill is open, or opening (false while it closes).</summary>
+    /// <summary>True while open or opening (false while closing).</summary>
     public bool IsExpanded => _wantOpen;
 
     public event RoutedPropertyChangedEventHandler<double> ValueChanged
@@ -363,7 +355,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         remove => RemoveHandler(ValueChangedEvent, value);
     }
 
-    /// <summary>The icon was clicked (after <see cref="IsIconChecked"/> switched, when it is a toggle).</summary>
+    /// <summary>Raised on icon click (after <see cref="IsIconChecked"/> toggles, if enabled).</summary>
     public event RoutedEventHandler IconClick
     {
         add => AddHandler(IconClickEvent, value);
@@ -380,7 +372,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
 
         peer.RaisePropertyChangedEvent(RangeValuePatternIdentifiers.ValueProperty, from, to);
 
-        // Its words too when its detents have them (5.4.4): what a screen reader says is the speed ("1.5x"), not its step.
+        // With detent labels, expose them so screen readers announce "1.5x" rather than the step index.
         if (pill.Worded)
             peer.RaisePropertyChangedEvent(ValuePatternIdentifiers.ValueProperty, pill.ReadoutTextFor(from), pill.ReadoutTextFor(to));
     }
@@ -393,7 +385,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
 
     private static ToggleState Toggled(bool on) => on ? ToggleState.On : ToggleState.Off;
 
-    // ----- Size and place: always the collapsed slot in layout (the icon's square, or CollapsedWidth); the open pill drawn (and hit) past it -----
+    // ----- Layout: always the collapsed slot (icon square or CollapsedWidth); the open pill renders and hit-tests beyond it -----
 
     private Size Slot()
     {
@@ -401,22 +393,22 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         return new Size(RenderSize.Width > 0 ? RenderSize.Width : CollapsedWidthFor(height), height);
     }
 
-    // The collapsed width: CollapsedWidth when one is set (5.4.4), else the icon's square.
+    // Collapsed width: CollapsedWidth if set, else the icon square.
     private double CollapsedWidthFor(double height) => CollapsedWidth is > 0 and var width && !double.IsInfinity(width) ? width : height + 2;
 
-    // The layout size is always the collapsed one.
+    // Layout size is always the collapsed size.
     protected override Size MeasureOverride(Size availableSize)
     {
         var height = double.IsNaN(Height) ? 22 : Height;
         return new Size(CollapsedWidthFor(height), height);
     }
 
-    // Drawn past its slot while open: never cut to it.
+    // No layout clip: the open pill draws past its slot.
     protected override Geometry? GetLayoutClip(Size layoutSlotSize) => null;
 
-    // The pill's parts, open this far: the pill itself, the track (its ends: where the thumb's centre goes at the least and the most) and
-    // the readout's room. The icon stays in the slot; the pill grows from it to the left or the right. A readout face is the readout
-    // (5.4.4): the pill keeps no room for another. TrackInset (5.4.4) sets the track that much further from the slot.
+    // Pill geometry at a given openness: pill rect, track ends (thumb centre at min and max) and readout rect. The icon stays in the slot
+    // and the pill grows left or right from it. A text face is the readout (no extra readout room). TrackInset moves the track further
+    // from the slot.
     private readonly record struct Parts(Rect Pill, double TrackFrom, double TrackTo, Rect Readout);
 
     private Parts Lay(double open)
@@ -439,7 +431,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
             new Rect(start + length + ThumbRadius + ReadoutGap, 0, readout, slot.Height));
     }
 
-    /// <summary>The track's ends on the control when open (where the thumb's centre is at the least and at the most): for tests.</summary>
+    /// <summary>Test hook: open-track ends in control coordinates (thumb centre at min and max).</summary>
     internal (double From, double To) TrackSpan
     {
         get
@@ -458,9 +450,9 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         return area.Contains(hitTestParameters.HitPoint) ? new PointHitTestResult(this, hitTestParameters.HitPoint) : null;
     }
 
-    // ----- Opening and closing -----
+    // ----- Open and close -----
 
-    /// <summary>How far open the pill is <paramref name="ms"/> after it began opening: 0 at 0, 1 at <see cref="OpenMs"/>, eased out (a cubic).</summary>
+    /// <summary>Openness <paramref name="ms"/> after opening began: cubic ease-out from 0 to 1 over <see cref="OpenMs"/>.</summary>
     internal static double OpenFraction(double ms) => Ease.Ease(Math.Max(0, Math.Min(ms / OpenMs, 1)));
 
     private static CubicEase Ease
@@ -497,8 +489,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         Animate(open: true);
         WatchClickOff(true);
 
-        // It takes over from a neighbour still open with the pointer gone from it (5.4.4: Volume and Playback Speed side by side): that
-        // one closes now rather than CloseDelayMs on, so the two never stand open over each other.
+        // Close an open neighbour the pointer has left immediately (not after CloseDelayMs) so adjacent pills never overlap open.
         foreach (var other in Neighbours())
         {
             if (other._wantOpen && !other.Held)
@@ -506,14 +497,14 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         }
     }
 
-    // The pills beside it in its panel (5.4.4: the transport row's Volume and Playback Speed).
+    // Sibling pills in the same panel (e.g. Volume and Playback Speed).
     private IEnumerable<ExpandablePillSlider> Neighbours() => VisualTreeHelper.GetParent(this) is System.Windows.Controls.Panel panel
         ? panel.Children.OfType<ExpandablePillSlider>().Where(other => !ReferenceEquals(other, this))
         : [];
 
     /// <summary>
-    /// Whether its slot lies under a neighbour's open pill (5.4.4: the Volume pill's, raised over the open Playback Speed's): the pointer
-    /// then opens it only once it rests there (<see cref="OpensLater"/>), so a pointer crossing it on the way to that one's track opens nothing.
+    /// True when this slot lies under a neighbour's open pill: hover then opens only after a dwell (<see cref="OpensLater"/>), so crossing
+    /// it toward that pill's track opens nothing.
     /// </summary>
     internal bool UnderOpenNeighbour()
     {
@@ -531,7 +522,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         return false;
     }
 
-    /// <summary>Whether it opens CloseDelayMs on if the pointer stays (5.4.4: as the neighbour over it closes): for tests.</summary>
+    /// <summary>Test hook: true when a dwell-delayed open (CloseDelayMs) is pending.</summary>
     internal bool OpensLater => _openTimer?.IsEnabled == true;
 
     private void OpenLater()
@@ -562,11 +553,11 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         Animate(open: false);
     }
 
-    // ----- Clicking off it (5.4.4, the user's) -----
+    // ----- Click-away close -----
     //
-    // The open pill lies over its neighbours and never moves them: a press anywhere else in its window (mouse, pen or touch) closes it at
-    // once, so whatever lay under it is one click away. Watched only while it is open, at the root of its visual tree and tunnelling (a
-    // control that handles its own press cannot hide it); the press itself goes on to whatever it was meant for.
+    // Any press elsewhere in the window (mouse, pen, touch) closes the open pill immediately, so covered controls are one click away.
+    // Hooked only while open, as a tunnelling handler at the visual root (controls handling their own press cannot hide it); the press
+    // continues to its target.
 
     private UIElement? _clickOffRoot;
 
@@ -597,7 +588,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
 
     private void TouchedOff(object? sender, TouchEventArgs e) => PressedAt(e.OriginalSource);
 
-    // A press on the pill itself (its slot, or the open pill drawn past it: it has no children) leaves it be.
+    // Presses on the pill itself (slot or drawn extension; it has no children) are ignored.
     private void PressedAt(object? source)
     {
         if (ReferenceEquals(source, this) || !_wantOpen)
@@ -608,7 +599,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
 
     private void Animate(bool open)
     {
-        // With Windows' animations off, it opens and closes at once.
+        // Windows client-area animations off: snap open/closed.
         if (!SystemParameters.ClientAreaAnimation)
         {
             SetOpenNow(open);
@@ -624,7 +615,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         SetValue(OpenProperty, open ? 1.0 : 0.0);
     }
 
-    /// <summary>Opens or closes the pill at once, with no animation (for tests, which have no pointer).</summary>
+    /// <summary>Test hook: opens or closes immediately without animation (tests have no pointer).</summary>
     internal void OpenAtOnce(bool open)
     {
         _closeTimer?.Stop();
@@ -634,7 +625,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         SetOpenNow(open);
     }
 
-    // Whether it stays open: under the pointer (not after a touch: a lifted finger is not there), held, or keeping the keyboard it was opened with.
+    // Stay open while hovered (not after touch: a lifted finger is gone), captured, or keyboard-opened and still focused.
     private bool Held => (IsMouseOver && !_touch) || IsMouseCaptured || (IsKeyboardFocused && _keyOpened);
 
     private void CloseLater()
@@ -658,10 +649,10 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         _closeTimer.Start();
     }
 
-    // ----- Changing the value -----
+    // ----- Value changes -----
 
-    // The value set from the user's hand, kept between Minimum and Maximum (never Math.Clamp: a binding may set Maximum before Minimum),
-    // on its nearest detent when it has them (5.4.4).
+    // User-set value: bounded to [Minimum, Maximum] without Math.Clamp (bindings may set Maximum before Minimum), then snapped to the
+    // nearest detent if any.
     private void Set(double value)
     {
         var kept = Snapped(Math.Max(Minimum, Math.Min(value, Maximum)));
@@ -669,8 +660,8 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
             Value = kept;
     }
 
-    // The value (already kept in the range) on its nearest detent (5.4.4), never past Maximum when the range is no whole number of
-    // detents; itself when there are none.
+    // Snaps an in-range value to the nearest detent, never past Maximum when the range is not a whole number of detents; identity
+    // without detents.
     private double Snapped(double value)
     {
         var detent = Detent;
@@ -681,7 +672,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         return on > Maximum ? Math.Max(Minimum, on - detent) : on;
     }
 
-    // How many detents the open track shows (5.4.4): from Minimum every Detent up to Maximum; 0 for none or too many to tell apart.
+    // Visible detent count from Minimum every Detent up to Maximum; 0 if none or too dense to distinguish.
     private int Detents()
     {
         var (detent, range) = (Detent, Maximum - Minimum);
@@ -699,8 +690,8 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     }
 
     /// <summary>
-    /// A drag on the track reached <paramref name="x"/> (the control's coordinates): there (fine: from where it was, a tenth as fast). With
-    /// detents (5.4.4) always there, on the nearest one: the pointer picks it, never the value it last snapped to, so the snap never fights the drag.
+    /// Track drag to <paramref name="x"/> (control coordinates): absolute, or relative at 1/10 speed in fine mode. With detents, snap the
+    /// pointer's position (not the last snapped value) so snapping never fights the drag.
     /// </summary>
     internal void DragTo(double x, bool fine)
     {
@@ -725,10 +716,10 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         (_dragging, _lastX) = (true, x);
     }
 
-    /// <summary>The drag on the track is over.</summary>
+    /// <summary>Ends a track drag.</summary>
     internal void EndDrag() => (_dragging, _fine) = (false, false);
 
-    /// <summary>The wheel turned by <paramref name="delta"/> (120 a notch; a touchpad's smaller turns add up): <see cref="SmallChange"/> a notch.</summary>
+    /// <summary>Wheel by <paramref name="delta"/> (120 per notch; touchpad partials accumulate): <see cref="SmallChange"/> per notch.</summary>
     internal void WheelBy(int delta)
     {
         _wheel += delta;
@@ -738,14 +729,14 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
             Set(Value + notches * SmallChange);
     }
 
-    /// <summary>A double-click: <see cref="DefaultValue"/> again (nothing when it has none).</summary>
+    /// <summary>Double-click: restores <see cref="DefaultValue"/> (no-op if NaN).</summary>
     internal void ResetToDefault()
     {
         if (!double.IsNaN(DefaultValue))
             Set(DefaultValue);
     }
 
-    /// <summary>The icon clicked: its switch flipped (when it is one), and IconClick raised.</summary>
+    /// <summary>Icon click: toggles the switch if enabled, then raises IconClick.</summary>
     internal void ClickIcon()
     {
         if (IsIconToggle)
@@ -753,13 +744,13 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         RaiseEvent(new RoutedEventArgs(IconClickEvent, this));
     }
 
-    /// <summary>What the readout says now: <see cref="ReadoutFor"/>'s words, else its detent's label, else the value in <see cref="ReadoutFormat"/>.</summary>
+    /// <summary>Current readout: <see cref="ReadoutFor"/>, else the detent label, else <see cref="ReadoutFormat"/>.</summary>
     internal string ReadoutText() => ReadoutTextFor(Value);
 
-    // Whether its detents have words (5.4.4: the speeds): UI Automation then gives them as its Value too.
+    // True when detents have labels; UI Automation then also exposes them via ValuePattern.
     private bool Worded => DetentLabels is { Count: > 0 } && Detent > 0 && !double.IsInfinity(Detent);
 
-    // What the readout says at a value (the value before a change too, for UI Automation's change event).
+    // Readout text for a value (also used for the old value in UI Automation change events).
     private string ReadoutTextFor(double value)
     {
         if (ReadoutFor is { } words)
@@ -774,7 +765,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
             }
         }
 
-        // The detent's own words (5.4.4: "1.25x"), when it has them.
+        // Detent label (e.g. "1.25x") when available.
         if (Worded && DetentLabels is { } labels && !double.IsNaN(value))
         {
             var index = Math.Round((value - Minimum) / Detent, MidpointRounding.AwayFromZero);
@@ -792,7 +783,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         }
     }
 
-    // ----- The pointer, the wheel, touch and keys -----
+    // ----- Pointer, wheel, touch and keyboard input -----
 
     private bool OnIcon(Point at) => new Rect(Slot()).Contains(at);
 
@@ -801,7 +792,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         base.OnMouseEnter(e);
         _touch = e.StylusDevice is not null;
 
-        // (Under a neighbour's open pill, 5.4.4, it opens once the pointer rests on it; a press or the wheel opens it at once.)
+        // Under a neighbour's open pill, hover opens after a dwell; a press or wheel opens immediately.
         if (!_touch && !_wantOpen && UnderOpenNeighbour())
             OpenLater();
         else if (!_touch)
@@ -823,7 +814,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         e.Handled = true;
         _touch = e.StylusDevice is not null;
 
-        // A first touch only opens it (a finger has no hover to show what it is first).
+        // First touch only opens (touch has no hover preview).
         if (_touch && OpenNow <= 0 && !_wantOpen)
         {
             Expand();
@@ -833,7 +824,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         Expand();
         var at = e.GetPosition(this);
 
-        // A readout face is no switch: a double-click on it puts the default back too (5.4.4: the speed's "1.5x" back to 1x).
+        // A text face is not a toggle: double-click on it also restores the default (e.g. "1.5x" to 1x).
         if (e.ClickCount == 2 && Icon == PillIcon.Readout && !IsIconToggle && OnIcon(at))
         {
             ResetToDefault();
@@ -880,7 +871,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
                 ClickIcon();
         }
 
-        // (A lifted finger is no pointer resting on it: it closes 2.5 s after the last touch.)
+        // Touch: close 2.5 s after the last touch (no hover to keep it open).
         if (icon || dragged || _touch)
             CloseLater();
     }
@@ -905,7 +896,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     {
         base.OnGotKeyboardFocus(e);
 
-        // Reached with the keyboard (Tab): open while it has it, so the value it steps is in sight.
+        // Keyboard focus (Tab): open while focused so the stepped value is visible.
         if (InputManager.Current.MostRecentInputDevice is KeyboardDevice)
         {
             _keyOpened = true;
@@ -923,7 +914,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         InvalidateVisual();
     }
 
-    /// <summary>The keys it keeps while it has the keyboard (MainWindow.KeyBelongsToFocus): the arrows, Page Up / Down, Home, End, and Enter for its icon's switch.</summary>
+    /// <summary>Keys owned while focused (MainWindow.KeyBelongsToFocus): arrows, Page Up/Down, Home, End, and Enter for the icon toggle.</summary>
     public bool OwnsKey(Key key, ModifierKeys modifiers) => modifiers == ModifierKeys.None
         && (key is Key.Left or Key.Right or Key.Up or Key.Down or Key.PageUp or Key.PageDown or Key.Home or Key.End || (key == Key.Enter && IsIconToggle));
 
@@ -948,7 +939,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         }
     }
 
-    // ----- Drawing -----
+    // ----- Rendering -----
 
     protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
     {
@@ -959,7 +950,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
 
     private Brush Themed(string key, Brush fallback) => TryFindResource(key) as Brush ?? fallback;
 
-    // A brush set in place of the theme's (5.4.4), else the theme's.
+    // Override brush if set, else the theme resource.
     private Brush Look(DependencyProperty over, string key, Brush fallback) => GetValue(over) as Brush ?? Themed(key, fallback);
 
     protected override void OnRender(DrawingContext drawing)
@@ -971,14 +962,14 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         var focused = IsKeyboardFocused;
         if (open <= 0)
         {
-            // The icon alone, on a well while the pointer or the keyboard is on it.
+            // Collapsed: icon only, on a well while hovered or focused.
             if (IsMouseOver || IsMouseCaptured || focused)
                 drawing.DrawRoundedRectangle(surface, focused ? FocusPen() : null, new Rect(slot), slot.Height / 2, slot.Height / 2);
             DrawIcon(drawing, slot, text);
             return;
         }
 
-        // (A readout face is the readout: no other is made, 5.4.4.)
+        // A text face is the readout; no separate readout is built.
         var readout = Icon == PillIcon.Readout ? null : Readout(text);
         var parts = Lay(open);
         var full = Lay(1);
@@ -988,7 +979,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         pill.Inflate(-0.5, -0.5);
         drawing.DrawRoundedRectangle(surface, edge, pill, radius, radius);
 
-        // While it opens or closes, what is inside fades with it and is cut to the pill as it is.
+        // During the transition, contents fade with openness and are clipped to the current pill.
         var growing = open < 1;
         if (growing)
         {
@@ -1008,7 +999,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         if (x > full.TrackFrom)
             drawing.DrawRoundedRectangle(accent, null, new Rect(full.TrackFrom, middle - TrackThickness / 2, x - full.TrackFrom, TrackThickness), TrackThickness / 2, TrackThickness / 2);
 
-        // The detents (5.4.4): a dot at each, the accent's up to the thumb, the groove's (stronger) past it.
+        // Detent dots: accent up to the thumb, stronger groove colour beyond.
         if (Detents() is > 0 and var detents)
         {
             var step = Detent / (Maximum - Minimum) * (full.TrackTo - full.TrackFrom);
@@ -1031,7 +1022,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         DrawIcon(drawing, slot, text);
     }
 
-    // The readout's text, made again only when its words, its brush or the screen's scale change; the readout's room grows to the widest.
+    // Readout FormattedText, rebuilt only on text, brush or DPI change; its reserved width grows to the widest seen.
     private FormattedText Readout(Brush brush)
     {
         var words = ReadoutText();
@@ -1094,9 +1085,8 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         drawing.DrawGeometry(null, _iconPen, _icons[index] ??= IconGeometry(Icon, waves, crossed, new Point((slot.Width - IconBox) / 2, (slot.Height - IconBox) / 2)));
     }
 
-    // A readout face (5.4.4): the value's words in the middle of the slot, made again only when they, their brush, the slot's width or the
-    // screen's scale change. 5.5A: the slot is the Volume pill's 24 DIPs; words wider than it less FacePad either side ("0.25x", "1.25x")
-    // are drawn smaller to fit, "1x" and "2x" at the bar's full size.
+    // Text face: value text centred in the slot, rebuilt only on text, brush, slot width or DPI change. With the 24 DIP slot, text wider
+    // than the slot minus FacePad on each side ("0.25x", "1.25x") is shrunk to fit; "1x" and "2x" render at full size.
     private void DrawFace(DrawingContext drawing, Size slot, Brush brush)
     {
         var words = ReadoutText();
@@ -1111,16 +1101,15 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
     }
 
     /// <summary>
-    /// A readout face's words as drawn (5.4.4): the bar's text (the window's face, <see cref="FaceFontSize"/> DIPs, whatever the system's text
-    /// size; Segoe UI's figures are tabular, every digit one width), in WPF's ideal text layout, so their width in DIPs is the same at any scale.
-    /// 5.5A: words wider than <paramref name="room"/> are drawn smaller to fit it (their width follows the size), never below
+    /// Builds text-face FormattedText: window typeface at <see cref="FaceFontSize"/> DIPs regardless of system text scaling (Segoe UI digits
+    /// are tabular), Ideal formatting so DIP width is scale-independent. Text wider than <paramref name="room"/> is shrunk to fit, never below
     /// <see cref="FaceLeastSize"/>.
     /// </summary>
     internal static FormattedText FaceText(string words, FontFamily family, Brush brush, double pixelsPerDip, double room = double.PositiveInfinity)
     {
         var text = new FormattedText(words, CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
             new Typeface(family, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), FaceFontSize, brush, pixelsPerDip);
-        // (Down a tenth of a DIP at a time from the proportional size, looked at again: a scale's glyph metrics need not shrink exactly in step.)
+        // Step down 0.1 DIP from the proportional size and re-measure: glyph metrics need not scale linearly.
         var size = FaceFontSize;
         for (var pass = 0; pass < 4 && room > 0 && double.IsFinite(room) && text.WidthIncludingTrailingWhitespace > room && size > FaceLeastSize; pass++)
         {
@@ -1131,7 +1120,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         return text;
     }
 
-    /// <summary>The speaker's waves for a level (0 to 1 of the range) and whether it is muted: crossed out (no waves) when muted or at the least; else 1 to a third, 2 to two thirds, 3 above.</summary>
+    /// <summary>Speaker wave count for a level (0..1) and mute: crossed (none) when muted or at minimum; else 1 up to 1/3, 2 up to 2/3, 3 above.</summary>
     internal static (int Waves, bool Crossed) SpeakerLevel(double fraction, bool muted) =>
         muted || fraction <= 0 ? (0, true) : fraction <= 1.0 / 3 ? (1, false) : fraction <= 2.0 / 3 ? (2, false) : (3, false);
 
@@ -1154,12 +1143,12 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         return geometry;
     }
 
-    /// <summary>One stroke of an icon: a line, or (a radius) a clockwise arc of a circle, from one point to another.</summary>
+    /// <summary>Icon stroke: a line, or (with a radius) a clockwise circular arc between two points.</summary>
     internal readonly record struct PillStroke(Point From, Point To, double Radius);
 
     /// <summary>
-    /// The icon's strokes in a 16-DIP box at <paramref name="origin"/> (CLAUDE.md 10.4, vector strokes): the speaker is a box and a cone,
-    /// with <paramref name="waves"/> arcs before it, or a cross there (<paramref name="crossed"/>); the magnifier a ring and its handle.
+    /// Vector icon strokes in a 16 DIP box at <paramref name="origin"/>: speaker = box + cone with <paramref name="waves"/> arcs, or a cross
+    /// when <paramref name="crossed"/>; magnifier = ring + handle.
     /// </summary>
     internal static PillStroke[] IconStrokes(PillIcon icon, int waves, bool crossed, Point origin)
     {
@@ -1184,7 +1173,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
             return [.. strokes];
         }
 
-        // Each wave an arc about the cone's mouth, 45 degrees either side of straight ahead.
+        // Each wave: an arc centred on the cone mouth, +/-45 degrees from the axis.
         for (var wave = 0; wave < Math.Max(0, Math.Min(waves, 3)); wave++)
         {
             var radius = 2.5 + wave * 2;
@@ -1195,7 +1184,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
         return [.. strokes];
     }
 
-    // ----- UI Automation: a slider (RangeValue) named as the XAML names it, with its icon as a child toggle ("Mute Player") -----
+    // ----- UI Automation: RangeValue slider (XAML name) with the icon as a child toggle ("Mute Player") -----
 
     protected override AutomationPeer OnCreateAutomationPeer() => new PillPeer(this);
 
@@ -1209,7 +1198,7 @@ public sealed class ExpandablePillSlider : FrameworkElement, IOwnsKeys
 
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Slider;
 
-        // RangeValue always; Value too (read-only) when its detents have words (5.4.4: the speed's "1.25x", where RangeValue gives its step).
+        // Always RangeValue; also read-only Value when detents are labelled ("1.25x" vs the RangeValue step index).
         public override object? GetPattern(PatternInterface patternInterface) => patternInterface switch
         {
             PatternInterface.RangeValue => this,

@@ -8,24 +8,22 @@ using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
-// The unified timeline's drawing: the rows' content (wells, blocks, frames, waveforms, fades, gain lines, keys, pills,
-// seams, the end shade), the blocks' words, the headers, the overlay (the block being dragged, hover handles, the drop
-// mark), and the two lines that slide (the playhead and the skim line). Everything made in code is frozen; what a block
-// is drawn with is made once and kept while the block keeps its place (its outline, keys, fades, words), and the
-// waveforms are frozen tiles kept per zoom step (WaveTiles), so drawing the rows again allocates next to nothing.
+// Unified timeline rendering: row content (wells, blocks, thumbnails, waveforms, fades, gain lines, keys, pills, seams, end shade),
+// block labels, headers, overlay (dragged block, hover handles, drop mark), and the translated playhead and skim line. All code-built
+// resources are frozen; per-block geometry is cached while the block is unchanged, and waveforms are frozen per-zoom-step tiles
+// (WaveTiles), so redraws allocate almost nothing.
 public sealed partial class UnifiedTimelineControl
 {
-    // Where the drawing in laid-out pixels starts, in steps of this (so that what is drawn again in the same place is made
-    // of the same numbers, and the tiles' placements are found again rather than made).
+    // Drawing origin quantum in layout pixels: redraws at the same place reuse identical numbers, so cached tile placements hit.
     private const double OriginStep = 1024;
 
-    // How far down a block a J/L cut's sound band starts, as a fraction of its height (every other sound is drawn across the block).
+    // J/L audio band top as a fraction of block height (other audio spans the full block).
     private const double SoundBandTop = 0.6;
 
-    // How see-through a waveform drawn across a block's pictures is (5.3-Stage2): its frames show through it.
+    // Waveform opacity over thumbnails (frames show through).
     private const double WaveOverPictures = 0.5;
 
-    // The width of a switch on a header, and the order the switches are laid in.
+    // Header switch width and layout order.
     private const double SwitchSize = 18;
     private static readonly RowSwitches[] SwitchOrder = [RowSwitches.Hidden, RowSwitches.Muted, RowSwitches.Soloed, RowSwitches.Voice, RowSwitches.Locked];
     private const RowSwitches AllSwitches = RowSwitches.Hidden | RowSwitches.Muted | RowSwitches.Soloed | RowSwitches.Voice | RowSwitches.Locked;
@@ -35,7 +33,7 @@ public sealed partial class UnifiedTimelineControl
     private const string ChevronRight = Glyphs.ChevronRight, ChevronDown = Glyphs.ChevronDown;
     private const string SwitchGlyphText = Glyphs.Switch;
 
-    // How far a header's second chevron (its sound's stack, beside its layers') is from its first.
+    // Offset of the audio-stack chevron from the visual-stack chevron.
     private const double ChevronStep = 16;
 
     private static readonly Typeface LabelFace = new("Segoe UI");
@@ -82,51 +80,50 @@ public sealed partial class UnifiedTimelineControl
     private static readonly Brush SkimBrush = Solid(130, 255, 255, 255);
     private static readonly Geometry PlayheadCap = FrozenTriangle();
 
-    // What was drawn of the rows, in laid-out pixels, and where the drawing's own x = 0 is in them.
+    // Drawn layout-pixel range and the drawing's x = 0 within it.
     private double _originX, _renderedFrom, _renderedTo = double.NegativeInfinity;
 
-    // The heights the playhead's and the skim line's drawings were made for.
+    // Heights the playhead and skim line drawings were built for.
     private double _playheadHeight = -1, _skimHeight = -1;
 
-    // Waveform tiles still to be made after a render that could not make them all: drawn at the next quiet moment.
+    // Waveform tiles deferred by a budget-limited render; built at the next idle render.
     private bool _tilesPending;
     private Action? _drawPendingTiles;
 
-    // The waveforms through a zoom (5.4.4): the scale the rows were last drawn at; whether it is moving (it changed, and less than
-    // WaveSettleMs ago), so tiles of a step either side stand in for the ones not made; whether a stand-in (or nothing) was drawn while it
-    // moved; and the timer that makes the crisp tiles once it rests (made at the first zoom), with the larger budget of that one render.
+    // Zoom-time waveform state: last drawn scale; moving flag (changed < WaveSettleMs ago, so adjacent-step tiles stand in); whether a
+    // stand-in or gap was drawn; and the settle timer (created on first zoom) that redraws crisp tiles with a larger one-render budget.
     private const int WaveSettleMs = 100;
     private double _waveScale;
     private bool _waveMoving, _waveOwed, _waveSettling;
     private DispatcherTimer? _waveSettle;
 
-    // A step's finer tiles that make one tile, found (a stand-in, at most 2^StandInOctaves).
+    // Scratch buffer of finer-step tiles composing one stand-in (at most 2^StandInOctaves).
     private readonly StreamGeometry?[] _finer = new StreamGeometry?[1 << WaveTiles.StandInOctaves];
 
-    // Where files dragged over the control would land (ShowDropMark).
+    // File-drop preview target (ShowDropMark).
     private sealed record DropMark(TimelineRow? Row, double Seconds, int Count, bool Stack);
 
     private DropMark? _dropMark;
     private FormattedText? _dropWords;
     private string? _dropWordsOf;
 
-    // The words on a new track's insertion bar (5.4A), laid out once for the screen's DPI.
+    // New-track insertion bar label, formatted once per DPI.
     private FormattedText? _newTrackWords;
     private const string NewTrackWords = "+ New Video Track";
     private FormattedText? _emptyHint;
 
-    // Words laid out once: glyphs and short texts, by text, colour, size and face.
+    // FormattedText cache keyed by text, colour, size and typeface.
     private readonly Dictionary<(string Text, Brush Brush, double Size, bool Icon), FormattedText> _words = [];
 
-    // The placements of the waveform tiles, frozen and found again while nothing moved (see OriginStep).
+    // Frozen waveform tile transforms, reused while unchanged (see OriginStep).
     private readonly Dictionary<(double, double, double, double), MatrixTransform> _placements = [];
 
-    // The see-through versions of the colours blocks and sounds are drawn in, by colour and how see-through.
+    // Frozen translucent brush cache keyed by colour and opacity.
     private static readonly Dictionary<(Brush, int), Brush> TranslucentBrushes = [];
 
     protected override void OnRender(DrawingContext drawing)
     {
-        // The panel behind everything: what shows between the lanes, and what makes the whole control answer the pointer.
+        // Background panel: visible between lanes and makes the whole control hit-testable.
         drawing.DrawRectangle(_panel, null, new Rect(RenderSize));
 
         var dpi = VisualTreeHelper.GetDpi(this);
@@ -143,7 +140,7 @@ public sealed partial class UnifiedTimelineControl
         PlaceLine(_playhead, _playheadSeconds, ref _playheadHeight, playhead: true);
         PlaceLine(_skim, _skimSeconds, ref _skimHeight, playhead: false);
 
-        // Waveform tiles left to make: the next render makes them, once input and layout are done.
+        // Deferred tiles: schedule another render after input and layout.
         if (_tilesPending)
         {
             _drawPendingTiles ??= () =>
@@ -155,26 +152,26 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    // ----- The rows -----
+    // ----- Rows -----
 
     private void RenderContent(DpiScale dpi)
     {
         _contentDirty = false;
         var (width, scale, view) = (TimeAreaWidth, PixelsPerSecond, ViewOffsetX);
 
-        // Half a view either side is drawn too: a pan that stays within it only slides what is drawn.
+        // Over-draw half a view on each side so pans within it only translate.
         var margin = Math.Max(width / 2, 256);
         (_renderedFrom, _renderedTo) = (view - margin, view + width + margin);
         var origin = Math.Floor(_renderedFrom / OriginStep) * OriginStep;
         if (origin != _originX)
         {
-            // The overlay is drawn from the same origin: it is drawn again with the rows.
+            // The overlay shares the origin, so redraw it with the rows.
             _originX = origin;
             _overlayDirty = true;
         }
 
-        // The scale changed since the rows were last drawn (both wheel glides, the zoom slider, a pinch, a splitter, a tab): moving, until
-        // WaveSettleMs after the last change. The first render ever is not a move: it makes its tiles as always.
+        // Scale changed since last draw (wheel glide, zoom slider, pinch, splitter, tab): moving until WaveSettleMs after the last change.
+        // The first render is never a move.
         if (_waveScale > 0 && scale != _waveScale)
             RestartWaveSettle();
         _waveScale = scale;
@@ -185,7 +182,7 @@ public sealed partial class UnifiedTimelineControl
 
         using (var drawing = _content.RenderOpen())
         {
-            // Under the last track: the same dark well, down to the toolbar, however few tracks there are.
+            // Fill below the last track with the well colour down to the toolbar.
             if (width > 0 && ActualHeight > _extent)
                 drawing.DrawRectangle(_inset, null, new Rect(_renderedFrom - _originX, _extent, _renderedTo - _renderedFrom, ActualHeight - _extent));
 
@@ -193,8 +190,7 @@ public sealed partial class UnifiedTimelineControl
             {
                 var (from, to) = (_renderedFrom - _originX, _renderedTo - _originX);
 
-                // The lanes' wells, sunk by the theme's edge where it draws one (along their tops and feet; their ends are
-                // drawn beside the headers, where they stay).
+                // Lane wells with the theme's sunken edge along top and bottom (ends are drawn beside the static headers).
                 foreach (var lane in _lanes)
                 {
                     if (lane.Height < 0.5)
@@ -208,7 +204,7 @@ public sealed partial class UnifiedTimelineControl
                     }
                 }
 
-                // After the end of the sequence: the room a clip can be dropped or dragged into.
+                // Past-end shade (drop/drag target area).
                 if (double.IsFinite(_sequenceSeconds) && scale > 0)
                 {
                     var end = _sequenceSeconds * scale - _originX;
@@ -235,12 +231,10 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    // ----- What slides: a fold put back or taken out, an edge dragged into a seam (4.4 BugHunt) -----
+    // ----- Slide rendering: unfold/refold and seam-edge drags -----
 
-    // How what follows a moment is drawn while it slides, in laid-out pixels: the blocks (and seams, pills) starting at or
-    // after At are drawn Dx along; for a fold put back, the blocks of the stretch that came back (starting from WipeFrom,
-    // before At) are wiped in up to WipeTo; for one taken out, where it was is shaded from GhostFrom to GhostTo. On the rows
-    // in Rows (by key; null: every row that is not locked).
+    // Slide parameters in layout pixels: content starting at or after At is offset by Dx; on unfold, the restored range (from WipeFrom,
+    // before At) is wiped in up to WipeTo; on refold, GhostFrom..GhostTo is shaded. Applies to Rows (keys; null = all unlocked).
     private readonly record struct Shift(double At, double Dx, double WipeFrom, double WipeTo, double GhostFrom, double GhostTo, HashSet<object>? Rows)
     {
         public bool Wipes => !double.IsNaN(WipeFrom);
@@ -248,7 +242,7 @@ public sealed partial class UnifiedTimelineControl
         public bool Ghosts => !double.IsNaN(GhostFrom) && GhostTo - GhostFrom > 0.5;
     }
 
-    /// <summary>What slides now: a fold sliding into place, or the later blocks of an edge dragged at a seam; null for nothing.</summary>
+    /// <summary>Active slide (fold animation or seam-edge drag), or null.</summary>
     private Shift? CurrentShift(double scale)
     {
         if (scale <= 0)
@@ -269,14 +263,12 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    // Whether a lane slides with what is sliding: its row is among those named, or (none named) its track is not locked. The
-    // blurred background never does (it lasts as long as the sequence), in a stack or not.
+    // Lane participates if its row is listed, or (none listed) its track is unlocked; the blur background never slides.
     private static bool Applies(in Lane lane, Shift shift) =>
         lane.Row.Kind != TimelineRowKind.Background
         && (shift.Rows is { } rows ? rows.Contains(lane.Row.Key) : (lane.Row.State & RowSwitches.Locked) == 0);
 
-    // Where a block (or a pill, a stretch) starting at a laid-out x is while something slides: moved (Dx along), wiped in
-    // (the stretch that came back), or where it is.
+    // Slide disposition for content at layout x: offset by Dx, wiped in (restored range), or unchanged.
     private enum Slid { Still, Moved, Wiped }
 
     private static Slid SlidOf(Shift? shift, double left) =>
@@ -287,7 +279,7 @@ public sealed partial class UnifiedTimelineControl
 
     private void DrawLane(DrawingContext drawing, in Lane lane, double from, double to, DpiScale dpi, Shift? shift, Transform? move)
     {
-        // A stack hidden takes no height, and is nothing to draw.
+        // Zero-height (hidden) lanes draw nothing.
         if (lane.Height < 0.5)
             return;
 
@@ -296,7 +288,7 @@ public sealed partial class UnifiedTimelineControl
         if (row.Kind == TimelineRowKind.Empty)
             drawing.DrawRectangle(EmptyRowFill, EmptyRowOutline, new Rect(from, lane.Top + 3, to - from, Math.Max(lane.Height - 6, 1)));
 
-        // A fold being put back is wiped in, left to right, inside the stretch that came back.
+        // Unfold: wipe in left to right within the restored range.
         Geometry? wipe = null;
         if (shift is { Wipes: true } wiping)
         {
@@ -318,7 +310,7 @@ public sealed partial class UnifiedTimelineControl
                 if (rect.Right + dx < from || rect.Left + dx > to)
                     continue;
 
-                // Moved by one shared transform: what the block is drawn with (its outline, keys, fades) stays as it was made.
+                // Offset via one shared transform so cached block geometry (outline, keys, fades) is reused.
                 drawing.PushTransform(move);
                 DrawBlock(drawing, lane, block, rect, rect.Left, null, from - dx, to - dx, dpi);
                 drawing.Pop();
@@ -339,8 +331,8 @@ public sealed partial class UnifiedTimelineControl
             DrawBlock(drawing, lane, block, rect, rect.Left, null, from, to, dpi);
         }
 
-        // The one bar a closed sound stack is: every stream that is not muted, in one waveform. What a drag carries along is drawn on
-        // the overlay with its bar, where it is now (Pass 5.5.1): these rows are drawn once as the drag begins and not again while it goes.
+        // Collapsed audio stack summary bar: all unmuted streams in one waveform. Dragged content draws its bar on the overlay at its live
+        // position, since rows are drawn once at drag start and not during the drag.
         if (lane.Summary && lane.Parent >= 0 && scale > 0)
         {
             foreach (var sibling in _lanes[lane.Parent].Row.Children)
@@ -358,7 +350,7 @@ public sealed partial class UnifiedTimelineControl
 
         if (lane.Detailed && scale > 0)
         {
-            // A crossfade across a cut: a box over the two blocks, as long as the crossfade and centred on the cut.
+            // Crossfade box centred on the cut, as long as the crossfade.
             foreach (var block in row.Blocks)
             {
                 if (block.CrossfadeIn <= 0.01 || IsDragged(block))
@@ -373,7 +365,7 @@ public sealed partial class UnifiedTimelineControl
         if (scale <= 0)
             return;
 
-        // Folded dead air that was put back: shaded, edged, and on a lane in full its Hide pill, which folds it again.
+        // Unfolded dead-air ranges: shaded, edged, with a Hide pill on full-size lanes.
         var reveals = row.Reveals;
         for (var i = 0; i < reveals.Count; i++)
         {
@@ -388,7 +380,7 @@ public sealed partial class UnifiedTimelineControl
             DrawReveal(drawing, lane, left - _originX, right - _originX, dpi.PixelsPerDip, pill: slid != Slid.Wiped);
         }
 
-        // Where a fold is being taken out: shaded, closing up.
+        // Refold in progress: shade the closing range.
         if (shift is { Ghosts: true } ghost && ghost.GhostTo - _originX >= from && ghost.GhostFrom - _originX <= to)
             drawing.DrawRectangle(RevealGhost, null, new Rect(ghost.GhostFrom - _originX, lane.Top + 1, ghost.GhostTo - ghost.GhostFrom, Math.Max(lane.Height - 2, 1)));
 
@@ -398,8 +390,8 @@ public sealed partial class UnifiedTimelineControl
         {
             var x = seams[i].Seconds * scale;
 
-            // The seam whose edge is dragged: at the earlier clip's end it moves with the edge (the fold's head shown again
-            // or folded more), at the later clip's start it stays (its tail); gone once the fold is all shown again.
+            // Seam under an edge drag: follows the earlier clip's end (fold head), stays at the later clip's start (fold tail); hidden
+            // once fully unfolded.
             if (grip is not null && Equals(seams[i].Fold, grip.Mark.Fold))
             {
                 if (grip.Seconds >= grip.Mark.FoldedSeconds - 1e-6)
@@ -417,12 +409,12 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    // Whether a row's sound is in its closed stack's one bar: a lane of the sound's stack, not muted.
+    // True if a row's audio feeds its collapsed stack's summary bar (unmuted audio-stack lane).
     private static bool HeardInBar(TimelineRow row) => row.Stack == ChildStack.Audio && (row.State & RowSwitches.Muted) == 0;
 
     /// <summary>
-    /// A block's sound in its closed stack's one bar (<paramref name="bar"/>, the Summary lane), cut to where the block is and laid from
-    /// <paramref name="soundLeft"/> (where its file's stretch begins: its left edge, or where it was while a trim moves its start).
+    /// Draws a block's audio into its collapsed stack's summary lane (<paramref name="bar"/>), clipped to the block and laid from
+    /// <paramref name="soundLeft"/> (media range start: left edge, or the pre-trim position during a start trim).
     /// </summary>
     private void DrawBarWave(DrawingContext drawing, in Lane bar, TimelineBlock block, double soundLeft, double from, double to, double scale, DpiScale dpi)
     {
@@ -433,8 +425,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The closed stack's one bar a row's sound is drawn in (Pass 5.5.1): the Summary lane under the row's parent, while the row is a lane
-    /// of its sound stack that is heard; -1 for none (the stack open, the lane muted, a row of no sound stack).
+    /// Summary-lane index under the row's parent for an audible audio-stack lane; -1 when the stack is open, the lane is muted, or there
+    /// is no audio stack.
     /// </summary>
     private int BarLaneOf(TimelineRow row)
     {
@@ -450,8 +442,7 @@ public sealed partial class UnifiedTimelineControl
         return -1;
     }
 
-    // A stretch of dead air that was put back: a faint shade over it, a dashed line at either end, and (on a lane in full,
-    // wide enough) its Hide pill.
+    // Unfolded range: faint shade, dashed lines at both ends, Hide pill on full-size lanes when wide enough.
     private void DrawReveal(DrawingContext drawing, in Lane lane, double left, double right, double pixelsPerDip, bool pill)
     {
         if (right - left < 0.5)
@@ -475,9 +466,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// Where a stretch's Hide pill is (from <paramref name="left"/> to <paramref name="right"/> along the lane, in the same
-    /// x as they are given): centred on the stretch, under the band of the fade handles; the arrows and "Hide" where the
-    /// stretch has room for both (<paramref name="words"/>), the arrows alone where it has room for them, none (Empty) below that.
+    /// Hide pill rect for a range [<paramref name="left"/>, <paramref name="right"/>] (same x space): centred, below the fade-handle band;
+    /// arrows plus "Hide" when wide enough (<paramref name="words"/>), arrows only when narrower, Empty below that.
     /// </summary>
     private Rect RevealPill(in Lane lane, double left, double right, double pixelsPerDip, out bool words)
     {
@@ -500,8 +490,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// Where a block is drawn, with its drawing's x = 0 at <paramref name="originX"/> of the laid-out rows: filling its lane
-    /// when it gives no place of its own (Top and Height 0), else at its place in the row scaled to the lane's height.
+    /// Block rect with drawing x = 0 at layout <paramref name="originX"/>: fills the lane when Top and Height are 0, else its Top/Height
+    /// scaled to the lane height.
     /// </summary>
     private static Rect BlockRect(in Lane lane, TimelineBlock block, double originX)
     {
@@ -521,11 +511,10 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// Draws a block: its colour, its pictures and its sound (both laid from <paramref name="contentLeft"/>, where its file's
-    /// stretch begins: its left edge, or where it was while its start is trimmed, or slid by a slip), and, on a lane drawn
-    /// in full, its gain line, fades, keys and badge; then its outline when it is selected. A J/L cut's sound reaches out
-    /// past its edges in the lower part (<paramref name="splitNow"/>: the cut being dragged, in place of the block's). A stack
-    /// sound is laid from <paramref name="stackLeft"/> when given (a slip: its lanes stay where they play), else from contentLeft.
+    /// Draws a block: fill, thumbnails and audio laid from <paramref name="contentLeft"/> (media range start: left edge, pre-trim position
+    /// during a start trim, or slipped), and on full-size lanes gain line, fades, keys and badge; outline when selected. J/L audio extends
+    /// past the edges in the lower band (<paramref name="splitNow"/> overrides during a J/L drag). Stack audio is laid from
+    /// <paramref name="stackLeft"/> when given (slips do not move lanes), else contentLeft.
     /// </summary>
     private void DrawBlock(DrawingContext drawing, in Lane lane, TimelineBlock block, Rect rect, double contentLeft, (double Lead, double Tail)? splitNow,
         double from, double to, DpiScale dpi, double? stackLeft = null)
@@ -533,16 +522,14 @@ public sealed partial class UnifiedTimelineControl
         var scale = PixelsPerSecond;
         var detailed = lane.Detailed;
         var (lead, tail) = splitNow ?? block.AudioSplit ?? (0.0, 0.0);
-        // A video's block with a sound stack shows what its stack's audible lanes play, as one waveform (5.3-Stage2, the user's call:
-        // StackSound, which the host combines), never its own sound beside it; one with no stack sound shows its own (a file of one
-        // stream, the user's Q1, even beside a clip with a stack on the same track). A clip whose sound is in its stack has none of its
-        // own on its block (unpacked, it is silent; unlinked, its sound is a block of its own: AddTrackBlocks), so nothing is drawn twice.
-        // The closed stack's one bar draws its lanes itself (DrawLane).
+        // A video block with StackSound (host-combined audible lanes) draws only that; without it, its own audio (e.g. single-stream files,
+        // even beside stacked clips). Clips whose audio lives in the stack carry none on the block (unpacked = silent; unlinked = separate
+        // block, AddTrackBlocks), so nothing draws twice. The collapsed summary bar draws its lanes itself (DrawLane).
         var stackSound = lane.Row.Kind == TimelineRowKind.Video && !lane.Summary ? block.StackSound : null;
         var wave = lane.Summary ? null : stackSound ?? block.SoundWindow ?? WindowOf(block, rect.Width, scale);
         var split = detailed && scale > 0 && (lead != 0 || tail != 0);
 
-        // A J/L cut: where the sound reaches out past the picture, a tab of the block's colour under its lower part.
+        // J/L extension: block-coloured tab under the lower band where audio extends past the video.
         var band = Rect.Empty;
         if (split)
         {
@@ -577,9 +564,8 @@ public sealed partial class UnifiedTimelineControl
             pictures = true;
         }
 
-        // Its sound: across the whole block (5.3-Stage2, the user's call), see-through over its pictures, which show through it
-        // (no shade under it); a J/L cut's still in its band below (after the clip). The stack's sound is laid on the block's own
-        // file time from its left edge (where its lanes play: a slip moves its frames, never them).
+        // Audio spans the whole block, translucent over thumbnails (no backing shade); J/L audio stays in its lower band. Stack audio is in
+        // the block's file time from its left edge (a slip moves thumbnails, not the lanes).
         if (wave is { } sound && (!split || stackSound is not null) && scale > 0)
         {
             var soundRect = new Rect(rect.Left, rect.Top + 1, rect.Width, Math.Max(rect.Height - 2, 1));
@@ -592,8 +578,7 @@ public sealed partial class UnifiedTimelineControl
             if (block.Gain is { } gain)
                 DrawGain(drawing, rect, gain, scale);
 
-            // Its fades: shaded above their curves, with a handle where each ends (at the corners while there is none,
-            // drawn on the overlay while the pointer is over the block).
+            // Fades shaded above their curves with end handles (corner handles when zero length are drawn on the overlay on hover).
             if (block.Fades is { } fades && block.FadeEdit is not null)
                 DrawFades(drawing, block, rect, fades, scale);
 
@@ -604,11 +589,11 @@ public sealed partial class UnifiedTimelineControl
                 drawing.DrawGeometry(ThemeManager.KeyFill, KeyOutline, block.KeyShape);
             }
 
-            // The beats of its sound (5.2B, the beat grid): laid with its file's stretch, so they stay on their moments as its start is trimmed.
+            // Beat grid, laid in media time so beats stay put under start trims.
             if (block.Beats is { Count: > 0 } beats)
                 DrawBeats(drawing, beats, rect, contentLeft, from, to);
 
-            // Its own switches at its top right (5.2), its badge left of them.
+            // Block switches top-right, badge to their left.
             var switches = BlockSwitchBoxes(block, rect);
             var free = switches.Lock.IsEmpty ? switches.OnOff : switches.Lock;
             if (block.Badge is { Length: > 0 } badge)
@@ -637,13 +622,12 @@ public sealed partial class UnifiedTimelineControl
             drawing.DrawRoundedRectangle(null, SelectedOutline, new Rect(rect.Left + 0.75, rect.Top + 0.75, Math.Max(rect.Width - 1.5, 1), Math.Max(rect.Height - 1.5, 1)), 3, 3);
     }
 
-    // The beat grid's tick (5.2B): faint, a pixel wide.
+    // Beat tick pen: faint, 1 px.
     private static readonly Pen BeatTick = Frozen(new Pen(Solid(140, 0xFF, 0xFF, 0xFF), 1));
 
     /// <summary>
-    /// A block's beats: a short tick each along its foot, from <paramref name="contentLeft"/> (where its file's stretch is laid), only those
-    /// on the block and in the stretch drawn (<paramref name="from"/> to <paramref name="to"/>). The beats are in order, so the first past
-    /// the right ends it.
+    /// Draws beat ticks along the block bottom from <paramref name="contentLeft"/>, only within the block and [<paramref name="from"/>,
+    /// <paramref name="to"/>]. Beats are sorted, so iteration stops at the first past the right edge.
     /// </summary>
     private static void DrawBeats(DrawingContext drawing, IReadOnlyList<double> beats, Rect rect, double contentLeft, double from, double to)
     {
@@ -662,7 +646,7 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    /// <summary>A block's sound given the old way (peaks by fraction, in pixels: TimelineBlock.Peaks), as a window by time.</summary>
+    /// <summary>Converts legacy fraction/pixel peaks (TimelineBlock.Peaks) to a time-based waveform window.</summary>
     private static WaveWindow? WindowOf(TimelineBlock block, double width, double scale)
     {
         if (block.Peaks is not { } peaks || peaks.Data.Count == 0 || scale <= 0)
@@ -676,8 +660,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A block's pictures on its file's time grid: slots as wide as a picture is at the block's height, slot k showing the
-    /// frame nearest the middle of its stretch of the file. Only the slots in view are drawn.
+    /// Draws thumbnails on the file's time grid: slots one frame-width wide at block height, slot k showing the frame nearest its
+    /// centre time. Only visible slots are drawn.
     /// </summary>
     private static void DrawFilm(DrawingContext drawing, FilmWindow film, Rect rect, double contentLeft, double from, double to, double scale)
     {
@@ -694,7 +678,7 @@ public sealed partial class UnifiedTimelineControl
         if (right <= left)
             return;
 
-        // Where the file's start would be: the slots are counted from there, so they stay where they are in the file.
+        // Slots are indexed from the file start's x so they stay fixed in media time.
         var origin = contentLeft - film.MediaFrom * fileScale;
         var firstSlot = (long)Math.Floor((left - origin) / slot);
         var lastSlot = (long)Math.Floor((right - origin) / slot);
@@ -706,9 +690,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A stretch of a sound, drawn from the frozen tiles of its zoom step (WaveTiles): each tile placed by one transform
-    /// (stretched by less than two, and as tall as the band at the sound's gain), with a line through the middle so that
-    /// silence still shows. Only what is in view of the band is drawn.
+    /// Draws a waveform range from frozen zoom-step tiles (WaveTiles), each placed by one transform (horizontal stretch &lt; 2x, height =
+    /// band x gain), plus a centre line so silence is visible. Only the visible part of the band is drawn.
     /// </summary>
     private void DrawWave(DrawingContext drawing, WaveWindow wave, double soundLeft, Rect band, double from, double to, double scale, double opacity, double dpiScale)
     {
@@ -721,7 +704,7 @@ public sealed partial class UnifiedTimelineControl
         if (right - left < 0.5)
             return;
 
-        // The stretch of the sound in view, in its own seconds: never before its start or past its end (or the window's).
+        // Visible media-time range, clamped to the audio and window bounds.
         var origin = soundLeft - wave.MediaFrom * fileScale;
         var start = Math.Max((left - origin) / fileScale, 0);
         var end = Math.Min(Math.Min((right - origin) / fileScale, data.Seconds), wave.MediaTo > wave.MediaFrom ? wave.MediaTo + 1 : double.MaxValue);
@@ -737,20 +720,18 @@ public sealed partial class UnifiedTimelineControl
         var stretch = fileScale / bucketScale;
         var moving = _waveMoving;
 
-        // Whole tiles reach past the sound's own stretch (a tile's width at most, and the window's second of slack past its end): the wave is
-        // cut to its band, from its first second shown to its last (5.4.4-Final, the user's: a closed sound stack's bar, which no block shape
-        // clips, drew its wave past its clip's end again).
+        // Whole tiles overshoot the range (up to a tile width, plus the window's 1 s slack): clip to the band's visible range, since the
+        // collapsed summary bar has no block shape to clip it.
         drawing.PushClip(WaveClip(new Rect(Math.Max(left, origin + start * fileScale), band.Top,
             Math.Max(Math.Min(right, origin + end * fileScale) - Math.Max(left, origin + start * fileScale), 0), band.Height)));
         for (var tile = (long)Math.Floor(start / tileSeconds); tile * tileSeconds < end; tile++)
         {
-            // While the zoom moves (5.4.4) only a tile made already is drawn as itself; settled, it is made now if this render may.
+            // While zooming, only existing tiles draw as themselves; when settled, missing tiles are built within the render budget.
             var x = origin + tile * tileSeconds * fileScale;
             var geometry = moving ? WaveTiles.Peek(data, bucket, tile) : WaveTiles.Get(data, bucket, tile, dpiScale);
             if (geometry is null)
             {
-                // Not made (only so many are made a render, so that crossing a zoom step never stalls one; none while the zoom moves):
-                // a step either side stands in, stretched, until it is.
+                // Not built (per-render budget avoids stalls at step crossings; none while zooming): stretch an adjacent step's tiles.
                 if (DrawStandIn(drawing, data, bucket, tile, x, tileSeconds * fileScale, stretch, height, middle, band, fill, start, end, !moving))
                 {
                     if (moving)
@@ -760,7 +741,7 @@ public sealed partial class UnifiedTimelineControl
                     continue;
                 }
 
-                // Nothing to stand in (a sound come into view): made now, while this render may, even while the zoom moves.
+                // No stand-in available (newly visible audio): build now within budget, even while zooming.
                 geometry = moving ? WaveTiles.Get(data, bucket, tile, dpiScale) : null;
                 if (geometry is null)
                 {
@@ -779,16 +760,16 @@ public sealed partial class UnifiedTimelineControl
 
         drawing.Pop();
 
-        // Silence is still a line: the sound is there, and quiet.
+        // Centre line keeps silent audio visible.
         var (lineFrom, lineTo) = (Math.Max(left, origin + start * fileScale), Math.Min(right, origin + end * fileScale));
         if (lineTo > lineFrom)
             drawing.DrawRectangle(fill, null, new Rect(lineFrom, middle - 0.5, lineTo - lineFrom, 1));
     }
 
-    // The waves' clips (5.4.4-Final), frozen and kept while their rectangles are the same (a render of the same rows makes none).
+    // Frozen waveform clip geometries, reused while the rect is unchanged (identical rows allocate none).
     private readonly Dictionary<Rect, RectangleGeometry> _waveClips = [];
 
-    /// <summary>A frozen clip of a wave's rectangle, the same one while the rectangle is the same.</summary>
+    /// <summary>Cached frozen RectangleGeometry for a waveform clip rect.</summary>
     private RectangleGeometry WaveClip(Rect rect)
     {
         if (_waveClips.TryGetValue(rect, out var kept))
@@ -802,8 +783,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A tile's placement (stretch, height, where): frozen, and the same one while the numbers are the same. Not <paramref name="keep"/>
-    /// (5.4.4: the zoom moving, whose numbers never come again), made and not kept.
+    /// Frozen tile transform (stretch, height, offset), cached by value; with <paramref name="keep"/> false (zooming: values never recur)
+    /// it is created without caching.
     /// </summary>
     private MatrixTransform Placed(double scaleX, double scaleY, double x, double y, bool keep = true)
     {
@@ -822,9 +803,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A tile not made, stood in for by those of a zoom step either side (5.4.4), stretched to its place: first the finer ones that make it
-    /// (2 or 4 at half or a quarter the stretch, every one in view), then a coarser one that holds it (cut to it), then the finer ones in
-    /// part. False when none is made. <paramref name="start"/> and <paramref name="end"/> are the sound's seconds in view.
+    /// Draws a missing tile from adjacent zoom steps: all visible finer tiles composing it (2 or 4), else a coarser containing tile
+    /// (clipped), else whichever finer tiles exist. Returns false if none exist. <paramref name="start"/>/<paramref name="end"/> = visible media seconds.
     /// </summary>
     private bool DrawStandIn(DrawingContext drawing, WaveformData data, int bucket, long tile, double x, double tileWidth, double stretch, double height,
         double middle, Rect band, Brush fill, double start, double end, bool keep)
@@ -879,8 +859,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The tiles of a step <paramref name="k"/> octaves finer that make one tile, into _finer (null where not made or not in view): how many
-    /// were found, and how many of them the sound's seconds in view (<paramref name="start"/> to <paramref name="end"/>) want.
+    /// Fills _finer with the tiles <paramref name="k"/> octaves finer that compose one tile (null where missing or not visible); returns
+    /// (found, needed for [<paramref name="start"/>, <paramref name="end"/>]).
     /// </summary>
     private (int Found, int Wanted) FinerTiles(WaveformData data, int finerBucket, long tile, int k, double tileSeconds, double start, double end)
     {
@@ -901,7 +881,7 @@ public sealed partial class UnifiedTimelineControl
         return (found, wanted);
     }
 
-    /// <summary>The scale changed (5.4.4): the crisp tiles wait until it has rested WaveSettleMs (the timer is made at the first zoom, never before).</summary>
+    /// <summary>Scale changed: (re)starts the WaveSettleMs settle timer (created lazily on first zoom).</summary>
     private void RestartWaveSettle()
     {
         if (_waveSettle is null)
@@ -915,8 +895,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The zoom has rested (5.4.4): the timer stops (nothing holds the control alive), and if a stand-in was drawn the rows are drawn once
-    /// more with the crisp tiles, <see cref="WaveTiles.SettleBuilds"/> made in that render (any left follow, a few a render).
+    /// Zoom settled: stops the timer (so it does not root the control) and, if stand-ins were drawn, redraws with up to
+    /// <see cref="WaveTiles.SettleBuilds"/> crisp tiles built that render (the rest follow a few per render).
     /// </summary>
     private void SettleWaves()
     {
@@ -930,16 +910,16 @@ public sealed partial class UnifiedTimelineControl
         InvalidateVisual();
     }
 
-    /// <summary>Waveform tiles made since HandPeg started, and held now (the golden wave-tiles-zoom).</summary>
+    /// <summary>Tiles built since start and currently held (golden wave-tiles-zoom).</summary>
     internal static (int Built, int Kept) WaveTilesForTests => (WaveTiles.Built, WaveTiles.Kept);
 
-    /// <summary>Whether the zoom counts as moving now: stand-ins drawn, nothing made (the golden wave-tiles-zoom).</summary>
+    /// <summary>True while zooming (stand-ins drawn, no builds) (golden wave-tiles-zoom).</summary>
     internal bool WaveZoomMoving => _waveMoving || _waveSettle is { IsEnabled: true };
 
-    /// <summary>Does what the zoom's rest does, at once (the golden wave-tiles-zoom: no dispatcher runs there).</summary>
+    /// <summary>Runs the settle logic synchronously (golden wave-tiles-zoom has no running dispatcher).</summary>
     internal void SettleWaveZoom() => SettleWaves();
 
-    /// <summary>A colour, as see-through as asked (a colour that is not one plain colour is drawn as it is).</summary>
+    /// <summary>Translucent variant of a SolidColorBrush (non-solid brushes are returned unchanged).</summary>
     private static Brush Translucent(Brush brush, double opacity)
     {
         if (brush is not SolidColorBrush solid || opacity >= 1)
@@ -959,17 +939,17 @@ public sealed partial class UnifiedTimelineControl
 
     // ----- Gain lines, fades, keys, badges, pills and seams -----
 
-    /// <summary>Where the gain line of a block lies, for a gain in dB: silence at its foot, +12 dB at its top.</summary>
+    /// <summary>Gain line y for a dB value: silence at the bottom, +12 dB at the top.</summary>
     private static double GainY(Rect rect, double gainDb) =>
         rect.Top + 3 + (1 - (Math.Clamp(gainDb, TimelineMetrics.LowestGain, TimelineMetrics.HighestGain) - TimelineMetrics.LowestGain)
             / (TimelineMetrics.HighestGain - TimelineMetrics.LowestGain)) * Math.Max(rect.Height - 6, 1);
 
-    /// <summary>The gain in dB at a height in a block: the line's place, the other way round.</summary>
+    /// <summary>Inverse of the gain line mapping: dB at a y.</summary>
     private static double GainAt(Rect rect, double y) =>
         Math.Round(TimelineMetrics.LowestGain + (1 - Math.Clamp((y - rect.Top - 3) / Math.Max(rect.Height - 6, 1), 0, 1))
             * (TimelineMetrics.HighestGain - TimelineMetrics.LowestGain), 1);
 
-    /// <summary>How wide a block's fades are drawn, in pixels: their seconds at the scale, never more than the block.</summary>
+    /// <summary>Fade widths in pixels at the current scale, clamped to the block width.</summary>
     private static (double In, double Out) FadeSpan(Rect rect, double fadeInSeconds, double fadeOutSeconds, double scale)
     {
         scale = Math.Max(scale, 0);
@@ -978,7 +958,7 @@ public sealed partial class UnifiedTimelineControl
         return (fadeIn, fadeOut);
     }
 
-    /// <summary>A clip's gain line: level across it at its gain, sloping down to its foot over its fades, with a grip in its middle.</summary>
+    /// <summary>Draws the gain line: level at the gain, sloping to the bottom across fades, with a centre grip.</summary>
     private static void DrawGain(DrawingContext drawing, Rect rect, (double GainDb, double FadeIn, double FadeOut) gain, double scale)
     {
         var y = GainY(rect, gain.GainDb);
@@ -991,9 +971,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A block's fades: each shaded above its curve (from nothing at the block's foot to all of it at its top, or back, in
-    /// the curve its transition style follows, EasingCurves.Evaluate), with a handle where each ends. The shapes are made
-    /// once and kept while the block and its fades stay as they are.
+    /// Draws fades shaded above their EasingCurves.Evaluate curve (bottom to top, or reverse) with end handles; geometry is cached while
+    /// block and fades are unchanged.
     /// </summary>
     private static void DrawFades(DrawingContext drawing, TimelineBlock block, Rect rect,
         (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle) fades, double scale)
@@ -1028,7 +1007,7 @@ public sealed partial class UnifiedTimelineControl
             DrawFadeHandle(drawing, rect, rect.Right - fadeOut);
     }
 
-    // One fade's ramp: its shade (the top edge across it, then back along its curve) and its curve.
+    // One fade: shade polygon (top edge, then back along the curve) and the curve itself.
     private static void Ramp(StreamGeometryContext shadePath, StreamGeometryContext linePath, Rect rect, double left, double width, bool rising, Models.TransitionStyle style)
     {
         var easing = new Models.Keyframe(0, 0, Models.TransitionStyles.Easing(style));
@@ -1051,13 +1030,13 @@ public sealed partial class UnifiedTimelineControl
             linePath.LineTo(points[i], true, true);
     }
 
-    /// <summary>Where a fade handle is drawn: at its fade's end, kept inside the block.</summary>
+    /// <summary>Fade handle position at the fade end, clamped inside the block.</summary>
     private static double HandleX(Rect rect, double x) => Math.Clamp(x, rect.Left + 4, Math.Max(rect.Right - 4, rect.Left + 4));
 
     private static void DrawFadeHandle(DrawingContext drawing, Rect rect, double x) =>
         drawing.DrawRoundedRectangle(FadeHandleFill, FadeHandleOutline, new Rect(HandleX(rect, x) - 3.5, rect.Top + 1.5, 7, 7), 1.5, 1.5);
 
-    /// <summary>The fade being dragged, in words beside its handle ("Fade In: 0.75 s · Smooth"), inside what is seen.</summary>
+    /// <summary>Fade drag readout beside the handle ("Fade In: 0.75 s · Smooth"), kept on-screen.</summary>
     private void DrawFadeReadout(DrawingContext drawing, Rect rect, bool fadeIn,
         (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle) fades, double from, double to, double pixelsPerDip)
     {
@@ -1069,7 +1048,7 @@ public sealed partial class UnifiedTimelineControl
     private static string FadeWords(bool fadeIn, double seconds, Models.TransitionStyle style) =>
         string.Create(CultureInfo.InvariantCulture, $"Fade {(fadeIn ? "In" : "Out")}: {seconds:0.00} s · {Models.TransitionStyles.Label(style)}");
 
-    /// <summary>Words in a dark box beside a point (to its right, or its left), kept inside what is seen.</summary>
+    /// <summary>Draws a dark label box right (or left) of a point, kept on-screen.</summary>
     private static void DrawReadout(DrawingContext drawing, string words, double x, double top, bool toRight, double from, double to, double pixelsPerDip)
     {
         var text = new FormattedText(words, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, LabelFace, 10.5, Brushes.White, pixelsPerDip);
@@ -1080,7 +1059,7 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawText(text, new Point(box.Left + 4, box.Top + 1));
     }
 
-    /// <summary>Keyframes' diamonds as one frozen shape: one at each key (pixels from the block's left), near its foot.</summary>
+    /// <summary>Single frozen diamond geometry for all keys (x from block left), near the bottom.</summary>
     private static Geometry Diamonds(IReadOnlyList<double> keys, Rect rect, double radius)
     {
         var diamonds = new StreamGeometry();
@@ -1104,14 +1083,14 @@ public sealed partial class UnifiedTimelineControl
         return diamonds;
     }
 
-    // ----- A block's own switches (5.2) -----
+    // ----- Block switches -----
     // Segoe MDL2 Assets: View (E890), Hide (ED1A), Volume (E767), Mute (E74F), Link (E71B), Unlock (E785).
 
     private const double BlockSwitchSize = 14, BlockSwitchGap = 2;
     private static readonly Brush SwitchOffFill = Solid(225, 0xC6, 0x28, 0x28);
     private static readonly Brush SwitchFreeFill = Solid(225, 0xEF, 0x8F, 0x00);
 
-    /// <summary>Where a block's switches are (its On/Off rightmost, its Lock left of it), in its rect's space; none on a block too small for them.</summary>
+    /// <summary>Switch rects in block space (On/Off rightmost, Lock to its left); none when the block is too small.</summary>
     internal static (Rect OnOff, Rect Lock) BlockSwitchBoxes(TimelineBlock block, Rect rect)
     {
         if ((block.IsOn is null && block.IsLocked is null) || block.Switched is null || rect.Width < 3 * BlockSwitchSize + 16 || rect.Height < BlockSwitchSize + 4)
@@ -1140,7 +1119,7 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawText(text, new Point(box.Left + (box.Width - text.Width) / 2, box.Top + (box.Height - text.Height) / 2));
     }
 
-    /// <summary>A block's badge: its words in a small dark tag at its top right, where the block has room for it.</summary>
+    /// <summary>Draws the badge text in a small dark tag at the top right when it fits.</summary>
     private static void DrawBadge(DrawingContext drawing, TimelineBlock block, Rect rect, string badge, double pixelsPerDip)
     {
         var text = block.BadgeText ??= new FormattedText(badge, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight, StrongFace, 9.5, Brushes.White, pixelsPerDip);
@@ -1152,7 +1131,7 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawText(text, new Point(box.Left + 3, box.Top + 0.5));
     }
 
-    // A crossfade's box: from half of it before its cut to half after, the lane's whole height.
+    // Crossfade box: centred on the cut, full lane height.
     private static Rect CrossfadeBox(in Lane lane, TimelineBlock block, double scale, double originX)
     {
         var rect = BlockRect(lane, block, originX);
@@ -1160,13 +1139,13 @@ public sealed partial class UnifiedTimelineControl
         return new Rect(rect.Left - half, rect.Top, Math.Max(half * 2, 6), rect.Height);
     }
 
-    // Its remove button: at the box's top middle, where the box has room for it.
+    // Remove button at the box's top centre when it fits.
     private static Rect CrossfadeRemove(Rect box) =>
         box.Width >= 18 && box.Height >= 22 ? new Rect(box.Left + box.Width / 2 - 7, box.Top + 2, 14, 14) : Rect.Empty;
 
     /// <summary>
-    /// A crossfade as the industry draws it (the user's directive): a shaded box the full height of the track across the cut, its two edges
-    /// grips, its two equal-power curves crossing in the middle, and a button to take it away.
+    /// Draws a crossfade in the standard NLE style: full-height shaded box across the cut, grip edges, two crossing equal-power curves,
+    /// and a remove button.
     /// </summary>
     private void DrawCrossfade(DrawingContext drawing, in Lane lane, TimelineBlock block, double scale, double originX, double pixelsPerDip)
     {
@@ -1206,7 +1185,7 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    // The pill a click closes a gap with: in the gap's middle, two arrows pointing in (what follows closes up).
+    // Close-gap pill centred in the gap: two inward arrows.
     private static Rect GapPill(in Lane lane, double left, double right)
     {
         var (middle, y) = ((left + right) / 2, lane.Top + lane.Height / 2);
@@ -1229,8 +1208,7 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawLine(GapArrow, new Point(middle + 4, y + 2.5), new Point(middle + 1.5, y));
     }
 
-    // A seam where dead air was folded out: a dashed line down the lane, and on a lane drawn in full a tab at its top with
-    // a zigzag in it (the fold), which a click puts back.
+    // Dead-air seam: dashed vertical line; on full-size lanes a top tab with a zigzag, clickable to unfold.
     private static void DrawSeam(DrawingContext drawing, in Lane lane, double x)
     {
         drawing.DrawLine(SeamLine, new Point(x, lane.Top + 1), new Point(x, lane.Bottom - 1));
@@ -1246,16 +1224,14 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawLine(SeamZigzag, new Point(tab.Right - step - 0.5, y - 2), new Point(tab.Right - 1.5, y));
     }
 
-    // The tab sits under the band of the fade handles (the corners of the clips either side of the seam), as far as the
-    // lane is tall enough for it; where it still meets a handle, the handle is the one pressed.
+    // Tab sits below the fade-handle band when the lane is tall enough; where it still overlaps a handle, the handle wins hit-testing.
     private static Rect SeamTab(in Lane lane, double x) => new(x - 6, Math.Max(Math.Min(lane.Top + FadeBand + 5, lane.Bottom - 11), lane.Top + 2), 12, 9);
 
-    // ----- The blocks' words -----
+    // ----- Block labels -----
 
     /// <summary>
-    /// The blocks' names, in the control's own x: each kept in view while its block is (from the view's left, never past
-    /// the block's right), so a long clip scrolled half out of view still says what it is. Laid again on every pan, which
-    /// only places words already laid out.
+    /// Positions block labels in control x, pinned to the view's left while the block is visible (never past its right edge), so
+    /// partially scrolled clips stay labelled. Re-run on every pan; only repositions existing text.
     /// </summary>
     private void RenderLabels(double pixelsPerDip)
     {
@@ -1279,7 +1255,7 @@ public sealed partial class UnifiedTimelineControl
                 continue;
             }
 
-            // While something slides, the words of what moves go with their blocks; those of a stretch being wiped in wait.
+            // During a slide, labels follow moving blocks; labels in a range being wiped in are deferred.
             var shift = sliding is { } each && Applies(lane, each) ? each : (Shift?)null;
             foreach (var block in lane.Row.Blocks)
             {
@@ -1310,7 +1286,7 @@ public sealed partial class UnifiedTimelineControl
             MaxLineCount = 1, Trimming = TextTrimming.CharacterEllipsis,
         };
 
-        // Set only when it changes: setting it lays the text out again.
+        // Assign only on change: setting text forces relayout.
         var widest = Math.Max(rect.Width - 10, 4);
         if (label.MaxTextWidth != widest)
             label.MaxTextWidth = widest;
@@ -1320,7 +1296,7 @@ public sealed partial class UnifiedTimelineControl
         var pictures = block.Film is not null || block.Frames is not null;
         var y = pictures && rect.Height >= 30 ? rect.Top + 3 : rect.Top + (rect.Height - label.Height) / 2;
 
-        // Over frames, the words get a shade of their own to be read against.
+        // Over thumbnails, add a backing shade for legibility.
         if (pictures)
             drawing.DrawRoundedRectangle(LabelShade, null, new Rect(x - 2, y, label.Width + 4, label.Height), 2, 2);
         drawing.DrawText(label, new Point(x, y));

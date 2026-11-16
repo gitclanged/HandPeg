@@ -10,13 +10,13 @@ using HandPegApp.Services.Audio;
 namespace HandPegApp;
 
 /// <summary>
-/// The parametric equalizer's curve (Pass 5.2B): a sound's ten equalizer bands on a log-frequency grid (20 Hz to 20 kHz, -20 to +20 dB),
-/// the response its biquads give (AudioChainBuilder.EqualizerResponseDb, the high-pass and the bass/treble shelves taken in while they are
-/// on) sampled at 200 points, and a node for each band: dragged across, its frequency; up and down, its gain (-12 to +12 dB); the wheel
-/// over it, its width in octaves (0.1 to 4; Shift: finely); double-clicked, the band as it was (its octave centre, one octave, 0 dB).
-/// It edits the <see cref="Filters"/> it is given in place (the frequencies and widths made from the octave centres the first time a
-/// band moves) and says so (<see cref="BandChanged"/>; a drag or a burst of notches is one gesture, <see cref="EditStarted"/> and
-/// <see cref="EditEnded"/>). One OnRender: the grid and the curve are frozen geometry made again only when the size or the filters change.
+/// Parametric equalizer curve: ten bands on a log-frequency grid (20 Hz to 20 kHz, -20 to +20 dB) with the biquad response
+/// (AudioChainBuilder.EqualizerResponseDb, including high-pass and bass/treble shelves when enabled) sampled at 200 points, plus one node per
+/// band: horizontal drag sets frequency, vertical drag sets gain (-12 to +12 dB), wheel sets width in octaves (0.1 to 4; Shift = fine), and
+/// double-click resets the band (octave centre, one octave, 0 dB). Edits <see cref="Filters"/> in place (frequency and width arrays are
+/// seeded from the octave centres on first move) and raises <see cref="BandChanged"/>; a drag or wheel burst is one gesture
+/// (<see cref="EditStarted"/> .. <see cref="EditEnded"/>). Single OnRender; grid and curve are frozen geometry rebuilt only on size or
+/// filter changes.
 /// </summary>
 public sealed class ParametricEqControl : FrameworkElement
 {
@@ -52,7 +52,7 @@ public sealed class ParametricEqControl : FrameworkElement
 
     private TrackAudioFilters? _filters;
 
-    /// <summary>The filters whose equalizer it shows and edits in place; null shows a flat grid.</summary>
+    /// <summary>Filters whose equalizer is displayed and edited in place; null shows a flat grid.</summary>
     public TrackAudioFilters? Filters
     {
         get => _filters;
@@ -63,13 +63,13 @@ public sealed class ParametricEqControl : FrameworkElement
         }
     }
 
-    /// <summary>A band was changed here (its index): its gain, frequency or width are the filters' now.</summary>
+    /// <summary>Raised with the band index after its gain, frequency or width was written to the filters.</summary>
     public event Action<int>? BandChanged;
 
-    /// <summary>A gesture began (a drag, a burst of wheel notches, a double-click's reset): what it changes until it ends is one step.</summary>
+    /// <summary>Raised when a gesture begins (drag, wheel burst, double-click reset); changes until EditEnded form one step.</summary>
     public event Action? EditStarted;
 
-    /// <summary>The gesture ended.</summary>
+    /// <summary>Raised when the gesture ends.</summary>
     public event Action? EditEnded;
 
     public ParametricEqControl()
@@ -93,14 +93,14 @@ public sealed class ParametricEqControl : FrameworkElement
         };
     }
 
-    /// <summary>The filters changed elsewhere (a slider moved, Reset All): the curve is made again.</summary>
+    /// <summary>Invalidates the cached curve after external filter changes (slider moves, Reset All).</summary>
     public void Refresh()
     {
         _curve = null;
         InvalidateVisual();
     }
 
-    // ----- A band's values, read and written on the filters -----
+    // ----- Band value accessors on the filters -----
 
     private double GainOf(int band) => _filters?.EqualizerGains is { } gains && band < gains.Length ? gains[band] : 0;
 
@@ -139,7 +139,7 @@ public sealed class ParametricEqControl : FrameworkElement
         BandChanged?.Invoke(band);
     }
 
-    // ----- Where things are -----
+    // ----- Geometry -----
 
     private Rect Plot => new(LeftRoom, Pad, Math.Max(RenderSize.Width - LeftRoom - Pad, 1), Math.Max(RenderSize.Height - Pad - BottomRoom, 1));
 
@@ -155,7 +155,7 @@ public sealed class ParametricEqControl : FrameworkElement
 
     private Point NodeOf(Rect plot, int band) => new(XOf(plot, FrequencyOf(band)), YOf(plot, GainOf(band)));
 
-    // The band whose node is nearest a point, within reach; -1 for none.
+    // Band whose node is nearest the point within reach; -1 for none.
     private int BandAt(Point point, double reach = NodeReach)
     {
         var plot = Plot;
@@ -171,7 +171,7 @@ public sealed class ParametricEqControl : FrameworkElement
         return best;
     }
 
-    // ----- The theme's look, and the words laid out once (per DPI and theme) -----
+    // ----- Theme brushes and cached labels (per DPI and theme) -----
 
     private Brush _inset = Solid(255, 0x1E, 0x1E, 0x1E), _muted = Brushes.Gray, _text = Brushes.Gainsboro;
     private readonly FormattedText?[] _hzWords = new FormattedText?[GridHz.Length];
@@ -210,9 +210,9 @@ public sealed class ParametricEqControl : FrameworkElement
             _bandWords[i] = Word((i + 1).ToString(CultureInfo.InvariantCulture), _text);
     }
 
-    // ----- Drawing -----
+    // ----- Rendering -----
 
-    // The grid's lines and the response curve, made for a size (and the curve for the filters as they were).
+    // Cached grid and response geometry per render size (curve also invalidated by Refresh on filter changes).
     private Geometry? _grid, _curve, _curveArea, _plotClip;
     private Size _gridSize, _curveSize;
 
@@ -244,7 +244,7 @@ public sealed class ParametricEqControl : FrameworkElement
         drawing.DrawGeometry(null, GridPen, _grid);
         drawing.DrawLine(ZeroPen, new Point(plot.Left, YOf(plot, 0)), new Point(plot.Right, YOf(plot, 0)));
 
-        // The scale's words: dB down the left, Hz along the bottom.
+        // Axis labels: dB on the left, Hz along the bottom.
         for (var i = 0; i < GridDb.Length; i++)
         {
             if (_dbWords[i] is { } word)
@@ -257,7 +257,7 @@ public sealed class ParametricEqControl : FrameworkElement
                 drawing.DrawText(word, new Point(Math.Max(Math.Min(XOf(plot, GridHz[i]) - word.Width / 2, plot.Right - word.Width), plot.Left - 4), plot.Bottom + 1));
         }
 
-        // The band held (or under the pointer): how wide it is, shaded.
+        // Shade the held (or hovered) band's octave width.
         var held = _held >= 0 ? _held : _hover;
         if (held >= 0)
         {
@@ -279,7 +279,7 @@ public sealed class ParametricEqControl : FrameworkElement
             drawing.DrawGeometry(null, CurvePen, _curve);
         drawing.Pop();
 
-        // The nodes: dimmed while the equalizer is off, the one held in gold, each with its number.
+        // Numbered band nodes: dimmed while the equalizer is off, held node in gold.
         var on = _filters?.Equalizer == true;
         for (var band = 0; band < Bands; band++)
         {
@@ -314,7 +314,7 @@ public sealed class ParametricEqControl : FrameworkElement
         return grid;
     }
 
-    // The response, 200 points from 20 Hz to 20 kHz (as the chain's biquads have it), as a line and as the area between it and 0 dB.
+    // Response sampled at 200 log-spaced points (20 Hz to 20 kHz) from the chain's biquads, as a line and the area to 0 dB.
     private (Geometry? Line, Geometry? Area) MakeCurve(Rect plot)
     {
         if (_filters is not { } filters)
@@ -352,16 +352,16 @@ public sealed class ParametricEqControl : FrameworkElement
         return (line, area);
     }
 
-    // ----- The pointer -----
+    // ----- Pointer input -----
 
-    // The band being dragged (-1 for none), the one under the pointer, and whether a burst of wheel notches is under way (and on which band).
+    // Dragged band (-1 none), hovered band, and the active wheel burst with its band.
     private int _held = -1, _hover = -1, _wheelBand = -1;
     private bool _wheeling;
     private readonly DispatcherTimer _wheelRest = new() { Interval = WheelGesture };
 
-    // A drag's press: where it was, and the held node's centre less it (the node keeps that offset from the pointer, so a press off its centre
-    // moves nothing); and whether the pointer has gone past the system's drag distance across (the frequency follows from then on) and up or
-    // down (the gain does): an axis the pointer has not moved along keeps its value, so a drag straight up never detunes the band.
+    // Drag state: press point and node-to-pointer offset (so an off-centre press causes no jump), plus per-axis flags set once travel
+    // exceeds the system drag distance (horizontal = frequency, vertical = gain). An untouched axis keeps its value, so a purely vertical
+    // drag never detunes the band.
     private Point _press;
     private Vector _grab;
     private bool _movedAcross, _movedUpDown;
@@ -377,7 +377,7 @@ public sealed class ParametricEqControl : FrameworkElement
         EndWheel();
         if (e.ClickCount == 2)
         {
-            // The band as it was: its octave centre, one octave wide, flat.
+            // Reset band: octave centre frequency, one octave wide, 0 dB.
             EditStarted?.Invoke();
             SetBand(band, gain: 0, hz: TrackAudioFilters.EqualizerBands[band], width: 1);
             EditEnded?.Invoke();
@@ -471,7 +471,7 @@ public sealed class ParametricEqControl : FrameworkElement
             EditStarted?.Invoke();
         }
 
-        // Up narrows it, down widens it.
+        // Wheel up narrows, down widens (0.1 octave per notch; Shift 0.02).
         var step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0.02 : 0.1;
         SetBand(band, width: WidthOf(band) - Math.Sign(e.Delta) * step);
         _wheelRest.Stop();

@@ -3,9 +3,7 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Where this run of the application keeps its temporary files: one folder, session_[id] in the temp folder,
-/// removed as a whole when the application closes. (Downloads are not in it: they are a cache meant to
-/// outlive the session.)
+/// Per-session temp folder (session_[id] under temp), deleted on exit. Downloads live elsewhere (a persistent cache).
 /// </summary>
 public static class SessionPaths
 {
@@ -24,15 +22,14 @@ public static class SessionPaths
     /// <summary>Cut and chapter lists belonging to queued jobs.</summary>
     public static string Queue => Path.Combine(Root, "queue");
 
-    /// <summary>Masks drawn from outlines as pictures, for FFmpeg's graph alone (see MaskStore.FileFor): gone with the session.</summary>
+    /// <summary>Rasterized drawn-mask files for file-based consumers (MaskStore.FileFor); session-scoped.</summary>
     public static string Masks => Path.Combine(Root, "masks");
 
     /// <summary>Removes this session's folder and everything in it.</summary>
     public static void DeleteSession() => DeleteFolder(Root);
 
     /// <summary>
-    /// Removes folders left by sessions that ended without cleaning up (a crash, a killed process).
-    /// Only old ones: a recent folder may belong to another copy of the application that is still running.
+    /// Deletes stale session folders from crashed or killed runs; recent ones are kept since another instance may own them.
     /// </summary>
     public static void DeleteAbandonedSessions()
     {

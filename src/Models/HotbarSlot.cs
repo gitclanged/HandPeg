@@ -2,26 +2,25 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Models;
 
-/// <summary>What a slot of the Creator Hotbar puts on the selected clips (Pass 5.2.1).</summary>
+/// <summary>Creator Hotbar slot kind applied to selected clips.</summary>
 public enum HotbarKind
 {
     /// <summary>An effect card (<see cref="EffectRegistry"/>, by its type), with its starting values.</summary>
     Effect,
 
-    /// <summary>A <see cref="TransitionStyle"/> (by name) for the clip's fade in, a fade of the default length where it has none.</summary>
+    /// <summary><see cref="TransitionStyle"/> (by name) for the fade in, adding a default-length fade if absent.</summary>
     Transition,
 
     /// <summary>A Game Preset of the Styles folder (by name).</summary>
     GamePreset,
 
-    /// <summary>A one-click tool of the Timeline's menu: <see cref="HotbarSlot.FlyIn"/> or <see cref="HotbarSlot.StudioVoice"/>.</summary>
+    /// <summary>One-click Timeline tool: <see cref="HotbarSlot.FlyIn"/> or <see cref="HotbarSlot.StudioVoice"/>.</summary>
     Tool,
 }
 
 /// <summary>
-/// One slot of the Creator Hotbar on the Timeline's row of tools (5.2.1): an Effect, a Transition, a Game Preset or a one-click
-/// tool, kept in the settings as "kind:id" (<see cref="ToString"/>, <see cref="Parse"/>). What it puts on a clip is ordinary: an
-/// effect card, a fade, a Game Preset's place and Cutouts, keyframes, Studio Voice switched on; each one step of Undo.
+/// Creator Hotbar slot (Timeline toolbar): Effect, Transition, Game Preset or one-click tool, stored as "kind:id" (<see cref="ToString"/>,
+/// <see cref="Parse"/>). Applies ordinary edits (effect card, fade, preset placement and Cutouts, keyframes, Studio Voice), one undo step each.
 /// </summary>
 public readonly record struct HotbarSlot(HotbarKind Kind, string Id)
 {
@@ -33,7 +32,7 @@ public readonly record struct HotbarSlot(HotbarKind Kind, string Id)
 
     public const int Count = 5;
 
-    /// <summary>The slots a new install starts with: Motion Blur, the 3D Fly-In, the Neon Rim, the Whip Pan and Studio Voice.</summary>
+    /// <summary>Default slots: Motion Blur, 3D Fly-In, Neon Rim, Whip Pan, Studio Voice.</summary>
     public static IReadOnlyList<string> Defaults { get; } =
         [$"effect:{EffectRegistry.MotionBlur}", $"tool:{FlyIn}", $"effect:{EffectRegistry.NeonRim}", $"transition:{nameof(TransitionStyle.WhipPan)}", $"tool:{StudioVoice}"];
 
@@ -42,7 +41,7 @@ public readonly record struct HotbarSlot(HotbarKind Kind, string Id)
 
     public override string ToString() => $"{Kind.ToString().ToLowerInvariant()}:{Id}";
 
-    /// <summary>A slot from its settings text; null for one HandPeg does not know (an effect, a style or a tool of another version).</summary>
+    /// <summary>Parses settings text; null for unknown effects, styles or tools.</summary>
     public static HotbarSlot? Parse(string? text)
     {
         var colon = text?.IndexOf(':') ?? -1;
@@ -60,7 +59,7 @@ public readonly record struct HotbarSlot(HotbarKind Kind, string Id)
         };
     }
 
-    /// <summary>The five slots as the settings keep them (null: <see cref="Defaults"/>), each the default where it cannot be read.</summary>
+    /// <summary>Resolves the five stored slots (null = <see cref="Defaults"/>), substituting defaults for unreadable entries.</summary>
     public static IReadOnlyList<HotbarSlot> FromSettings(IReadOnlyList<string>? kept)
     {
         var slots = new HotbarSlot[Count];

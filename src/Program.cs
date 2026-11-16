@@ -9,21 +9,17 @@ namespace HandPegApp;
 public static partial class Program
 {
     /// <summary>
-    /// The entry point, written out by hand (App.xaml is built as a Page, so none is generated) because
-    /// Velopack's bootstrap has to be the very first thing that runs: when the installer or updater starts
-    /// the program to finish an install, update or uninstall, it does that here and exits, before any of
-    /// WPF has been touched. On an ordinary start it is not waited for (<see cref="VelopackStarted"/>).
+    /// Hand-written entry point (App.xaml is a Page, so none is generated) because Velopack's bootstrap must run first: installer/updater
+    /// hook launches complete here and exit before WPF loads. Ordinary starts do not wait for it (<see cref="VelopackStarted"/>).
     ///
-    /// One thing comes before even that: HandPeg.exe started as its own crash sentinel (--crash-sentinel, see
-    /// Services.CrashSentinel) does only that and leaves, without the updater, the settings or WPF ever being loaded.
-    /// Everything else is in <see cref="Start"/>, so that compiling this method reaches none of them either.
+    /// Worker modes come even earlier: --crash-sentinel (Services.CrashSentinel), the compositor worker and the hardware benchmark run and
+    /// exit without loading the updater, settings or WPF. Everything else lives in <see cref="Start"/> so JIT of Main touches none of it.
     /// </summary>
     [STAThread]
     public static void Main(string[] args)
     {
-        // First of all (5.2, the user's Windows on ARM laptop): no Windows error box for HandPeg or for a program it starts. A child process
-        // inherits this error mode, so a tool missing a DLL (whisper-cli.exe without libomp140.aarch64.dll on ARM64) fails with
-        // STATUS_DLL_NOT_FOUND (0xC0000135), which HandPeg reports, instead of stopping on a modal "was not found" box.
+        // Suppress Windows error boxes for this process and inherited by children: a tool missing a DLL (e.g. whisper-cli.exe without
+        // libomp140.aarch64.dll on ARM64) then fails with STATUS_DLL_NOT_FOUND (0xC0000135), which is reported, instead of blocking on a modal.
         SetErrorMode(SetErrorMode(0) | FailCriticalErrors | NoGpFaultErrorBox);
 
         if (args.Length > 0 && args[0] == Services.CrashSentinel.Argument)
@@ -32,9 +28,8 @@ public static partial class Program
             return;
         }
 
-        // The GPU compositor and the hardware benchmark (Pass 5.0-Core) are HandPeg.exe too, started by HandPeg itself
-        // (Services.WorkerProcess): the same, with no second program to publish. Like the sentinel, neither loads the
-        // updater, the settings or WPF.
+        // Compositor worker and hardware benchmark are HandPeg.exe modes launched by Services.WorkerProcess (no second binary). Like the
+        // sentinel, neither loads the updater, settings or WPF.
         if (args.Length > 0 && args[0] == Compositor.CompositorWorker.Argument)
         {
             Environment.ExitCode = Compositor.CompositorWorker.Run(args);
@@ -55,60 +50,51 @@ public static partial class Program
     {
         Services.StartupTrace.Mark("Main");
 
-        // Windows shows the "working in background" pointer from the moment Explorer starts a windowed program until the
-        // program first calls GetMessage (PeekMessage does not end it: measured on a 7950X3D desktop in 5.2E, the
-        // pointer lasted until WPF's own first GetMessage, 120-160 ms in). A message posted to this thread is taken back at once,
-        // so the call never waits, and the pointer is back to an arrow while the window is still being built, not only after
-        // the first frame (the user's 5.0 directive 2). PeekMessage first makes the thread's message queue.
+        // Windows shows the app-starting cursor until the first GetMessage (PeekMessage alone does not clear it; measured lasting until
+        // WPF's first GetMessage, 120-160 ms in). Post WM_NULL to ourselves and GetMessage it immediately so the cursor reverts while the
+        // window is still being built (Law 1: 0 ms busy cursor). PeekMessage first creates the thread's message queue.
         _ = PeekMessageW(out _, 0, 0, 0, 0);
         if (PostThreadMessageW(GetCurrentThreadId(), 0, 0, 0))
             _ = GetMessageW(out _, 0, 0, 0);
 
-        // Multi-core JIT (Pass 4.1C): the methods this start had to compile (mostly generic code over HandPeg's own
-        // types, which ReadyToRun cannot compile ahead of time: about 2,500 at each start) are recorded, and from the
-        // next start on they are compiled on other cores ahead of this thread needing them. A small file in the cache.
+        // Multi-core JIT: records the ~2,500 methods compiled at start (mostly generics over HandPeg types that ReadyToRun cannot
+        // precompile) and, from the next start, compiles them on other cores ahead of use. Profile stored in the cache folder.
         StartMulticoreJit();
 
-        // A self-contained copy (portable.txt, --portable) is not an installed one: it has no installer to answer,
-        // and nothing from an earlier build elsewhere on the computer to bring over. It stays in its folder.
+        // Self-contained (portable.txt, --portable) copies have no installer hooks and nothing to migrate; they stay in their folder.
         if (!Services.AppPaths.IsSelfContained)
         {
-            // Started by the installer or the updater to finish its work (an install, update or uninstall hook): done
-            // here, before anything else, and the process ends. Started by the user: the bootstrap only sets up what
-            // the update check needs later, about 22 ms that no longer hold up the first frame (Pass 4.1C), so it
-            // runs beside the window's start. AppPaths (read just above) finds a portable copy from the disk, not from
-            // Velopack's locator, which does not exist until the bootstrap has run.
+            // Installer/updater hook launch (install, update, uninstall): run it here and exit. Normal launch: the bootstrap only prepares
+            // later update checks (~22 ms), so it runs in parallel with window start-up instead of delaying Frame 1. AppPaths detects
+            // portable copies from disk, not Velopack's locator, which does not exist until the bootstrap runs.
             if (Environment.GetCommandLineArgs().Skip(1).Any(a => a.StartsWith("--veloapp-", StringComparison.OrdinalIgnoreCase)))
                 VelopackHooks().Run();
             else
                 VelopackStarted = Task.Run(RunVelopack);
 
-            // Before anything reads a setting: what an earlier build kept beside the program is brought over, and a
-            // portable copy's first start copies the installed places' settings into its own folder.
+            // Before any settings read: migrate data an older build kept beside the program; a portable copy's first start imports the
+            // installed settings into its own folder.
             Services.DataMigration.Run();
             Services.StartupTrace.Mark("data migration");
         }
 
-        // A project or bundle double-clicked while HandPeg is open (5.2.0's re-cut, the user's answer): handed to the copy open, which asks
-        // about its unsaved changes, opens it and comes to the front, and this process ends. Otherwise this copy is the one later ones hand
-        // theirs to (a named mutex here; its pipe after the first frame). A start with no project looks for no other copy.
+        // Project/bundle launched while HandPeg runs: hand it to the running instance (which prompts for unsaved changes, opens it and
+        // activates) and exit. Otherwise claim primary-instance status (named mutex now; pipe after Frame 1). No-project starts skip the hand-off.
         if (Services.SingleInstance.LaunchFile() is { } launched && Services.SingleInstance.HandOff(launched))
             return;
         Services.SingleInstance.Claim();
 
-        // What makes HandPeg fall over is caught from here on (the handlers and the native fault filter only: cheap;
-        // the shared memory and the sentinel wait for the first frame). The version is in every report already.
+        // Crash capture from here on (cheap handlers and native fault filter only; shared memory and sentinel wait for Frame 1). The
+        // version is already in every report.
         Services.CrashReporter.Install();
         Services.CrashReporter.Note("app", "start");
         Services.StartupTrace.Mark("crash reporter installed");
 
-        // While this thread starts WPF, the settings and the presets are read on others: both are files to
-        // parse, neither needs this thread, and by the time the first window asks for them they are there.
+        // Parse settings and presets on pool threads while this thread starts WPF; they are ready before the first window needs them.
         _ = Task.Run(static () => Services.AppSettings.Current);
         Services.PresetStore.LoadEarly();
 
-        // And the hardware encoders an earlier launch found (with the cards, which take a moment to list): the window
-        // puts them in its list before its first frame, so a hardware default encoder is there from the start.
+        // Load the hardware encoders (and adapters) found by a previous launch so a hardware default encoder is listed before Frame 1.
         Services.EncoderProber.LoadSavedResultEarly();
         Services.StartupTrace.Mark("early reads started");
 
@@ -118,15 +104,13 @@ public static partial class Program
         Services.StartupTrace.Mark("App made");
         app.Run();
 
-        // The window closed and the application ended in the ordinary way.
+        // Normal shutdown.
         Services.CrashReporter.MarkCleanExit();
     }
 
     /// <summary>
-    /// The profile is this build's own (named after its module version id): one recorded by another build (the one
-    /// before an update, or another copy used for comparison) would be replayed only in part, and was measured to
-    /// slow the start it was meant to speed up. Each start rewrites its profile, so one unused for two weeks belongs to
-    /// a build that is gone: those are deleted on a pool thread.
+    /// Starts a per-build JIT profile (named by module version id): replaying another build's profile only partially applies and was
+    /// measured to slow start-up. Each start rewrites its profile, so profiles untouched for 14 days are deleted on a pool thread.
     /// </summary>
     private static void StartMulticoreJit()
     {
@@ -141,7 +125,7 @@ public static partial class Program
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // No profile: this start, and the next, compile on this thread as they always did.
+            // No profile: fall back to ordinary on-thread JIT.
         }
     }
 
@@ -158,7 +142,7 @@ public static partial class Program
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Another copy of HandPeg is using it, or it is gone already: the next start tries again.
+            // In use by another instance or already gone; retried next start.
         }
     }
 
@@ -180,18 +164,17 @@ public static partial class Program
     [LibraryImport("user32.dll")]
     private static partial int GetMessageW(out Message message, nint window, uint first, uint last);
 
-    // WM_NULL (0) to this thread: what the first GetMessage above takes back at once.
+    // Posts WM_NULL (0) to this thread for the immediate first GetMessage above.
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool PostThreadMessageW(uint thread, uint message, nint wParam, nint lParam);
 
-    // SEM_FAILCRITICALERRORS (no critical-error box, a DLL not found among them) and SEM_NOGPFAULTERRORBOX.
+    // SEM_FAILCRITICALERRORS (no critical-error box, including DLL-not-found) and SEM_NOGPFAULTERRORBOX.
     private const uint FailCriticalErrors = 0x0001, NoGpFaultErrorBox = 0x0002;
 
     /// <summary>
-    /// Velopack's bootstrap on an ordinary start, run beside the window's start: the update checker waits for it before
-    /// it asks Velopack anything (<see cref="Services.AppUpdater"/>). Done at once where it never ran (a hook start,
-    /// a self-contained copy).
+    /// Velopack bootstrap task on ordinary starts (runs in parallel with window start-up); <see cref="Services.AppUpdater"/> awaits it
+    /// before calling Velopack. Already completed for hook starts and self-contained copies.
     /// </summary>
     public static Task VelopackStarted { get; private set; } = Task.CompletedTask;
 
@@ -207,8 +190,8 @@ public static partial class Program
         }
     }
 
-    // The installer's hooks, the same on both starts (a hook start runs them, an ordinary start only sets up): an uninstall takes out the
-    // Explorer previews this user's HandPeg registered (Pass 5.2D; the registry only, before settings or WPF).
+    // Installer hooks (run on hook starts, only configured on normal starts): uninstall unregisters this user's Explorer thumbnail handler
+    // (registry only, before settings or WPF).
     private static Velopack.VelopackApp VelopackHooks() =>
         Velopack.VelopackApp.Build().OnBeforeUninstallFastCallback(_ => Services.ExplorerThumbnails.Unregister());
 }

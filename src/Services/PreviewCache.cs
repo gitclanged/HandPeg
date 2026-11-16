@@ -7,20 +7,15 @@ using System.Text;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Pictures made from media files, kept on disk between sessions so that a file opened again does not have them
-/// made again: a folder of files, each named after what it was made from (the file's path, size and time it was
-/// last changed, so an edited file is a different one) and what it is ("sprite", "strip16", "peaks80-0"...). When the
-/// folder grows past its limit, the files used longest ago go first.
+/// Persistent on-disk cache of media-derived artifacts, keyed by source path, size and last write (edits invalidate) plus a kind
+/// ("sprite", "strip16", "peaks80-0", ...). LRU eviction beyond the size limit.
 ///
-/// Three of them: the timeline's (sheets of hover previews, the strips of frames on the blocks, waveform peaks,
-/// I-frame lists), the media browser's (the frames a file's tile shows as the pointer moves over it) and the
-/// proxies (small copies of heavy videos that Live Preview plays in their place; see ProxyCache). Each is switched
-/// on and limited in Settings, Caches. Switched off, nothing is read or written, and callers make what they need in
-/// the session's own folder as before.
+/// Three instances: Timeline (hover sheets, block filmstrips, waveform peaks, I-frame lists), Media Browser (tile hover frames) and
+/// proxies (lightweight stand-ins for heavy videos; see ProxyCache). Each is enabled and sized in Settings > Caches; when disabled
+/// nothing is read or written and callers use the session folder.
 ///
-/// Each folder keeps a manifest (manifest.tsv): one line per file kept, with the file it was made from, that file's
-/// size and when it was written. That is what lets the entries of files that have since been deleted (or changed)
-/// be found and removed (<see cref="PurgeMissing"/>): the names are one-way hashes and say nothing by themselves.
+/// Each folder keeps manifest.tsv (one line per entry: source path, size, write time) so entries for deleted or changed sources can
+/// be purged (<see cref="PurgeMissing"/>); file names are one-way hashes.
 /// </summary>
 public sealed class PreviewCache
 {
@@ -31,14 +26,13 @@ public sealed class PreviewCache
     private readonly object _manifestLock = new();
     private int _trimQueued;
 
-    // Files used since the last trim, and when: their "last used" times are written in one go, by the trim, and
-    // not as each is found (a write to the disk from whatever thread asked, the UI's included).
+    // Access times since the last trim, flushed in bulk by the trim instead of per hit (avoids disk writes on any thread, incl. UI).
     private readonly ConcurrentDictionary<string, DateTime> _touched = new(StringComparer.OrdinalIgnoreCase);
 
     private PreviewCache(string name, string folder, Func<bool> enabled, Func<long> limitBytes) =>
         (Name, Folder, _enabled, _limitBytes) = (name, folder, enabled, limitBytes);
 
-    /// <summary>The timeline's previews of the videos loaded: hover sheets, strips of frames, waveforms, I-frames.</summary>
+    /// <summary>Timeline cache: hover sheets, filmstrips, waveforms, I-frames.</summary>
     public static PreviewCache Timeline { get; } = new("Timeline previews",
         Path.Combine(AppPaths.Cache, "timeline"), () => AppSettings.Current.CacheTimelinePreviews, () => AppSettings.Current.TimelineCacheMegabytes * 1024L * 1024);
 
@@ -65,9 +59,8 @@ public sealed class PreviewCache
     public bool IsEnabled => _enabled() && _limitBytes() > 0;
 
     /// <summary>
-    /// The name a thing made from a file is kept under: the same for the same file (unchanged) and the same
-    /// <paramref name="kind"/>; null when the cache is off or the file cannot be looked at. What is known of the
-    /// file comes from memory after the first time (see FileState): this is asked for every tile and every clip.
+    /// Cache path for an unchanged file and <paramref name="kind"/>; null when disabled or the file is inaccessible. File state is
+    /// memoized (FileState) since this runs for every tile and clip.
     /// </summary>
     public string? PathFor(string mediaPath, string kind, string extension)
     {
@@ -121,8 +114,7 @@ public sealed class PreviewCache
     }
 
     /// <summary>
-    /// Takes a file just made (whole: it is only ever given one that was finished) into the cache, and says where
-    /// it is now; where it was, when the cache is off or the move fails.
+    /// Moves a completed file into the cache and returns its new path (the original path when disabled or the move fails).
     /// </summary>
     public string Keep(string mediaPath, string kind, string extension, string made)
     {
@@ -154,7 +146,7 @@ public sealed class PreviewCache
         }
     }
 
-    /// <summary>Keeps bytes for a file and a kind (written whole, then put in place, so a reader never sees half of them).</summary>
+    /// <summary>Stores bytes atomically (temp write, then rename) for a file and kind.</summary>
     public void WriteBytes(string mediaPath, string kind, string extension, ReadOnlySpan<byte> bytes)
     {
         // Copied once into a buffer the writer can carry (a span cannot be captured), never into an array of its own size.
@@ -171,7 +163,7 @@ public sealed class PreviewCache
         }
     }
 
-    /// <summary>Keeps what <paramref name="write"/> writes for a file and a kind, written whole and then put in place.</summary>
+    /// <summary>Stores <paramref name="write"/>'s output atomically for a file and kind.</summary>
     public void Write(string mediaPath, string kind, string extension, Action<Stream> write)
     {
         if (PrepareWrite(mediaPath, kind, extension) is not { } path)
@@ -201,7 +193,7 @@ public sealed class PreviewCache
 
     private string ManifestPath => Path.Combine(Folder, ManifestName);
 
-    /// <summary>One line in the manifest for a file just kept: what it is, and the file (as it was) it was made from.</summary>
+    /// <summary>Appends a manifest line for a new entry: cache name and source file state.</summary>
     private void Remember(string path, string kind, string mediaPath)
     {
         FileState.Forget(path);
@@ -327,10 +319,9 @@ public sealed class PreviewCache
     }
 
     /// <summary>
-    /// Deletes the files used longest ago until what is left is no more than <paramref name="bytes"/>. The "last used"
-    /// times of the files found since the last trim are written first, so that they count as the recent ones they are.
+    /// LRU-trims to at most <paramref name="bytes"/>, first flushing pending access times so recent hits count.
     /// </summary>
-    /// <param name="spare">Files never deleted, whatever their age: a proxy that is playing.</param>
+    /// <param name="spare">Files exempt from deletion (e.g. a proxy in playback).</param>
     public void TrimTo(long bytes, IReadOnlySet<string>? spare = null)
     {
         try
@@ -389,10 +380,8 @@ public sealed class PreviewCache
     // ----- Entries of files that are gone -----
 
     /// <summary>
-    /// Deletes what was kept for files that have been deleted since, or changed (that version can never be asked for
-    /// again), as the manifest lists them. A file on a drive that is not there now (an unplugged USB drive, a share
-    /// that is offline) is only unreachable: its entries are kept, unless <paramref name="missingDrivesCountAsDeleted"/>.
-    /// Files kept before there was a manifest are left to the size limit. Returns how many files were deleted and their bytes.
+    /// Deletes manifest entries whose source was deleted or changed. Sources on absent drives (unplugged USB, offline share) are kept
+    /// unless <paramref name="missingDrivesCountAsDeleted"/>. Pre-manifest entries are left to the size limit. Returns count and bytes.
     /// </summary>
     public (int Files, long Bytes) PurgeMissing(bool missingDrivesCountAsDeleted, CancellationToken token = default)
     {

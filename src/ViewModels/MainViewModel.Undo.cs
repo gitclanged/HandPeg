@@ -6,42 +6,39 @@ using HandPegApp.Services;
 namespace HandPegApp.ViewModels;
 
 /// <summary>
-/// The sequence's own look, which no clip holds (4.4): the colour grade, the sharpening and the blurred background (5.0-Release:
-/// its continuous radius, its zoom, and its own effect stack). Kept with every undo step (TimelineSnapshot.Look), in memory only.
+/// Sequence-level look not held by any clip: colour grade, sharpening and blur fill (radius, zoom, own effect stack). Stored in
+/// every undo step (TimelineSnapshot.Look), in memory only.
 /// </summary>
 public sealed record SequenceLook(
     double Contrast, double Brightness, double Saturation, double Gamma, double Hue, double Red, double Green, double Blue,
     double Sharpen, double BlurRadius, int BlurPasses, double BackgroundDim, double BackgroundZoom = 1,
     List<Models.Effects.EffectState>? BackgroundEffects = null, bool BackgroundEffectsBypassed = false, string? LutPath = null);
 
-// ----- Universal undo (4.4) -----
-// An edit of the document takes its own step (OnDocumentCommitted), and so does whatever takes one by hand (Checkpoint):
-// a gizmo dragged, a dialog's visit, a keyframe moved. Everything else the user changes is a look: of a clip's view (its
-// place, size, text, filters), of the caption box, of one of the output audio tracks (5.2.0: what is made of it, its title),
-// or of the sequence (its colour, its blur fill's look). Each of those takes a step just before it changes (PropertyChanging, or
-// the toolkit's OnXChanging), so the step holds the look as it was; but only when it is the user changing it, and once for
-// a burst of changes: a slider dragged, a box typed into, a name typed letter by letter.
+// ----- Universal undo -----
+// Document edits take a step on commit (OnDocumentCommitted); explicit Checkpoints cover gizmo drags, dialog visits and keyframe
+// moves. All other user changes are looks (clip view placement/size/text/filters, caption box, output audio tracks, Sequence
+// colour and blur fill), which take a step just before changing (PropertyChanging / OnXChanging) so it captures the prior look;
+// only for user-originated changes, and once per burst (slider drag, typing).
 public partial class MainViewModel
 {
-    // How recent a key, click or turn of the wheel must be for a change to be the user's (NoteUserInput).
+    // Max age of the last key/click/wheel for a change to count as user input (NoteUserInput).
     private const long UserActionWindow = 300;
 
-    // When the user last pressed a key, a button or turned the wheel, and how many times they have (each one a gesture).
+    // Timestamp of the last input event and a monotonic gesture counter.
     private long _userInputAt;
     private int _inputGesture;
 
-    // While set, no look takes a step of its own: a style is being applied, which took one for all it does.
+    // Suppresses per-look steps while a style applies under one step.
     private int _lookStepsHeld;
 
-    // A dialog opened just after a step was taken for its visit (Checkpoint, UndoMark, ShowDialog, DropStepIfUnchanged): what
-    // is changed in it belongs to that step, for as long as no other step follows it.
+    // Dialog opened right after its visit step (Checkpoint, UndoMark, ShowDialog, DropStepIfUnchanged): its changes join that step
+    // until another step follows.
     private byte[]? _visitStep;
 
-    // The caption box, the output audio tracks and the dialogs are listened to from the user's first touch (NoteUserInput):
-    // a look changes by the user's hand only after a touch of theirs.
+    // Caption box, output tracks and dialogs are subscribed at the first user input (NoteUserInput); no user look change can precede it.
     private bool _undoSourcesHooked;
 
-    /// <summary>Holds back the looks' own steps while a whole set of them is put in place by something that took one for all.</summary>
+    /// <summary>Scope suppressing per-look steps during a bulk change covered by one step.</summary>
     private LookStepHold HoldLookSteps()
     {
         _lookStepsHeld++;
@@ -53,12 +50,12 @@ public partial class MainViewModel
         public void Dispose() => owner._lookStepsHeld--;
     }
 
-    /// <summary>The sequence's look as it is now, for an undo step.</summary>
+    /// <summary>Captures the current Sequence look for an undo step.</summary>
     private SequenceLook CaptureLook() => new(
         ColorContrast, ColorBrightness, ColorSaturation, ColorGamma, ColorHue, ColorRed, ColorGreen, ColorBlue,
         SharpenStrength, BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom, CaptureBackgroundEffects(), _backgroundRow.EffectsBypassed, LutPath);
 
-    /// <summary>Puts the sequence's look back as an undo step had it.</summary>
+    /// <summary>Restores the Sequence look from an undo step.</summary>
     private void ApplyLook(SequenceLook look)
     {
         (ColorContrast, ColorBrightness, ColorSaturation, ColorGamma) = (look.Contrast, look.Brightness, look.Saturation, look.Gamma);
@@ -66,37 +63,33 @@ public partial class MainViewModel
         (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom) = (look.BlurRadius, look.BlurPasses, look.BackgroundDim, look.BackgroundZoom);
         SetBackgroundEffects(look.BackgroundEffects, look.BackgroundEffectsBypassed);
 
-        // The legacy LUT (5.6.0): Undo and Redo of a Convert move it with the cards, whether or not the Color tab is up; a step of one
-        // project never reaches another (each tab keeps its own history). An older step's null leaves it as it is.
+        // Legacy LUT: undo/redo of a Convert moves it with the cards regardless of the Color tab; histories are per tab. A null
+        // (older step) leaves it unchanged.
         if (look.LutPath is { } lut)
             LutPath = lut;
     }
 
     /// <summary>
-    /// Whether a look may take a step at all now: not while the views are being written from the document, a step is being
-    /// put back, a project or a preset is being put in place (the command deferred), keyframes are being played or recorded,
-    /// a value is being copied along a track, a picture is being kept in place as the frame changes shape, the Crop boxes are
-    /// showing a clip's crop, the crop is
-    /// being written into clips, a style is being applied, an edit is open, or the Effects pane is writing (it keeps steps of
-    /// its own). Nor before the user has touched anything at all.
+    /// Whether looks may take steps now: false during view sync, restore, preset/project apply (command deferred), keyframe
+    /// playback/recording, track propagation, reshape anchoring, crop display or write-back, style apply, open edits, Effects pane
+    /// writes (own steps), and before any user input.
     /// </summary>
     private bool LookStepsShut =>
         _inputGesture == 0 || _isBackgroundWorker || _syncingViews || _applyingKeys || _recordingKey || _settingQuietly || _placingViews
         || _showingTarget || _takingCrop || _commandDeferrals > 0 || _lookStepsHeld > 0 || _openEdit is not null || _gesture.OwnedLooks > 0
         || IsRestoringTimeline;
 
-    /// <summary>A name or words: typed letter by letter, each letter a change.</summary>
+    /// <summary>Text properties that change per keystroke.</summary>
     private static bool IsTyped(string name) => name is nameof(Layer.Name) or nameof(Layer.TextContent) or nameof(AudioTrack.Title);
 
     /// <summary>
-    /// Whether the user's change of a look (about to be made) takes an undo step first. Only when it is the user's (the left
-    /// button held, a key, click or turn of the wheel a moment ago, or a name typed into a box), and once for a burst: the same
-    /// value of the same thing again soon after with no other step between, anything within half a second of a step taken by
-    /// hand, anything more while one press of the button is held, anything in a dialog whose visit is a step already.
+    /// Whether an impending look change takes a step: only if user-originated (button held, recent key/click/wheel, typing) and not
+    /// part of a burst (same property soon after with no intervening step, within 0.5 s of a manual step, same button press, or
+    /// inside a dialog whose visit already took a step).
     /// </summary>
     private bool TakesLookStep(object target, string name)
     {
-        // A step being put back, or its bindings settling: what they write is theirs, never the user's (4.4-BugHunt).
+        // Restore or its binding settle: writes are echoes, not user changes.
         if (IsRestoringTimeline)
             return false;
 
@@ -111,11 +104,11 @@ public partial class MainViewModel
         if (again || now - _checkpointedAt <= HandStepGrace || (_visitStep is { } visit && ReferenceEquals(newest, visit)))
             return false;
 
-        // One press of the button held down (a slider or a box dragged) is one step, however long it is held.
+        // One held button press (slider or box drag) is one step.
         return !held || _gesture.StepPress != _inputGesture;
     }
 
-    /// <summary>Takes the step for a look about to change, and remembers it as the newest, so the rest of its run joins it.</summary>
+    /// <summary>Takes a look step and records it as the current run so following changes merge.</summary>
     private void TakeLookStep(string what)
     {
         Checkpoint(what);
@@ -124,10 +117,10 @@ public partial class MainViewModel
 
     // ----- Views, the caption box -----
 
-    /// <summary>A view's (or the caption box's) value is about to change: a step first, when it is part of its look and the user's change.</summary>
+    /// <summary>PropertyChanging for views and the caption box: takes a step for user look changes.</summary>
     private void OnViewChanging(object? sender, PropertyChangingEventArgs e)
     {
-        // A layer announcing its own effect change (not a view property writing its card) is no change of the user's either.
+        // Layer-raised effect value notifications (not a view property write) are not user changes.
         if (LookStepsShut || sender is not Layer { IsEmptyTrack: false, RaisingEffectChange: false } view || e.PropertyName is not { } name
             || !LayerFields.UndoableLooks.Contains(name) || !TakesLookStep(view, name))
             return;
@@ -135,7 +128,7 @@ public partial class MainViewModel
         TakeLookStep(LookStepLabel(view, name));
     }
 
-    /// <summary>What a look's step is called in the status bar ("Undid: move Logo").</summary>
+    /// <summary>Status bar label for a look step ("Undid: move Logo").</summary>
     private static string LookStepLabel(Layer view, string name) => name switch
     {
         nameof(Layer.Name) => $"rename {view.Name}",
@@ -159,7 +152,7 @@ public partial class MainViewModel
         track.PropertyChanging += OnTrackChanging;
     }
 
-    /// <summary>One of the output audio tracks is about to change (what is made of it, or its title): a step first, when it is the user's change.</summary>
+    /// <summary>PropertyChanging for output audio tracks (action, title): takes a step for user changes.</summary>
     private void OnTrackChanging(object? sender, PropertyChangingEventArgs e)
     {
         if (LookStepsShut || sender is not AudioTrack track || e.PropertyName is not { } name)
@@ -175,8 +168,8 @@ public partial class MainViewModel
             TakeLookStep(what);
     }
 
-    // ----- The sequence's look -----
-    // Set by a Game Preset (held), a preset or a project (deferred), an undo step (deferred): none of those is the user's change.
+    // ----- Sequence look -----
+    // Writes from Game Presets (held), presets/projects and undo (deferred) are not user changes.
 
     partial void OnColorContrastChanging(double value) => SequenceLookChanging(nameof(ColorContrast), "change the contrast");
     partial void OnColorBrightnessChanging(double value) => SequenceLookChanging(nameof(ColorBrightness), "change the brightness");
@@ -199,11 +192,11 @@ public partial class MainViewModel
             TakeLookStep(what);
     }
 
-    // ----- What is listened to, from the user's first touch -----
+    // ----- Subscriptions started at first user input -----
 
     /// <summary>
-    /// Listens to the caption box, the output audio tracks (those there and those to come) and the dialogs: called on the
-    /// interface's thread at the user's first touch, before any change of theirs can be made.
+    /// Subscribes to the caption box, output audio tracks (current and future) and dialogs; called on the UI thread at the first
+    /// user input, before any user change.
     /// </summary>
     private void HookUndoSources()
     {
@@ -218,54 +211,47 @@ public partial class MainViewModel
                 HookTrack(track);
         };
 
-        // A dialog opened right after a step was taken for it (a Properties visit, the blur settings, a layer tool): what is
-        // changed in it is that step's, however long it stays open. One opened without one (the frame preview's colour
-        // controls) takes steps as the main window does.
+        // Dialogs opened right after their visit step (Properties, blur settings, layer tools) merge all changes into it; dialogs
+        // without one (frame preview colour controls) take steps like the main window.
         ComponentDispatcher.EnterThreadModal += (_, _) =>
             _visitStep = Environment.TickCount64 - _checkpointedAt < MergeWindow ? NewestStep : null;
         ComponentDispatcher.LeaveThreadModal += (_, _) => _visitStep = null;
     }
 
-    // ----- Putting a step back (4.4-BugHunt) -----
-    // While a document is being put in place (an undo or redo step, a project opened, a new one: Step, RestoreTimeline and
-    // InstallDocument, each nesting in the one before), nothing may take an undo step, open an edit, project the captions or
-    // write the Crop boxes into clips: what asks then is the restore itself, or something it set going, and
-    // it would land in the middle of it. The captions are projected once, as it ends, from the anchors put back. And from its
-    // end until the window's bindings have taken the new views (the dispatcher idle again), or the user's next touch, what
-    // they write back is their echo, not the user's change: it takes no step and makes no edit.
+    // ----- Restore scope -----
+    // During a document install (undo/redo, open, new: Step > RestoreTimeline > InstallDocument, nested), nothing may take a step,
+    // open an edit, project captions or write Crop boxes into clips; such requests come from the restore itself. Captions project
+    // once at the end from the restored anchors. Until bindings settle on the new views (dispatcher idle) or the next user input,
+    // binding write-backs are echoes: no step, no edit.
 
-    // How many restores are under way (they nest); and the outermost's settling: until when at the latest (0: none), and
-    // which restore's it is (an older one's idle moment ends nothing).
+    // Restore nesting depth; the outermost settle deadline (0 = none) and its generation (stale idle callbacks end nothing).
     private int _restoring;
     private long _settleEndsAt;
     private int _settleNumber;
 
-    // What the outermost restore does once, as it ends: the captions projected again, the subtitles' change told.
+    // Deferred end-of-restore work: caption re-projection and subtitle change notification.
     private bool _reprojectPending, _subtitlesChangedPending;
 
-    // The longest the bindings are given to settle, should the dispatcher not go idle sooner (playback keeps it busy).
+    // Maximum settle time if the dispatcher never idles (e.g. during playback).
     private const long SettleAtMost = 1000;
 
     /// <summary>
-    /// Whether a document is being put in place (an undo or redo step, a project opened, a new one) or has just been, the
-    /// window's bindings not yet settled on its views: nothing that could take an undo step, start an edit, clear the redo
-    /// history or project the captions may then. The settling ends at the dispatcher's next idle moment after the restore,
-    /// or at the user's next touch (<see cref="NoteUserInput"/>), whichever comes first.
+    /// True during a document install and until bindings settle (next dispatcher idle or <see cref="NoteUserInput"/>, whichever is
+    /// first); blocks undo steps, edits, redo clearing and caption projection.
     /// </summary>
     public bool IsRestoringTimeline => _restoring > 0 || RestoreSettling;
 
     private bool RestoreSettling => _settleEndsAt != 0 && Environment.TickCount64 < _settleEndsAt;
 
     /// <summary>
-    /// Raised once on the interface's thread when an undo or redo step, or a project, has been put in place: every view made
-    /// afresh and synced, the selection (<see cref="KeyLayer"/>) moved to its clip's new view by id, the captions projected.
-    /// What shows the timeline rebuilds its rows and its selection (by clip id) then, once. <see cref="IsRestoringTimeline"/>
-    /// is still true while it is raised: the bindings have yet to settle.
+    /// Raised once on the UI thread after an undo/redo or project install: views rebuilt and synced, <see cref="KeyLayer"/> remapped by
+    /// clip id, captions projected. Timeline views rebuild rows and selection once. <see cref="IsRestoringTimeline"/> is still true
+    /// (bindings not yet settled).
     /// </summary>
     public event Action? TimelineRestored;
 
 
-    /// <summary>A document starts being put in place; disposed, it is done (the outermost then finishes, <see cref="EndRestore"/>).</summary>
+    /// <summary>Begins a restore scope; disposing ends it (the outermost runs <see cref="EndRestore"/>).</summary>
     private RestoreScope BeginRestore()
     {
         _restoring++;
@@ -282,19 +268,17 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The outermost restore is over: the bindings are given until the dispatcher's next idle moment to settle on the new
-    /// views, the selection follows its clip into its new view, the captions are projected once (through the timeline put
-    /// back, from the anchors put back) and the subtitles' change is told once; then <see cref="TimelineRestored"/>. Nothing
-    /// escapes it: a fault is written down.
+    /// Finishes the outermost restore: starts the settle window (until next idle), remaps the selection, projects captions once from
+    /// restored anchors, raises the subtitle change once, then <see cref="TimelineRestored"/>. Faults are logged, never thrown.
     /// </summary>
     private void EndRestore()
     {
-        // A change made right after this is a step of its own, never the end of a run from before it.
+        // End any merge run: the next change takes its own step.
         _gesture.Looks.Reset();
         _gesture.Fields.Reset();
 
-        // First: what the window does on what follows (the captions told, its rows rebuilt) is not the user's change either. A
-        // view model without a dispatcher (a background worker, a headless harness) has no bindings to settle.
+        // Start the settle first so window reactions (caption notify, row rebuild) count as echoes. Dispatcher-less VMs (background
+        // workers, headless harnesses) have no bindings to settle.
         if (!_isBackgroundWorker && System.Windows.Application.Current?.Dispatcher is { } dispatcher && dispatcher.CheckAccess())
         {
             var number = ++_settleNumber;
@@ -338,8 +322,7 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The selected clip (the Keyframes and Effects panes', <see cref="KeyLayer"/>) as the view its clip has now: a document
-    /// put in place makes every view anew, and a clip keeps its id through undo and redo. Let go when its clip is gone.
+    /// Remaps <see cref="KeyLayer"/> to its clip's new view after an install (clip ids survive undo/redo); cleared if the clip is gone.
     /// </summary>
     private void FollowSelection()
     {
@@ -358,7 +341,7 @@ public partial class MainViewModel
         }
     }
 
-    // The words a step's name may carry on past its first into a crash report's breadcrumb: none of them names anything of the user's.
+    // Words allowed after the first in a breadcrumb step label; none can identify user content.
     private static readonly HashSet<string> PlainWords = new(StringComparer.Ordinal)
     {
         "a", "an", "the", "of", "to", "at", "in", "on", "into", "from", "out", "up", "back", "more", "again", "all", "every", "and", "s",
@@ -367,8 +350,8 @@ public partial class MainViewModel
     };
 
     /// <summary>
-    /// What an undo step or an edit is called, for a crash report's breadcrumbs: its first word (what was done) and the plain
-    /// words and numbers after it, up to the first that may name a clip (a file's name, a title): no name of the user's.
+    /// Privacy-safe breadcrumb label for a step or edit: the first word plus following allow-listed words/numbers, stopping before
+    /// anything that could be a clip name, file name or title.
     /// </summary>
     private static string NoteOf(string label)
     {
@@ -378,8 +361,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A fault caught where it must not escape (an edit, an undo step): written to the log with its stack (<paramref name="what"/>
-    /// may name the user's clips: the log stays on the machine), and a breadcrumb of what was being done without any name.
+    /// Records a contained fault (edit, undo step): full log entry with stack (<paramref name="what"/> may contain clip names; the
+    /// log is local only) plus a name-free breadcrumb.
     /// </summary>
     private static void NoteFault(string category, string what, string note, Exception ex)
     {

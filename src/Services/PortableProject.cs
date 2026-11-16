@@ -6,24 +6,22 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Services;
 
-// ----- Fully portable project saves (5.2A, AppSettings.FullyPortableProjectSave, the user's directive) -----
-// With the setting on, a manual save writes the project as a folder that holds everything it reads: Projects\Name\Name.hproj, and every
-// media file it names (videos, sounds, pictures, LUTs, masks) in Projects\Name\media\, the project naming each as "media\file" (relative,
-// so the folder can be carried to another PC or drive and opened there). A file on the same drive is hard-linked into media\ (instant, no
-// space taken: the same file under two names); one on another drive (or on a drive with no hard links: FAT32, exFAT, a share) is copied in
-// the background, the project first naming it where it is and then, once the copy is whole, its copy. The project carries a top-level
-// "portableMedia": true, and opening it points every "media\..." back at the folder it is in (Resolve). Autosaves are left as they are.
+// ----- Fully portable project saves (AppSettings.FullyPortableProjectSave) -----
+// Manual saves write a self-contained folder: Projects\Name\Name.hproj plus all referenced media (video, audio, images, LUTs, masks) in
+// Projects\Name\media\, referenced as relative "media\file" so the folder is movable. Same-volume files are hard-linked (instant, no
+// space); others (or volumes without hard links: FAT32, exFAT, shares) are copied in the background, the project referencing the
+// original until the copy completes. The file carries "portableMedia": true; Resolve maps "media\..." back on open. Autosaves unaffected.
 public static partial class PortableProject
 {
     public const string MediaFolder = "media";
 
-    // The project's own mark: present and true in a portable project's file (an unknown property to a version before 5.2A, which ignores it).
+    // Portable marker property (ignored as unknown by older versions).
     private const string Marker = "portableMedia";
 
-    // The media copies under way (their targets), so a save made while one is copying neither copies it twice nor names it before it is whole.
+    // In-flight copy targets, so concurrent saves neither duplicate a copy nor reference it before completion.
     private static readonly HashSet<string> Copying = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Where a fully portable project of this name is saved: Projects\Name\Name.hproj (the name made fit for a file name).</summary>
+    /// <summary>Portable project path: Projects\Name\Name.hproj (name sanitized).</summary>
     public static string PathFor(string name)
     {
         var fileName = string.Concat(name.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)).Trim();
@@ -32,18 +30,17 @@ public static partial class PortableProject
         return Path.Combine(ProjectStore.Folder, fileName, fileName + ProjectStore.Extension);
     }
 
-    /// <summary>Whether a project file is a fully portable project's: in a folder of its own name, beside its media folder or ready for one.</summary>
+    /// <summary>True when the project sits in a same-named folder suitable for a media subfolder.</summary>
     public static bool IsPortableFolder(string projectPath) =>
         projectPath.Length > 0 && Path.GetDirectoryName(Path.GetFullPath(projectPath)) is { Length: > 0 } folder
         && string.Equals(Path.GetFileName(folder), Path.GetFileNameWithoutExtension(projectPath), StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>What a portable save did: files linked or already in media\, files being copied there in the background, and named files that were not there.</summary>
+    /// <summary>Portable save result: files linked or present, files copying in the background, and missing references.</summary>
     public readonly record struct Outcome(string Path, int InPlace, int Copying, int Missing, Task Copies);
 
     /// <summary>
-    /// Writes the state as a fully portable project at <paramref name="projectPath"/> (its folder made if need be): every file it names that is
-    /// there is named "media\file", hard-linked into the folder's media\ when it can be, else copied there in the background (the project names
-    /// it where it is until its copy is whole, then is written again naming the copy). The export's destination is left as it is.
+    /// Saves a portable project at <paramref name="projectPath"/> (creating the folder): existing references become "media\file",
+    /// hard-linked when possible, else copied in the background (original path until done, then rewritten). Export destination unchanged.
     /// </summary>
     public static Outcome Save(ProjectState state, string projectPath)
     {
@@ -121,8 +118,7 @@ public static partial class PortableProject
     }
 
     /// <summary>
-    /// A portable project's text with every "media\..." it names pointed at the media folder beside the file (and nothing outside it), as it is
-    /// opened; any other project's text as it is.
+    /// On open, maps a portable project's "media\..." references to the adjacent media folder (never outside it); other projects pass through.
     /// </summary>
     public static string Resolve(string json, string projectPath)
     {
@@ -147,19 +143,16 @@ public static partial class PortableProject
     private static bool IsMediaName(string text) =>
         text.Length > MediaFolder.Length + 1 && text.StartsWith(MediaFolder, StringComparison.OrdinalIgnoreCase) && text[MediaFolder.Length] is '\\' or '/';
 
-    // ----- The undo and redo history (5.2B, the user's Q1) -----
-    // Each step of the history a save carries is the timeline it puts back, packed as Undo keeps it (UndoSteps: Brotli over its JSON, Base64
-    // in the file), so a rewrite of the project's own strings never reaches the paths inside it. A portable save unpacks every step, rewrites
-    // it with the same map as the project and packs it again; opening the project (Resolve) and the copies' pointing (CopyThenPoint) do the
-    // same with theirs. Undo and Redo then go on in a folder carried to another PC, reading the media beside it as the project does.
-    // A step is first read token by token (no tree made): one none of whose strings the map changes keeps its packed bytes as they are. The
-    // map's answers are kept per string for the whole project, so a path named in forty steps is looked at (File.Exists, a link) once.
+    // ----- Undo/redo history -----
+    // Saved steps are packed timelines (UndoSteps: Brotli JSON, Base64), opaque to project-level string rewriting. Portable save, Resolve
+    // and CopyThenPoint unpack, rewrite with the same map and repack each step, so undo works after moving the folder. Steps are first
+    // scanned token by token; unchanged ones keep their bytes. Map results are memoized per string (one File.Exists per path).
 
-    // The project's histories, as the file names them, and what a step's "state" holds unpacked at most (UndoSteps.MaximumBytes).
+    // History property names and the maximum unpacked step size (UndoSteps.MaximumBytes).
     private static readonly string[] Histories = ["undoHistory", "redoHistory"];
     private const int MaximumStepBytes = 128 * 1024 * 1024;
 
-    /// <summary>Replaces every string of the project, and of every step of its undo and redo history, that <paramref name="map"/> has another value for.</summary>
+    /// <summary>Rewrites mapped strings in the project and in every undo/redo step via <paramref name="map"/>.</summary>
     private static void RewriteWithHistory(JsonNode project, Func<string, string?> map)
     {
         // Each string asked about once: the project and every step share the answers.
@@ -187,8 +180,7 @@ public static partial class PortableProject
     }
 
     /// <summary>
-    /// A packed step (Base64) with the strings of its timeline rewritten, packed again as Undo packs it; null when nothing in it changed, or
-    /// it is not a step (left as it is: the project's reading lets go of a step it cannot read, never the project).
+    /// Rewrites and repacks a Base64 step; null when unchanged or unreadable (left as-is; loading drops unreadable steps, not the project).
     /// </summary>
     internal static string? RewriteStep(string packed, Func<string, string?> map)
     {
@@ -220,7 +212,7 @@ public static partial class PortableProject
         return changed ? Convert.ToBase64String(PackStep(System.Text.Encoding.UTF8.GetBytes(timeline.ToJsonString()))) : null;
     }
 
-    // Whether any string value of a step's JSON is one the map has another value for, read token by token (no tree made, nothing written).
+    // True if any JSON string in the step is remapped (token scan, no DOM, no writes).
     private static bool AnyChanged(ReadOnlySpan<byte> json, Func<string, string?> map)
     {
         var reader = new System.Text.Json.Utf8JsonReader(json);
@@ -273,8 +265,7 @@ public static partial class PortableProject
     }
 
     /// <summary>
-    /// The file in the media folder a file goes to: its own name, the same file already there kept (its length and write time match), another
-    /// file of that name numbered: "clip (2).mkv".
+    /// Media folder target: same name, reusing an identical existing file (length and write time), else numbered ("clip (2).mkv").
     /// </summary>
     private static string TargetFor(string full, string media, Dictionary<string, string> taken)
     {
@@ -324,8 +315,8 @@ public static partial class PortableProject
     }
 
     /// <summary>
-    /// Copies the files from other drives into the media folder (each through a ".part" file, its write time kept, so a seek index matches it),
-    /// then points the project file at the copies that are whole: whatever saves have been made meanwhile, the newest file is rewritten.
+    /// Copies cross-volume files into media (via ".part", preserving write time for seek indexes), then rewrites the newest project file to
+    /// reference completed copies.
     /// </summary>
     private static void CopyThenPoint(string projectPath, List<(string From, string To)> files)
     {

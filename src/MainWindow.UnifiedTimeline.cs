@@ -12,31 +12,27 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- The timeline pane (4.4): its rows, its tools, its inspector, and what its surface asks for -----
-// The pane (Views/UnifiedTimelinePane) is one drawn surface of every track with its ruler, scroll bars and tools around it.
-// This side makes its rows from what is open (the view model's LayerRows and AudioRows, the document's folds, the captions'
-// anchor), gives them to the surface at the view's scale, and does what the surface and the tools ask: select, seek, edit
-// through the view model's verbs, open a track's menu (FillTrackMenu), put a fold back, close a gap, split at a click.
-// The selection (_selectedClip) is the window's, shared with the Canvas, the Keyframes pane and the playback bar.
+// ----- Timeline pane host: rows, tools, inspector, surface callbacks -----
+// Views/UnifiedTimelinePane is one drawn surface with ruler, scroll bars and tools. This partial builds rows from the view model
+// (LayerRows, AudioRows, folds, caption anchor) at the view scale and handles surface/tool requests: select, seek, edit via view-model
+// verbs, track menus (FillTrackMenu), unfold, close gaps, split. _selectedClip is window-owned, shared with Canvas, Keyframes and playback bar.
 public partial class MainWindow
 {
-    // How tall rows are: pictures and sounds by the one Track Height (1 to 50, LayerTrackHeight: the pane's height pill and
-    // slider, Alt + Shift + the wheel over the tracks, Shift + a row's lower edge dragged in the headers, and its Pane Settings), a
-    // picture's from 32 to 120 px (5.1-Polish, the user's directive), a sound's a little lower; a track's row can have a
-    // height of its own (its lower edge dragged, TimelineTrackModel.Height, the user's Q2); the captions and the background
-    // are thin, having little to show.
+    // Row heights: video/audio follow the global Track Height (1..50, LayerTrackHeight; set by the height pill/slider, Alt+Shift+wheel,
+    // Shift+edge drag, Pane Settings), video 32..120 px and audio slightly lower; a track may override it (edge drag,
+    // TimelineTrackModel.Height). Captions and background rows are thin.
     private const double CaptionRowHeight = 30;
     private const double BackgroundRowHeight = 26;
     private const double LowestPictureRow = 32, TallestPictureRow = 120, LowestSoundRow = 28, TallestSoundRow = 92;
 
-    /// <summary>The Track Height HandPeg starts with (a double-click on a row's lower edge, or on the height pill, puts it back).</summary>
+    /// <summary>Default Track Height (restored by double-clicking a row's lower edge or the height pill).</summary>
     private const double UsualTrackHeight = 25;
 
-    // How many steps of the Track Height one notch of Alt + Shift + the wheel is, and the setting when a row's edge drag began.
+    // Track Height steps per Alt+Shift+wheel notch, and the setting at the start of an edge drag.
     private const int TrackHeightStepsPerNotch = 2;
     private double _trackHeightAtDrag;
 
-    // A track's row being sized by its lower edge: its key and the height it has until the drag is let go of (the edit).
+    // Per-row resize in progress: row key and live height until release commits it.
     private (object Key, double Height)? _rowHeightDrag;
 
     private static readonly object CaptionsRowKey = "captions";
@@ -48,7 +44,7 @@ public partial class MainWindow
 
     private double RowHeightAt(double lowest, double tallest) => Math.Round(lowest + (Math.Clamp(_viewModel.LayerTrackHeight, 1, 50) - 1) * (tallest - lowest) / 49);
 
-    /// <summary>How tall a track's row is: what its lower edge is being dragged to, its own height, or the one Track Height.</summary>
+    /// <summary>Effective row height: live drag height, else the track override, else the global Track Height.</summary>
     private double RowHeightOf(object key, TimelineTrackModel? track, TimelineRowKind kind)
     {
         var (lowest, tallest, shared) = kind == TimelineRowKind.Audio
@@ -58,48 +54,46 @@ public partial class MainWindow
         return own is { } height ? Math.Round(Math.Clamp(height, lowest, tallest)) : shared;
     }
 
-    /// <summary>The track of a row its own height is kept on (the row of a track, never a lane of its stack that shows the same layer).</summary>
+    /// <summary>Track owning a row's height override (track rows only, never a stack lane showing the same layer).</summary>
     private TimelineTrackModel? HeightTrackOf(TimelineRow row) =>
         row.Data is Layer layer && Equals(row.Key, layer.TrackId) ? _viewModel.TrackOfRow(layer) : null;
 
-    /// <summary>Steps of the Track Height a picture row's height changes by for so many DIPs.</summary>
+    /// <summary>Converts a video-row DIP delta to Track Height steps.</summary>
     private static double TrackHeightSteps(double pixels) => pixels * 49 / (TallestPictureRow - LowestPictureRow);
 
-    // Rows are being made (a change of scale while they are is not another reason to make them).
+    // Reentrancy guard: a scale change during a rebuild does not trigger another.
     private bool _rebuildingRows;
 
-    // A row whose sound's stack opens once the rows are made again: the row of a clip whose sound was just unlinked, so its
-    // lane can be dragged.
+    // Row whose audio stack auto-expands after the next rebuild (a clip just unlinked, so its lane is draggable).
     private object? _expandRowKey;
 
-    // The rows of the tracks as last made, by the track's id: which rows slide with a fold (a track's row and those in its stack).
+    // Last-built track rows by track id, used to find rows that slide with a fold (the track row and its stack).
     private Dictionary<Guid, TimelineRow> _rowByTrack = [];
 
     /// <summary>
-    /// A tab's rows as they were when it went behind (5.4.1-M3): given back, not made again, as it comes back while its Sequence (its undo
-    /// mark and views), the scale and the switches that shape the rows are as they were.
+    /// Rows captured at tab deactivation, reused on activation while the Sequence (undo mark, views), scale and row-shaping switches are unchanged.
     /// </summary>
     private sealed record KeptRows(TimelineRow[] Rows, Dictionary<Guid, TimelineRow> ByTrack, double Scale, object? UndoMark, (bool, bool, bool) Shape);
 
-    // The rows of the tab coming back, until they are given back or the switch's layouts are done.
+    // Pending reusable rows of the activating tab, until consumed or the switch's layouts finish.
     private KeptRows? _rowsToTakeBack;
 
-    // The switches that shape the rows (BuildTimelineRows): the waveforms, Show Linked Audio and the effect lanes.
+    // Row-shaping switches (BuildTimelineRows): waveforms, Show Linked Audio, effect lanes.
     private (bool, bool, bool) RowShape() =>
         (AppSettings.Current.ShowClipWaveforms, _viewModel.ShowLinkedAudio, AdoptsEffectLanes(AppSettings.Current));
 
-    /// <summary>The rows as they are now, for the tab in front put behind; null while they are owed or being made.</summary>
+    /// <summary>Current rows for the deactivating tab; null while stale or rebuilding.</summary>
     private KeptRows? KeepRows() =>
         _rowsStale || _rebuildingRows || UnifiedTimeline.Surface.IsDragging ? null
             : new(UnifiedTimeline.Surface.Rows.ToArray(), _rowByTrack, UnifiedTimeline.Surface.PixelsPerSecond, _viewModel.UndoMark, RowShape());
 
-    /// <summary>The rows of the tab come back, when they are still what would be made at <paramref name="scale"/> (see <see cref="KeptRows"/>).</summary>
+    /// <summary>The activating tab's saved rows if still valid at <paramref name="scale"/> (see <see cref="KeptRows"/>).</summary>
     private TimelineRow[]? TakeBackRows(double scale)
     {
         if (_rowsToTakeBack is not { } kept || kept.Scale != scale || !ReferenceEquals(kept.UndoMark, _viewModel.UndoMark) || kept.Shape != RowShape())
             return null;
 
-        // Every track's row still one of its views (never a row of a view made anew).
+        // Every track row must still reference a current view (never a recreated one).
         var layers = _viewModel.Layers.ToHashSet();
         if (kept.Rows.Any(r => r.Data is Layer layer && !layers.Contains(layer)) || kept.Rows.Count(r => r.Data is Layer) > layers.Count)
             return null;
@@ -109,15 +103,14 @@ public partial class MainWindow
         return kept.Rows;
     }
 
-    // The clips' views and the audio streams whose changes (a strip or a waveform arriving, a name, a mute) the rows show:
-    // watched while they are on the timeline. Two sets, swapped, so that watching costs nothing new each time.
+    // Watched clip views and audio streams (strip/waveform arrival, name, mute) while on the timeline; two swapped sets avoid
+    // per-rebuild allocation.
     private HashSet<INotifyPropertyChanged> _rowSources = [];
     private HashSet<INotifyPropertyChanged> _rowSourcesNext = [];
 
     /// <summary>
-    /// Hooks the timeline pane up (called once, from the constructor): its surface's events and questions (what is
-    /// selected, what to snap to, the frame rate), its ruler, scroll bar and zoom to the shared view, its tools. Nothing is
-    /// made here: the surface has rows once there is something open.
+    /// One-time wiring from the constructor: surface events and queries (selection, snap points, frame rate), ruler, scroll bar and zoom
+    /// to the shared view, and tools. Builds no rows (they arrive once media opens).
     /// </summary>
     private void InitializeUnifiedTimeline()
     {
@@ -134,8 +127,8 @@ public partial class MainWindow
         surface.EmptyPressed += Timeline_EmptyPressed;
         surface.DragRefused += Timeline_DragRefused;
 
-        // 4.4 BugHunt: the rows owed are laid out before a press is looked at, and at once when a drag ends (what it drew
-        // moved is the timeline again, edited, refused or failed); a fault in an edit the surface asked for is a status line.
+        // Flush stale rows before hit-testing a press and immediately at drag end (success, refusal or failure); surface edit faults
+        // become a status line.
         surface.PressStarting += FlushClipRedraw;
         surface.DragEnded += Timeline_DragEnded;
         surface.CallbackFailed += ex => TimelineFault("an edit on the timeline", ex);
@@ -144,7 +137,7 @@ public partial class MainWindow
 
         surface.ZoomRequested += (factor, x) => ZoomTimeline(factor, surface.TimeAreaWidth > 0 ? x / surface.TimeAreaWidth : 0.5);
         surface.PanRequested += pixels => PanTimeline(surface.PixelsPerSecond > 0 ? pixels / surface.PixelsPerSecond : 0);
-        // A change of width (a splitter or the window dragged) lays the rows out again once the moves pause, not at every one.
+        // Width changes (splitter, window resize) rebuild rows once movement pauses (debounced).
         surface.ScaleChanged += ScheduleClipRedraw;
         surface.HeaderSwitchToggled += Timeline_HeaderSwitchToggled;
         surface.MenuRequested += Timeline_MenuRequested;
@@ -152,13 +145,13 @@ public partial class MainWindow
         surface.CloseGapRequested += Timeline_CloseGapRequested;
         surface.RazorRequested += Timeline_RazorRequested;
 
-        // The tracks' height from the surface (5.1-Polish): Alt + Shift + the wheel (5.4.1-M1), and a row's lower edge dragged or double-clicked.
+        // Global track height from the surface: Alt+Shift+wheel, lower-edge drag or double-click.
         surface.TrackHeightStepped += notches => _viewModel.LayerTrackHeight = Math.Clamp(_viewModel.LayerTrackHeight + notches * TrackHeightStepsPerNotch, 1, 50);
         surface.TrackHeightDragStarted += () => _trackHeightAtDrag = _viewModel.LayerTrackHeight;
         surface.TrackHeightDragged += pixels => _viewModel.LayerTrackHeight = Math.Clamp(_trackHeightAtDrag + TrackHeightSteps(pixels), 1, 50);
         surface.TrackHeightReset += () => _viewModel.LayerTrackHeight = UsualTrackHeight;
 
-        // One track's height (5.1-AutoHud-Part1, the user's Q2): drawn as it is dragged, one step of Undo when it is let go of.
+        // Per-track height: live while dragging, one Undo step on release.
         surface.RowHeightDragged += (row, height) =>
         {
             _rowHeightDrag = (row.Key, height);
@@ -178,18 +171,18 @@ public partial class MainWindow
                 _viewModel.SetTrackHeight(track, null);
         };
 
-        // 5.0: clips selected together (a click let go decides what a Ctrl / Shift press on a selected clip does; a group's
-        // drag is one step of Undo), and the moment under the pointer over the ruler told as the rows' is (Instant Seek).
+        // Multi-selection (click release resolves Ctrl/Shift on selected clips; group drag = one Undo step) and ruler pointer time
+        // forwarded like the rows' (Instant Seek).
         surface.BlockClicked += Timeline_BlockClicked;
         surface.HeaderClicked += Timeline_HeaderClicked;
 
-        // 5.2A: a track's preset badge drops the Game Presets; a rubber band over empty space selects what it touches.
+        // Preset badge opens the Game Preset list; rubber band selects touched clips.
         surface.BadgePressed += Timeline_BadgePressed;
         surface.MarqueeSelected += Timeline_MarqueeSelected;
         surface.Together = _viewModel.EditTogether;
 
-        // 5.5A: a picture track's header dragged to a seam between the picture tracks (moved there with its Sub-Lanes, or out of its stack),
-        // or right onto the lower half of another top-level picture track's header (made its Sub-Lane). Each one step of Undo.
+        // Video track header drags: to a seam (move with Sub-Lanes, or un-nest), or onto the lower half of another top-level video
+        // header (nest as its Sub-Lane). One Undo step each.
         surface.CanDragRow = row => TrackLayerOf(row) is { } layer && _viewModel.CanDragTrack(layer);
         surface.CanMoveRowTo = (row, beside, above) => TrackLayerOf(row) is { } layer && TrackLayerOf(beside) is { } besideLayer && _viewModel.CanMoveTrackToSeam(layer, besideLayer, above);
         surface.CanNestRow = (row, parent) => TrackLayerOf(row) is { } layer && TrackLayerOf(parent) is { } parentLayer && _viewModel.CanNestTrack(layer, parentLayer);
@@ -204,11 +197,11 @@ public partial class MainWindow
         _viewModel.LayerRows.CollectionChanged += (_, _) => ScheduleClipRedraw();
         _viewModel.AudioRows.CollectionChanged += (_, _) => ScheduleClipRedraw();
 
-        // A clip picture stored or released (a strip of frames, a waveform): the blocks are drawn again, coalesced.
+        // Clip image cached or released (strip, waveform): coalesced block redraw.
         _viewModel.ClipPictures.Changed += ScheduleClipRedraw;
         _viewModel.ClipPictures.OtherFilesInUse = () => _hydrated.Values.SelectMany(FilesOf);
 
-        // Play / Pause in the pane's corner while neither the playback bar's nor the Sequence Overview Scrubber's is on screen.
+        // Corner Play/Pause shown only while neither the playback bar nor the Scrubber is visible.
         TimelinePane.IsVisibleChanged += (_, _) => ShowTimelinePlayButton();
         pane.Loaded += (_, _) =>
         {
@@ -234,9 +227,9 @@ public partial class MainWindow
     private void ShowTimelinePlayButton() =>
         UnifiedTimeline.PlayButton.Visibility = _viewModel.ShowSimplePlayback && !TimelinePane.IsVisible ? Visibility.Visible : Visibility.Collapsed;
 
-    // ----- The view on the surface -----
+    // ----- Surface view -----
 
-    /// <summary>Gives the surface the shared view (a minute's room while nothing is open, as the ruler shows); its scale follows from it.</summary>
+    /// <summary>Pushes the shared view to the surface (60 s span while empty, matching the ruler); scale derives from it.</summary>
     private void ShowViewOnSurface()
     {
         ClampView();
@@ -245,8 +238,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Shows the view's change on the surface: a pan slides what is drawn; a zoom changes the scale, and the rows are laid
-    /// out again for it (never under a drag, which goes on at the scale it began at).
+    /// Applies a view change: pans translate; zooms rescale and rebuild rows (never mid-drag; drags keep their start scale).
     /// </summary>
     private void ShowTimelineView()
     {
@@ -257,11 +249,10 @@ public partial class MainWindow
             RebuildTimelineRows();
     }
 
-    // ----- The rows -----
+    // ----- Rows -----
 
     /// <summary>
-    /// Makes the timeline's rows again from what is open, at the surface's scale, and gives them to it (it keeps which
-    /// rows are open by their keys). Never under a drag: the drag's end asks again.
+    /// Rebuilds rows at the surface scale and hands them over (expansion persists by key). Never mid-drag; drag end requests a rebuild.
     /// </summary>
     private void RebuildTimelineRows()
     {
@@ -271,7 +262,7 @@ public partial class MainWindow
 
         _rebuildingRows = true;
 
-        // What is made now is what the timeline is: anything that changes while it is made asks again.
+        // Clear the stale flag first: any change during the build re-schedules.
         _rowsStale = false;
         try
         {
@@ -295,12 +286,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The timeline's rows, top to bottom, with their blocks laid out at <paramref name="scale"/> pixels a second. Each
-    /// track's row in the stacking order (the front first: LayerRows), its children (the tracks made to go with it, a Game
-    /// Preset's HUD Cutouts; its clips' unlinked sound; its streams' Sub-Lanes) in its mini-stack; the captions in the stack of the
-    /// track whose sound they were heard in (else on top); the blur fill's settings row under the pictures; the sound clips'
-    /// tracks last. Each row is known by a key that an undo leaves as it was (Layer.TrackId, "captions", "background"), so a
-    /// row that was open stays open.
+    /// Builds rows top to bottom at <paramref name="scale"/> px/s: video tracks in stacking order (front first, LayerRows) with children in
+    /// their mini-stacks (child tracks, HUD Cutouts, unlinked audio, stream Sub-Lanes); captions in their source track's stack (else top);
+    /// the blur fill row below the video; audio tracks last. Keys are undo-stable (Layer.TrackId, "captions", "background"), preserving expansion.
     /// </summary>
     private List<TimelineRow> BuildTimelineRows(double scale)
     {
@@ -308,13 +296,12 @@ public partial class MainWindow
         var seconds = _viewModel.DurationMs / 1000;
         if (_viewModel.Layers.Count == 0 && seconds <= 0)
         {
-            // An empty timeline (a new project, the last one closed): the combined sounds the last one drew are let go too.
+            // Empty timeline (new project, last clip removed): also release cached combined waveforms.
             GiveStacksTheirSound([], 0, 0);
             return rows;
         }
 
-        // The tracks' rows: pictures in the stacking order, then the sound clips' tracks (a video clip's sound is on its
-        // own clip's row, or its lane while unlinked).
+        // Track rows: video in stacking order, then audio tracks (video audio lives on its clip's row, or its lane when unlinked).
         var pictures = new List<(Layer Layer, TimelineRow Row)>();
         TimelineRow? captionRow = null, backgroundRow = null;
         foreach (var layer in _viewModel.LayerRows)
@@ -327,8 +314,7 @@ public partial class MainWindow
                 pictures.Add((layer, TrackRow(layer, scale, seconds)));
         }
 
-        // (5.2-AuditB: a file's streams are Sub-Lanes of sound clips, rows of their own in their video track's stack; the output
-        // audio tracks are the Audio tab's, no rows of the timeline.)
+        // File streams are audio-clip Sub-Lanes in their video track's stack; output audio tracks belong to the Audio tab, not the timeline.
         var sounds = new List<(Layer Layer, TimelineRow Row)>();
         foreach (var item in _viewModel.AudioRows)
         {
@@ -336,11 +322,11 @@ public partial class MainWindow
                 sounds.Add((sound, TrackRow(sound, scale, seconds)));
         }
 
-        // Captions made or imported while their layer is not listed are shown all the same.
+        // Show captions even when their layer is not listed (generated or imported).
         if (captionRow is null && seconds > 0 && _viewModel.GetSubtitleSegments().Count > 0)
             captionRow = CaptionRow(_viewModel.CaptionLayer, scale, seconds);
 
-        // A track made to go with another (its ParentTrackId) is in that one's mini-stack.
+        // Child tracks (ParentTrackId) go into their parent's mini-stack.
         var byLayer = new Dictionary<Layer, TimelineRow>(pictures.Count + sounds.Count);
         var byTrack = new Dictionary<Guid, TimelineRow>(pictures.Count + sounds.Count);
         foreach (var (layer, row) in pictures.Concat(sounds))
@@ -356,9 +342,8 @@ public partial class MainWindow
                 Adopt(parentRow, row);
         }
 
-        // Each picture track's effects (5.2): its clips' effects as blocks on lanes of its own stack, among its Sub-Lanes (EffectRows),
-        // taking room only while that stack is open (5.3); none at all while the Timeline's effect lanes are switched off, when a clip's
-        // effects show only as the "fx N" badge on its block (AdoptsEffectLanes).
+        // Video track effect lanes (EffectRows) in its stack, taking space only while open; omitted when effect lanes are off (only the
+        // "fx N" badge shows, AdoptsEffectLanes).
         if (AdoptsEffectLanes(AppSettings.Current))
         {
             foreach (var (layer, row) in pictures)
@@ -368,10 +353,8 @@ public partial class MainWindow
             }
         }
 
-        // The captions follow the sound they were heard in: in the stack of its track, among its layers (4.4 BugHunt: beside
-        // the HUD cut-outs and masks, never among its sound's lanes).
-        // Strict order (the user's directive): that is where they are drawn, right over that track; drawn anywhere else, their row is
-        // where they are drawn, under the track over them, or at the very top over everything.
+        // Captions sit in their source track's visual stack (beside HUD Cutouts and masks, never audio lanes) when drawn directly over
+        // that track; otherwise their row follows draw order: under the track above them, or at the very top.
         TimelineRow? overCaptions = null;
         if (captionRow is not null)
         {
@@ -384,8 +367,7 @@ public partial class MainWindow
                 rows.Add(captionRow);
         }
 
-        // The blur fill's settings (5.2-AuditB: each video's own blur fill, this row their look) under the pictures: a row of
-        // the view only, the sequence's setting, no clip, and nothing links it.
+        // Blur fill settings row below the video: view-only, sequence-level look for per-video fills; no clip, no links.
         rows.AddRange(pictures.Where(p => p.Row.Parent is null).Select(p => p.Row));
         if (overCaptions is not null)
         {
@@ -395,27 +377,24 @@ public partial class MainWindow
             rows.Insert(rows.IndexOf(top) + 1, captionRow!);
         }
 
-        // Where the Background Blur is drawn (5.4A: under every picture): its row the last of the lowest family's stack, under its
-        // Cutouts, when that family alone has blur fills; otherwise the last of the picture rows, under them all.
+        // Background Blur draws beneath all video: its row is last in the lowest family's stack when only that family has blur fills,
+        // else last among all video rows.
         if (backgroundRow is { Parent: null } && BlurFamilyRow(byTrack) is { } family)
             Adopt(family, backgroundRow);
         if (backgroundRow is { Parent: null })
             rows.Add(backgroundRow);
         rows.AddRange(sounds.Where(s => s.Row.Parent is null).Select(s => s.Row));
 
-        // Each row's stack in its two parts, each opened by itself: its layers (the captions first, as they are drawn in
-        // front of everything, then the tracks made to go with it, and last the blur fill's settings row under them all) and under
-        // them its sound's lanes, a video track's stream lanes by stream (5.2: "Stream 1", "Stream 2"...).
+        // Each stack has two independently expandable parts: visual (captions first as topmost, child tracks, blur fill row last) then
+        // audio lanes (stream lanes named "Stream 1", "Stream 2", ...).
         OrderStacks(rows, row => row.Data is Layer lane && _viewModel.StreamOrdinalOf(lane) is { } ordinal ? ordinal : int.MaxValue);
         MarkInFront(rows);
 
-        // Each video block with a sound stack shows what its audible lanes play, as one waveform (5.3-Stage2): known only now that the
-        // lanes are in their stacks; none while the blocks' waveforms or Show Linked Audio are off (what was drawn is let go).
+        // Combined stack waveforms need lanes already stacked; skipped (and released) while waveforms or Show Linked Audio are off.
         GiveStacksTheirSound(AppSettings.Current.ShowClipWaveforms && _viewModel.ShowLinkedAudio ? rows : [], scale, seconds);
         _rowByTrack = byTrack;
 
-        // The seams of folded dead air, on the row of the track each was folded at, with the rows that slide with each
-        // (that track's and its stack's; every unlocked row for a fold made on every track).
+        // Dead-air seams on their track's row, with sliding rows (that track and its stack; all unlocked rows for an all-tracks fold).
         Dictionary<TimelineRow, List<SeamMark>>? seams = null;
         foreach (var (trackId, at, fold) in _viewModel.FoldSeams())
         {
@@ -437,7 +416,7 @@ public partial class MainWindow
             }
         }
 
-        // The stretches of folded dead air that were put back (4.4 BugHunt): each shaded on its row, with its Hide pill.
+        // Unfolded dead-air ranges: shaded on their row with a Hide pill.
         Dictionary<TimelineRow, List<RevealMark>>? reveals = null;
         foreach (var (trackId, from, to, restored) in _viewModel.RestoredStretches())
         {
@@ -461,7 +440,7 @@ public partial class MainWindow
 
         return rows;
 
-        // A row taken into another's stack: among its layers, or (a sound: an audio track, a stream's lane) among its sound's lanes.
+        // Adds a child row to the visual part, or (audio track, stream lane) to the audio part.
         static void Adopt(TimelineRow parent, TimelineRow child)
         {
             child.Parent = parent;
@@ -469,8 +448,8 @@ public partial class MainWindow
             parent.Children.Add(child);
         }
 
-        // Every stack laid as its two parts, in the order they were taken in within each (a stable order); among the layers the
-        /// captions first and the blur fill's settings row last, among the sound's lanes the streams by their place in the file.
+        // Each stack = visual part then audio part, stable insertion order within each; visual: captions first, blur fill row last;
+        // audio: streams by file index.
         static void OrderStacks(List<TimelineRow> rows, Func<TimelineRow, int> stream)
         {
             foreach (var row in rows)
@@ -487,7 +466,7 @@ public partial class MainWindow
             }
         }
 
-        // Whether a row is the other or lies (at any depth) in its stack: it cannot then be put in that one's stack.
+        // Cycle guard: true if a row is the other or is (at any depth) in its stack.
         static bool Within(TimelineRow row, TimelineRow other)
         {
             for (var at = row; at is not null; at = at.Parent)
@@ -499,10 +478,9 @@ public partial class MainWindow
             return false;
         }
 
-        // Which children of each stack of layers are drawn in front of their parent, by the very order the compositor draws
-        // in (5.0-Release, the user's directive 4): a track over its parent's in the stacking order (a Cutout over the
-        // video; one moved behind it, in the 3D view or by Send Backward, is under it), the captions over everything, the
-        /// blur fill's settings row under everything. Open, the surface lays those in front above the parent's row.
+        // Marks visual children composited above their parent (InFront), from the compositor's draw order: a track above its parent
+        // (e.g. a Cutout; one sent backward is below), captions above all, the blur fill row below all. Open stacks lay InFront
+        // children above the parent row.
         void MarkInFront(List<TimelineRow> level)
         {
             foreach (var row in level)
@@ -525,17 +503,17 @@ public partial class MainWindow
             }
         }
 
-        // A track's row's place in the stacking order (Document.Tracks, bottom first); -1 for a row that is no track's.
+        // Stacking index of a track row (Document.Tracks, bottom first); -1 for non-track rows.
         int StackPlaceOf(TimelineRow row) =>
             row.Data is Layer layer && _viewModel.TrackOfRow(layer) is { } track ? _viewModel.Document.Tracks.IndexOf(track) : -1;
     }
 
-    // What a picture track's header says of its drag (5.5A).
+    // Header-drag capability of a video track row.
     private const string TrackDragTip = "Drag this header up or down to move the track, its Sub-Lanes with it; drag it right onto the lower half of another track's header to make it that track's Sub-Lane. Esc cancels the drag.";
     private const string EmptyTrackDragTip = "An empty track: drop videos and pictures onto it. " + TrackDragTip;
     private const string SubLaneDragTip = "A Sub-Lane: drag this header past the top or bottom of its stack, to a seam between the tracks, to take it out of its stack, or right onto another track's header to move it into that one's. Let go over its own stack, or press Esc, and nothing changes.";
 
-    /// <summary>A track's row (a picture's, a video's, an empty one, a sound clip's), with its clips and, while any of them is unlinked from its sound, that sound's lane in its stack.</summary>
+    /// <summary>Builds a track row (video, image, empty or audio) with its clips, plus an unlinked-audio lane in its stack when needed.</summary>
     private TimelineRow TrackRow(Layer layer, double scale, double seconds)
     {
         var kind = layer.IsEmptyTrack ? TimelineRowKind.Empty : layer.IsAudio ? TimelineRowKind.Audio : TimelineRowKind.Video;
@@ -551,22 +529,20 @@ public partial class MainWindow
             HasOwnHeight = track?.Height is not null || (_rowHeightDrag is { } drag && Equals(drag.Key, layer.TrackId)),
             Accent = layer.IsAudio ? SoundClipBrush : LayerClipBrush,
 
-            // 5.5A: a picture track's header says it can be dragged (moved, nested, taken out of its stack).
+            // Video track headers are draggable (move, nest, un-nest).
             Tip = track is { Kind: TimelineTrackKind.Video or TimelineTrackKind.Switch }
                 ? track.ParentTrackId is null ? layer.IsEmptyTrack ? EmptyTrackDragTip : TrackDragTip : SubLaneDragTip
                 : layer.IsEmptyTrack ? "An empty track: drop videos and pictures onto it." : null,
 
-            // A gap's pill closes it on this track: never on a locked one (an unlinked sound's lane, the captions and the
-            // blur fill's settings row have none either).
+            // Gap pills only on unlocked tracks (unlinked-audio lanes, captions and the blur fill row have none).
             ClosesGaps = track is { IsLocked: false },
 
-            // Its Track Preset (5.2A): the badge in its header, on a picture track of its own (an empty one too: set before anything is dropped).
+            // Track Preset badge on top-level video tracks (empty ones too, so it can be set before dropping media).
             Badge = _viewModel.TrackPresetOf(layer),
             OffersBadge = _viewModel.CanHaveTrackPreset(layer),
         };
 
-        // Its header's switches: the eye (a sound clip's track is muted instead), its sound's mute, the solo (5.2-AuditB: the
-        // track's own, the document's: Alt plays it alone), the voice, the lock.
+        // Header switches: eye (audio tracks mute instead), audio mute, solo (track-level in the document; Alt = exclusive), voice, lock.
         var (offered, state) = (RowSwitches.None, RowSwitches.None);
         if (layer.IsAudio)
         {
@@ -575,15 +551,14 @@ public partial class MainWindow
         }
         else
         {
-            // The eye is the track's own switch (5.2: its whole family's), not its first clip's.
+            // The eye is the track's (whole family's) switch, not its first clip's.
             if (layer.CanHide)
             {
                 offered |= RowSwitches.Hidden;
                 state |= _viewModel.IsTrackHidden(layer) ? RowSwitches.Hidden : 0;
             }
 
-            // The master mute: on every video track's header, all of its sound at once (the user's directive). 5.4.4-Final (the user's): only on a
-            // track that is heard, never on a Cutout's or a mask's track (a child layer with no sound of its own) nor on a silent video's.
+            // Master mute (all of a video track's audio at once): only on audible tracks, never on Cutout/mask child tracks or silent video.
             if (layer.IsVideoFile && _viewModel.RowHasOwnSound(layer) && !(_viewModel.ParentRowOf(layer) is not null && CountsAsCutout(_viewModel, layer)))
             {
                 offered |= RowSwitches.Muted;
@@ -599,8 +574,7 @@ public partial class MainWindow
 
         (row.Offered, row.State) = (offered, state);
 
-        // The clips' sound that is unlinked from their pictures: a lane of its own in the row's sound stack, each block
-        // dragged by itself.
+        // Unlinked clip audio: its own lane in the row's audio stack, each block independently draggable.
         if (BuildRowBlocks(row, scale, seconds) is { } unlinked)
         {
             var link = KeybindManager.GestureText("clip.toggleLink") is { Length: > 0 } keys ? $"{keys} links" : "Toggle A/V Link on its menu links";
@@ -645,9 +619,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The row of the one track family (a track and the Sub-Lanes made to go with it, TimelineLowering.FamilyOf) whose clips have every
-    /// blur fill there is, when that family is the lowest picture family (5.4A: every blur twin is drawn under every picture, so the row
-    /// sits in that family's stack only where nothing lies under it); null when none has one, several do, or the family is higher up.
+    /// Row of the single track family (TimelineLowering.FamilyOf) holding all blur fills, if it is the lowest video family (blur twins
+    /// draw under all video, so nesting is only valid with nothing below); null if none, several, or not the lowest.
     /// </summary>
     private TimelineRow? BlurFamilyRow(Dictionary<Guid, TimelineRow> byTrack)
     {
@@ -692,8 +665,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The keys of a row and of every row in its stack, at any depth: what slides with a fold made on its track. Never the
-    /// blur fill's settings row's: it lasts as long as the sequence, whatever is folded.
+    /// Keys of a row and all rows in its stack (any depth): the rows that slide with a fold on its track. Excludes the blur fill row,
+    /// which always spans the sequence.
     /// </summary>
     private static List<object> RowKeysOf(TimelineRow row)
     {
@@ -723,7 +696,7 @@ public partial class MainWindow
         return null;
     }
 
-    /// <summary>Watches the clips' views that are on the timeline now (and no others) for what the rows show of them.</summary>
+    /// <summary>Re-targets change subscriptions to exactly the clip views currently on the timeline.</summary>
     private void WatchRowSources()
     {
         var next = _rowSourcesNext;
@@ -749,7 +722,7 @@ public partial class MainWindow
         _rowSourcesNext.Clear();
     }
 
-    // What arrives or changes on a clip that its row shows: its strip of frames, its sound, its name, a mute.
+    // Clip view property changes that affect rows: strip, waveform, name, mute.
     private void RowSource_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         switch (e.PropertyName)
@@ -761,16 +734,15 @@ public partial class MainWindow
         }
     }
 
-    // ----- What the surface asks for -----
+    // ----- Surface callbacks -----
 
-    // A switch on a row's header: the eye, a mute, the solo (Alt: this one alone), the voice, the lock. One step of Undo each
-    // where it is an edit of the timeline.
+    // Header switch: eye, mute, solo (Alt = exclusive), voice, lock; one Undo step each when it edits the timeline.
     private void Timeline_HeaderSwitchToggled(TimelineRow row, RowSwitches which, bool alone)
     {
         switch (row.Data, which)
         {
             case (Layer sound, RowSwitches.Soloed):
-                // The command reads Alt itself: held, the track is played alone.
+                // The command reads Alt itself (exclusive solo).
                 _viewModel.ToggleSoloCommand.Execute(sound);
                 break;
             case (Layer { IsAudio: true } sound, RowSwitches.Muted):
@@ -780,7 +752,7 @@ public partial class MainWindow
                 _viewModel.ToggleHidden(layer);
                 break;
             case (Layer layer, RowSwitches.Muted):
-                // All the track is heard by at once, in one step of Undo.
+                // Mutes/unmutes all of the track's audio in one Undo step.
                 var mute = !_viewModel.IsRowSoundMuted(layer);
                 _viewModel.SetTrackSoundMuted(layer, mute);
                 _viewModel.StatusText = mute ? $"The sound of {layer.Name} is muted; its picture stays." : $"The sound of {layer.Name} is heard again.";
@@ -798,21 +770,19 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // A right-click: the menu of the row, the clip, its fade handle or the header (P10's FillTrackMenu fills it).
+    // Context menu for a row, clip, fade handle or header (filled by FillTrackMenu).
     private void Timeline_MenuRequested(TimelineMenuRequest request)
     {
         (object Clip, bool In)? fade = request.FadeIn is { } fadeIn && request.Block?.Clip is { } clip ? (clip, fadeIn) : null;
         FillTrackMenu(request.Menu, request.Row?.Data, request.Block?.Clip, fade, request.OnHeader);
     }
 
-    // The Menu key went down and nothing took it (a shortcut bound to it is run first): its menu opens as it is let go, as
-    // Windows opens one.
+    // Unhandled Menu key press (bound shortcuts run first): open the menu on key-up, matching Windows.
     private bool _menuKeyDown;
 
     /// <summary>
-    /// Has a window answer the Menu key and Shift+F10 with the selected clip's menu on the timeline, as a right-click on it
-    /// would (the surface takes no keyboard focus, where the old Layers list's rows did): this window and the side window.
-    /// The bubbling key events, so the control with the keyboard and the shortcuts (MainWindow_PreviewKeyDown) come first.
+    /// Makes a window (main or side) open the selected clip's timeline menu on Menu or Shift+F10 (the surface takes no focus). Uses
+    /// bubbling key events so the focused control and shortcuts (MainWindow_PreviewKeyDown) run first.
     /// </summary>
     private void HookTimelineMenuKey(Window window)
     {
@@ -845,8 +815,7 @@ public partial class MainWindow
         e.Handled = OpenSelectedClipMenu();
     }
 
-    // The selected clip's menu on the timeline, unless what has the keyboard has a menu of its own (a text box, a drop-down,
-    // the Media pane's list), which the key is left to open.
+    // Opens the selected clip's menu unless the focused element has its own (text box, drop-down, Media list).
     private bool OpenSelectedClipMenu()
     {
         var focused = Keyboard.FocusedElement as DependencyObject;
@@ -862,9 +831,8 @@ public partial class MainWindow
         return UnifiedTimeline.Surface.OpenSelectedMenu();
     }
 
-    // A seam of folded dead air clicked: what was folded there is put back (one step of Undo), what follows sliding out to
-    // make room. The fold is the timeline's own, found by its id (the seam may have been drawn from the timeline before an
-    // undo, whose copy of it is another record).
+    // Seam click: unfold (one Undo step), sliding later content out. Re-resolve the fold by id (the seam may predate an undo that
+    // replaced the record).
     private void Timeline_SeamClicked(TimelineRow row, SeamMark seam)
     {
         if (seam.Fold is not FoldedSegment shown)
@@ -882,7 +850,7 @@ public partial class MainWindow
         AnimatedFoldChange(() => _viewModel.UnfoldSegment(fold));
     }
 
-    // A stretch put back's Hide pill clicked: folded out again (one step of Undo), what follows sliding in over it.
+    // Hide pill click: refold (one Undo step), sliding later content in.
     private void Timeline_RevealHideRequested(TimelineRow row, RevealMark mark)
     {
         if (mark.Restored is not RestoredFold restored)
@@ -893,11 +861,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Makes a change that folds dead air out or puts it back (a seam clicked, a Hide pill, Restore Folded Silence or Hide /
-    /// Fold Dead Air Segment on a clip's menu), then slides what follows into place over about 120 ms (4.4 BugHunt). The
-    /// model changes at once and the rows are made again from it at once; only the drawing moves. A fold that became a
-    /// stretch put back (the same id) is an opening, a stretch that became a fold again a closing; several at once (Restore
-    /// All) slide nothing.
+    /// Applies a fold/unfold edit (seam, Hide pill, Restore Folded Silence, Hide / Fold Dead Air Segment) and animates later content
+    /// (~120 ms). Model and rows update immediately; only drawing animates. Same-id fold-to-range = opening, range-to-fold = closing;
+    /// multi-changes (Restore All) do not animate.
     /// </summary>
     private void AnimatedFoldChange(Action change)
     {
@@ -933,7 +899,7 @@ public partial class MainWindow
             }
         }
 
-        // A fold put back that left no stretch to fold again: it opens where its seam was, by its length.
+        // Unfold that left no refoldable range: animate an opening at the seam by its length.
         foreach (var (id, was) in seams)
         {
             if (!seamsNow.Contains(id) && !opened.Contains(id))
@@ -943,29 +909,27 @@ public partial class MainWindow
             }
         }
 
-        // The rows as the timeline is now, before anything slides on them.
+        // Rebuild rows to the final state before starting the slide.
         _rowsStale = true;
         FlushClipRedraw();
         if (count == 1 && slide is { } s && _rowByTrack.TryGetValue(s.TrackId, out var row))
             UnifiedTimeline.Surface.AnimateFold(s.At, s.Length, s.Opening, s.AllTracks ? null : RowKeysOf(row));
     }
 
-    // A drag on the timeline ended (4.4 BugHunt): the rows are laid out again from the timeline at once, so what it drew
-    // moved is what the timeline is (the edit made, refused with the model's reason in the status bar, or failed).
-    // A row's name clicked (5.0-Verify): the captions' and the background's rows are one thing each, selected by it as a
-    // click on their blocks selects them (their place, size and style, or the blur, in the inspector).
+    // Drag ended: rebuild rows immediately so the drawing matches the model (edited, refused with a status reason, or failed).
+    // Row name click: captions and background rows select as a whole, like clicking their blocks (inspector shows them).
     private void Timeline_HeaderClicked(TimelineRow row)
     {
         if (row.Data is Layer { IsCaptions: true } or Layer { IsBackground: true })
             SelectClip(row.Data);
     }
 
-    // The track a row stands for (5.5A, a header's drag): a track's own row, never the captions', the blur fill's, an effect lane (its Data is
-    // no Layer) nor a track's unlinked-sound lane (it shares its track's Layer, under another key).
+    // Track of a header-drag row: only real track rows; never captions, blur fill, effect lanes (Data not a Layer) or unlinked-audio
+    // lanes (same Layer under another key).
     private static Layer? TrackLayerOf(TimelineRow row) =>
         row.Data is Layer layer && Equals(row.Key, layer.TrackId) && !layer.IsCaptions && !layer.IsBackground ? layer : null;
 
-    // A track's header let go at a seam (5.5A): the track (with its Sub-Lanes) there, or out of its stack.
+    // Header released at a seam: move the track (with Sub-Lanes) there, or un-nest it.
     private void Timeline_RowMoveRequested(TimelineRow row, TimelineRow beside, bool above)
     {
         if (TrackLayerOf(row) is not { } layer || TrackLayerOf(beside) is not { } besideLayer)
@@ -975,7 +939,7 @@ public partial class MainWindow
         _viewModel.MoveTrackToSeam(layer, besideLayer, above);
     }
 
-    // A track's header let go nested (5.5A): that track a Sub-Lane of the other.
+    // Header released onto another header: nest as its Sub-Lane.
     private void Timeline_RowNestRequested(TimelineRow row, TimelineRow parent)
     {
         if (TrackLayerOf(row) is not { } layer || TrackLayerOf(parent) is not { } parentLayer)
@@ -985,7 +949,7 @@ public partial class MainWindow
         _viewModel.NestTrackUnder(layer, parentLayer);
     }
 
-    // A track's preset badge clicked (5.2A): its Game Presets drop from it, the track's own ticked, and Clear Track Preset under them.
+    // Preset badge click: Game Preset list (current one ticked) plus Clear Track Preset.
     private void Timeline_BadgePressed(TimelineRow row, Rect badge)
     {
         if (row.Data is not Layer layer || !_viewModel.CanHaveTrackPreset(layer))
@@ -997,8 +961,8 @@ public partial class MainWindow
         menu.IsOpen = true;
     }
 
-    // A rubber band let go over the rows (5.2A): the clips it touched are the selection, or join it with Ctrl or Shift; the last one is the one the
-    // panes show. Captions, the blur fill's row and an effect's lane are not clips to select together.
+    // Rubber band release: touched clips replace (or with Ctrl/Shift extend) the selection; the last becomes primary. Captions, blur fill
+    // and effect lanes are excluded.
     private void Timeline_MarqueeSelected(IReadOnlyList<TimelineBlock> blocks, bool add)
     {
         var touched = blocks.Select(b => b.Clip switch { Layer clip => clip, LayerSound sound => sound.Layer, _ => null })
@@ -1021,17 +985,15 @@ public partial class MainWindow
 
     private void Timeline_DragEnded()
     {
-        // What the press left to its click is decided by now (a click was told before the drag's end): a drag that moved
-        // leaves none to fire on a later click (5.0-Verify).
+        // Any deferred click was already raised before drag end; clear it so a moved drag cannot fire it later.
         _clickGesture = null;
         _rowsStale = true;
         FlushClipRedraw();
         TakeOwedZoom();
     }
 
-    // An undo, a redo or a project put a timeline in place (4.4 BugHunt): a drag still held is let go (nothing it drew is
-    // committed onto the timeline that replaced it), the selection follows its clip into the views made afresh (by its id;
-    // gone with it, nothing is selected), and the rows are made again once.
+    // Timeline replaced (undo, redo, project load): cancel any active drag, re-resolve the selection by clip id (cleared if gone),
+    // and rebuild rows once.
     private void Timeline_Restored()
     {
         var surface = UnifiedTimeline.Surface;
@@ -1050,7 +1012,7 @@ public partial class MainWindow
         if (_selectedClip is null)
             _playheadVideoSelected = false;
 
-        // Clips selected together follow theirs the same way (5.0); where the range began, too.
+        // Re-resolve multi-selection and the range anchor the same way.
         _viewModel.RemapClipSelection();
         _rangeAnchor = _rangeAnchor is { ClipId: var anchorId } && anchorId != Guid.Empty ? ViewOfClip(anchorId) : null;
         _clickGesture = null;
@@ -1058,17 +1020,17 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // The view of a clip on the timeline now, by its id; null when it is not on it.
+    // Current clip view by id; null if not on the timeline.
     private Layer? ViewOfClip(Guid id) => _viewModel.Document.FindClip(id) is { } clip ? _viewModel.ViewOf(clip) : null;
 
-    // A gap's pill clicked: what follows on the row's track closes up (Ripple All Tracks: on every unlocked track).
+    // Gap pill click: ripple-close on the row's track (all unlocked tracks with Ripple All Tracks).
     private void Timeline_CloseGapRequested(TimelineRow row, double from, double to)
     {
         if (row.Data is Layer track)
             _viewModel.CloseGapOn(track, from, to);
     }
 
-    // Alt + click on a block: the razor, there (on the clip as the timeline has it now, by its id).
+    // Alt+click: razor at that time on the clip re-resolved by id.
     private void Timeline_RazorRequested(TimelineRow row, TimelineBlock block, double seconds)
     {
         CrashReporter.Note("timeline", string.Create(CultureInfo.InvariantCulture, $"split (Alt+click) at {seconds:0.000} s"));
@@ -1081,7 +1043,7 @@ public partial class MainWindow
                 _viewModel.SplitLayer(live, seconds);
                 break;
 
-            // A caption block (5.1-Polish, the user's directive): its words are split at the word under the click.
+            // Caption block: split at the word under the click.
             case SubtitleRef:
                 SplitCaptionAt(seconds);
                 return;
@@ -1094,33 +1056,49 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // ----- The tools -----
+    // ----- Tools -----
 
     /// <summary>
-    /// Every button of the timeline pane: what it does, by its Tag (the pane's title row, corners, inspector, bin and Add
-    /// Layer kinds). A fault in it is a status line and a note in the log (4.4 BugHunt), never an exception that ends the app.
+    /// Cutout Studio pick from the Timeline: the selected video clip, else null (the video at the playhead); the Studio and the heat
+    /// lamp both resolve its base clip (<see cref="MainViewModel.CutoutStudioBase"/>).
     /// </summary>
-    /// <summary>The clip the Cutout Studio would open for from the Timeline: the selected video clip, else (null) the video at the playhead.</summary>
     private Layer? CutoutTarget() => _selectedClip is Layer { IsVideoFile: true } clip ? clip : null;
 
-    /// <summary>The Cutout Studio on the video, for Cutouts and Game Presets.</summary>
+    /// <summary>Opens the Cutout Studio on the picked clip's base video with all its Cutouts (Cutouts and Game Presets).</summary>
     private void OpenCutoutStudio()
     {
         if (_viewModel.HasSource)
-            new MaskDrawWindow(_viewModel, null, _heatLamp?.TakeWarmCutoutStill()) { Owner = this }.ShowDialog();
+            new MaskDrawWindow(_viewModel, null, CutoutOpening(CutoutTarget())) { Owner = this }.ShowDialog();
+    }
+
+    private MaskDrawWindow.Opening CutoutOpening(Layer? picked) => new(picked, _heatLamp?.TakeWarmCutoutStill(), FilmstripFrameAt);
+
+    /// <summary>
+    /// The Timeline filmstrip's frame of <paramref name="file"/> nearest a file time: the Cutout Studio's frame-0 picture while its
+    /// still decodes. Null before the filmstrip or the file's probe exists.
+    /// </summary>
+    private ImageSource? FilmstripFrameAt(string file, double seconds)
+    {
+        if (_viewModel.ClipPictures.Film(file) is not System.Windows.Media.Imaging.BitmapSource strip
+            || MediaProbe.KnownInfo(file) is not { Video: { Width: > 0, Height: > 0 } video } info
+            || FramesOf(strip, (double)video.Width / video.Height) is not { Length: > 0 } frames)
+        {
+            return null;
+        }
+
+        var each = info.DurationSeconds > 0.05 ? info.DurationSeconds / frames.Length : double.PositiveInfinity;
+        return frames[Math.Clamp((int)(seconds / each), 0, frames.Length - 1)];
     }
 
     /// <summary>
-    /// The Cutout Studio for one video clip (5.2: "Open Cutout &amp; Mask Studio..." on every video clip's menu): it starts
-    /// from the clip's own drawn shape, and Apply to This Clip cuts the clip to what is drawn, kept as its outlines alone (no
-    /// picture file), one step of Undo, as the mask dialog's Draw Custom Shape does. Its Cutouts and Game Presets are there as
-    /// ever.
+    /// "Open Cutout &amp; Mask Studio..." for one video clip: starts from its drawn shape; Apply to This Clip stores the drawn outlines
+    /// (no image file) as its mask in one Undo step, like Draw Custom Shape. Cutouts and Game Presets remain available.
     /// </summary>
     private void OpenCutoutStudio(Layer clip)
     {
         _viewModel.Checkpoint($"change the mask of {clip.Name}");
         var visit = _viewModel.UndoMark;
-        var window = new MaskDrawWindow(_viewModel, clip, _heatLamp?.TakeWarmCutoutStill()) { Owner = this };
+        var window = new MaskDrawWindow(_viewModel, clip, CutoutOpening(clip)) { Owner = this };
         if (window.ShowDialog() == true && MaskStore.DrawnKey(window.Shapes).Length > 0)
         {
             (clip.CustomMask, clip.MaskPath, clip.MaskFrame, clip.MaskShapes) = (true, "", true, window.Shapes);
@@ -1136,6 +1114,10 @@ public partial class MainWindow
         _viewModel.DropStepIfUnchanged(visit);
     }
 
+    /// <summary>
+    /// Dispatches every timeline pane button by Tag (title row, corners, inspector, bin, Add Layer kinds); faults become a status line
+    /// and a log entry, never an unhandled exception.
+    /// </summary>
     private void TimelineTool_Click(object sender, RoutedEventArgs e)
     {
         var tag = (sender as FrameworkElement)?.Tag as string;
@@ -1162,23 +1144,23 @@ public partial class MainWindow
             case "ZoomFit": FitTimeline(); break;
             case "PlayPause": PlayPause_Click(sender, e); break;
 
-            // The gear beside Snap (5.3): the Timeline Settings menu, the same as the Timeline tab's right-click.
+            // Gear beside Snap: Timeline Settings menu (same as the Timeline tab's context menu).
             case "TimelineSettings": OpenTimelineSettings(sender as FrameworkElement); break;
 
-            // The Creator Hotbar's slots (5.2.1).
+            // Creator Hotbar slots.
             case "Hotbar0" or "Hotbar1" or "Hotbar2" or "Hotbar3" or "Hotbar4": ApplyHotbar(tag[^1] - '0'); break;
 
-            // The inspector's: they act on what their group shows (the button's DataContext).
+            // Inspector buttons act on their group's DataContext.
             case "Properties" when sender is FrameworkElement { DataContext: Layer element }: ShowInEffectsPane(element); break;
             case "BlurSettings": ShowBlurFillSettings(); break;
             case "TrackFilters": TrackFilters_Click(sender, e); break;
 
-            // The recycle bin's, and Text Settings' colours.
+            // Recycle bin and Text Settings colour buttons.
             case "RestoreDeleted": RestoreDeleted_Click(sender, e); break;
             case "EmptyBin": EmptyBin_Click(sender, e); break;
             case "Font" or "Outline": TextColor_Click(sender, e); break;
 
-            // Add Track's kinds (the flyout has closed itself).
+            // Add Track kinds (the flyout already closed).
             case "builtin.vfx.explosion" or "builtin.vfx.sparks" or "builtin.vfx.animelines" or "builtin.vfx.shield" or "builtin.vfx.saber" or "builtin.gpu.shockwave":
             case "Empty" or "Video" or "Image" or "Text" or "Adjustment" or "Region" or "MaskLayers" or "Audio" or "Voiceover"
                 or "Captions" or "ImportSubtitles" or "EditCaptions" or "CaptionStyle":
@@ -1188,9 +1170,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// U (and Toggle A/V Link on a clip's menu): the selected clip's sound is linked to its picture, or unlinked from it
-    /// (one step of Undo); unlinked, it gets a lane of its own in its row's stack, opened, to be dragged by itself. The main
-    /// video's sound is its file's audio streams: for its clips this is the chain button (every clip with sound at once).
+    /// U / Toggle A/V Link: links or unlinks the selected clip's audio (one Undo step); unlinked audio gets an expanded lane in its row's
+    /// stack. For main-video clips (audio = file streams) this acts as the chain button across all audible clips.
     /// </summary>
     internal void ToggleSelectedClipLink()
     {
@@ -1211,15 +1192,15 @@ public partial class MainWindow
         if (!_viewModel.ToggleClipAudioLink(clip))
             return;
 
-        // Its row is known by its track's number (every clip of a track has it): opened once the rows are made again.
+        // Expand that row (keyed by track number) after the next rebuild.
         if (wasLinked)
             _expandRowKey = clip.TrackId;
         ScheduleClipRedraw();
     }
 
-    // ----- The inspector -----
+    // ----- Inspector -----
 
-    /// <summary>Shows the selection's values under the tracks: a picture clip's place and size, a sound's gain and mute, the background's blur.</summary>
+    /// <summary>Binds the inspector to the selection: video position/size, audio gain/mute, or background blur.</summary>
     private void UpdateTimelineInspector()
     {
         object? picture = null, sound = null, background = null;
@@ -1230,7 +1211,7 @@ public partial class MainWindow
                 (background, name) = (_viewModel, layer.Name);
                 break;
 
-            // The captions (5.0-Verify): their box's place and size, Properties (their position and look) and Caption Style.
+            // Captions: box position/size, Properties (position, look) and Caption Style.
             case Layer { IsCaptions: true } captions:
                 (picture, name) = (captions, "Captions");
                 break;
@@ -1253,7 +1234,7 @@ public partial class MainWindow
                 break;
         }
 
-        // One of clips selected together (5.0): the inspector edits it alone, and says how many more there are.
+        // Multi-selection: edits the primary clip only and shows how many others are selected.
         if (GroupHolds && _viewModel.SelectedClips.Count > 1)
             name = string.Create(CultureInfo.InvariantCulture, $"{name} (+{_viewModel.SelectedClips.Count - 1} selected)");
 

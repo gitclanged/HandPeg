@@ -18,14 +18,14 @@ using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
-// ----- Canvas: the overlay drawn on the video (crop, layer target) and arranging layers on the output frame -----
+// ----- Canvas: video overlay drawing (crop, layer target) and layer arrangement on the output frame -----
 public partial class MainWindow
 {
     // ----- Drawing on the video -----
-    // One canvas lies over the video and serves three jobs, one at a time:
+    // One overlay canvas over the video, used in one mode at a time:
     //   Crop        drag a rectangle to set the Top/Bottom/Left/Right crop;
-    //   DrawTarget  drag a rectangle to mark where a layer is in the source.
-    // Arranging the layers on the output frame has a pane of its own beside the player; see further down.
+    //   DrawTarget  drag a rectangle to mark a layer's source region.
+    // Layer arrangement on the output frame uses the separate Canvas pane (below).
 
     private enum OverlayMode
     {
@@ -39,13 +39,13 @@ public partial class MainWindow
     private readonly List<(Layer Layer, PropertyChangedEventHandler Handler)> _arrangeSubscriptions = [];
     private readonly List<Adorner> _arrangeAdorners = [];
 
-    // What the layout pane draws over its boxes: snap guides and the selected clip's motion path (see LayoutGuidesView).
+    // Canvas pane overlay above the boxes: snap guides and the selected clip's motion path (LayoutGuidesView).
     private LayoutGuidesView? _layoutGuides;
     private Rect _layoutFrame;
 
     private Point? _dragStart;
 
-    // The undo step a press on the video in DrawTarget mode will take once it draws a rectangle; null when taken or none.
+    // Pending DrawTarget Undo step, taken when the first rectangle is drawn; null once taken or when none.
     private string? _drawTargetStep;
 
     private OverlayMode CurrentOverlayMode =>
@@ -54,13 +54,13 @@ public partial class MainWindow
         : OverlayMode.None;
 
     /// <summary>
-    /// The size of the picture the player shows while a rectangle is drawn on it (5.2-AuditB: a clip's own file, the one the
-    /// player shows, MainViewModel.ShownSourceClip): a region's video's while it is marked, else the Crop boxes' clip's.
+    /// Source size shown while drawing (MainViewModel.ShownSourceClip): the marked region's video during DrawTarget, else the Crop
+    /// boxes' clip.
     /// </summary>
     private (int Width, int Height) ShownPictureSize() =>
         _viewModel.DrawTargetLayer is { IsVideoFile: true, ImageWidth: > 0, ImageHeight: > 0 } piece ? (piece.ImageWidth, piece.ImageHeight) : _viewModel.CropPictureSize;
 
-    /// <summary>Where the picture actually is inside the player: the video is letterboxed to keep its shape.</summary>
+    /// <summary>Letterboxed picture rect inside the player.</summary>
     private Rect GetDisplayedVideoArea(out double scale)
     {
         scale = 0;
@@ -73,7 +73,7 @@ public partial class MainWindow
         return new Rect(new Point((CropCanvas.ActualWidth - size.Width) / 2, (CropCanvas.ActualHeight - size.Height) / 2), size);
     }
 
-    /// <summary>Shows or hides the canvas for the mode the view model is now in.</summary>
+    /// <summary>Shows or hides the overlay canvas for the view model's current mode.</summary>
     private void UpdateOverlayMode()
     {
         var mode = CurrentOverlayMode;
@@ -86,10 +86,10 @@ public partial class MainWindow
 
         CropCanvas.Visibility = mode == OverlayMode.None ? Visibility.Collapsed : Visibility.Visible;
 
-        // The player shows the clip's own file while a rectangle is drawn on it, the composite otherwise (PushGpuState).
+        // Player shows the clip's source while drawing, the composite otherwise (PushGpuState).
         ScheduleGpuState();
 
-        // Red for the crop, gold for a UI layer, so it is clear what is being drawn.
+        // Red for crop, gold for a UI layer target.
         var colour = mode == OverlayMode.DrawTarget ? Colors.Gold : Colors.Red;
         CropRectangle.Stroke = Frozen(colour);
         CropRectangle.Fill = Frozen(Color.FromArgb(0x18, colour.R, colour.G, colour.B));
@@ -102,7 +102,7 @@ public partial class MainWindow
             _ => _viewModel.StatusText,
         };
 
-        // Let the canvas take its size before anything is placed on it.
+        // Defer placement until the canvas has been measured.
         Dispatcher.BeginInvoke(RedrawOverlay, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
@@ -113,7 +113,7 @@ public partial class MainWindow
         switch (CurrentOverlayMode)
         {
             case OverlayMode.Crop:
-                // The crop of the clip the Crop boxes stand for (4.4: each clip has its own).
+                // Crop of the Crop boxes' clip (per-clip crop).
                 var crop = _viewModel.GetTargetCropRect();
                 ShowSourceRectangle(crop.Left, crop.Top, crop.Width, crop.Height);
                 break;
@@ -131,8 +131,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The part of its video a region shows, in that picture's pixels: a piece cut from a video's file (5.2-AuditB), what its crop
-    /// keeps; an old piece of the video, its source rectangle.
+    /// A region's source rect in source pixels: the crop-kept area for a file-cut piece, or the legacy source rectangle.
     /// </summary>
     private (int X, int Y, int Width, int Height) RegionRect(Layer element)
     {
@@ -145,7 +144,7 @@ public partial class MainWindow
             (int)Math.Round((1 - left - right) * pictureWidth), (int)Math.Round((1 - top - bottom) * pictureHeight));
     }
 
-    /// <summary>Draws a rectangle given in source pixels at the matching place on the displayed video.</summary>
+    /// <summary>Draws a source-pixel rectangle at its position on the displayed (letterboxed) video.</summary>
     private void ShowSourceRectangle(int left, int top, int width, int height)
     {
         var area = GetDisplayedVideoArea(out var scale);
@@ -171,13 +170,13 @@ public partial class MainWindow
 
         var point = e.GetPosition(CropCanvas);
 
-        // Double-click inside the crop rectangle: keep its size, centre it on the frame.
+        // Double-click inside the crop rect: keep size, centre on the frame.
         if (e.ClickCount == 2 && mode == OverlayMode.Crop)
         {
             var current = new Rect(Canvas.GetLeft(CropRectangle), Canvas.GetTop(CropRectangle), CropRectangle.Width, CropRectangle.Height);
             if (CropRectangle.Visibility == Visibility.Visible && current.Contains(point))
             {
-                // The crop is in percent of the source, so centring is sharing each pair out equally.
+                // Crop is in source percent: centring splits each opposite pair equally.
                 var horizontal = _viewModel.CropLeft + _viewModel.CropRight;
                 var vertical = _viewModel.CropTop + _viewModel.CropBottom;
                 (_viewModel.CropLeft, _viewModel.CropRight) = (horizontal / 2, horizontal / 2);
@@ -188,16 +187,14 @@ public partial class MainWindow
             return;
         }
 
-        // Marking a layer's area again is a step of Undo, taken when the rectangle is first drawn: a click draws none. So is
-        // a crop drawn (its first change takes the drag's one step, 4.4).
+        // Re-marking a layer region or drawing a crop is one Undo step, taken on the first actual change (a plain click takes none).
         _drawTargetStep = mode == OverlayMode.DrawTarget && _viewModel.DrawTargetLayer is { } target ? $"redraw the area of {target.Name}" : null;
         if (mode == OverlayMode.Crop)
             _viewModel.BeginCropDrag();
 
         _dragStart = ClampTo(area, point);
 
-        // A drag that loses the mouse (another window brought up, a popup) is over as well, or the crop's next changes would
-        // take no undo step of their own (subscribed once: taken off before it is put on).
+        // Capture loss also ends the drag, or later crop changes would get no Undo step (unsubscribe before subscribe: once only).
         CropCanvas.LostMouseCapture -= CropCanvas_LostMouseCapture;
         CropCanvas.LostMouseCapture += CropCanvas_LostMouseCapture;
         CropCanvas.CaptureMouse();
@@ -216,11 +213,11 @@ public partial class MainWindow
 
         var drawn = new Rect(start, ClampTo(area, e.GetPosition(CropCanvas)));
 
-        // A click with a trembling hand is not a rectangle.
+        // Ignore jitter-sized rectangles.
         if (drawn.Width < 4 || drawn.Height < 4)
             return;
 
-        // Even numbers of pixels: most encoders need even frame sizes.
+        // Round to even pixels (most encoders require even dimensions).
         var left = Even((drawn.Left - area.Left) / scale);
         var top = Even((drawn.Top - area.Top) / scale);
 
@@ -232,8 +229,8 @@ public partial class MainWindow
                 _viewModel.Checkpoint(step);
             }
 
-            // Kept as fractions of the picture, which is all the drawn rectangle really says: a piece cut from a video's file is
-            // cut there by its crop, its box taking the shape that leaves (5.2-AuditB); an old piece of the video, its source rectangle.
+            // Stored as picture fractions: a file-cut piece sets its crop (its box takes the resulting shape); a legacy piece sets its
+            // source rectangle.
             var (fromX, fromY) = ((drawn.Left - area.Left) / area.Width, (drawn.Top - area.Top) / area.Height);
             var (toX, toY) = ((drawn.Right - area.Left) / area.Width, (drawn.Bottom - area.Top) / area.Height);
             if (element.IsVideoFile)
@@ -251,7 +248,7 @@ public partial class MainWindow
         }
         else
         {
-            // Source pixels here; the view model keeps them as percentages of the source.
+            // Source pixels here; the view model stores source percentages.
             _viewModel.SetCropFromPixels(left, top, Even((area.Right - drawn.Right) / scale), Even((area.Bottom - drawn.Bottom) / scale));
         }
     }
@@ -263,7 +260,7 @@ public partial class MainWindow
         CropCanvas.ReleaseMouseCapture();
         _viewModel.EndCropDrag();
 
-        // Marking a layer is a one-shot job: once the rectangle is drawn, the canvas goes away again.
+        // DrawTarget is one-shot: hide the canvas after the rectangle is drawn.
         if (wasDragging && _viewModel.DrawTargetLayer is { } element)
         {
             var (x, y, width, height) = RegionRect(element);
@@ -272,10 +269,10 @@ public partial class MainWindow
         }
     }
 
-    // ----- The Canvas (the layout pane until 4.2): arranging layers on the output frame -----
+    // ----- Canvas pane: arranging layers on the output frame -----
 
-    /// <summary>Opens or closes the Canvas, following its box in Tabs and Panes: it is shown or hidden where the arrangement has it.</summary>
-    /// <param name="announce">Whether to say how the pane is used: when it has just been opened, not when the panes are laid out again.</param>
+    /// <summary>Shows or hides the Canvas per its Tabs and Panes checkbox, in place in the arrangement.</summary>
+    /// <param name="announce">Post a usage hint (on explicit open, not on relayout).</param>
     private void UpdateLayoutPane(bool announce = true)
     {
         var opening = _viewModel.IsArrangeActive && !LayoutPane.IsVisible;
@@ -283,7 +280,7 @@ public partial class MainWindow
         if (opening && announce)
             _viewModel.StatusText = "Drag the clips into place on the Canvas. Drag a corner handle to resize; double-click a clip to center it.";
 
-        // Let the canvas take its size before anything is placed on it.
+        // Defer placement until the canvas has been measured.
         Dispatcher.BeginInvoke(RedrawLayout, System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
@@ -297,10 +294,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Draws the output frame, in whatever shape the Export tab's Resolution gives it, with a box
-    /// for each track's clip (5.2-AuditB: every video's alike), and the caption box when auto-captions are. Every box is
-    /// dragged to move its layer, and carries a resize handle on its corner. The boxes and the sliders show the same
-    /// numbers: moving either moves the other.
+    /// Builds the output-frame stage (Export Resolution aspect) with one draggable, resizable box per track clip plus the caption box
+    /// when captions exist. Boxes and inspector sliders are two-way bound to the same values.
     /// </summary>
     private void BuildArrangeVisuals()
     {
@@ -315,7 +310,7 @@ public partial class MainWindow
             frameWidth * scale,
             frameHeight * scale);
 
-        // The stage: the output frame itself.
+        // Stage = output frame.
         var stage = new System.Windows.Shapes.Rectangle
         {
             Width = frame.Width,
@@ -330,10 +325,10 @@ public partial class MainWindow
         _arrangeVisuals.Add(stage);
         LayoutCanvas.Children.Add(stage);
 
-        // Last, so that it lies on top of everything, as the captions do in the output.
+        // Caption box added last so it is topmost, matching output order.
         if (_viewModel.AutoCaptions)
         {
-            // Moved, sized and centred as over the player (TrackLayerRect and the rest know the caption box, 5.0-Verify).
+            // Same move/size/centre logic as on the player (TrackLayerRect handles the caption box).
             var captions = _viewModel.CaptionLayer;
             var placeCaptions = AddArrangeLayer(
                 "Subtitles", (Style)FindResource("CaptionThumb"), captions, frame, scale,
@@ -347,9 +342,8 @@ public partial class MainWindow
             _arrangeSubscriptions.Add((captions, captionHandler));
         }
 
-        // One box per track: its clip on screen at the playhead, else its first shown one (4.4: a clip's place is its own, as
-        // the player's boxes are its clips at the playhead). A hidden track has none. Built again when the playhead brings
-        // another clip (SameArrangeClips).
+        // One box per visible track: its clip at the playhead, else its first visible clip (per-clip placement). Rebuilt when the
+        // playhead reaches a different clip (SameArrangeClips).
         _arrangeClips.Clear();
         CollectArrangeClips(_arrangeClips);
         foreach (var element in _arrangeClips.ToArray())
@@ -368,7 +362,7 @@ public partial class MainWindow
             _arrangeSubscriptions.Add((element, handler));
         }
 
-        // Over everything: the snap guides and the selected clip's motion path (its dots answer the pointer, nothing else).
+        // Topmost: snap guides and the motion path (only its dots are hit-testable).
         _layoutFrame = frame;
         _layoutGuides = new LayoutGuidesView { Width = LayoutCanvas.ActualWidth, Height = LayoutCanvas.ActualHeight };
         _layoutGuides.DotMoved += (time, moved) => _viewModel.MoveMotionKey(_viewModel.ActiveKeyLayer, time, moved.X / scale / frameWidth, moved.Y / scale / frameHeight);
@@ -379,12 +373,11 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A dragged box held to the guides it comes near: its left edge, middle or right edge to the frame's middle or a
-    /// safe margin (5% action-safe, 10% title-safe) or edge, and the same down the frame, within six pixels on screen.
-    /// The guides it is held to are drawn while it is.
+    /// Snaps a dragged box's left/centre/right (and top/middle/bottom) to the frame centre, safe margins (5% action, 10% title) or edges
+    /// within 6 screen pixels, drawing the active guides.
     /// </summary>
-    /// <param name="frame">The output frame on the surface the box is dragged on, in its units.</param>
-    /// <param name="view">Where the guides are drawn; none over the player (4.1.1-B), which only snaps.</param>
+    /// <param name="frame">Output frame on the drag surface, in surface units.</param>
+    /// <param name="view">Guide host; null over the player (snaps without guides).</param>
     private static (double X, double Y) SnapToGuides(double x, double y, double width, double height, Rect frame, LayoutGuidesView? view)
     {
         double[] lines = [0, 0.05, 0.1, 0.5, 0.9, 0.95, 1];
@@ -418,13 +411,12 @@ public partial class MainWindow
         return snapped;
     }
 
-    // The clips the Canvas's boxes were made for (each track's), and a list to compare them with.
+    // Clips the Canvas boxes were built for (one per track), plus a scratch list for comparison.
     private readonly List<Layer> _arrangeClips = [], _arrangeScratch = [];
 
     /// <summary>
-    /// Each track's clip its box on the Canvas stands for: the one on screen at the playhead, else its
-    /// first shown one; a hidden track, or a clip hidden or see-through, has none. The views come track by track
-    /// (MainViewModel.SyncViews), so one pass, and nothing made: it is asked at every move of the playhead.
+    /// Per track: the clip drawn at the playhead, else its first drawn clip; none for hidden tracks or hidden/transparent clips. Single
+    /// allocation-free pass over track-ordered views (MainViewModel.SyncViews); runs on every playhead move.
     /// </summary>
     private void CollectArrangeClips(List<Layer> into)
     {
@@ -438,9 +430,8 @@ public partial class MainWindow
             if (layer is not { IsAudio: false, IsEmptyTrack: false, IsHidden: false })
                 continue;
 
-            // The drawn test (a clip lookup and its look evaluated) runs only when its answer can change the pick: once a track has its
-            // clip at the playhead nothing later on it matters, and before that only a later clip at the playhead can replace the
-            // track's first drawn one. O(L + T·C) per playhead move instead of a drawn test for every layer.
+            // Evaluate the costly drawn test only when it can change the pick (stop after a track's playhead clip; before that only a
+            // playhead clip can replace its first drawn clip): O(L + T*C) per playhead move instead of testing every layer.
             var same = layer.TrackId == track;
             if (same && onScreen)
                 continue;
@@ -463,7 +454,7 @@ public partial class MainWindow
             into.Add(pick);
     }
 
-    /// <summary>Whether the Canvas's boxes still stand for the clips they would be made for now (the playhead moved, another clip selected).</summary>
+    /// <summary>True if the existing boxes still match the clips that would be picked now (after playhead or selection changes).</summary>
     private bool SameArrangeClips()
     {
         CollectArrangeClips(_arrangeScratch);
@@ -478,19 +469,17 @@ public partial class MainWindow
         return true;
     }
 
-    // ----- A track's layer moved, resized, centred and turned: the same in the layout pane and over the player -----
+    // ----- Layer move/resize/centre/rotate (shared by Canvas pane and player overlay) -----
 
-    // Every clip's box is its own place (4.4; 5.2-AuditB: no clip is placed by other controls). The caption box (5.0-Verify:
-    // moved over the player as on the Canvas) is its corner and its size on the frame, kept on it.
+    // Each clip's box is its own placement. The caption box is its corner and size on the frame, clamped inside it.
     private (int X, int Y, int Width, int Height) TrackLayerRect(Layer element) =>
         element.GetOutputRect(_viewModel.FrameWidth, _viewModel.FrameHeight, element.IsCaptions ? 0 : _viewModel.SourceWidth, element.IsCaptions ? 0 : _viewModel.SourceHeight);
 
-    /// <summary>Moves a track's layer by a distance in output pixels, snapping to the guides of the frame it is dragged on.</summary>
+    /// <summary>Moves a track layer by an output-pixel delta, snapping to frame guides.</summary>
     private void MoveTrackLayer(Layer element, double deltaX, double deltaY, Rect frame, LayoutGuidesView? guides)
     {
-        // Output pixels to fractions of the frame. Setting them moves the sliders, and the box follows them.
-        // A layer may be dragged off the frame: what is outside is cut off, and the frame stays as it is.
-        // Near the frame's middle or a safe margin, an edge or the middle of the box snaps to it (not with Alt).
+        // Convert to frame fractions (sliders update; the box follows). Layers may extend off-frame (clipped, frame unchanged). Edges or
+        // centre snap to the frame centre or safe margins unless Alt is held.
         var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
         var (x, y) = (element.PositionX + deltaX / frameWidth, element.PositionY + deltaY / frameHeight);
         if (AppSettings.Current.SnapLayoutGuides && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
@@ -501,14 +490,14 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Grows a track's layer by a distance in output pixels (the move of its <paramref name="corner"/> in its own unturned frame), dragged by
-    /// that corner: the bottom right one unless a tilted clip's other grips say otherwise (Pass 5.2D, the user's Q3).
+    /// Resizes a track layer by an output-pixel delta of the dragged <paramref name="corner"/> in its unrotated frame (bottom-right unless
+    /// a tilted clip's other corner grip is used).
     /// </summary>
     private void ResizeTrackLayer(Layer element, double deltaX, double deltaY, GripCorner corner = GripCorner.BottomRight)
     {
         var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
 
-        // The caption box: its width and height each by the pointer's move, from its corner, within the frame.
+        // Caption box: width and height follow the pointer from its corner, clamped to the frame.
         if (element.IsCaptions)
         {
             element.SizeWidth = Math.Clamp(element.SizeWidth + deltaX / frameWidth, 0.05, 1);
@@ -516,25 +505,25 @@ public partial class MainWindow
             return;
         }
 
-        // The height as the box has it: its own, or (locked to its shape) the width's share of it.
+        // Current height: its own, or width * aspect when the shape is locked.
         var follows = element.LockAspectRatio;
         var height = follows || element.SizeHeight <= 0 ? element.SizeWidth * element.HeightPerWidth : element.SizeHeight;
         var fromOpposite = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
 
-        // A tilted clip's opposite corner stays where it is drawn (TiltedCorners' tilt); a flat clip's tilt is none.
+        // Tilted clips keep their drawn opposite corner fixed (TiltedCorners tilt); flat clips have zero tilt.
         var (tiltX, tiltY) = DrawnTilted(element) ? (Layer.Tilt(element.TiltX), Layer.Tilt(element.TiltY)) : (0.0, 0.0);
         var resized = ResizedFromCorner(element.PositionX, element.PositionY, element.SizeWidth, height, element.AnchorX, element.AnchorY, corner,
             deltaX / frameWidth, deltaY / frameHeight, follows, element.HeightPerWidth, fromOpposite, frameWidth, frameHeight, element.Rotation, tiltX, tiltY);
 
-        // Ctrl: dragged by its corner, the opposite corner is what stays put (a left or top corner moves the box's place as it grows; a tilted
-        // clip's place moves too, so that the corner stays where it is drawn).
+        // Ctrl: opposite corner stays fixed (left/top corners shift the position as size changes; tilted clips also shift so the drawn
+        // corner stays put).
         if (fromOpposite)
         {
             element.FromCorner(() =>
             {
                 element.SizeWidth = resized.Width;
 
-                // Locked, the height follows the width by itself; unlocked, it is dragged separately.
+                // Locked: height follows width; unlocked: independent.
                 if (!follows)
                     element.SizeHeight = resized.Height;
                 (element.PositionX, element.PositionY) = (resized.X, resized.Y);
@@ -542,23 +531,19 @@ public partial class MainWindow
             return;
         }
 
-        // Otherwise about the anchor point, which stays where it is: the layer moves its corner to suit as its size is set
-        // (Layer.AnchorCenter), as ResizedFromCorner works it out.
+        // Default: resize about the fixed anchor point (Layer.AnchorCenter), corner position derived by ResizedFromCorner.
         element.SizeWidth = resized.Width;
         if (!follows)
             element.SizeHeight = resized.Height;
     }
 
     /// <summary>
-    /// A clip's box (its corner and size, as fractions of the frame) resized by one of its corners moved by (<paramref name="deltaX"/>,
-    /// <paramref name="deltaY"/>), fractions of the frame in the box's own unturned frame. About the anchor point, which stays where it is:
-    /// the corner follows the pointer, so a side grows by the move over the corner's share of it, signed (a left or top corner's share lies
-    /// before the anchor: the divisor is -max(anchor, 0.1), and 1 - anchor's for a right or bottom one, the bottom right grip's arithmetic as
-    /// it has always been). With <paramref name="fromOpposite"/> (Ctrl) the opposite corner stays instead; a tilted clip's (its
-    /// <paramref name="tiltX"/> or <paramref name="tiltY"/> not 0, degrees as the GPU takes them, turned by <paramref name="rotation"/>, on a
-    /// frame of <paramref name="frameWidth"/> x <paramref name="frameHeight"/> pixels) stays where it is drawn. A height that follows the width
-    /// (<paramref name="heightFollows"/>, its shape locked) is <paramref name="heightPerWidth"/> of it and takes no move of its own. Width
-    /// 0.02 to 4, height 0.01 to 4. Pure: the golden tests call it (gpufx-tilt-pick).
+    /// Pure (golden gpufx-tilt-pick): resizes a box (corner + size in frame fractions) by a corner delta (<paramref name="deltaX"/>,
+    /// <paramref name="deltaY"/>) in its unrotated frame. About the anchor: size += delta / corner share, with divisor -max(anchor, 0.1) for
+    /// left/top corners and 1 - anchor for right/bottom. <paramref name="fromOpposite"/> (Ctrl) fixes the opposite corner instead; for tilted
+    /// clips (<paramref name="tiltX"/>/<paramref name="tiltY"/> degrees, <paramref name="rotation"/>, <paramref name="frameWidth"/> x
+    /// <paramref name="frameHeight"/>) the drawn corner stays put. With <paramref name="heightFollows"/>, height = width *
+    /// <paramref name="heightPerWidth"/>. Width clamped to 0.02..4, height 0.01..4.
     /// </summary>
     internal static (double X, double Y, double Width, double Height) ResizedFromCorner(double x, double y, double width, double height,
         double anchorX, double anchorY, GripCorner corner, double deltaX, double deltaY, bool heightFollows, double heightPerWidth, bool fromOpposite,
@@ -567,14 +552,13 @@ public partial class MainWindow
         var (right, bottom) = LayerGizmoAdorner.SidesOf(corner);
         if (fromOpposite)
         {
-            // The side grows by the move itself (a left or top corner's the other way), and the box's place moves by what a left or top side grew.
+            // Opposite-corner mode: size changes by the delta (negated for left/top); position shifts by left/top growth.
             var grownWidth = Math.Clamp(width + (right == 1 ? deltaX : -deltaX), 0.02, 4);
             var grownHeight = heightFollows ? grownWidth * heightPerWidth : Math.Clamp(height + (bottom == 1 ? deltaY : -deltaY), 0.01, 4);
             var (grownX, grownY) = (right == 1 ? x : x - (grownWidth - width), bottom == 1 ? y : y - (grownHeight - height));
 
-            // A tilted clip (Pass 5.2D): the opposite corner the user sees is where the GPU draws it, and a box grown in
-            // perspective, tilted about an anchor that has moved with it, draws that corner elsewhere. The drawn quad moves with the box's place
-            // alone (Matrix4.Corners lays it about the anchor), so the place moves back by what the drawn corner moved. A flat clip's stays.
+            // Tilted: resizing moves the anchor, so the perspective-drawn opposite corner would shift. The quad translates with position
+            // only (Matrix4.Corners about the anchor), so subtract the drawn corner's displacement from position. Flat clips skip this.
             if ((tiltX != 0 || tiltY != 0) && frameWidth > 0 && frameHeight > 0)
             {
                 var opposite = (GripCorner)(((int)corner + 2) % 4);
@@ -594,14 +578,13 @@ public partial class MainWindow
         return (x - (newWidth - width) * anchorX, y - (newHeight - height) * anchorY, newWidth, newHeight);
     }
 
-    // A corner of a box (its place and size as fractions of the frame) where the GPU draws it tilted, in the frame's pixels: TiltedCorners'
-    // arithmetic (Matrix4.Corners) on the box as it is being resized.
+    // Drawn (tilted) corner of a box in frame pixels, using TiltedCorners' Matrix4.Corners math on the in-progress box.
     private static (float X, float Y) DrawnCorner(double x, double y, double width, double height, double anchorX, double anchorY, GripCorner corner,
         double frameWidth, double frameHeight, double rotation, double tiltX, double tiltY) =>
         HandPegApp.Compositor.Matrix4.Corners((float)(x * frameWidth), (float)(y * frameHeight), (float)(width * frameWidth), (float)(height * frameHeight),
             (float)rotation, (float)anchorX, (float)anchorY, (float)frameWidth, (float)frameHeight, (float)tiltX, (float)tiltY)[(int)corner];
 
-    /// <summary>A double-click on a track's box: the layer keeps its size and goes to the middle of the frame.</summary>
+    /// <summary>Box double-click: centres the layer on the frame, keeping its size.</summary>
     private void CenterTrackLayer(Layer element)
     {
         var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
@@ -610,21 +593,19 @@ public partial class MainWindow
         element.PositionY = (frameHeight - height) / 2.0 / frameHeight;
     }
 
-    // ----- A tilted clip's outline (5.2B, the user's Q4) -----
-    // A clip turned out of the frame's plane (its Tilt X / Tilt Y) is drawn by the GPU as a quad in perspective, which no 2D transform of
-    // its box can show. Its outline on the Canvas and over the player is the four corners the GPU lays it at (Matrix4.Corners, the same
-    // arithmetic as the scene's); the flat box under it is still what is dragged, and (5.2C) its grip and stalk stand on the drawn corners
-    // (LayerGizmoAdorner.TiltedCorners), a grip on each of the four since Pass 5.2D (the user's Q3), each resizing
-    // about the anchor point (ResizedFromCorner). A flat clip is drawn as before.
+    // ----- Tilted clip outline -----
+    // Tilt X/Y renders a perspective quad no 2D transform can show, so the Canvas and player draw the GPU's four corners (Matrix4.Corners,
+    // same math as the scene). The flat box underneath is still the drag target; grips and stalk sit on the drawn corners
+    // (LayerGizmoAdorner.TiltedCorners), each corner resizing about the anchor (ResizedFromCorner). Flat clips are unaffected.
 
     private static readonly Brush TiltOutlineFill = FrozenCanvasBrush(Color.FromArgb(0x99, 0x00, 0x78, 0xD7));
 
-    /// <summary>Whether a clip is drawn tilted (its tilt now): what has an outline and grips on its drawn corners, and what Ctrl's resize keeps a drawn corner of.</summary>
+    /// <summary>True if the clip currently renders tilted (gets a perspective outline, corner grips, and drawn-corner Ctrl resize).</summary>
     private static bool DrawnTilted(Layer clip) => clip.HasFilters && (clip.TiltX != 0 || clip.TiltY != 0);
 
     /// <summary>
-    /// A tilted clip's four corners (top left, top right, bottom right, bottom left) on a surface whose output frame is <paramref name="frame"/>
-    /// at <paramref name="scale"/> surface units an output pixel, as the GPU lays them; null for a clip that is not tilted (or the captions).
+    /// GPU-drawn corners (TL, TR, BR, BL) of a tilted clip on a surface with output <paramref name="frame"/> at <paramref name="scale"/>
+    /// surface units per output pixel; null if not tilted (or captions).
     /// </summary>
     private PointCollection? TiltedCorners(Layer clip, Rect frame, double scale)
     {
@@ -637,7 +618,7 @@ public partial class MainWindow
         var points = new PointCollection(corners.Length);
         foreach (var (cornerX, cornerY) in corners)
         {
-            // A corner behind the camera is never on screen: no outline is better than a wrong one.
+            // A corner behind the camera cannot be projected: draw no outline rather than a wrong one.
             if (!float.IsFinite(cornerX) || !float.IsFinite(cornerY))
                 return null;
             points.Add(new Point(frame.X + cornerX * scale, frame.Y + cornerY * scale));
@@ -648,8 +629,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Puts a tilted clip's outline over its box on a surface (made the first time it is needed, just above the box, never hit-testable),
-    /// or hides it (<paramref name="corners"/> null, or not <paramref name="shown"/>). The outline it made or was given.
+    /// Shows a tilted clip's outline just above its box (created lazily, never hit-testable), or hides it when <paramref name="corners"/> is
+    /// null or not <paramref name="shown"/>. Returns the outline element.
     /// </summary>
     private static System.Windows.Shapes.Polygon? PlaceTiltOutline(Panel surface, LayerBox box, System.Windows.Shapes.Polygon? outline, PointCollection? corners,
         bool shown, Brush? fill, Brush stroke, double thickness, List<UIElement>? made)
@@ -674,17 +655,16 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The corner grips, the rotation handle and the anchor dot of a track's box, on whatever surface the box lies (the layout
-    /// pane's canvas or the player's): the box resized from the corner dragged, the angle from the anchor point to the pointer,
-    /// and the anchor moved inside the box.
+    /// Attaches corner grips (resize), rotation handle (angle from anchor to pointer) and anchor dot (move within the box) to a track box
+    /// on either surface (Canvas pane or player).
     /// </summary>
     private void WireGizmo(LayerGizmoAdorner adorner, FrameworkElement box, Layer gizmo, string name, UIElement surface,
         Func<(int X, int Y, int Width, int Height)> getRect, double scale, Func<Rect> frameOf)
     {
-        // A tilted clip's grips (one on each of its drawn corners, Pass 5.2D) and stalk on its picture (5.2C, the user's Q4).
+        // Tilted clips: grips on all four drawn corners, stalk on the drawn picture.
         adorner.TiltedCorners = () => TiltedCorners(gizmo, frameOf(), scale);
 
-        // Each handle's drag is one undo step, taken as it first changes something (DragStep).
+        // Each handle drag is one Undo step, taken on its first change (DragStep).
         var resizeStep = new DragStep(_viewModel, $"resize {name}");
         adorner.ResizeStarted += _ => resizeStep.Pressed();
         adorner.ResizeDelta += (corner, moved) =>
@@ -693,7 +673,7 @@ public partial class MainWindow
             ResizeTrackLayer(gizmo, moved.X / scale, moved.Y / scale, corner);
         };
 
-        // The rotation handle: the angle from the anchor point to the pointer, the handle pointing up at 0 degrees.
+        // Rotation handle: angle from anchor to pointer; 0 degrees = handle pointing up.
         var turnStep = new DragStep(_viewModel, $"turn {name}");
         adorner.TurnStarted += turnStep.Pressed;
         adorner.TurnDelta += () =>
@@ -712,8 +692,7 @@ public partial class MainWindow
             adorner.ShowAngle(degrees);
         };
 
-        // The anchor dot: where the pointer is in the (unturned) box; the layer stays where it is on the frame. It snaps
-        // to the middle, the edges and the corners (not with Alt).
+        // Anchor dot: pointer position in the unrotated box; the layer stays put on the frame. Snaps to centre, edges and corners unless Alt.
         var anchorStep = new DragStep(_viewModel, $"move the anchor point of {name}");
         adorner.AnchorStarted += anchorStep.Pressed;
         adorner.AnchorDelta += () =>
@@ -733,9 +712,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The selected clip's motion path in the layout pane: where its anchor point goes between its first and last place
-    /// keyframes (sampled along their easing), with a dot at each, to drag (the keyframe's place moves with it) or click
-    /// (the playhead goes to it). Nothing while the clip's place has no keyframes, or Settings hides the path.
+    /// Motion path in the Canvas pane: the anchor's trajectory between first and last position keyframes (sampled along easing) with a
+    /// dot per keyframe (drag to move it, click to seek). Hidden without position keyframes or when disabled in Settings.
     /// </summary>
     private void RefreshMotionPath()
     {
@@ -754,7 +732,7 @@ public partial class MainWindow
         var (frame, height) = (_layoutFrame, clip.HeightPerWidth);
         Point At(double time)
         {
-            // The anchor point on the frame: from the corner's keyframes, or (a place with none) where the anchor holds still.
+            // Anchor on the frame from the position keyframes, or static if none.
             var width = clip.Evaluate(KeyProperty.Scale, time);
             var x = clip.HasKeys(KeyProperty.X) ? clip.Evaluate(KeyProperty.X, time) + clip.AnchorX * width : clip.PositionX + clip.AnchorX * clip.SizeWidth;
             var y = clip.HasKeys(KeyProperty.Y) ? clip.Evaluate(KeyProperty.Y, time) + clip.AnchorY * width * height : clip.PositionY + clip.AnchorY * clip.SizeWidth * height;
@@ -774,14 +752,13 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Adds one draggable, resizable clip to the canvas: the same for a video, a Cutout of a
-    /// video and an image. Returns the action that puts its box where the layer now is.
+    /// Adds a draggable, resizable box (video, Cutout or image) to the canvas; returns the action that re-syncs the box to the layer.
     /// </summary>
-    /// <param name="getRect">The layer's place on the output frame, in output pixels.</param>
-    /// <param name="move">Moves the layer by a distance in output pixels.</param>
-    /// <param name="resize">Grows the layer by a distance in output pixels.</param>
-    /// <param name="reset">What a double-click does: puts the layer back in the middle of the frame.</param>
-    /// <param name="gizmo">A track's layer: its box gets the rotation handle and the anchor point, turns about that point, and nudges with the arrow keys.</param>
+    /// <param name="getRect">Layer rect on the output frame, in output pixels.</param>
+    /// <param name="move">Moves the layer by an output-pixel delta.</param>
+    /// <param name="resize">Resizes the layer by an output-pixel delta.</param>
+    /// <param name="reset">Double-click action (centre on the frame).</param>
+    /// <param name="gizmo">Track layer: adds rotation handle and anchor, rotates about the anchor, supports arrow-key nudges.</param>
     private Action AddArrangeLayer(
         string name, Style style, object? dataContext, Rect frame, double scale,
         Func<(int X, int Y, int Width, int Height)> getRect, Action<double, double> move, Action<double, double> resize, Action reset, Func<double>? rotation = null,
@@ -816,12 +793,12 @@ public partial class MainWindow
         {
             _layoutGuides?.ShowGuides([]);
 
-            // As over the player: a click with no drag on the box held goes on to the next one down at that place.
+            // As on the player: a no-drag click on the held box cycles to the next box beneath that point.
             if (wasHeld && !e.Canceled && Math.Abs(e.HorizontalChange) + Math.Abs(e.VerticalChange) < 2)
                 ClickThrough([.. LayoutCanvas.Children.OfType<LayerBox>()], box, LayoutCanvas, next => next.Focus());
         };
 
-        // Chosen with the pointer, the arrow keys nudge it (see MainWindow_PreviewKeyDown): a pixel of the output, ten with Shift.
+        // Pointer-selected box: arrows nudge 1 output pixel, 10 with Shift (MainWindow_PreviewKeyDown).
         if (gizmo is not null)
         {
             box.Focusable = true;
@@ -837,18 +814,17 @@ public partial class MainWindow
             if (e.ChangedButton != MouseButton.Left)
                 return;
 
-            // The second press of a double-click also starts a drag. It is called off first: the box is
-            // about to jump out from under the pointer, and a drag would carry it straight back.
+            // Cancel the drag started by the double-click's second press: the box is about to recentre and a drag would pull it back.
             box.CancelDrag();
             _viewModel.Checkpoint($"center {name}");
             reset();
             e.Handled = true;
         };
 
-        // The gizmo (a track's box): told to lay its handles out again when the anchor or the box changes.
+        // Gizmo re-lays its handles when the anchor or box changes.
         LayerGizmoAdorner? gizmoAdorner = null;
 
-        // A tilted clip's outline in perspective over its box (5.2B): made the first time the clip is tilted.
+        // Perspective outline, created on first tilt.
         System.Windows.Shapes.Polygon? tiltOutline = null;
 
         void Place()
@@ -859,12 +835,12 @@ public partial class MainWindow
             Canvas.SetLeft(box, frame.X + x * scale);
             Canvas.SetTop(box, frame.Y + y * scale);
 
-            // Shown turned as the layer is, about its anchor point. (It is still dragged along the frame's own axes.)
+            // Rotated about the anchor like the layer (drags still use frame axes).
             var angle = rotation?.Invoke() ?? 0;
             var origin = gizmo is null ? new Point(0.5, 0.5) : new Point(gizmo.AnchorX, gizmo.AnchorY);
             (box.RenderTransformOrigin, box.RenderTransform) = (origin, Math.Abs(angle % 360) < 0.05 ? Transform.Identity : new RotateTransform(angle));
 
-            // Tilted (5.2B): drawn as the GPU lays it, the flat box faint under it (still what is dragged; its handles on the drawn corners, 5.2C).
+            // Tilted: show the GPU quad; the flat box (still the drag target) is faint, handles on the drawn corners.
             var corners = gizmo is null ? null : TiltedCorners(gizmo, frame, scale);
             tiltOutline = PlaceTiltOutline(LayoutCanvas, box, tiltOutline, corners, shown: true, TiltOutlineFill, Brushes.White, 1, _arrangeVisuals);
             box.Opacity = corners is null ? 1 : 0.35;
@@ -872,7 +848,7 @@ public partial class MainWindow
         }
 
         _arrangeVisuals.Add(box);
-        // The caption box was made first so that its handlers exist, but it belongs on top: layers go under it.
+        // The caption box was created first (handlers exist) but must stay topmost: insert layers beneath it.
         var captionBox = LayoutCanvas.Children.OfType<Thumb>().FirstOrDefault(t => t.DataContext is Layer { IsCaptions: true });
         if (captionBox is not null && !ReferenceEquals(dataContext, captionBox.DataContext))
             LayoutCanvas.Children.Insert(LayoutCanvas.Children.IndexOf(captionBox), box);
@@ -880,7 +856,7 @@ public partial class MainWindow
             LayoutCanvas.Children.Add(box);
         Place();
 
-        // The handle is an adorner on the box: it stays on the corner however the box moves or grows.
+        // Resize handle is an adorner, so it tracks the corner through moves and resizes.
         if (AdornerLayer.GetAdornerLayer(box) is { } layer && gizmo is null)
         {
             var adorner = new ResizeAdorner(box, (Style)FindResource("LayerGrip"), name);
@@ -905,7 +881,7 @@ public partial class MainWindow
         return Place;
     }
 
-    /// <summary>The Canvas's box a press stays with: the one last pressed (it has the arrow keys), else the selected layer's.</summary>
+    /// <summary>Box that owns arrow-key nudges: the last pressed box, else the selected layer's.</summary>
     private LayerBox? HeldArrangeBox
     {
         get
@@ -917,22 +893,21 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>A layout box's arrow-key nudge: what it moves (its name, for Undo), and how, in pixels of the output.</summary>
+    /// <summary>Arrow-key nudge target: Undo label and move action (output pixels).</summary>
     private sealed record LayoutNudge(string Name, Action<double, double> Move);
 
     /// <summary>
-    /// One drag's undo step, taken as the drag first changes something rather than as it is pressed (4.3E): a Thumb, and
-    /// every handle, says a drag has started the moment it is pressed, and a press that only selects a box (or the first
-    /// press of a double-click) must not leave a step that undoes nothing, or Ctrl+Z seems to do nothing at all.
+    /// Defers a drag's Undo step to its first actual change: Thumbs report DragStarted on press, and a select-only press (or a
+    /// double-click's first press) must not leave an empty step that makes Ctrl+Z appear to do nothing.
     /// </summary>
     private sealed class DragStep(MainViewModel viewModel, string what)
     {
         private bool _taken;
 
-        /// <summary>A press: the next change is the drag's first.</summary>
+        /// <summary>Arms the step: the next change opens it.</summary>
         public void Pressed() => _taken = false;
 
-        /// <summary>A change of the drag: the first takes the step, before it is made.</summary>
+        /// <summary>Called before each drag change; the first one opens the Undo step.</summary>
         public void Changing()
         {
             if (_taken)
@@ -960,9 +935,9 @@ public partial class MainWindow
         _arrangeVisuals.Clear();
     }
 
-    // ----- A rubber band on the Canvas (5.2A) -----
-    // A drag over empty space on the Canvas draws a band; let go, the clips whose boxes it touches are selected together (with Ctrl or
-    // Shift, they join the selection), as the Timeline's band selects them. A click with no drag does what it always did: nothing.
+    // ----- Canvas rubber band -----
+    // Dragging on empty Canvas space draws a band; on release, intersected boxes' clips are selected (Ctrl/Shift extend), as on the
+    // Timeline. A no-drag click does nothing.
 
     private Point? _canvasBandFrom;
     private bool _canvasBandAdds;
@@ -982,7 +957,7 @@ public partial class MainWindow
     {
         LayoutCanvas.MouseLeftButtonDown += (_, e) =>
         {
-            // Empty space only: a box, a handle or a dot of the motion path takes its own presses.
+            // Empty space only; boxes, handles and motion-path dots handle their own presses.
             if (e.Handled || !ReferenceEquals(e.OriginalSource, LayoutCanvas) || !_viewModel.IsArrangeActive || !LayoutCanvas.CaptureMouse())
                 return;
 
@@ -1034,7 +1009,7 @@ public partial class MainWindow
             LayoutCanvas.ReleaseMouseCapture();
     }
 
-    // The clips whose boxes a band touches (each box as it is turned), selected together; the topmost is the one the panes show.
+    // Selects clips whose (rotated) boxes intersect the band; the topmost becomes primary.
     private void SelectCanvasBand(Rect band)
     {
         var touched = new List<Layer>();

@@ -17,20 +17,18 @@ using Microsoft.Win32;
 
 namespace HandPegApp;
 
-// ----- MainWindow, continued: the Views button of the transport row and its menu (placed, opened, Reset Panes Layout) -----
+// ----- Views button and menu on the transport row (placement, open/close, Reset Panes Layout) -----
 public partial class MainWindow
 {
-    // ----- The Views button in the transport row -----
-    // The timeline's I-frame checkboxes that followed it are in the Views menu and Timeline Settings since 5.3-Stage2 (the user's de-clutter).
-    // 5.4.4 (the user's): the one button at the left of the bar for the views and the bar itself; what the bar shows and Dynamic Preview
-    // Scaling are the menu's Playback Bar column (the bar's own settings button at its right end is retired).
+    // ----- Views button -----
+    // Timeline I-frame options live in the Views menu and Timeline Settings. The Views button is the single control at the bar's left for
+    // pane views and the bar itself; bar contents and Dynamic Preview Scaling are in the menu's Playback Bar column.
 
     private void TimelineOptionsBar_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) => UpdateTransportMinWidth();
 
     /// <summary>
-    /// However narrow the player gets, the Views button keeps its place at the left of the playback bar: it is the way to
-    /// the panes, the timeline's I-frame checkboxes and (5.4.4) what the bar shows. An icon alone since 5.4.4: 34 DIPs until
-    /// it is laid out (its 16 DIP picture, its padding and its border).
+    /// Reserves the Views button's column at the bar's left at any player width (it is the entry to panes, I-frame options and bar
+    /// contents). Icon-only: assumes 34 DIPs (16 DIP glyph plus padding and border) until laid out.
     /// </summary>
     private void UpdateTransportMinWidth() =>
         TransportRow.ColumnDefinitions[0].MinWidth = TimelineOptionsBar.IsVisible
@@ -38,13 +36,12 @@ public partial class MainWindow
             : 0;
 
     /// <summary>
-    /// Puts the Views menu over the button that opens it, at the left of the transport row, their left edges level: placed by
-    /// UiScale.PlaceAgainst (5.3-Stage3), so a touch PC's mirrored menus never put it a menu's width to the left. Again at every
-    /// layout of the panes: measured from the window its button is in now (the playback row may be in the side window).
+    /// Places the Views menu above its button, left edges aligned, via UiScale.PlaceAgainst (immune to right-handed menu mirroring).
+    /// Re-run on every pane layout, measured from the button's current window (the playback row may be in a side window).
     /// </summary>
     private void PlaceViewsPopup() => UiScale.PlaceAgainst(ViewsPopup, ViewsButton, UiScale.FlyoutSide.AboveStart, 4);
 
-    // Reset Panes Layout (the Views menu; 5.4D: its one home, the Layout menu's Reset Layout retired): the user's Default layout put back.
+    // Reset Panes Layout (sole home in the Views menu): restores the configured default layout.
     private void ResetPanesLayout_Click(object sender, RoutedEventArgs e)
     {
         _layoutHover.Close();
@@ -57,12 +54,12 @@ public partial class MainWindow
     {
         FillViewsLists();
 
-        // The setting as it is now (5.4.4: the Settings window sets it too).
+        // Sync with the current setting (the Settings window can also change it).
         ViewsPreviewScalingBox.IsChecked = AppSettings.Current.DynamicPreviewScaling;
         ViewsButton.IsHitTestVisible = false;
     }
 
-    /// <summary>The Views menu's "Dynamic Preview Scaling" (5.4.4; the same setting as the Settings window's): saved at once, read by the player as it draws.</summary>
+    /// <summary>Views menu "Dynamic Preview Scaling" (same setting as in Settings): saved immediately, read by the player per frame.</summary>
     private void ViewsPreviewScalingBox_Click(object sender, RoutedEventArgs e)
     {
         var on = ViewsPreviewScalingBox.IsChecked == true;

@@ -8,16 +8,14 @@ using System.Windows.Controls.Primitives;
 namespace HandPegApp;
 
 /// <summary>
-/// A row of controls that never wraps: laid out on one line, in order, and when the line is too short for all of
-/// them the least important (<see cref="PriorityProperty"/>; the later of two equal ones first) are left out of it
-/// and listed instead in a menu that opens from its "more" button (the child marked <see cref="IsOverflowButtonProperty"/>,
-/// shown only while something is left out). A control left out keeps its own visibility, which what the row shows is
-/// chosen by: it is only given no room. From the menu, a button is pressed and a toggle toggled through their
-/// automation peers, so that their commands run exactly as a click would run them.
+/// Single-line, non-wrapping control row. When space runs out, the lowest-<see cref="PriorityProperty"/> controls (later first on ties)
+/// overflow into a menu opened by the "more" button (the child marked <see cref="IsOverflowButtonProperty"/>, visible only while
+/// something overflows). Overflowed controls keep their own Visibility (which still decides what the row offers); they just get zero
+/// size. Menu items invoke buttons and toggles through their automation peers, so commands run exactly as on a click.
 /// </summary>
 public sealed class OverflowStrip : Panel
 {
-    /// <summary>How much a control is wanted on the row: the higher, the later it is left out. 0 by default.</summary>
+    /// <summary>Keep priority on the row: higher values overflow later. Default 0.</summary>
     public static readonly DependencyProperty PriorityProperty = DependencyProperty.RegisterAttached(
         "Priority", typeof(int), typeof(OverflowStrip), new FrameworkPropertyMetadata(0, FrameworkPropertyMetadataOptions.AffectsParentMeasure));
 
@@ -25,7 +23,7 @@ public sealed class OverflowStrip : Panel
 
     public static void SetPriority(UIElement element, int value) => element.SetValue(PriorityProperty, value);
 
-    /// <summary>Marks the strip's "more" button: placed last, shown only while something does not fit, and opening the menu of what did not.</summary>
+    /// <summary>Marks the "more" button: placed last, visible only while something overflows, and opens the overflow menu.</summary>
     public static readonly DependencyProperty IsOverflowButtonProperty = DependencyProperty.RegisterAttached(
         "IsOverflowButton", typeof(bool), typeof(OverflowStrip), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsParentMeasure));
 
@@ -33,16 +31,16 @@ public sealed class OverflowStrip : Panel
 
     public static void SetIsOverflowButton(UIElement element, bool value) => element.SetValue(IsOverflowButtonProperty, value);
 
-    // What did not fit at the last measure, the "more" button, and how wide that is when shown: it is collapsed while
-    // everything fits, so that it can neither be tabbed to nor found by a screen reader, and then measures 0.
+    // Overflowed children from the last measure, the "more" button and its shown width (cached because the button is collapsed,
+    // measuring 0, while everything fits, which also keeps it out of tab order and screen readers).
     private readonly List<UIElement> _left = [];
     private ButtonBase? _more;
     private double _moreWidth;
 
-    /// <summary>For a child that is not a button (a pane's tab): what its entry in the menu says, and what choosing it does.</summary>
+    /// <summary>Menu entry factory for non-button children (e.g. pane tabs): header text and choose action.</summary>
     public Func<UIElement, (string Header, Action Choose)?>? MenuEntryFor { get; set; }
 
-    /// <summary>The narrowest the strip can be, as of its last measure: its most wanted child, and the "more" button beside it when there are others.</summary>
+    /// <summary>Minimum width at the last measure: the highest-priority child plus the "more" button when others exist.</summary>
     public double MinimumWidth { get; private set; }
 
     protected override Size MeasureOverride(Size availableSize)
@@ -81,8 +79,8 @@ public sealed class OverflowStrip : Panel
             return new Size(total, height);
         }
 
-        // Too long: the least wanted go first, until what is left fits beside the "more" button. (The first time it is
-        // wanted its width is not known yet: showing it brings another measure, which leaves room for it.)
+        // Overflow lowest priority first until the rest fits beside the "more" button. (On first overflow its width is unknown;
+        // showing it triggers a re-measure that then reserves its room.)
         ShowMore(true);
         var room = availableSize.Width - (_more is null ? 0 : _moreWidth);
         foreach (var child in shown.Select((c, i) => (Child: c, Index: i)).OrderBy(p => GetPriority(p.Child)).ThenByDescending(p => p.Index).Select(p => p.Child))
@@ -126,7 +124,7 @@ public sealed class OverflowStrip : Panel
         return finalSize;
     }
 
-    /// <summary>The menu of what did not fit, in the row's order: each by its name, ticked when it is a toggle that is on.</summary>
+    /// <summary>Opens the overflow menu in row order: one item per control by name, checked for toggles that are on.</summary>
     private void More_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not ButtonBase more)
@@ -143,7 +141,7 @@ public sealed class OverflowStrip : Panel
                 continue;
             }
 
-            // A tooltip naming keys (KeyTip) is filled in with the keys as bound now, and the menu shows the action's key too.
+            // KeyTip tooltips resolve with current bindings; the item also shows the action's shortcut.
             var tip = KeyTip.Render(child) ?? (child as FrameworkElement)?.ToolTip;
             var name = AutomationProperties.GetName(child) is { Length: > 0 } named ? named
                 : tip as string ?? (child as ContentControl)?.Content as string ?? "";

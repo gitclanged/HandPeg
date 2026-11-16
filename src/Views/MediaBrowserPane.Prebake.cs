@@ -4,15 +4,15 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Views;
 
-// ----- What a video dropped on the Timeline wants, made ahead (Pass 5.4.1-M5) -----
-// A folder being indexed (IndexFolderAsync, after the posters on screen) and the watched capture folder (AppSettings.WatchedCaptureFolder,
-// a while after start-up) have each video's Timeline work done ahead in quiet time (the Idle lane, Priority 3): the shared N-frame strip
-// (the Timeline's filmstrip and hover take it up at once, MediaBrowserFrames), the waveform peaks of each audio stream (one reading of the
-// file, Waveforms.BakeAsync) and the seek facts (seekindex.bin, MediaProbe). What the caches hold already is never made again. 5.4.2A: all of it
-// to the disk caches only; no picture, peaks or strip of a pre-baked file is kept in memory (the Timeline reads them back when it shows the file).
+// ----- Pre-baking Timeline assets for likely drops -----
+// For a folder being indexed (IndexFolderAsync, after visible posters) and the watched capture folder (AppSettings.WatchedCaptureFolder,
+// shortly after start-up), each video's Timeline work is done ahead on the Idle lane (Priority 3): the shared N-frame strip (used
+// directly by Timeline filmstrips and hover, MediaBrowserFrames), per-stream waveform peaks (single file pass, Waveforms.BakeAsync) and
+// seek facts (seekindex.bin, MediaProbe). Cached items are never rebuilt. Output goes to disk caches only; no pre-baked image, peaks or
+// strip stays in memory (the Timeline reads them back when the file is shown).
 public partial class MediaBrowserPane
 {
-    /// <summary>The waveform peaks and the seek facts of one video, made at Idle where the caches do not hold them yet.</summary>
+    /// <summary>Bakes one video's missing waveform peaks and seek facts on the Idle lane.</summary>
     internal static async Task PrebakeTimelineAsync(string path, CancellationToken token)
     {
         var first = new WaveformRequest([0], 16, 16, "gray");
@@ -22,7 +22,7 @@ public partial class MediaBrowserPane
         if (await MediaProbe.ProbeAsync(path, token, WorkLane.Idle) is not { } info)
             return;
 
-        // The seek facts are written once the probe and the I-frames are both known (MediaProbe.KeepSeekFacts).
+        // Seek facts are persisted once both the probe and I-frames are known (MediaProbe.KeepSeekFacts).
         if (info.Video is not null)
             await FfmpegRunner.GetIFramesAsync(path, token);
 
@@ -33,8 +33,8 @@ public partial class MediaBrowserPane
     }
 
     /// <summary>
-    /// The watched capture folder's videos prepared in quiet time (Pass 5.4.1-M5): their strips, waveforms and seek facts, newest first,
-    /// at most Settings' Most Videos per Folder. Not on battery nor on a network drive unless Settings says so, as a folder shown is.
+    /// Pre-bakes the watched capture folder's videos at idle (strips, waveforms, seek facts), newest first, capped at Settings' Most Videos
+    /// per Folder. Skipped on battery or network drives unless enabled in Settings, as for a browsed folder.
     /// </summary>
     public static async Task PrepareWatchedFolderAsync(CancellationToken token)
     {
@@ -48,7 +48,7 @@ public partial class MediaBrowserPane
             if (!settings.BrowserIndexNetwork && await Task.Run(() => PowerStatus.IsNetworkFolder(folder), token))
                 return;
 
-            // A video written to in the last minute is a recording still going on (the game being played): left alone.
+            // Skip files written within the last minute: likely an in-progress recording.
             var settled = DateTime.UtcNow.AddMinutes(-1);
             var videos = await Task.Run(() => Directory.Exists(folder)
                 ? new DirectoryInfo(folder).EnumerateFiles().Where(f => MediaFiles.KindOf(f.Name) == MediaBrowserKind.Video && f.LastWriteTimeUtc < settled)

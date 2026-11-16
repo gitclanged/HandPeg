@@ -326,6 +326,25 @@ public static partial class WindowFrameTests
 
         var none = WindowFrame.MaximizedPlaceOf((0, 0, 1920, 1080), (0, 0, 1920, 1040), 0);
         expect(none == (0, 0, 1920, 1040), "no taskbar that hides itself: the working area itself (the window is then left where Windows maximizes it)");
+
+        // The backdrops over those strips (WindowFrame.BackdropStripsOf), so no wallpaper shows under a retracted taskbar.
+        text.Append("## The backdrops over the strips a hidden taskbar leaves (WindowFrame.BackdropStripsOf)\n");
+        foreach (var (name, monitor, work, edges, _) in cases)
+        {
+            var place = WindowFrame.MaximizedPlaceOf(monitor, work, edges);
+            var strips = WindowFrame.BackdropStripsOf(monitor, place, edges);
+            text.Append($"  {name}: {string.Join("; ", strips.Select(s => $"{s.Rect.Left},{s.Rect.Top} - {s.Rect.Right},{s.Rect.Bottom}"))}\n");
+            var covered = strips.Sum(s => (long)(s.Rect.Right - s.Rect.Left) * (s.Rect.Bottom - s.Rect.Top));
+            var monitorArea = (long)(monitor.Item3 - monitor.Item1) * (monitor.Item4 - monitor.Item2);
+            var placeArea = (long)(place.Right - place.Left) * (place.Bottom - place.Top);
+            var workArea = (long)(work.Item3 - work.Item1) * (work.Item4 - work.Item2);
+            expect(strips.Count == System.Numerics.BitOperations.PopCount((uint)edges) && strips.All(s => s.Rect.Right > s.Rect.Left && s.Rect.Bottom > s.Rect.Top),
+                $"{name}: one backdrop per hidden edge");
+            expect(edges == (left | top | right | bottom) ? covered >= monitorArea - placeArea : placeArea + covered == workArea,
+                $"{name}: the window and its backdrops cover the working area, never overlapping the window");
+        }
+
+        expect(WindowFrame.BackdropStripsOf((0, 0, 1920, 1080), (0, 0, 1920, 1040), 0).Count == 0, "no taskbar that hides itself: no backdrop");
     }
 
     /// <summary>
@@ -364,6 +383,24 @@ public static partial class WindowFrameTests
             expect(IsZoomed(hwnd) && shown.Left == placedAtSource.Left && shown.Top == placedAtSource.Top && shown.Right == placedAtSource.Right
                 && shown.Bottom == placedAtSource.Bottom, "made maximized: shown maximized exactly where it was placed before it was shown (nothing moves after its first frame)");
             expect(desktopFrame && !clipped, "made maximized: the desktop draws its frame, with no region");
+
+            // A hidden taskbar on this monitor (this PC's setting): a click-through backdrop over each strip it leaves.
+            var monitorHandle = MonitorFromWindow(hwnd, 2);
+            var edges = WindowFrame.AutoHideEdges(monitorHandle);
+            var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+            GetMonitorInfo(monitorHandle, ref info);
+            var wanted = WindowFrame.BackdropStripsOf((info.Monitor.Left, info.Monitor.Top, info.Monitor.Right, info.Monitor.Bottom), (shown.Left, shown.Top, shown.Right, shown.Bottom), edges);
+            var backdrops = WindowFrame.BackdropsOf(hwnd);
+            var rects = backdrops.Select(b => GetWindowRect(b, out var r) ? (r.Left, r.Top, r.Right, r.Bottom) : default).ToList();
+            var styles = backdrops.Select(b => GetWindowLongPtr(b, -20).ToInt64()).ToList();
+            Console.WriteLine($"        made maximized: hidden taskbar edges {edges}, {backdrops.Count} backdrop(s) {string.Join("; ", rects.Select(r => $"{r.Left},{r.Top} - {r.Right},{r.Bottom}"))}");
+            expect(backdrops.Count == wanted.Count && wanted.All(w => rects.Contains(w.Rect)),
+                "made maximized: a backdrop over each strip a hidden taskbar leaves, and none without one");
+            expect(styles.All(s => (s & 0x20) != 0 && (s & 0x80000) != 0 && (s & 0x08000000) != 0 && (s & 0x80) != 0),
+                "made maximized: the backdrops let clicks through, never activate and stay off Alt+Tab");
+            window.WindowState = WindowState.Normal;
+            Idle();
+            expect(WindowFrame.BackdropsOf(hwnd).Count == 0, "restored: no backdrop shows");
         }
         finally
         {

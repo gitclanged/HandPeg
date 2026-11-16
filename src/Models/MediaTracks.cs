@@ -6,18 +6,15 @@ namespace HandPegApp.Models;
 public sealed record InfoRow(string Label, string Value);
 
 /// <summary>
-/// One part of an audio track that was cut up on the timeline: from where to where in the track's own time,
-/// and whether it has been silenced.
+/// A segment of a cut audio track: start/end in track time and whether it is silenced.
 /// </summary>
 public readonly record struct AudioPiece(double Start, double End, bool Muted);
 
 /// <summary>
-/// An output audio track (5.2-AuditB): a stream place of the file last opened, and what is made of it in the output: copied,
-/// encoded again or dropped, its codec, bitrate and title. Output N carries the sound of every Sub-Lane of stream place N.
-/// Nothing is heard through it: the file's sound plays through its clips and their Sub-Lanes, each lane with its own gain,
-/// filters and ducking. Its mixer and edits (gain, filters, ducking, voice, slip, silenced pieces) are what a project from
-/// before mixed the main video's stream with: the input of the conversion that puts them on Sub-Lanes as a 5.1 project is opened
-/// (LegacyMainVideo, which then sets them back to neutral); nothing the export or the player hears reads them.
+/// Output audio track for a stream index of the last opened file: copy, re-encode or drop, plus codec, bitrate and title. Output N
+/// carries every Sub-Lane of stream N; audio itself plays through clips and Sub-Lanes (own gain, filters, ducking). The mixer and edit
+/// fields (gain, filters, ducking, voice, slip, silenced ranges) are legacy input for the LegacyMainVideo Sub-Lane migration, neutral
+/// afterwards and never read by playback or export.
 /// </summary>
 public sealed partial class AudioTrack : ObservableObject
 {
@@ -26,10 +23,10 @@ public sealed partial class AudioTrack : ObservableObject
     public const string Drop = "Ignore / Drop";
 
     public static IReadOnlyList<string> AllActions { get; } = [Passthrough, Reencode, Drop];
-    /// <summary>The audio encoders offered (5.4B: FLAC, lossless, beside PCM).</summary>
+    /// <summary>Offered audio encoders (including lossless FLAC and PCM).</summary>
     public static IReadOnlyList<string> AllCodecs { get; } = ["aac", "libopus", "libmp3lame", "ac3", "flac", "pcm_s16le"];
 
-    /// <summary>A codec that is lossless and takes no bitrate (PCM, FLAC): none is given to it, nor shown beside it.</summary>
+    /// <summary>True for lossless codecs without a bitrate (PCM, FLAC); no bitrate is passed or shown.</summary>
     public static bool IsLossless(string codec) => codec == "flac" || codec.StartsWith("pcm_", StringComparison.Ordinal);
     public static IReadOnlyList<string> AllBitrates { get; } = ["96k", "128k", "160k", "192k", "256k", "320k"];
 
@@ -55,8 +52,7 @@ public sealed partial class AudioTrack : ObservableObject
     public int Index => Stream.Index;
 
     /// <summary>
-    /// The second line of its row: which stream of the file it is (counted from 1), the title it has when it
-    /// has one, its language, and its format. "Stream #2 (MIC)  ·  aac, stereo".
+    /// Row subtitle: 1-based stream number, optional title, language and format, e.g. "Stream #2 (MIC)  ·  aac, stereo".
     /// </summary>
     public string Description
     {
@@ -84,8 +80,7 @@ public sealed partial class AudioTrack : ObservableObject
     private string? _actionBeforeMute;
 
     /// <summary>
-    /// Muted: left out of the mix. It is the same thing as Ignore / Drop, under the name the track rows give it,
-    /// where a sound is either heard or not and how it is encoded is not a question asked of each track.
+    /// Muted (excluded from the mix): the track-row name for Ignore / Drop.
     /// </summary>
     public bool IsMuted
     {
@@ -108,19 +103,18 @@ public sealed partial class AudioTrack : ObservableObject
     [ObservableProperty] private string _codec = "aac";
     [ObservableProperty] private string _bitrate = "160k";
 
-    // ----- Mixer (legacy: the input of LegacyMainVideo.Migrate, neutral after it; nothing the sound engine hears reads it) -----
+    // ----- Mixer (legacy LegacyMainVideo.Migrate input; neutral afterwards, never read by the audio engine) -----
 
-    /// <summary>Louder (positive) or quieter, in decibels, as a project from before 5.2-AuditB mixed the stream (now its Sub-Lane's gain).</summary>
+    /// <summary>Legacy stream gain in dB (now the Sub-Lane gain).</summary>
     [ObservableProperty] private double _gainDb;
 
-    /// <summary>The stream's processing as a project from before 5.2-AuditB had it (compressor, gate, equalizer...): now its Sub-Lane's.</summary>
+    /// <summary>Legacy stream processing (compressor, gate, EQ, ...), now on the Sub-Lane.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(FiltersCountText))]
     private TrackAudioFilters _filters = new();
 
-    // ----- As a row of the Audio tab -----
-    // The rows there are made from one template, for these tracks and for the sounds added from files alike
-    // (see Layer). These say what a track is where the two differ, under names both have.
+    // ----- Audio tab row adapter -----
+    // One row template serves both these tracks and file-based audio layers (see Layer); these members bridge the differences.
 
     /// <summary>One of the video's own audio streams, with a codec, filters and a solo button of its own.</summary>
     public bool IsStream => true;
@@ -133,10 +127,10 @@ public sealed partial class AudioTrack : ObservableObject
 
     // ----- On the timeline (legacy: the input of LegacyMainVideo.Migrate, neutral after it) -----
 
-    /// <summary>How far the stream was slipped against the picture, in seconds (positive is later), before 5.2-AuditB: now baked into its Sub-Lane clips.</summary>
+    /// <summary>Legacy audio slip in seconds (positive = later), now baked into Sub-Lane clips.</summary>
     [ObservableProperty] private double _offsetSeconds;
 
-    /// <summary>The parts the stream was cut into, in its own time, before 5.2-AuditB (now Sub-Lane clips, the silenced ones muted); empty while it is still whole.</summary>
+    /// <summary>Legacy cut segments in stream time (now Sub-Lane clips, silenced ones muted); empty when uncut.</summary>
     public IReadOnlyList<AudioPiece> Pieces { get; private set; } = [];
 
     public void SetEdits(double offset, IEnumerable<AudioPiece>? pieces)
@@ -146,12 +140,11 @@ public sealed partial class AudioTrack : ObservableObject
         OnPropertyChanged(nameof(Pieces));
     }
 
-    /// <summary>The stream was turned down while a voice spoke, before 5.2-AuditB: now its Sub-Lane's ducking.</summary>
+    /// <summary>Legacy ducking flag, now Sub-Lane ducking.</summary>
     [ObservableProperty] private bool _autoDuck;
 
     /// <summary>
-    /// The stream was a voice (a microphone, dialogue: what the ducked tracks made room for), before 5.2-AuditB: now its
-    /// Sub-Lane clips are (their look's IsVoice).
+    /// Legacy voice flag (mic/dialogue that ducked tracks yield to), now IsVoice on Sub-Lane clips.
     /// </summary>
     [ObservableProperty] private bool _isVoice;
 

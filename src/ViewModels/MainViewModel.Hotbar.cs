@@ -3,13 +3,13 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.ViewModels;
 
-// ----- The Creator Hotbar (Pass 5.2.1) -----
-// Five slots on the Timeline's row of tools, each an Effect, a Transition, a Game Preset or a one-click tool (Models.HotbarSlot), put
-// on the clips the window hands over (the selected ones, else the video clip at the playhead). What each makes is ordinary (an
-// effect card, a fade, a Game Preset's place and Cutouts, keyframes, Studio Voice switched on), and one press is one step of Undo.
+// ----- Creator Hotbar -----
+// Five Timeline toolbar slots (Models.HotbarSlot), each an Effect, Transition, Game Preset or one-click tool, applied to the window's
+// target clips (selection, else video at playhead). Output is ordinary (effect card, fade, preset placement and Cutouts, keyframes,
+// Studio Voice); one press is one undo step.
 public partial class MainViewModel
 {
-    /// <summary>Puts what a slot holds on these clips; whether it went on any. The status says what was done, or why nothing was.</summary>
+    /// <summary>Applies a slot to the clips; true if applied to any. Status reports the result or reason.</summary>
     public bool ApplyHotbarSlot(HotbarSlot slot, IReadOnlyList<Layer> clips)
     {
         switch (slot.Kind)
@@ -57,7 +57,7 @@ public partial class MainViewModel
             case HotbarKind.GamePreset:
                 return ApplyGamePreset(clips, slot.Id);
 
-            // The Fly-In is placed from the playhead: on the clip the window names first, never several flying at once.
+            // Fly-In starts at the playhead on the first target clip only (never several at once).
             case HotbarKind.Tool when slot.Id == HotbarSlot.FlyIn:
                 return clips.FirstOrDefault(c => c.HasFilters && Layers.Contains(c)) is { } flown
                     ? FlyInWithShockwave(flown)
@@ -71,8 +71,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Studio Voice switched on for the sound of these clips (a clip with sound of its own; a video's, its streams' clips on its
-    /// Sub-Lanes), its mix as it was; one step of Undo. Whether any was switched on.
+    /// Enables Studio Voice on the clips' audio (own audio, or a video's stream clips on its Sub-Lanes), keeping the mix. One undo
+    /// step; true if any was enabled.
     /// </summary>
     private bool StudioVoiceOn(IReadOnlyList<Layer> clips)
     {

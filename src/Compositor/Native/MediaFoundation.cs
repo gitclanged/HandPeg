@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace HandPegApp.Compositor.Native;
 
-// ----- Media Foundation: the Source Reader decoding into Direct3D 11 textures (Pass 5.0-Core) -----
+// ----- Media Foundation Source Reader decoding into D3D11 textures -----
 
 internal static class MfGuids
 {
@@ -35,7 +35,7 @@ internal static class MfGuids
     public static readonly Guid FriendlyName = new("314ffbae-5b41-4c95-9c19-4e7d586face3");
 }
 
-/// <summary>MFVideoArea: offsets (16.16 fixed) and the size.</summary>
+/// <summary>MFVideoArea: 16.16 fixed-point offsets and size.</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct MfVideoArea
 {
@@ -70,7 +70,7 @@ internal static unsafe partial class Mf
     public const uint ReaderError = 0x1, ReaderEndOfStream = 0x2, ReaderNewStream = 0x4, ReaderCurrentMediaTypeChanged = 0x20, ReaderStreamTick = 0x100;
     public const uint EnumHardware = 0x4, EnumSortAndFilter = 0x40;
 
-    /// <summary>MFT_ENUM_FLAG_ALL (synchronous, asynchronous, hardware, field-of-use, local, transcode-only): every kind of transform.</summary>
+    /// <summary>MFT_ENUM_FLAG_ALL (sync, async, hardware, field-of-use, local, transcode-only): every transform kind.</summary>
     public const uint EnumAll = 0x3F;
 
     [LibraryImport("mfplat.dll")]
@@ -99,7 +99,7 @@ internal static unsafe partial class Mf
         return hr;
     }
 
-    /// <summary>MFTEnum2: the MFTs of a category, narrowed by attributes (MFT_ENUM_ADAPTER_LUID: one card's hardware MFTs).</summary>
+    /// <summary>MFTEnum2: MFTs of a category filtered by attributes (MFT_ENUM_ADAPTER_LUID: one adapter's hardware MFTs).</summary>
     [LibraryImport("mfplat.dll", EntryPoint = "MFTEnum2")]
     private static partial int MFTEnum2Native(Guid category, uint flags, MftRegisterTypeInfo* input, MftRegisterTypeInfo* output, nint attributes, nint** activates, uint* count);
 
@@ -114,7 +114,7 @@ internal static unsafe partial class Mf
     [LibraryImport("mfreadwrite.dll", EntryPoint = "MFCreateSourceReaderFromURL", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int MFCreateSourceReaderFromURLNative(string url, nint attributes, nint* reader);
 
-    /// <summary>The Source Reader over a file (5.4.4: the Open of every Media Foundation decoder, a breadcrumb before it).</summary>
+    /// <summary>Creates a Source Reader over a file (every MF decoder open goes through here, with a breadcrumb around the call).</summary>
     public static int MFCreateSourceReaderFromURL(string url, nint attributes, nint* reader)
     {
         var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("MF.Open", System.IO.Path.GetFileName(url));
@@ -236,7 +236,7 @@ internal static unsafe partial class Mf
     public static int SetCurrentMediaType(nint reader, uint stream, nint mediaType) =>
         ((delegate* unmanaged<nint, uint, uint*, nint, int>)Com.Table(reader)[IMFSourceReaderSlot.SetCurrentMediaType])(reader, stream, null, mediaType);
 
-    /// <summary>Seeks to a moment in 100 ns units (the reader goes to the key frame at or before it).</summary>
+    /// <summary>Seeks to a time in 100 ns units (the reader lands on the key frame at or before it).</summary>
     public static int SetCurrentPosition(nint reader, long ticks)
     {
         var position = new PropVariant { Type = PropVariant.I8, Value = ticks };
@@ -261,7 +261,7 @@ internal static unsafe partial class Mf
         return hr;
     }
 
-    /// <summary>IMFSourceReader::ReadSample over every selected stream: <paramref name="stream"/> says whose sample it is.</summary>
+    /// <summary>IMFSourceReader::ReadSample across all selected streams; <paramref name="stream"/> reports which stream the sample is from.</summary>
     public static int ReadSampleAny(nint reader, out uint stream, out uint flags, out long timestamp, out nint sample)
     {
         uint actual, f;
@@ -282,7 +282,7 @@ internal static unsafe partial class Mf
         return hr;
     }
 
-    /// <summary>The source's length in 100 ns units (MF_PD_DURATION), 0 when it does not say.</summary>
+    /// <summary>Source duration in 100 ns units (MF_PD_DURATION); 0 when not reported.</summary>
     public static long Duration(nint reader)
     {
         var value = default(PropVariant);
@@ -329,7 +329,7 @@ internal static unsafe partial class Mf
         return hr;
     }
 
-    /// <summary>IMF2DBuffer::Lock2D: the first row and the pitch (which may be negative for bottom-up pictures).</summary>
+    /// <summary>IMF2DBuffer::Lock2D: first scanline and pitch (negative for bottom-up images).</summary>
     public static int Lock2D(nint buffer2D, out byte* scanline0, out int pitch)
     {
         byte* line;
@@ -342,7 +342,7 @@ internal static unsafe partial class Mf
 
     public static int Unlock2D(nint buffer2D) => ((delegate* unmanaged<nint, int>)Com.Table(buffer2D)[IMF2DBufferSlot.Unlock2D])(buffer2D);
 
-    /// <summary>IMFMediaBuffer::Lock (a buffer without the 2D interface).</summary>
+    /// <summary>IMFMediaBuffer::Lock (for buffers without IMF2DBuffer).</summary>
     public static int Lock(nint buffer, out byte* data, out uint length)
     {
         byte* d;
@@ -356,14 +356,13 @@ internal static unsafe partial class Mf
     public static int Unlock(nint buffer) => ((delegate* unmanaged<nint, int>)Com.Table(buffer)[IMFMediaBufferSlot.Unlock])(buffer);
 }
 
-// ----- Media Foundation transforms driven directly: the Export Quality Preview's encoder and decoder (Pass 5.4B) -----
+// ----- Directly driven Media Foundation transforms: Export Quality Preview encoder and decoder -----
 //
-// IMFTransform, ICodecAPI, IMFMediaEventGenerator, IMFActivate and the sample and buffer calls the encode loopback needs
-// (ExportLoopbackPreview, MfLoopbackCodec). Every GUID, value and method place below was checked for this pass against the
-// Windows SDK 10.0.26100 headers (mftransform.h, mfapi.h, mfobjects.h, codecapi.h, strmif.h, mferror.h): IUnknown is 0-2,
-// IMFAttributes 3-32, then each interface's own methods in declaration order.
+// IMFTransform, ICodecAPI, IMFMediaEventGenerator, IMFActivate and the sample/buffer calls the encode loopback needs (ExportLoopbackPreview,
+// MfLoopbackCodec). GUIDs, values and vtable slots are verified against the Windows SDK 10.0.26100 headers (mftransform.h, mfapi.h,
+// mfobjects.h, codecapi.h, strmif.h, mferror.h).
 
-/// <summary>The interface ids of the transforms (mftransform.h, strmif.h, mfobjects.h).</summary>
+/// <summary>Transform interface ids (mftransform.h, strmif.h, mfobjects.h).</summary>
 internal static class MfIid
 {
     public static readonly Guid Transform = new("bf94c121-5b05-4e6f-8000-ba598961414d");
@@ -371,7 +370,7 @@ internal static class MfIid
     public static readonly Guid MediaEventGenerator = new("2cd0bd52-bcd5-4b89-b62c-eadc0c031e7d");
 }
 
-/// <summary>The attributes of a transform and of its media types (mftransform.h, mfapi.h).</summary>
+/// <summary>Transform and media-type attributes (mftransform.h, mfapi.h).</summary>
 internal static class MftGuids
 {
     public static readonly Guid TransformAsync = new("f81a699a-649a-497d-8c73-29f8fed6ad7a");
@@ -390,7 +389,7 @@ internal static class MftGuids
     public const uint H264High = 100;
 }
 
-/// <summary>The encoder settings (codecapi.h): each a VT_UI4 unless said.</summary>
+/// <summary>Encoder settings (codecapi.h); VT_UI4 unless noted.</summary>
 internal static class CodecApi
 {
     /// <summary>eAVEncCommonRateControlMode: 0 CBR, 1 peak-constrained VBR, 2 unconstrained VBR, 3 quality, 4 low-delay VBR.</summary>
@@ -399,10 +398,10 @@ internal static class CodecApi
     public static readonly Guid MaxBitRate = new("9651eae4-39b9-4ebf-85ef-d7f444ec7465");
     public static readonly Guid BufferSize = new("0db96574-b6a4-4c8b-8106-3773de0310cd");
 
-    /// <summary>0 (smallest) to 100 (best): the quality mode's target.</summary>
+    /// <summary>Quality-mode target, 0 (smallest) to 100 (best).</summary>
     public static readonly Guid Quality = new("fcbf57a3-7ea5-4b0c-9644-69b40c39c391");
 
-    /// <summary>0 (fastest) to 100 (best quality): the nearest a hardware encoder has to a preset.</summary>
+    /// <summary>0 (fastest) to 100 (best quality): the closest hardware-encoder equivalent of a preset.</summary>
     public static readonly Guid QualityVsSpeed = new("98332df8-03cd-476b-89fa-3f9e442dec9f");
 
     /// <summary>VT_BOOL; the same GUID as MF_LOW_LATENCY (<see cref="MfGuids.LowLatency"/>).</summary>
@@ -410,7 +409,7 @@ internal static class CodecApi
     public static readonly Guid GopSize = new("95f31b26-95a4-41aa-9303-246a7fc6eef1");
     public static readonly Guid DefaultBPictureCount = new("8d390aac-dc5c-4200-b57f-814d04babab2");
 
-    /// <summary>1: the next frame is a key frame.</summary>
+    /// <summary>1 forces the next frame to be a key frame.</summary>
     public static readonly Guid ForceKeyFrame = new("398c1b98-8353-475a-9ef2-8f265d260345");
 
     public const ushort VtBool = 11, VtUi4 = 19;
@@ -451,7 +450,7 @@ internal static unsafe partial class Mf
     /// <summary>MF_EVENT_FLAG_NO_WAIT.</summary>
     public const uint EventNoWait = 1;
 
-    /// <summary>The HRESULTs a transform answers with (mferror.h).</summary>
+    /// <summary>Transform HRESULTs (mferror.h).</summary>
     public const int NeedMoreInput = unchecked((int)0xC00D6D72), StreamChange = unchecked((int)0xC00D6D61), NotAccepting = unchecked((int)0xC00D36B5),
         NoEventsAvailable = unchecked((int)0xC00D3E80), TypeNotSet = unchecked((int)0xC00D6D60), NoMoreTypes = unchecked((int)0xC00D36B9);
 
@@ -461,7 +460,7 @@ internal static unsafe partial class Mf
     [LibraryImport("mfplat.dll")]
     public static partial int MFCreateMemoryBuffer(uint maxLength, nint* buffer);
 
-    // ----- IMFAttributes (more) -----
+    // ----- IMFAttributes (additional) -----
 
     public static void SetUInt64(nint attributes, in Guid key, ulong value)
     {
@@ -469,10 +468,10 @@ internal static unsafe partial class Mf
             Com.Check(((delegate* unmanaged<nint, Guid*, ulong, int>)Com.Table(attributes)[IMFAttributesSlot.SetUINT64])(attributes, k, value), "IMFAttributes::SetUINT64");
     }
 
-    /// <summary>Two 32-bit halves packed as MFSetAttributeSize / MFSetAttributeRatio do: the first in the high half.</summary>
+    /// <summary>Packs two 32-bit values as MFSetAttributeSize/MFSetAttributeRatio do: the first in the high half.</summary>
     public static void SetPair(nint attributes, in Guid key, uint high, uint low) => SetUInt64(attributes, key, ((ulong)high << 32) | low);
 
-    /// <summary>IMFAttributes::GetBlobSize then GetBlob: the bytes of a blob attribute, null when it is not there.</summary>
+    /// <summary>IMFAttributes::GetBlobSize then GetBlob: a blob attribute's bytes, null when absent.</summary>
     public static byte[]? GetBlobBytes(nint attributes, in Guid key)
     {
         uint size;
@@ -519,7 +518,7 @@ internal static unsafe partial class Mf
         return hr;
     }
 
-    /// <summary>IMFTransform::GetAttributes: the transform's own attributes (0 when it has none).</summary>
+    /// <summary>IMFTransform::GetAttributes: the transform's own attribute store (0 when none).</summary>
     public static nint TransformAttributes(nint transform)
     {
         nint result = 0;
@@ -572,7 +571,7 @@ internal static unsafe partial class Mf
         return hr;
     }
 
-    /// <summary>IMFTransform::ProcessOutput of one stream; <paramref name="buffer"/>'s sample and events come back in it.</summary>
+    /// <summary>IMFTransform::ProcessOutput for one stream; the sample and events come back in <paramref name="buffer"/>.</summary>
     public static int ProcessOutput(nint transform, ref MftOutputDataBuffer buffer, out uint status)
     {
         uint result = 0;
@@ -619,7 +618,7 @@ internal static unsafe partial class Mf
             return ((delegate* unmanaged<nint, Guid*, int>)Com.Table(codecApi)[ICodecAPISlot.IsModifiable])(codecApi, a) == 0;
     }
 
-    /// <summary>ICodecAPI::SetValue with a VT_UI4 (the 24-byte PropVariant has a VARIANT's layout for it).</summary>
+    /// <summary>ICodecAPI::SetValue with a VT_UI4 (the 24-byte PropVariant matches the VARIANT layout for it).</summary>
     public static int SetCodecValue(nint codecApi, in Guid api, uint value)
     {
         var variant = new PropVariant { Type = CodecApi.VtUi4, Value = value };
@@ -635,7 +634,7 @@ internal static unsafe partial class Mf
             return ((delegate* unmanaged<nint, Guid*, PropVariant*, int>)Com.Table(codecApi)[ICodecAPISlot.SetValue])(codecApi, a, &variant);
     }
 
-    // ----- IMFSample and IMFMediaBuffer (more) -----
+    // ----- IMFSample and IMFMediaBuffer (additional) -----
 
     public static int SetSampleTime(nint sample, long time) => ((delegate* unmanaged<nint, long, int>)Com.Table(sample)[IMFSampleSlot.SetSampleTime])(sample, time);
 

@@ -4,29 +4,27 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Native GPU breadcrumbs: a crash tracer for hard GPU hangs. Before a native Direct3D 11, DXGI or Media Foundation call that can hang
-/// the driver (keyed mutexes, Present, ResizeBuffers, Source Reader reads and seeks, encoder and decoder transforms, the overlay's window
-/// region) an ENTER line is recorded, and a LEAVE line after it returns. A buffered log is lost when Windows freezes or resets; these
-/// lines bypass the disk cache, so after a hard freeze the file names the call in flight, its process, thread and adapter.
+/// Native GPU breadcrumbs for diagnosing hard hangs: ENTER/LEAVE lines around hang-prone D3D11, DXGI and Media Foundation calls (keyed
+/// mutexes, Present, ResizeBuffers, Source Reader read/seek, MFTs, overlay window region). Lines bypass the OS cache so after a freeze the
+/// file names the in-flight call, process, thread and adapter.
 /// <para>Two write disciplines (<see cref="BreadcrumbFile"/>):</para>
 /// <list type="bullet">
-/// <item><see cref="Enter(string, long)"/>, <see cref="Enter(string, string)"/> and <see cref="Mark"/> write their line through to the
-/// disk before returning. They wrap calls made a few times per session (open, seek, resize, transform set-up).</item>
-/// <item><see cref="EnterHot"/> wraps the per-frame calls (Present, AcquireSync/ReleaseSync, Source Reader ReadSample, CopyHardwareFrame,
-/// transform ProcessInput/ProcessOutput). Its lines are formatted into the thread's slot without allocating and without I/O; a
-/// background thread writes each changed slot every <see cref="BreadcrumbFile.FlushMilliseconds"/> ms. A call blocked for longer than
-/// one flush period is therefore on disk with its ENTER line, well inside the 2 s TDR delay. Only a whole-system freeze within one
-/// flush period of a hot call can lose that call's line.</item>
+/// <item><see cref="Enter(string, long)"/>, <see cref="Enter(string, string)"/> and <see cref="Mark"/> write through synchronously; used
+/// for infrequent calls (open, seek, resize, transform setup).</item>
+/// <item><see cref="EnterHot"/> wraps per-frame calls (Present, AcquireSync/ReleaseSync, ReadSample, CopyHardwareFrame,
+/// ProcessInput/ProcessOutput): formatted allocation-free into a per-thread slot, flushed by a background thread every
+/// <see cref="BreadcrumbFile.FlushMilliseconds"/> ms, so any call blocked longer than one period is on disk well within the 2 s TDR
+/// window.</item>
 /// </list>
-/// <para>Enabled by the flag file <see cref="FlagFile"/> in <see cref="Folder"/>, HANDPEG_GPU_BREADCRUMBS=1, or a preview build's
-/// tracing (<see cref="PreviewTrace.IsOn"/>), read once at process start. Disabled, a call costs one null test of a static field.</para>
+/// <para>Enabled by <see cref="FlagFile"/> in <see cref="Folder"/>, HANDPEG_GPU_BREADCRUMBS=1 or preview tracing
+/// (<see cref="PreviewTrace.IsOn"/>), read once at start. Disabled cost: one static null check.</para>
 /// </summary>
 internal static class GpuNativeBreadcrumbs
 {
     /// <summary>Where the breadcrumbs and the sentinel's log are kept: %LOCALAPPDATA%\HandPeg\CrashReports.</summary>
     public static string Folder { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "HandPeg", "CrashReports");
 
-    /// <summary>The file whose presence in <see cref="Folder"/> turns the breadcrumbs on for processes started after it.</summary>
+    /// <summary>Flag file in <see cref="Folder"/> enabling breadcrumbs for subsequently started processes.</summary>
     public const string FlagFile = "gpu-breadcrumbs.on";
 
     /// <summary>Whether this process leaves breadcrumbs (decided once, at its start).</summary>
@@ -38,7 +36,7 @@ internal static class GpuNativeBreadcrumbs
     private static readonly string Role = Environment.GetCommandLineArgs().Any(a => a.Equals("--compositor-worker", StringComparison.OrdinalIgnoreCase)) ? "worker" : "editor";
     private static readonly BreadcrumbFile? Log = On ? BreadcrumbFile.OpenInFolder(Folder, Role) : null;
 
-    /// <summary>A native call in flight: <see cref="Leave"/> records its LEAVE line (a no-op when breadcrumbs are disabled).</summary>
+    /// <summary>In-flight call token; <see cref="Leave"/> records LEAVE (no-op when disabled).</summary>
     public readonly struct Crumb
     {
         private readonly BreadcrumbFile? _file;
@@ -57,7 +55,7 @@ internal static class GpuNativeBreadcrumbs
     /// <summary>Before a native call, with a short description of its arguments (written through).</summary>
     public static Crumb Enter(string op, string detail) => Log is { } log ? log.Enter(op, detail) : default;
 
-    /// <summary>Before a per-frame native call: the ENTER line is recorded in memory and flushed by the background writer.</summary>
+    /// <summary>Per-frame ENTER recorded in memory and flushed by the background writer.</summary>
     public static Crumb EnterHot(string op, long detail = 0) => Log is { } log ? log.Enter(op, detail, hot: true) : default;
 
     /// <summary>A standalone line (a state reached, a choice made), written through.</summary>

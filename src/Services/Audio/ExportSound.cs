@@ -9,31 +9,28 @@ using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- An export's sound, the sound engine's alone (Pass 5.2-Audit: FFmpeg only encodes it) -----
-// What used to be FFmpeg's sound graph (each clip's sound placed, ducked and processed, several tracks kept apart, loudness
-// normalization, surround kept as it is) is the sound engine's render: the program the editor plays (AudioProgram), its strips
-// laid on buses, one bus for each output track and each pair of a surround track's channels, all mixed in one pass
-// (AudioMixer.RenderTo) so a track still ducks under a voice on another. Output track N carries the sounds of the Sub-Lanes of
-// stream place N (5.2-AuditB: every clip's, on whichever track; no file is the "main" one), the first also every sound of no
-// stream place and the voiceover. Each output track is then written as raw float (its pairs side by side again, or folded to
-// mono), loudness-normalized here when asked (EBU R128 / BS.1770: LoudnessMeter), and handed to FFmpeg to encode. A track copied
-// as it is never touches the engine: FFmpeg maps it from its file.
+// ----- Export audio rendered by the sound engine (FFmpeg only encodes) -----
+// The editor's AudioProgram renders the export audio: strips mapped onto buses (one per output track and per surround channel pair) and
+// mixed in one pass (AudioMixer.RenderTo), so ducking still works across tracks. Output track N carries the Sub-Lanes of stream slot N
+// (every clip's, on any track); the first also carries slot-less sounds and the voiceover. Each output is written as raw float (pairs
+// re-interleaved, or folded to mono), loudness-normalized when requested (EBU R128 / BS.1770: LoudnessMeter), then encoded by FFmpeg.
+// Passthrough tracks never touch the engine: FFmpeg maps them from the source file.
 
-/// <summary>One output sound track of an export: what it carries, how it is encoded, and where its render is.</summary>
-/// <param name="Title">The stream's title ("" for none).</param>
-/// <param name="Codec">The encoder ("aac", "libopus", "pcm_s16le"...), or "copy" for a stream of a file mapped as it is.</param>
-/// <param name="Channels">The channels written (1, 2, or a surround track's own).</param>
-/// <param name="Buses">The mixer buses it is made of: one for mono or stereo, one a pair of channels for surround.</param>
-/// <param name="CopyStream">The audio stream of <paramref name="CopyPath"/> it copies ("a:N"), for <c>copy</c>; -1 for a render.</param>
-/// <param name="CopyPath">The file whose stream it copies (cleaned), for <c>copy</c>; "" for a render.</param>
+/// <summary>One output audio track of an export: content, encoding and render location.</summary>
+/// <param name="Title">Stream title ("" for none).</param>
+/// <param name="Codec">Encoder ("aac", "libopus", "pcm_s16le", ...), or "copy" for a stream mapped unchanged from a file.</param>
+/// <param name="Channels">Channels written (1, 2, or a surround track's own count).</param>
+/// <param name="Buses">Mixer buses it is built from: one for mono or stereo, one per channel pair for surround.</param>
+/// <param name="CopyStream">Audio stream of <paramref name="CopyPath"/> to copy ("a:N") for <c>copy</c>; -1 for a render.</param>
+/// <param name="CopyPath">File whose stream is copied (cleaned) for <c>copy</c>; "" for a render.</param>
 public sealed record ExportSoundTrack(string Title, string Codec, string Bitrate, int Channels, int[] Buses, int CopyStream = -1, string CopyPath = "")
 {
-    /// <summary>The raw render (f32le, interleaved, <see cref="Channels"/> wide) once made; null before, and for a copied stream.</summary>
+    /// <summary>Raw render path (f32le, interleaved, <see cref="Channels"/> wide) once made; null before rendering and for copies.</summary>
     public string? RenderPath { get; init; }
 
     public bool IsCopy => CopyStream >= 0;
 
-    /// <summary>FFmpeg's name for the layout of <see cref="Channels"/> channels, as its f32le input is told.</summary>
+    /// <summary>FFmpeg channel layout name for <see cref="Channels"/>, passed to the f32le input.</summary>
     public string Layout => Channels switch
     {
         1 => "mono",
@@ -48,48 +45,45 @@ public sealed record ExportSoundTrack(string Title, string Codec, string Bitrate
     };
 }
 
-/// <summary>An export's sound: its output tracks and the program that renders them (null tracks: no sound at all).</summary>
+/// <summary>An export's audio plan: output tracks and their bus layout (no tracks = no audio).</summary>
 public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, AudioBusLayout Layout, int SampleRate, bool Normalize)
 {
-    /// <summary>The most mixer buses one export renders (every output track's pairs).</summary>
+    /// <summary>Maximum mixer buses per export (all output tracks' channel pairs).</summary>
     public const int MaxBuses = 32;
 
-    /// <summary>The loudness normalization's aim by default (what FFmpeg's loudnorm was given): -16 LUFS integrated, -1.5 dBTP.</summary>
+    /// <summary>Default normalization target (the former loudnorm settings): -16 LUFS integrated, -1.5 dBTP.</summary>
     public const double TargetLufs = -16, CeilingDb = -1.5;
 
-    /// <summary>The integrated loudness this export's normalization aims at (5.4B: the state's, -16 or -14 LUFS; <see cref="TargetLufs"/> by default).</summary>
+    /// <summary>Integrated loudness target for this export (the state's -16 or -14 LUFS; <see cref="TargetLufs"/> by default).</summary>
     public double LoudnessLufs { get; init; } = TargetLufs;
 
     public int BusCount => Tracks.Count == 0 ? 0 : Tracks.SelectMany(t => t.Buses).DefaultIfEmpty(-1).Max() + 1;
 
     /// <summary>
-    /// The sound tracks of an export of <paramref name="state"/> (5.2-AuditB: by stream place, never a file's own streams). Without
-    /// Merge Audio Tracks, output N carries every sound on a Sub-Lane of stream place N (<see cref="TimelineTrackModel.StreamOrdinal"/>,
-    /// on any track): a place is an output while a Sub-Lane of it holds a clip with sound (a silenced lane is a silent track) and its
-    /// choice (<see cref="SequenceExportState.AudioOutputs"/>) does not leave it out. The first output also carries every sound of no
-    /// stream place and the voiceover (an output of its own when no Sub-Lane holds any). Each is titled, encoded and copied as its
-    /// choice says (without one: <see cref="SequenceExportState.MixedAudioCodec"/>, <see cref="SequenceExportState.AudioBitrate"/>,
-    /// titled with its lane's name), in the channels the Audio tab asks for, of the widest of its sounds' streams. A passthrough
-    /// output is copied as it is only while it is exactly one sound played plainly from a file the whole Sequence is one clip of
-    /// (<see cref="SequenceSpans.WholeFiles"/>), nothing mixed into it and nothing done to the whole. Merge Audio Tracks: one mix of
-    /// them all. Empty for a picture-only output (GIF, WebP) and a sequence with nothing to hear. Every track is heard, whatever is
-    /// soloed. An audio-only output (<see cref="EncoderCommand.IsAudioOnly"/>) is planned as <see cref="For(SequenceExportState, bool, bool)"/> plans it.
+    /// Plans an export's audio tracks by stream slot (never by a file's own streams). Without Merge Audio Tracks, output N carries every sound
+    /// on a Sub-Lane of stream slot N (<see cref="TimelineTrackModel.StreamOrdinal"/>, any track); a slot is an output while one of its Sub-Lanes
+    /// holds a clip with sound (a silenced lane yields a silent track) and its choice (<see cref="SequenceExportState.AudioOutputs"/>) does not
+    /// drop it. The first output also carries slot-less sounds and the voiceover (its own output when no Sub-Lane has sound). Title, codec and
+    /// copy follow each choice (defaults: <see cref="SequenceExportState.MixedAudioCodec"/>, <see cref="SequenceExportState.AudioBitrate"/>, the
+    /// lane name); channels follow the Audio tab from the widest stream. Passthrough copies only one plain sound from a file the whole sequence
+    /// is one clip of (<see cref="SequenceSpans.WholeFiles"/>), with nothing mixed in or applied globally. Merge Audio Tracks: one mix. Empty for
+    /// picture-only outputs (GIF, WebP) and silent sequences. Solo is ignored. Audio-only outputs (<see cref="EncoderCommand.IsAudioOnly"/>) are
+    /// planned by <see cref="For(SequenceExportState, bool, bool)"/>.
     /// </summary>
     public static ExportSoundPlan For(SequenceExportState state, bool pictureOnly) => For(state, pictureOnly, !pictureOnly && EncoderCommand.IsAudioOnly(state));
 
     /// <summary>
-    /// The sound of an export, as <see cref="For(SequenceExportState, bool)"/> plans it; with <paramref name="audioOnly"/> (5.4C: a FLAC,
-    /// WAV or MP3 file, which holds one stream) always one rendered track: every stream place and the loose sounds mixed on bus 0
-    /// (each place's own choice, dropped or copied, does not apply), never copied as it is, stereo (mono when the Audio tab says so),
-    /// encoded with the file's own codec (<see cref="EncoderCommand.AudioOnlyCodec"/>) at <see cref="SequenceExportState.AudioBitrate"/>,
-    /// normalized as asked. No tracks when nothing is heard.
+    /// Plans export audio as <see cref="For(SequenceExportState, bool)"/>; with <paramref name="audioOnly"/> (FLAC, WAV or MP3: one stream)
+    /// always one rendered track: all stream slots and loose sounds mixed on bus 0 (per-slot drop/copy choices ignored), never copied, stereo
+    /// (mono when selected), encoded with the container's codec (<see cref="EncoderCommand.AudioOnlyCodec"/>) at
+    /// <see cref="SequenceExportState.AudioBitrate"/>, normalized as requested. No tracks when nothing is audible.
     /// </summary>
     public static ExportSoundPlan For(SequenceExportState state, bool pictureOnly, bool audioOnly) =>
         PlanOf(state, pictureOnly, audioOnly) is var plan && plan.LoudnessLufs != state.LoudnessTargetLufs ? plan with { LoudnessLufs = state.LoudnessTargetLufs } : plan;
 
     private static ExportSoundPlan PlanOf(SequenceExportState state, bool pictureOnly, bool audioOnly)
     {
-        // 0, "Match Project Settings" (5.4A): the project's own rate (48 kHz unless it says otherwise).
+        // 0 = "Match Project Settings": the project's sample rate (48 kHz unless set otherwise).
         var rate = state.AudioSampleRate > 0 ? Math.Clamp(state.AudioSampleRate, 8000, 192000) : state.Timeline.SampleRate;
         if (pictureOnly)
             return new ExportSoundPlan([], AudioBusLayout.AllOnOne, rate, false);
@@ -105,7 +99,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
             choices.TryAdd(output.Ordinal, output);
         bool LeftOut(int ordinal) => choices.TryGetValue(ordinal, out var made) && made.Dropped;
 
-        // The stream places that are outputs, in order, each with its first lane's name (for a place without a choice).
+        // Output stream slots in order, each with its first lane's name (the title when the slot has no choice).
         var places = new SortedDictionary<int, string>();
         foreach (var track in document.Tracks)
         {
@@ -114,7 +108,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
                 places[ordinal] = track.Name.Trim();
         }
 
-        // The first output takes the sounds of no stream place and the voiceover: the lowest place's, or one of their own.
+        // The first output takes slot-less sounds and the voiceover: the lowest slot's output, or an output of its own.
         var takesLoose = voiceover || sounds.Exists(s => s.Ordinal < 0);
         var outputs = places.Keys.ToList();
         if (outputs.Count == 0 && takesLoose)
@@ -122,7 +116,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
         if (outputs.Count == 0)
             return new ExportSoundPlan([], AudioBusLayout.AllOnOne, rate, false);
 
-        // One mix: every place's sound and the loose sounds on bus 0, stereo (or mono), encoded as a mix is.
+        // Merged: every slot's audio and the loose sounds on bus 0, stereo (or mono), encoded as a mix.
         if (state.MergeAudioTracks && outputs.Count > 1)
         {
             var channels = state.AudioChannels == AudioChannelChoice.Mono ? 1 : 2;
@@ -130,7 +124,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
                 new AudioBusLayout(places.Keys.ToDictionary(n => n, _ => new[] { 0 }), 0), rate, state.NormalizeAudio);
         }
 
-        // What a sound copied as it is must not take part in: the ducking (a voice ducks, a ducked sound is ducked).
+        // A copied sound must not take part in ducking (as a voice that ducks others, or as a ducked sound).
         var anyVoice = voiceover || sounds.Exists(s => s.IsVoice);
         var anyDucked = sounds.Exists(s => s.Ducked);
         var wholeFiles = SequenceSpans.WholeFiles(document);
@@ -146,8 +140,8 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
             var mixedIn = k == 0 && takesLoose;
             var widest = own.Count == 0 ? 2 : own.Max(s => ChannelsOf(s.Layer.AudioChannels));
 
-            // Copied as it is: one sound played as its file has it, of a file the Sequence is the whole of, nothing mixed into it, and the
-            // master fader at 0 dB (5.2B: the mixer's own test, AudioProgram.MasterGain 1, so a moved fader is heard in the file too).
+            // Copy unchanged only for one plain sound from a whole-sequence file, nothing mixed in, and the master fader at 0 dB (the
+            // mixer's own test, AudioProgram.MasterGain 1, so a moved fader is audible in the file).
             if (choice is { Passthrough: true } && !mixedIn && !state.NormalizeAudio && !state.FadeIn && !state.FadeOut
                 && AudioProgramBuilder.MasterFactor(state.MasterGainDb) == 1f && own is [var only] && IsPlain(only, wholeFiles, lowering.SequenceSeconds) && !(only.Ducked ? anyVoice : only.IsVoice && anyDucked))
             {
@@ -176,12 +170,12 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
         if (next > MaxBuses)
             throw new InvalidOperationException(string.Create(CultureInfo.InvariantCulture, $"the export's sound tracks need {next} mixer buses (at most {MaxBuses})"));
 
-        // The loose sounds and the voiceover go into the first output's first bus (its left and right, for a surround one).
+        // Loose sounds and the voiceover go to the first output's first bus (its L/R pair for surround).
         return new ExportSoundPlan(tracks, new AudioBusLayout(buses, looseBus >= 0 ? looseBus : 0), rate, state.NormalizeAudio);
     }
 
-    // An audio-only file's one track (5.4C): every stream place that holds a clip with sound, and the loose sounds and the voiceover,
-    // on bus 0; nothing left out by a place's choice, nothing copied; the file's own codec.
+    // Audio-only file: one track mixing every stream slot with sound, the loose sounds and the voiceover on bus 0; no drops, no copies;
+    // the container's own codec.
     private static ExportSoundPlan AudioOnlyPlan(SequenceExportState state, int rate)
     {
         var lowering = TimelineLowering.Lowering(state);
@@ -203,8 +197,8 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
             new AudioBusLayout(places.ToDictionary(n => n, _ => new[] { 0 }), 0), rate, state.NormalizeAudio);
     }
 
-    // A sound played as its file has it: from the Sequence's start to its end, from the file's start at its own speed, with no slip,
-    // fades, gain (its clip's or its track's) or processing; of a file the whole Sequence is one clip of.
+    // True for a sound played exactly as its file has it: spanning the whole sequence from file start at 1x, with no slip, fades, gain
+    // (clip or track) or processing, from a file the whole sequence is one clip of.
     private static bool IsPlain(HeardSound sound, IReadOnlySet<string> wholeFiles, double sequenceSeconds)
     {
         var (layer, clip, track) = (sound.Layer, sound.Clip, sound.Track);
@@ -218,8 +212,8 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
     }
 
     /// <summary>
-    /// How many channels a stream has, as its layout names them (Layer.AudioChannels: FFmpeg's "mono", "stereo", "5.1(side)", "quad",
-    /// or "6 ch"): the full-range channels and the low-frequency ones of an "N.M" layout; 2 when it cannot be told.
+    /// Channel count from a layout name (Layer.AudioChannels: FFmpeg's "mono", "stereo", "5.1(side)", "quad" or "6 ch"): full-range plus
+    /// LFE channels for "N.M" layouts; 2 when unrecognized.
     /// </summary>
     internal static int ChannelsOf(string layout)
     {
@@ -253,9 +247,9 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
     }
 
     /// <summary>
-    /// Renders every output track that is not a copy, from <paramref name="fromSeconds"/> on the sequence for
-    /// <paramref name="frames"/> frames of the plan's rate (the export's length: exactly as long as its piped picture), into the
-    /// session's previews folder: the tracks with their <see cref="ExportSoundTrack.RenderPath"/>. Off the interface's thread; it decodes.
+    /// Renders every non-copy output track from <paramref name="fromSeconds"/> for <paramref name="frames"/> frames at the plan's rate (exactly
+    /// the piped picture's length) into the session previews folder; returns the tracks with <see cref="ExportSoundTrack.RenderPath"/> set.
+    /// Call off the UI thread (decodes).
     /// </summary>
     public IReadOnlyList<ExportSoundTrack> Render(SequenceExportState state, double fromSeconds, long frames, Action<double>? progress, CancellationToken token)
     {
@@ -292,7 +286,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
                 token.ThrowIfCancellationRequested();
                 var gain = Normalize ? NormalizingGain(track, busPaths, frames, n) : 1f;
 
-                // A stereo track at its own level is its bus's render as it is; anything else is written anew.
+                // A stereo track at unity gain uses its bus render directly; anything else is written anew.
                 if (track is { Channels: 2, Buses: [var only] } && gain == 1f)
                 {
                     rendered.Add(track with { RenderPath = busPaths[only] });
@@ -304,7 +298,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
                 rendered.Add(track with { RenderPath = path });
             }
 
-            // The buses no track kept as its own render.
+            // Delete bus renders that no track kept as its own.
             var kept = rendered.Select(t => t.RenderPath).OfType<string>().ToHashSet(StringComparer.OrdinalIgnoreCase);
             foreach (var bus in busPaths.Where(b => !kept.Contains(b)))
                 Delete(bus);
@@ -320,7 +314,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
         }
     }
 
-    /// <summary>Deletes the renders of tracks made by <see cref="Render"/> (the export is done, or failed).</summary>
+    /// <summary>Deletes the renders made by <see cref="Render"/> (export finished or failed).</summary>
     public static void DeleteRenders(IEnumerable<ExportSoundTrack> tracks)
     {
         foreach (var track in tracks)
@@ -336,16 +330,16 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Still open: it is in the session's previews folder, which goes when HandPeg closes.
+            // Still open: it lives in the session previews folder, which is removed when HandPeg closes.
         }
     }
 
-    // ----- Writing a track from its buses -----
+    // ----- Track assembly from buses -----
 
     private const int Block = 1 << 14;
 
-    // The gain that brings a track to the target loudness, held so its peak stays under the ceiling (linear normalization: the
-    // sound's own dynamics are kept; a track too peaky to reach the target is as loud as its ceiling lets it be). 1 for silence.
+    // Gain that brings a track to the target loudness, capped so its peak stays under the ceiling (linear normalization keeps the
+    // dynamics; a track too peaky to reach the target gets as loud as the ceiling allows). 1 for silence.
     private float NormalizingGain(ExportSoundTrack track, string[] busPaths, long frames, int n)
     {
         var meter = new LoudnessMeter(SampleRate, track.Channels);
@@ -355,7 +349,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
         if (!double.IsFinite(loudness) || peak <= 0)
             return 1f;
 
-        // The sample peak with half a decibel kept back for the peaks between samples (a true-peak meter's 4x look, roughly).
+        // Sample peak with 0.5 dB held back for inter-sample peaks (a rough stand-in for a 4x true-peak meter).
         var wanted = LoudnessLufs - loudness;
         var room = CeilingDb - 0.5 - 20 * Math.Log10(peak);
         var gainDb = Math.Min(wanted, room);
@@ -364,8 +358,8 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
         return (float)Math.Pow(10, gainDb / 20);
     }
 
-    // The track's buses side by side again (a surround track's pairs: channels 1 and 2 from the first, 3 and 4 from the next...),
-    // or folded to one (a mono track: the two sides' mean), at a gain, into a raw file.
+    // Re-interleaves a track's buses (surround: channels 1-2 from the first pair bus, 3-4 from the next, ...) or folds to mono (L/R mean),
+    // applies the gain and writes a raw file.
     private static void Assemble(ExportSoundTrack track, string[] busPaths, long frames, float gain, string path)
     {
         using var output = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
@@ -378,7 +372,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
         });
     }
 
-    // Reads a track's frames block by block, interleaved in its own channels, from its buses' stereo renders.
+    // Reads a track block by block, interleaved in its own channel count, from its buses' stereo renders.
     private static void ReadTrack(ExportSoundTrack track, string[] busPaths, long frames, ReadOnlySpanAction<float, int> take)
     {
         var inputs = track.Buses.Select(b => new FileStream(busPaths[b], FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20)).ToArray();
@@ -406,7 +400,7 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
                     }
                 }
 
-                // A stereo track's bus is its frames as they are, handed on in place (5.3: the renders are the processor's own floats, little-endian).
+                // A stereo track's bus already holds its interleaved frames: pass it through in place (renders are native little-endian floats).
                 if (track.Channels == 2 && BitConverter.IsLittleEndian)
                 {
                     take(MemoryMarshal.Cast<byte, float>(stereo[0].AsSpan(0, count * 8)), count);
@@ -438,22 +432,22 @@ public sealed record ExportSoundPlan(IReadOnlyList<ExportSoundTrack> Tracks, Aud
 }
 
 /// <summary>
-/// How an export's sound is laid on the mixer's buses (5.2-AuditB: by stream place): the buses of each stream place that is
-/// rendered (one per channel pair), and the bus of the sounds of no stream place and the voiceover.
+/// Maps export audio onto mixer buses by stream slot: each rendered slot's buses (one per channel pair) and the bus for slot-less sounds
+/// and the voiceover.
 /// </summary>
 /// <param name="OrdinalBuses">
-/// The buses of the sounds on the Sub-Lanes of each stream place (<see cref="TimelineTrackModel.StreamOrdinal"/>):
-/// one, read as stereo; several, a surround output's pairs. A place it does not name is not rendered (copied, or left out).
+/// Buses for the Sub-Lanes of each stream slot (<see cref="TimelineTrackModel.StreamOrdinal"/>): one = stereo; several = a surround
+/// output's pairs. Slots not listed are not rendered (copied or dropped).
 /// </param>
-/// <param name="DefaultBus">Where the sounds of no stream place and the voiceover are mixed.</param>
+/// <param name="DefaultBus">Bus for slot-less sounds and the voiceover.</param>
 public sealed record AudioBusLayout(IReadOnlyDictionary<int, int[]> OrdinalBuses, int DefaultBus)
 {
     private static readonly int[] FirstBus = [0];
 
-    /// <summary>Everything on bus 0, stereo: what the editor plays.</summary>
+    /// <summary>Everything on bus 0, stereo: editor playback.</summary>
     public static AudioBusLayout AllOnOne { get; } = new(new Dictionary<int, int[]>(), 0);
 
-    /// <summary>The buses a sound of stream place <paramref name="ordinal"/> (-1: of none) is mixed into; null when it is not rendered.</summary>
+    /// <summary>Buses for a sound in stream slot <paramref name="ordinal"/> (-1 = none); null when that slot is not rendered.</summary>
     public int[]? BusesOf(int ordinal) =>
         ReferenceEquals(this, AllOnOne) ? FirstBus : ordinal < 0 ? [DefaultBus] : OrdinalBuses.TryGetValue(ordinal, out var buses) ? buses : null;
 }

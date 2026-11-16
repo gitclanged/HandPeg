@@ -3,11 +3,11 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- A project's saved window (Pass 5.4.1-M5) -----
-// A save writes the window as it is into the project's "workspace" section (ProjectWorkspace): the dock layout, the Media Browser's
-// view and the 3D Exploded View's camera, the same three a tab put behind keeps in its header (MainWindow.ProjectTabs.cs). Never part of
-// the unsaved-changes fingerprint (ProjectState.Workspace is JsonIgnore), so rearranging the window never makes a project dirty. Opening
-// a project takes it up again when AppSettings.RestoreProjectWorkspaceOnOpen is on (the Layout selector's footer and Settings).
+// ----- Per-project saved workspace -----
+// Saving writes the current window state to the project's "workspace" section (ProjectWorkspace): dock layout, Media Browser view and
+// 3D Exploded View camera, the same three a backgrounded tab keeps in its header (MainWindow.ProjectTabs.cs). Excluded from the dirty
+// fingerprint (ProjectState.Workspace is JsonIgnore), so rearranging never marks a project modified. Restored on open when
+// AppSettings.RestoreProjectWorkspaceOnOpen is enabled (Layout selector footer and Settings).
 public partial class MainWindow
 {
     private void InitializeProjectWorkspace()
@@ -16,13 +16,13 @@ public partial class MainWindow
         _viewModel.WorkspaceOpened += RestoreProjectWorkspace;
     }
 
-    /// <summary>The window as a save writes it; null off the interface's thread or while the tab in front is not brought back yet.</summary>
+    /// <summary>Workspace snapshot for saving; null off the UI thread or while the active tab has not been resumed yet.</summary>
     private ProjectWorkspace? WorkspaceForSave()
     {
         if (!Dispatcher.CheckAccess() || _unresumed.Contains(_tabs.Active.Id))
             return null;
 
-        // A layout the Layout Selector is only previewing is never written: the arrangement in use before it is.
+        // Never save a Layout Selector preview; save the arrangement that preceded it.
         var pose = new ProjectTabHeader();
         TakeExplodedState(pose, _explodedUi && _gpu is { } engine ? engine.TargetPose : null, _explodedWaitingTab, _explodedLastPose);
         return new ProjectWorkspace
@@ -38,8 +38,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A project's saved window taken up as it opens, into the tab in front (its header takes it as its own, as a switch would lay it
-    /// out): the Media Browser's view before the layout's build, the layout, then the 3D view at its camera (or flat, its camera kept).
+    /// Restores a project's saved workspace on open into the active tab (its header adopts it, as a tab switch would): Media Browser view
+    /// before the layout build, then the layout, then the 3D view at its camera (or flat with the camera retained).
     /// </summary>
     private void RestoreProjectWorkspace(ProjectWorkspace workspace)
     {
@@ -62,7 +62,7 @@ public partial class MainWindow
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            // A layout that could not be laid out is let go (written down): the project is open all the same.
+            // Invalid saved layout: log and continue; the project still opens.
             AppLog.Write("Project workspace: the saved layout could not be laid out", ex);
         }
 

@@ -5,24 +5,19 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Proxies: small copies of videos whose I-frames are far apart (long-GOP recordings) that the GPU preview plays in their
-/// place where it cannot decode the original fast (a codec the card has no decoder for, a preview on the processor), so
-/// that seeking and scrubbing a layer of one cost what a 540-line H.264 file costs. They are for looking at only: exports
-/// always read the original files, and the sound always comes from the original.
+/// Preview proxies: short-GOP 540p H.264 stand-ins for long-GOP videos the GPU preview cannot decode fast (no hardware decoder, CPU
+/// preview), making seek/scrub cheap. Preview only: exports and audio always use the originals.
 ///
-/// A proxy is made on demand only (a clip's right-click Optimize Long-GOP Clip for Scrubbing, offered where it helps:
-/// MainViewModel.OptimizeIsUseful), in the background (see WorkScheduler) on the background graphics card where there is
-/// one, one at a time; written beside its place and moved there when whole. It is kept in
-/// the proxy cache (PreviewCache.Proxies, or a folder beside the project: Settings), named after the file it stands for
-/// (its path, size and date), its height and its codec, and listed in that cache's manifest. The composed timeline proxy
-/// of 4.x is gone: the GPU engine draws the timeline itself.
+/// Created on demand (clip context menu "Optimize Long-GOP Clip for Scrubbing", shown when MainViewModel.OptimizeIsUseful), as serial
+/// background work (WorkScheduler) on the background adapter, written beside its target then moved. Stored in PreviewCache.Proxies (or
+/// Name.proxies beside the project, per Settings), keyed by source path/size/date, height and codec, and listed in the manifest.
 /// </summary>
 public static class ProxyCache
 {
     // Proxy caches beside projects, by folder.
     private static readonly ConcurrentDictionary<string, PreviewCache> ProjectStores = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>The cache proxies are kept in: the proxy cache, or a folder beside the project (Name.proxies) when Settings says so and there is a project.</summary>
+    /// <summary>Proxy cache location: the proxy cache, or Name.proxies beside the project when enabled and a project exists.</summary>
     public static PreviewCache Store(string? projectPath)
     {
         if (AppSettings.Current.ProxyLocation != AppSettings.ProxiesBesideProject || string.IsNullOrWhiteSpace(projectPath))
@@ -37,8 +32,8 @@ public static class ProxyCache
     private static int Tier => AppSettings.ProxyTiers.Contains(AppSettings.Current.ProxyTier) ? AppSettings.Current.ProxyTier : 540;
 
     /// <summary>
-    /// What a proxy is kept under in its cache: its height and codec, and "t2" since its frames keep the file's own time
-    /// stamps ("proxy540h264t2", <see cref="FrameTiming"/>). A proxy of another height or codec, or one made before, is another proxy.
+    /// Cache kind: height, codec and timing revision "t2" (source timestamps preserved, <see cref="FrameTiming"/>), e.g. "proxy540h264t2".
+    /// Different height, codec or revision means a distinct proxy.
     /// </summary>
     public static string Kind => string.Create(CultureInfo.InvariantCulture, $"proxy{Tier}{(Mjpeg ? "mjpeg" : "h264")}t2");
 
@@ -50,8 +45,8 @@ public static class ProxyCache
     // ----- Making them -----
 
     /// <summary>
-    /// The H.264 encoders to try for a proxy, best first: as Settings says, or (Auto) the background card's, then the
-    /// main card's, then the processor's. Only those the encoder test found working; libx264 always last.
+    /// H.264 encoder fallback order: Settings choice, or (Auto) background adapter, main adapter, then CPU; only probe-verified encoders,
+    /// libx264 always last.
     /// </summary>
     public static List<string> Encoders(IReadOnlyCollection<string> working)
     {
@@ -69,16 +64,14 @@ public static class ProxyCache
     }
 
     /// <summary>
-    /// What a proxy keeps of the file's frames, and when: every frame whose time stamp is later than the last one kept,
-    /// at exactly its own time stamp (passed through, on a 1/90000 clock that holds milliseconds and 1/30000 alike).
-    /// Some downloads have runs of frames sharing one time stamp (72 at 511.752 s in a YouTube webm, the stream going
-    /// on 14 ms later): the default constant-rate output put them in the slots that followed and, within its tolerance
-    /// of 1.1 frames, never caught up, so every later frame of the proxy was a frame off the original's (Pass 4.1B).
+    /// Frame timing: keeps each frame with a strictly increasing timestamp, passed through on a 1/90000 timebase (exact for ms and
+    /// 1/30000). Some downloads contain runs of duplicate timestamps; constant-rate output shifted them into later slots and never caught
+    /// up, offsetting every subsequent proxy frame by one.
     /// </summary>
     private const string FrameTiming = "select='isnan(prev_selected_t)+gt(t,prev_selected_t)',";
     private const string FrameTimingOutput = "-fps_mode passthrough -enc_time_base 1/90000";
 
-    /// <summary>What follows the picture in a proxy's command: the encoder at its fastest sensible setting, an I-frame every 15 frames and no B-frames.</summary>
+    /// <summary>Encoder arguments: fastest sensible preset, GOP 15, no B-frames.</summary>
     private static string EncodeArguments(string encoder) => Mjpeg ? "-c:v mjpeg -q:v 5 -pix_fmt yuvj420p" : encoder switch
     {
         "h264_nvenc" => "-c:v h264_nvenc -preset p1 -rc vbr -cq 28 -b:v 0 -maxrate 4M -bufsize 8M -g 15 -bf 0 -pix_fmt yuv420p",
@@ -89,9 +82,8 @@ public static class ProxyCache
     };
 
     /// <summary>
-    /// Makes the proxy of a file: silent, <see cref="Tier"/> lines high (never larger than the original), decoded on
-    /// the background card where there is one. Each encoder that will not do it is followed by the next, down to the
-    /// processor. Returns its path, or null when it could not be made. Called inside a piece of background work.
+    /// Builds a silent proxy at <see cref="Tier"/> lines (never upscaled), decoding on the background adapter and falling back through
+    /// encoders to CPU. Returns the path or null. Runs inside background work.
     /// </summary>
     public static async Task<string?> MakeAsync(string media, string? projectPath, IReadOnlyCollection<string> workingEncoders, WorkContext work)
     {

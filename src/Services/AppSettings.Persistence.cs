@@ -6,32 +6,26 @@ namespace HandPegApp.Services;
 
 // ----- Reading and writing appsettings.json -----
 //
-// Load never resets the settings silently. A file that cannot be opened (locked by another process, access denied) gives
-// this session defaults and the file is never written while it runs (ReadFailed), so an intact file is not replaced because
-// one read failed. A file that opens but does not parse is set aside as appsettings.damaged-<stamp>.json and the copy the
-// last save left beside it (appsettings.json.prev, AtomicFile) is used instead; only when neither reads does HandPeg start
-// as a first run. Every write is whole and flushed (AtomicFile, durable).
+// Load never silently resets. An unopenable file (locked, access denied) yields session defaults and disables writes (ReadFailed)
+// so an intact file is never replaced. An unparseable file is moved to appsettings.damaged-<stamp>.json and appsettings.json.prev
+// (AtomicFile) is used; only if both fail does a first run start. Writes are atomic and flushed (AtomicFile, durable).
 //
-// Two ways to change the settings in effect:
-// - Update(change): an in-place change to Current, under Gate, from any thread; saved by one debounced background write.
-//  For in-session toggles and background writers (captions, the hardware test, preset renames at start-up).
-// - SaveAsCurrent: writes this object now and makes it Current. For the explicit saves the user waits on (the Settings
-//  window, the first-run window, window close).
-// Writes are ordered by WriteGate and always serialize the object in effect at write time, so a later write never carries
-// older settings than an earlier one.
+// Two mutation paths:
+// - Update(change): in-place change to Current under Gate from any thread, saved by a debounced background write (toggles and
+//   background writers such as captions, the hardware test, start-up preset renames).
+// - SaveAsCurrent: immediate write that becomes Current (Settings window, first-run window, window close).
+// WriteGate orders writes, each serializing the object current at write time, so later writes never carry older settings.
 
 public sealed partial class AppSettings
 {
     /// <summary>
-    /// Keys this version does not know: a newer version's (a rollback, or two versions sharing one profile) or retired ones. Kept
-    /// so that saving does not drop them.
+    /// Unknown keys (from newer versions after a rollback or shared profile, or retired) preserved on save.
     /// </summary>
     [JsonExtensionData]
     public Dictionary<string, JsonElement>? Extra { get; set; }
 
     /// <summary>
-    /// True when appsettings.json existed at start but could not be opened (another process held it, access denied): this session
-    /// runs on defaults and never writes the file.
+    /// True when appsettings.json existed but could not be opened (locked, access denied): session uses defaults and never writes it.
     /// </summary>
     internal static bool ReadFailed { get; private set; }
 
@@ -51,9 +45,8 @@ public sealed partial class AppSettings
     private enum ReadOutcome { Read, Missing, Unreadable, Damaged }
 
     /// <summary>
-    /// Changes the settings in effect in place and saves them shortly after on a background thread (several changes within
-    /// 250 ms share one write). Safe from any thread: changes are serialized by one lock, and the write serializes the object
-    /// as it is at write time.
+    /// Mutates Current in place and schedules a debounced background save (changes within 250 ms coalesce). Thread-safe: one lock
+    /// serializes changes; the write serializes the object at write time.
     /// </summary>
     /// <param name="saveNow">Write before returning (and rethrow a write failure) instead of debouncing.</param>
     public static void Update(Action<AppSettings> change, bool saveNow = false)
@@ -74,8 +67,8 @@ public sealed partial class AppSettings
     }
 
     /// <summary>
-    /// <see cref="Update"/> for a change that may find nothing to do: <paramref name="change"/> returns whether it changed anything,
-    /// and only then is <see cref="Changed"/> raised and a save scheduled.
+    /// Conditional <see cref="Update"/>: <paramref name="change"/> returns whether it changed anything; only then is
+    /// <see cref="Changed"/> raised and a save scheduled.
     /// </summary>
     /// <returns>Whether the settings changed.</returns>
     public static bool UpdateIf(Func<AppSettings, bool> change)
@@ -102,15 +95,13 @@ public sealed partial class AppSettings
         });
 
     /// <summary>
-    /// Writes an <see cref="Update"/> that is still waiting for its debounce: at exit, and before an import replaces the file
-    /// (a late debounced write would otherwise put the old settings back over it).
+    /// Flushes a pending debounced <see cref="Update"/> (at exit, and before an import replaces the file so a late write cannot revert it).
     /// </summary>
     public static void FlushPendingSave() => WriteCurrent(rethrow: false);
 
     /// <summary>
-    /// Copies into <paramref name="target"/> every property whose value differs between <paramref name="original"/> and
-    /// <paramref name="edited"/>, compared as JSON. A screen that edits a copy saves with it (inside <see cref="Update"/>), so a
-    /// change made to the settings in effect while the screen was open (a background writer, another pane) survives unless the
+    /// Copies into <paramref name="target"/> each property whose JSON differs between <paramref name="original"/> and
+    /// <paramref name="edited"/>. Used inside <see cref="Update"/> by copy-editing screens so concurrent changes survive unless the
     /// screen changed the same property.
     /// </summary>
     /// <returns>The JSON names of the properties copied.</returns>
@@ -137,7 +128,7 @@ public sealed partial class AppSettings
         return copied;
     }
 
-    /// <summary>The clean-up every save applies: pasted quotes around paths, whitespace around addresses, incomplete Smart Rules.</summary>
+    /// <summary>Save-time normalization: strips quotes from paths and whitespace from addresses, drops incomplete Smart Rules.</summary>
     internal void TidyForSave()
     {
         YtDlpPath = Clean(YtDlpPath);
@@ -163,8 +154,7 @@ public sealed partial class AppSettings
                 json = JsonSerializer.Serialize(this, JsonOptions);
                 Current = this;
 
-                // This write carries everything an earlier Update changed in Current when this is Current; a later Update
-                // schedules its own write.
+                // When this is Current, the write includes all earlier Updates; later Updates schedule their own write.
                 Interlocked.Exchange(ref _savePending, 0);
             }
 
@@ -219,8 +209,7 @@ public sealed partial class AppSettings
                 AppLog.Write($"Settings: {Path.GetFileName(previous)} could not be used either", earlierError);
         }
 
-        // A first start. Stamped with the latest migration version, so the first session's own choices are never migrated as an
-        // old file's would be on the next start (SettingsMigrations).
+        // First start: stamp the latest migration version so new settings are never migrated on the next start (SettingsMigrations).
         NoteFirstRun();
         return new AppSettings { ShowTimelineThumbnails = false, Migrated411Defaults = true, ViewDefaultsVersion = SettingsMigrations.Latest };
     }
@@ -249,7 +238,7 @@ public sealed partial class AppSettings
             }
             catch (IOException) when (attempt < 4)
             {
-                // A sharing violation from an antivirus scan, a backup or sync client, or another HandPeg mid-write: brief, so retried.
+                // Transient sharing violation (antivirus, backup/sync client, another HandPeg mid-write): retry.
                 Thread.Sleep(50);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -293,7 +282,7 @@ public sealed partial class AppSettings
             }
             catch (InvalidOperationException ex) when (!rethrow)
             {
-                // A list in Current was changed in place outside Update while it was serialized: written on the next turn instead.
+                // A Current list was mutated outside Update during serialization: retry on the next turn.
                 AppLog.Write("Settings: a background save met a list being changed; it is tried again", ex);
                 ScheduleSave();
             }

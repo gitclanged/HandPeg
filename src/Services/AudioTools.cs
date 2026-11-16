@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -10,15 +9,14 @@ using Lanes = System.Numerics.Vector<float>;
 
 namespace HandPegApp.Services;
 
-/// <summary>One waveform to be made of a file: of one of its audio tracks, or of several mixed together.</summary>
-/// <param name="Width">The shape of the picture: it is this many units wide for every <paramref name="Height"/> high.</param>
-/// <param name="Color">A colour as FFmpeg would be given it: a name such as gray, or 0xRRGGBB.</param>
+/// <summary>Waveform request for one audio track or a mix of tracks.</summary>
+/// <param name="Width">Aspect width units per <paramref name="Height"/>.</param>
+/// <param name="Color">Colour name (gray) or 0xRRGGBB.</param>
 public sealed record WaveformRequest(IReadOnlyList<int> Tracks, int Width, int Height, string Color)
 {
     /// <summary>
-    /// What its peaks are kept under in the cache: the rate with the tracks ("peaks80-0", "peaks80-0-1"). A .peaks file holds
-    /// only how many pairs it has, so peaks kept at another rate (before 4.4-BugHunt "wave0", "wave0-1"..., twenty a second)
-    /// are never found under it, and never read as a sound of a quarter of its length; the cache lets them go as it trims.
+    /// Cache key encoding rate and tracks ("peaks80-0", "peaks80-0-1"). .peaks files store only the pair count, so the rate is in the key;
+    /// legacy keys at other rates are never matched (avoiding misread lengths) and age out of the cache.
     /// </summary>
     public string CacheKind => string.Create(System.Globalization.CultureInfo.InvariantCulture, $"peaks{Waveforms.PeaksPerSecond:0}-{string.Join("-", Tracks)}");
 }
@@ -26,10 +24,8 @@ public sealed record WaveformRequest(IReadOnlyList<int> Tracks, int Width, int H
 /// <summary>Pictures of sound: the waveform images shown on the timeline and in the mixer.</summary>
 public static partial class Waveforms
 {
-    // The sound is read at this rate, which is plenty for its outline (it holds what lies below 4 kHz), and for every so
-    // many samples only the lowest and the highest are kept: eighty pairs to the second (4.4-BugHunt, twenty before), so
-    // that a timeline zoomed in on a word still shows its syllables. An hour of sound is 288,000 pairs, 2.3 MB (and about
-    // a seventh more for the folds, WaveformData).
+    // Decode rate (content below 4 kHz suffices for an envelope), reduced to 80 min/max pairs per second so syllables remain visible
+    // when zoomed. One hour = 288,000 pairs, 2.3 MB (+~1/7 for mip folds, WaveformData).
     private const int SampleRate = 8000, SamplesPerPeak = 100;
 
     /// <summary>How many pairs of peaks there are to a second of sound.</summary>
@@ -45,33 +41,28 @@ public static partial class Waveforms
     public static WaveformData? DataOf(ImageSource? picture) => picture is not null && Peaks.TryGetValue(picture, out var data) ? data : null;
 
     /// <summary>
-    /// Reads the whole of one audio track as peaks, and returns a picture of them made of geometry: the
-    /// outline of its loudness, as one filled shape. FFmpeg decodes the sound to plain samples, which are
-    /// read as they come and reduced; no image file is made and no bitmap is held. The peaks stay with the
-    /// picture (see <see cref="DataOf"/>). Null when it could not be made.
+    /// Reads a full audio track as peaks and returns a vector waveform (single filled geometry). Samples are streamed and reduced; no image
+    /// file or bitmap. Peaks are attached to the drawing (<see cref="DataOf"/>). Null on failure.
     /// </summary>
-    /// <param name="trackIndexes">Which of the file's audio tracks, counted from 0. Several are mixed together (amix) first.</param>
-    /// <param name="imagePath">Not used any more: the picture is not a file. Kept for the callers that name one.</param>
-    /// <param name="width">The shape of the picture: it is this many units wide for every <paramref name="height"/> high.</param>
-    /// <param name="color">A colour as FFmpeg would be given it: a name such as gray, or 0xRRGGBB.</param>
+    /// <param name="trackIndexes">Zero-based audio track indexes; several are mixed.</param>
+    /// <param name="imagePath">Unused (vector output); kept for caller compatibility.</param>
+    /// <param name="width">Aspect width units per <paramref name="height"/>.</param>
+    /// <param name="color">Colour name (gray) or 0xRRGGBB.</param>
     public static async Task<ImageSource?> RenderAsync(
         string mediaPath, IReadOnlyList<int> trackIndexes, string imagePath, int width, int height, string color, CancellationToken cancellationToken) =>
         (await RenderManyAsync(mediaPath, [new WaveformRequest(trackIndexes, width, height, color)], cancellationToken))[0];
 
     /// <summary>
-    /// Several waveforms of one file in one reading of it: each track asked for, and each mix of tracks, decoded
-    /// by one FFmpeg (the tracks split where several waveforms want them, and every waveform a channel of one
-    /// stream), where one FFmpeg per waveform would read the whole file once for each. A recording with four
-    /// tracks and their mix was five readings of the file. Those kept in the cache are not made again.
+    /// Builds several waveforms of one file in a single decode pass (each requested track or mix as one channel of one stream) instead of
+    /// one read per waveform. Cached results are reused.
     /// </summary>
-    /// <returns>One picture for each request, in order; null for one that could not be made.</returns>
-    /// <param name="lane">The reading's lane: Background, but for what the user is waiting on.</param>
+    /// <returns>One drawing per request in order; null entries on failure.</returns>
+    /// <param name="lane">Scheduler lane: Background unless the user is waiting.</param>
     public static Task<ImageSource?[]> RenderManyAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken, WorkLane lane = WorkLane.Background) =>
         ReadManyAsync(mediaPath, requests, cancellationToken, lane, draw: true);
 
     /// <summary>
-    /// The peaks of several waveforms of one file written to the Timeline cache (.peaks) and nothing else (5.4.2A: the folder pre-bake, Priority
-    /// 3): no picture drawn and no peaks kept in memory, for a file no open Sequence shows yet. Those kept already are not read again.
+    /// Pre-bakes peaks to the Timeline cache only (folder pre-index, priority 3): no drawing, nothing kept in memory. Cached entries are skipped.
     /// </summary>
     public static async Task BakeAsync(string mediaPath, IReadOnlyList<WaveformRequest> requests, CancellationToken cancellationToken) =>
         await ReadManyAsync(mediaPath, requests, cancellationToken, WorkLane.Idle, draw: false);
@@ -98,14 +89,14 @@ public static partial class Waveforms
         if (wanted.Count == 0)
             return pictures;
 
-        // The reading itself is background work (see WorkScheduler): asked for twice, it is done once (a bake apart: it gives no pictures).
+        // Scheduled background work (WorkScheduler), deduplicated by key (bakes use a separate key: they return no drawings).
         var key = $"wave|{WorkScheduler.PathKey(mediaPath)}|{string.Join(",", wanted.Select(i => requests[i].CacheKind))}{(draw ? "" : "|bake")}";
         return await WorkScheduler.Run(new WorkSpec($"Waveforms of {Path.GetFileName(mediaPath)}", lane) { Key = key },
             work => DecodeAsync(work.Token), cancellationToken);
 
         async Task<ImageSource?[]> DecodeAsync(CancellationToken cancellationToken)
         {
-            // In this process first (Waveforms.Native.cs): each track once, in one reading of the file, on a thread that keeps out of the way.
+            // Native in-process decode first (Waveforms.Native.cs): each track once, single pass, on a low-priority thread.
             var distinct = wanted.SelectMany(i => requests[i].Tracks).Distinct().ToList();
             var native = distinct.Select(_ => new PeakReader()).ToArray();
             var written = new bool[requests.Count];
@@ -130,7 +121,7 @@ public static partial class Waveforms
                         one.Finish();
                     foreach (var w in wanted)
                     {
-                        // Several tracks together: their outlines added up, which is the most their mix can reach (and exactly it where only one sounds).
+                        // Mix envelope = sum of track envelopes: an upper bound, exact where only one track is active.
                         var request = requests[w];
                         float[]? lows = null, highs = null;
                         foreach (var track in request.Tracks)
@@ -270,7 +261,7 @@ public static partial class Waveforms
         }
     }
 
-    /// <summary>Hands each waveform its own samples, out of frames of one sample for each (16-bit, little-endian, as this processor is).</summary>
+    /// <summary>De-interleaves 16-bit little-endian frames (one sample per waveform) into per-waveform reducers.</summary>
     private static void Deal(byte[] buffer, int length, PeakReader[] readers)
     {
         var values = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(buffer.AsSpan(0, length));
@@ -281,8 +272,7 @@ public static partial class Waveforms
         }
     }
 
-    // Peaks as they are kept on disk: how many pairs, then the lows, then the highs, as 32-bit floats. Written
-    // and read in place, from and into the arrays the waveform keeps: no copy of the whole is made either way.
+    // .peaks format: pair count, lows, highs (float32). Read/written directly from/to the waveform arrays without intermediate copies.
     private static void WritePeaks(Stream stream, float[] lows, float[] highs)
     {
         Span<byte> count = stackalloc byte[4];
@@ -323,8 +313,7 @@ public static partial class Waveforms
     }
 
     /// <summary>
-    /// Reduces 16-bit samples, as they arrive, to the lowest and highest of every so many. The pairs gather in
-    /// borrowed room that grows as it needs to, and are copied out once, at their final size, when it is done.
+    /// Streaming min/max reducer for 16-bit samples, accumulating into a growable pooled buffer copied once at final size.
     /// </summary>
     private sealed class PeakReader : IDisposable
     {
@@ -377,8 +366,7 @@ public static partial class Waveforms
     }
 
     /// <summary>
-    /// A stretch of a waveform as a waveform of its own, between two fractions of its length: what is left of
-    /// a sound once it has been trimmed. Null for a picture that is not one of these waveforms.
+    /// Sub-range of a waveform between two length fractions (trimmed audio); null for non-waveform drawings.
     /// </summary>
     public static ImageSource? Cut(ImageSource? picture, double from, double to, int width, int height)
     {
@@ -391,7 +379,7 @@ public static partial class Waveforms
         return cut;
     }
 
-    /// <summary>The peaks as a picture: one shape, a column for every so many pairs (one sweep of the peaks, WaveformData.Envelope).</summary>
+    /// <summary>Builds the vector envelope: one shape, one column per bucket of pairs (WaveformData.Envelope).</summary>
     private static ImageSource Draw(WaveformData data, double width, double height)
     {
         var columns = Math.Max(Math.Min(data.Count, MostColumns), 1);
@@ -428,7 +416,7 @@ public static partial class Waveforms
         pool.Return(tops);
         pool.Return(bottoms);
 
-        // The see-through rectangle gives the picture its full size: without it, it would be as tall as the loudest moment only.
+        // Transparent bounds rectangle fixes full height; otherwise bounds would shrink to the loudest peak.
         var drawing = new DrawingGroup();
         drawing.Children.Add(new GeometryDrawing(Brushes.Transparent, null, new RectangleGeometry(new Rect(0, 0, width, height))));
         drawing.Children.Add(new GeometryDrawing(data.Fill, null, outline));
@@ -459,7 +447,7 @@ public static partial class Waveforms
         return Brushes.Gray;
     }
 
-    /// <summary>Reads a picture completely into memory and lets go of the file.</summary>
+    /// <summary>Loads an image fully into memory and releases the file handle.</summary>
     public static ImageSource? Load(string path)
     {
         try
@@ -481,207 +469,8 @@ public static partial class Waveforms
 }
 
 /// <summary>
-/// Records a microphone to a wave file with FFmpeg's DirectShow input. A recording can be paused and
-/// carried on: each stretch between Record and Pause is a file of its own, and Stop joins them into one.
-/// </summary>
-public sealed partial class VoiceRecorder
-{
-    // FFmpeg lists devices as:  [dshow @ 0000...] "Microphone (Realtek Audio)" (audio)
-    [GeneratedRegex("\"([^\"]+)\"\\s+\\(audio\\)")]
-    private static partial Regex AudioDeviceRegex();
-
-    /// <summary>How long FFmpeg is given to open the device before the recording counts as started.</summary>
-    public static readonly TimeSpan StartupGrace = TimeSpan.FromMilliseconds(900);
-
-    private readonly List<string> _parts = [];
-    private readonly System.Text.StringBuilder _errors = new();
-    private Process? _process;
-    private string _folder = "";
-
-    /// <summary>A stretch is being recorded right now.</summary>
-    public bool IsRecording => _process is { HasExited: false };
-
-    /// <summary>A recording has been started and not yet stopped: it is running, or paused.</summary>
-    public bool IsSessionOpen => IsRecording || _parts.Count > 0;
-
-    /// <summary>The names of the audio capture devices DirectShow knows, as FFmpeg expects them in audio="...".</summary>
-    public static async Task<List<string>> ListMicrophonesAsync(CancellationToken cancellationToken)
-    {
-        if (!File.Exists(DependencyUpdater.FfmpegPath))
-            return [];
-
-        // Listing devices is not an error to FFmpeg, but opening the "dummy" input afterwards is: the
-        // exit code says nothing, the list is on stderr.
-        var result = await ProcessPipes.RunBufferedAsync(Cli.Wrap(DependencyUpdater.FfmpegPath)
-            .WithArguments(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-            .WithValidation(CommandResultValidation.None), cancellationToken, System.Text.Encoding.UTF8);
-
-        return AudioDeviceRegex().Matches(result.StandardError).Select(m => m.Groups[1].Value).Distinct().ToList();
-    }
-
-    /// <summary>
-    /// Starts a new recording, or carries a paused one on, from the named microphone. Throws with FFmpeg's
-    /// own words when the device cannot be opened (in use by another program, unplugged, renamed).
-    /// </summary>
-    /// <param name="folder">Where the stretches of the recording are kept until it is stopped.</param>
-    public async Task StartAsync(string microphone, string folder)
-    {
-        if (IsRecording)
-            throw new InvalidOperationException("A recording is already running.");
-        if (!File.Exists(DependencyUpdater.FfmpegPath))
-            throw new InvalidOperationException("FFmpeg is not installed. Install it from Settings first.");
-        if (string.IsNullOrWhiteSpace(microphone))
-            throw new InvalidOperationException("Choose a microphone first.");
-
-        _folder = folder;
-        Directory.CreateDirectory(folder);
-        var part = Path.Combine(folder, $"voiceover_part{_parts.Count}.wav");
-
-        var start = new ProcessStartInfo(DependencyUpdater.FfmpegPath)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-
-            // The way to stop FFmpeg so that it finishes the file properly is to type "q" at it.
-            RedirectStandardInput = true,
-            RedirectStandardError = true,
-        };
-
-        // Each entry is one argument, quoted for the command line as needed: a device name with spaces or
-        // brackets in it reaches FFmpeg whole, exactly as audio="Microphone (Realtek Audio)" would.
-        foreach (var argument in new[] { "-hide_banner", "-loglevel", "error", "-f", "dshow", "-i", $"audio={microphone}", "-y", part })
-            start.ArgumentList.Add(argument);
-
-        _errors.Clear();
-        var process = Process.Start(start) ?? throw new InvalidOperationException("FFmpeg could not be started.");
-        process.ErrorDataReceived += (_, e) =>
-        {
-            if (!string.IsNullOrWhiteSpace(e.Data))
-            {
-                lock (_errors)
-                    _errors.AppendLine(e.Data.Trim());
-            }
-        };
-        process.BeginErrorReadLine();
-        ProcessPipes.Track(process.Id);
-        _process = process;
-
-        // A device that cannot be opened makes FFmpeg give up within moments. Waiting for that here turns
-        // "nothing was recorded" into a message that says why.
-        await Task.Delay(StartupGrace);
-        if (process.HasExited)
-        {
-            ProcessPipes.Untrack(process.Id);
-            process.Dispose();
-            _process = null;
-
-            string reason;
-            lock (_errors)
-                reason = _errors.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault() ?? "";
-            throw new InvalidOperationException(reason.Length > 0 ? reason : "The microphone could not be opened.");
-        }
-
-        _parts.Add(part);
-    }
-
-    /// <summary>Ends the stretch being recorded, keeping the recording open to be carried on.</summary>
-    public async Task PauseAsync()
-    {
-        if (_process is not { } process)
-            return;
-
-        _process = null;
-        try
-        {
-            if (!process.HasExited)
-            {
-                // FFmpeg is asked to quit, which lets it write the length into the file's header; if it
-                // does not go within a few seconds it is stopped the hard way.
-                await process.StandardInput.WriteAsync('q');
-                await process.StandardInput.FlushAsync();
-                using var patience = new CancellationTokenSource(TimeSpan.FromSeconds(4));
-                try
-                {
-                    await process.WaitForExitAsync(patience.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
-        {
-            // Already gone: the file is whatever it managed to write.
-        }
-        finally
-        {
-            ProcessPipes.Untrack(process.Id);
-            process.Dispose();
-        }
-    }
-
-    /// <summary>Ends the recording and throws away everything recorded so far.</summary>
-    public async Task DiscardAsync()
-    {
-        await PauseAsync();
-
-        foreach (var part in _parts)
-        {
-            try
-            {
-                File.Delete(part);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Left in the session folder, which goes when the application closes.
-            }
-        }
-
-        _parts.Clear();
-    }
-
-    /// <summary>
-    /// Ends the recording and writes it to one file: the single stretch as it is, or several joined end to
-    /// end. Returns false when nothing usable was recorded.
-    /// </summary>
-    public async Task<bool> StopAsync(string outputPath, CancellationToken cancellationToken)
-    {
-        await PauseAsync();
-
-        var parts = _parts.Where(p => File.Exists(p) && new FileInfo(p).Length > 1024).ToList();
-        _parts.Clear();
-        if (parts.Count == 0)
-            return false;
-
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-            if (parts.Count == 1)
-            {
-                File.Move(parts[0], outputPath, overwrite: true);
-                return true;
-            }
-
-            var ffmpeg = DependencyUpdater.IsFfmpegOverridden ? $"\"{DependencyUpdater.FfmpegPath}\"" : "ffmpeg";
-            var inputs = string.Join(" ", parts.Select(p => $"-i \"{p}\""));
-            await FfmpegRunner.RunAsync(
-                $"{ffmpeg} -hide_banner -y {inputs} -filter_complex \"concat=n={parts.Count}:v=0:a=1[whole]\" -map \"[whole]\" -c:a pcm_s16le \"{outputPath}\"",
-                new Progress<FfmpegProgress>(), cancellationToken);
-            return true;
-        }
-        finally
-        {
-            foreach (var part in parts.Where(File.Exists))
-                File.Delete(part);
-        }
-    }
-}
-/// <summary>
-/// Windows notifications. They are sent through a notification-area icon, which Windows 10 and 11 show
-/// as ordinary toasts and keep in the notification centre; no installer registration is needed for that.
-/// Since 5.0-Release they are silent (NIIF_NOSOUND: the user's "random loud system beeps"), and none is sent while HandPeg is
-/// the active application: the user is looking at it, and <see cref="Said"/> puts the same words on its status line.
+/// Windows notifications via a notification-area icon (shown as toasts; no installer registration needed). Always silent
+/// (NIIF_NOSOUND) and suppressed while HandPeg is foreground, where <see cref="Said"/> shows the text on the status line instead.
 /// </summary>
 public static partial class Notifier
 {
@@ -720,11 +509,11 @@ public static partial class Notifier
 
     private static readonly object Gate = new();
 
-    // The icon shown in the notification area (kept alive while it is there), and the window it is shown for; zero before the first.
+    // Notification-area icon (kept alive while shown) and its owner HWND; zero before first use.
     private static System.Drawing.Icon? _icon;
     private static IntPtr _owner;
 
-    /// <summary>A notification not sent because HandPeg was the active application: its title and words, for the status line (any thread).</summary>
+    /// <summary>Raised (any thread) with title and text when a notification is suppressed because HandPeg is foreground.</summary>
     public static event Action<string, string>? Said;
 
     public static void Show(string title, string message)
@@ -803,7 +592,7 @@ public static partial class Notifier
         into[length] = '\0';
     }
 
-    /// <summary>Whether the window in front belongs to HandPeg (any thread).</summary>
+    /// <summary>True when the foreground window belongs to this process (any thread).</summary>
     private static bool IsActiveApplication()
     {
         var front = GetForegroundWindow();
@@ -812,22 +601,17 @@ public static partial class Notifier
 }
 
 /// <summary>
-/// A sound reduced to peaks: for each eightieth of a second, the lowest and the highest sample (-1 to 1).
-/// Whatever draws it asks for the range over a stretch of it, as wide a stretch as one of its pixels covers:
-/// zoomed out, many pairs fall into one pixel and are merged into one; zoomed in, each pair is its own.
-/// Since 4.4 the peaks are also kept folded (a mip pyramid: every 8 pairs as one, every 64, every 512), made once
-/// when the peaks are, so that a stretch of any length is answered by reading a few dozen numbers, not every pair in it.
-/// The folds are never written to disk: the .peaks file holds the pairs alone, as before.
+/// Audio envelope: min/max sample (-1..1) per 1/80 s. Renderers query the range per pixel span. A mip pyramid (1:8, 1:64, 1:512) built
+/// with the peaks answers any range in a few dozen reads. Mips are memory-only; .peaks files hold level 0.
 /// </summary>
 public sealed class WaveformData
 {
     /// <summary>
-    /// The stretches quieter than a level for long enough: Remove Dead Air's silences, from the peaks in memory (5.1-CleanupStudioAndFfmpegPurge:
-    /// under a millisecond for an hour of sound, where FFmpeg's silencedetect read the whole file), each pair's two peaks both under the
-    /// level. To a pair's length, 12.5 ms. A silence running to the end is closed at <paramref name="duration"/>.
+    /// Silence ranges for Remove Dead Air from in-memory peaks (under 1 ms per hour of audio): runs where both peaks are below the level,
+    /// at 12.5 ms pair resolution. A trailing silence closes at <paramref name="duration"/>.
     /// </summary>
-    /// <param name="noiseDb">Anything quieter than this counts as silence.</param>
-    /// <param name="minimumSeconds">Shorter pauses are ignored.</param>
+    /// <param name="noiseDb">Silence threshold (dB).</param>
+    /// <param name="minimumSeconds">Minimum silence length.</param>
     public List<(double Start, double End)> Silences(double noiseDb, double minimumSeconds, double duration)
     {
         var level = (float)Math.Pow(10, noiseDb / 20);
@@ -860,11 +644,10 @@ public sealed class WaveformData
         return found;
     }
 
-    /// <summary>How many pairs of one level are folded into one pair of the next; the levels are 1:1, 1:8, 1:64 and 1:512.</summary>
+    /// <summary>Mip fold factor between levels (1:1, 1:8, 1:64, 1:512).</summary>
     public const int MipFactor = 8, MipLevels = 4;
 
-    // The pairs of each level, [level][i]: level 0 is the arrays given, each level above folds 8 of the one below
-    // (its last pair folding what is left over, so nothing is padded).
+    // Mip levels [level][i]: level 0 is the source; each level folds 8 below (the last pair folds the remainder; no padding).
     private readonly float[][] _lows, _highs;
 
     public WaveformData(float[] lows, float[] highs, Brush fill, double pairsPerSecond = Waveforms.PeaksPerSecond)
@@ -903,10 +686,10 @@ public sealed class WaveformData
     /// <summary>The colour it is drawn in.</summary>
     public Brush Fill { get; }
 
-    /// <summary>How many pairs there are to a second of the sound (80 since 4.4-BugHunt, 20 before).</summary>
+    /// <summary>Pairs per second (80).</summary>
     public double PairsPerSecond { get; }
 
-    /// <summary>How long the sound is, in its own seconds: what the pairs cover (not the container's duration, which may differ).</summary>
+    /// <summary>Duration covered by the pairs (may differ from container duration).</summary>
     public double Seconds => Count / PairsPerSecond;
 
     /// <summary>How many pairs a level has.</summary>
@@ -920,17 +703,14 @@ public sealed class WaveformData
     public static int LevelFor(double pairsPerColumn) =>
         pairsPerColumn >= 512 ? 3 : pairsPerColumn >= 64 ? 2 : pairsPerColumn >= 8 ? 1 : 0;
 
-    /// <summary>How tall a combined sound's pairs may be (<see cref="Combine"/>): as tall as a waveform is ever drawn, 4 times its band.</summary>
+    /// <summary>Clamp for combined peaks (<see cref="Combine"/>): 4x band, the maximum drawn height.</summary>
     public const float MostCombined = 4;
 
     /// <summary>
-    /// Several sounds as one (5.3-Stage2, the user's call: a video clip's waveform is its audible Sub-Lanes' together): each pair the
-    /// most any of them reaches there, each as tall as its gain makes it (high: the highest gain x high, low: the lowest gain x low, held
-    /// within plus or minus <see cref="MostCombined"/>), silence where none plays. OffsetShift is where the combined sound's second 0 is
-    /// in that part's own seconds (a part's second = the combined second + its shift), to the nearest pair. A part with no gain, no pairs
-    /// or another rate than the first kept is left out; null when none is left. One part as it is (gain 1, no shift) is that part's own
-    /// peaks, so the waveform tiles made of it are drawn again. Whole vectors (System.Numerics: NEON on ARM64, AVX on x64), then the
-    /// rest one by one: every pair exactly what one by one gives.
+    /// Combines several envelopes (a video clip's audible Sub-Lanes): per pair, max of gain x high and min of gain x low, clamped to
+    /// +/-<see cref="MostCombined"/>; silence where none plays. OffsetShift maps combined second 0 to each part (part = combined + shift,
+    /// nearest pair). Parts with zero gain, no pairs or a different rate are skipped; null when none remain. A single unity-gain unshifted
+    /// part returns itself (tile cache reuse). SIMD via System.Numerics (NEON/AVX) with a scalar tail producing identical results.
     /// </summary>
     public static WaveformData? Combine(IReadOnlyList<(WaveformData Data, double GainFactor, double OffsetShift)> parts)
     {
@@ -971,8 +751,7 @@ public sealed class WaveformData
         return new WaveformData(lows, highs, kept[0].Data.Fill, kept[0].Data.PairsPerSecond);
     }
 
-    // into = the higher (upward) or the lower of into and from x gain, from x gain held within MostCombined: whole vectors, then
-    // what is left one by one. The same arithmetic both ways (one float product, clamped, compared), so the same pairs.
+    // into = max (upward) or min of into and clamp(from x gain); vectorized then scalar tail with identical arithmetic.
     private static void Widen(Span<float> into, ReadOnlySpan<float> from, float gain, bool upward)
     {
         var length = Math.Min(into.Length, from.Length);
@@ -1001,7 +780,7 @@ public sealed class WaveformData
         return new WaveformData(lows[first..last], highs[first..last], Fill, PairsPerSecond);
     }
 
-    /// <summary>The lowest and the highest sample between two points of the sound, each a fraction of its length (0 to 1).</summary>
+    /// <summary>Min/max between two length fractions (0-1).</summary>
     public (float Low, float High) Range(double from, double to)
     {
         var count = Count;
@@ -1014,9 +793,8 @@ public sealed class WaveformData
     }
 
     /// <summary>
-    /// The lowest and the highest sample of the pairs from <paramref name="first"/> up to (not including)
-    /// <paramref name="end"/>, exactly: the ragged ends are read pair by pair, and what lies between them a level up, as
-    /// whole folds, climbing until little is left. (0, 0) for no pairs.
+    /// Exact min/max over pairs [<paramref name="first"/>, <paramref name="end"/>): ragged ends at level 0, aligned interior via higher mip
+    /// levels. (0, 0) for an empty range.
     /// </summary>
     public (float Low, float High) RangeOf(int first, int end)
     {
@@ -1073,11 +851,9 @@ public sealed class WaveformData
     }
 
     /// <summary>
-    /// One low and one high for each column of a stretch of the sound, from <paramref name="fromSeconds"/> to
-    /// <paramref name="toSeconds"/> (its own seconds), as many columns as the spans are long. One sweep over the level
-    /// whose folds are no wider than a column: each fold goes into the column its middle falls in, and a column no fold
-    /// falls in (zoomed in, or past the end of the sound) takes the fold under its own middle, or silence. So a column
-    /// may show a sound up to a fold away from it, never less than what lies wholly inside it.
+    /// Per-column min/max over [<paramref name="fromSeconds"/>, <paramref name="toSeconds"/>]: one sweep at the finest mip level no wider
+    /// than a column, binning folds by centre; empty columns take the fold at their centre or silence. Columns may include up to one fold
+    /// of neighbouring signal but never omit their own.
     /// </summary>
     public void Envelope(double fromSeconds, double toSeconds, Span<float> lows, Span<float> highs)
     {

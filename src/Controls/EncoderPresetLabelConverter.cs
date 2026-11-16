@@ -4,9 +4,9 @@ using System.Windows.Data;
 namespace HandPegApp;
 
 /// <summary>
-/// An encoder's speed step as the Encoder Preset box shows it. The step itself is the word FFmpeg takes
-/// ("p1", "speed"), which is what presets and projects store; only what is read on screen is dressed up:
-/// AMF's steps get a capital, and NVENC's two ends say which end they are.
+/// Display label for an encoder speed preset in the Encoder Preset box. The stored value stays the raw FFmpeg token ("p1",
+/// "speed") as presets and projects persist it; only the label is prettified: AMF tokens title-cased, NVENC p1/p7 annotated
+/// as fastest/highest quality, and AMF high_quality marked slowest.
 /// </summary>
 public sealed class EncoderPresetLabelConverter : IValueConverter
 {

@@ -6,22 +6,22 @@ using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
-/// <summary>The tools the Studio draws with: the polygon pen, and the helpers that lay down a ready outline by a drag.</summary>
+/// <summary>Studio drawing tools: the polygon pen and drag-to-place outline helpers.</summary>
 public enum CutoutTool { Pen, Rectangle, Ellipse, Slant }
 
 public sealed partial class MaskDrawWindow
 {
     /// <summary>
-    /// The shapes over the still, and what the pointer does to them. Drawn in <see cref="OnRender"/>, in the source's pixels; lines
-    /// and handles are sized by how far the view has scaled it, so they stay thin at 64x. Each shape belongs to a named piece.
-    /// Nothing here cares how far the view is zoomed or panned: that happens around it, at any moment, even with a shape half drawn.
+    /// Shape overlay on the still plus pointer editing. Renders in source pixels (<see cref="OnRender"/>) with lines and handles
+    /// scaled inversely to view zoom (thin at 64x). Each shape belongs to a named piece. Zoom/pan is applied externally and may
+    /// change at any time, even mid-shape.
     /// </summary>
     private sealed class ShapeSurface : FrameworkElement
     {
-        // An ellipse helper's outline: enough points for a smooth curve, few enough to drag by hand.
+        // Ellipse helper vertex count: smooth yet few enough to edit by hand.
         private const int EllipsePoints = 32;
 
-        // How far a slant helper leans: a bar's lean, as a share of its width.
+        // Slant helper skew as a fraction of bar width.
         private const double SlantLean = 0.16;
 
         private readonly double _width, _height;
@@ -55,7 +55,7 @@ public sealed partial class MaskDrawWindow
 
         public CutoutTool Tool { get; set; } = CutoutTool.Pen;
 
-        /// <summary>The piece new shapes go to.</summary>
+        /// <summary>Piece that receives new shapes.</summary>
         public int CurrentPiece { get; set; }
 
         public bool IsDrawing => _drawing is { Count: > 0 };
@@ -64,15 +64,15 @@ public sealed partial class MaskDrawWindow
         public IReadOnlyList<List<Point>> Finished => _shapes;
         public IReadOnlyList<int> Owners => _owners;
 
-        /// <summary>The colour a piece is drawn in.</summary>
+        /// <summary>Display colour of a piece.</summary>
         public static Brush LineOf(int piece) => PieceLines[Math.Abs(piece) % PieceLines.Length];
 
-        /// <summary>A line in a piece's colour, for the Source Navigator's small outlines.</summary>
+        /// <summary>Pen in a piece's colour for Source Navigator thumbnails.</summary>
         public static Pen PenOf(int piece) => PiecePens[Math.Abs(piece) % PiecePens.Length];
 
         /// <summary>
-        /// A view changed: the grid of source pixels to draw (pixels that step wide, over what is seen; null for none), and vertices at
-        /// that zoom land on pixel corners. The pointer is where it is on the picture now: a live line follows it however the view moved.
+        /// View change: sets the visible source-pixel grid (null for none) with vertex snapping to pixel corners at that zoom, and
+        /// re-maps the pointer so the live segment tracks it after any pan/zoom.
         /// </summary>
         public void ViewChanged(double? pixelGrid, Rect seen)
         {
@@ -82,10 +82,10 @@ public sealed partial class MaskDrawWindow
             InvalidateVisual();
         }
 
-        // ----- Undo (4.3E) -----
-        // Before each change, the shapes as they were (the finished ones and the one being drawn): a point put down, a shape
-        // closed or dropped, a point taken back, a point or shape removed, Clear All, one step each; a point dragged, one step
-        // for the drag. The window is modal and works on a copy, kept only when it is confirmed: these steps are its own.
+        // ----- Undo -----
+        // Snapshots (finished shapes + in-progress shape) before each change: add point, close/discard shape, retract point, delete
+        // point/shape, Clear All (one step each); a point drag is one step. The modal window edits a copy committed only on confirm,
+        // so this undo stack is local.
         private const int UndoDepth = 100;
         private readonly List<Drawn> _undo = [], _redo = [];
         private bool _dragKept;
@@ -111,7 +111,7 @@ public sealed partial class MaskDrawWindow
 
         private void Step(List<Drawn> from, List<Drawn> to)
         {
-            // Not while a point is held: the drag would go on moving a point of shapes that are gone.
+            // Blocked during a point drag, which would otherwise keep moving a point of discarded shapes.
             if (from.Count == 0 || _dragging is not null || _box is not null)
                 return;
 
@@ -126,7 +126,7 @@ public sealed partial class MaskDrawWindow
             Redraw();
         }
 
-        // How many of the source's pixels one pixel on screen is.
+        // Source pixels per screen pixel.
         private double OnePixel
         {
             get
@@ -202,7 +202,7 @@ public sealed partial class MaskDrawWindow
             Redraw();
         }
 
-        /// <summary>Takes a piece's shapes away (one step of Undo, which brings them back to it).</summary>
+        /// <summary>Clears a piece's shapes (one undo step restores them).</summary>
         public void RemovePiece(int piece)
         {
             if (!_owners.Contains(piece))
@@ -229,7 +229,7 @@ public sealed partial class MaskDrawWindow
 
         private Point Clamp(Point point) => new(Math.Clamp(point.X, 0, _width), Math.Clamp(point.Y, 0, _height));
 
-        // Where the pointer is on the picture: with the pixel grid shown, on the nearest corner of a pixel.
+        // Pointer position in source pixels, snapped to the nearest pixel corner when the grid is shown.
         private Point Pointer() => Snapped(Mouse.GetPosition(this));
 
         private Point Snapped(Point at)
@@ -238,10 +238,10 @@ public sealed partial class MaskDrawWindow
             return _grid is not null ? new Point(Math.Round(at.X), Math.Round(at.Y)) : at;
         }
 
-        /// <summary>Whether a press here (in the picture's pixels) lands on an edge, where Alt + a press puts a point in (5.3.1: elsewhere it pans).</summary>
+        /// <summary>Whether a press (source pixels) hits an edge, where Alt+press inserts a point (elsewhere Alt+press pans).</summary>
         public bool HasEdgeAt(Point at) => EdgeAt(Snapped(at)) is not null;
 
-        // With Shift, the next point lies along 0, 45 or 90 degrees from the last one.
+        // Shift constrains the next point to 0/45/90 degrees from the last.
         private Point Constrained(Point at)
         {
             if (_drawing is not { Count: > 0 } drawing || !Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
@@ -254,7 +254,7 @@ public sealed partial class MaskDrawWindow
             return Clamp(new Point(from.X + along * Math.Cos(angle), from.Y + along * Math.Sin(angle)));
         }
 
-        // The point under the pointer, within a few pixels on screen: of the shape being drawn first.
+        // Vertex hit test within a few screen pixels, in-progress shape first.
         private (List<Point> Points, int Index)? PointAt(Point at)
         {
             var reach = 7 * OnePixel;
@@ -276,7 +276,7 @@ public sealed partial class MaskDrawWindow
             return null;
         }
 
-        // The edge under the pointer: the outline and the index a new point goes in at.
+        // Edge hit test: returns the outline and insertion index.
         private (List<Point> Points, int Index)? EdgeAt(Point at)
         {
             var reach = 6 * OnePixel;
@@ -318,7 +318,7 @@ public sealed partial class MaskDrawWindow
             return -1;
         }
 
-        // A point put in on an edge, and held: the same press carries on as its drag.
+        // Inserts a point on an edge and continues the same press as its drag.
         private void InsertAndHold((List<Point> Points, int Index) edge, Point at)
         {
             Remember();
@@ -334,14 +334,14 @@ public sealed partial class MaskDrawWindow
             var at = Pointer();
             e.Handled = true;
 
-            // Alt + click on an edge puts a point in it, at any moment.
+            // Alt+click on an edge inserts a point (any state).
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Alt) && EdgeAt(at) is { } altEdge)
             {
                 InsertAndHold(altEdge, at);
                 return;
             }
 
-            // A double-click closes the shape: its first click has already put a point down, which is kept.
+            // Double-click closes the shape, keeping the point added by its first click.
             if (e.ClickCount == 2 && _drawing is { Count: >= 3 })
             {
                 Remember();
@@ -351,14 +351,14 @@ public sealed partial class MaskDrawWindow
                 return;
             }
 
-            // A double-click on a finished shape's edge puts a point in it, as Alt + click does.
+            // Double-click on a finished shape's edge inserts a point, like Alt+click.
             if (e.ClickCount == 2 && _drawing is null && EdgeAt(at) is { } edge)
             {
                 InsertAndHold(edge, at);
                 return;
             }
 
-            // The glowing first point closes the shape; any other point is dragged, the shape being drawn or not.
+            // Clicking the highlighted first point closes the shape; any other vertex starts a drag.
             if (_drawing is { Count: >= 3 } && (_drawing[0] - at).Length <= 9 * OnePixel)
             {
                 CloseShape();
@@ -394,7 +394,7 @@ public sealed partial class MaskDrawWindow
             }
             else if (_dragging is { } dragging && e.LeftButton == MouseButtonState.Pressed && dragging.Points[dragging.Index] != at)
             {
-                // The drag's one step, as the point first moves.
+                // Take the drag's single undo step on first movement.
                 if (!_dragKept)
                 {
                     _dragKept = true;
@@ -433,7 +433,7 @@ public sealed partial class MaskDrawWindow
             }
         }
 
-        // A helper's outline: ordinary points, to be dragged as any others.
+        // Helper outlines are ordinary editable vertices.
         private static List<Point> Helper(CutoutTool tool, Rect area)
         {
             switch (tool)
@@ -462,14 +462,13 @@ public sealed partial class MaskDrawWindow
         }
 
         /// <summary>
-        /// A right-click at a place on the picture (in its pixels). The window decides it was one when the button comes up without the
-        /// pointer having moved (5.3.1): a right-drag pans the view instead.
+        /// Right-click at a source-pixel point; the window reports it only for a release without movement (right-drag pans instead).
         /// </summary>
         public void RightClick(Point at)
         {
             at = Snapped(at);
 
-            // A point goes, of the shape being drawn or a finished one; a finished shape left with fewer than three goes with it.
+            // Delete a vertex (in-progress or finished shape); a finished shape left with fewer than three is removed.
             if (PointAt(at) is { } point)
             {
                 Remember();
@@ -519,7 +518,7 @@ public sealed partial class MaskDrawWindow
             var px = OnePixel;
             dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, _width, _height));
 
-            // One source pixel to a cell (at 16x and up): only over what is seen, so it costs the same at any zoom.
+            // Pixel grid at 16x+: one cell per source pixel, visible area only so cost is zoom-independent.
             if (_grid is { } grid && grid.Step > 0)
             {
                 var pen = new Pen(GridLine, px);
@@ -534,7 +533,7 @@ public sealed partial class MaskDrawWindow
                 }
             }
 
-            // The areas the layers cut out of the video: this layer's solid, the others dashed.
+            // Layer cutout regions: this layer solid, others dashed.
             foreach (var (area, name, isThis) in _regions)
             {
                 var pen = new Pen(RegionLine, (isThis ? 2.5 : 1.5) * px) { DashStyle = isThis ? DashStyles.Solid : DashStyles.Dash };
@@ -571,7 +570,7 @@ public sealed partial class MaskDrawWindow
                 foreach (var point in drawing)
                     dc.DrawRectangle(DrawingLine, null, new Rect(point.X - handle, point.Y - handle, handle * 2, handle * 2));
 
-                // The first point is where the shape closes: it glows, and fills while the pointer is near enough to close it.
+                // First point (close target) glows, and fills while the pointer is within close range.
                 var near = drawing.Count >= 3 && _pointer is { } p && (drawing[0] - p).Length <= 9 * px;
                 if (drawing.Count >= 3)
                     dc.DrawEllipse(FirstPointGlow, null, drawing[0], 16 * px, 16 * px);

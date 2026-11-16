@@ -12,79 +12,76 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// A saved project as the Project Manager lists it (4.1.1-B): its entry, and its picture (its baked thumbnail since Pass
-/// 5.2D, else its video's poster), which the pointer scrubs through the video's frames while it is across it.
+/// Project Manager row: the project entry and its picture (baked thumbnail, else video poster), hover-scrubbable through the video's frames.
 /// </summary>
 public sealed partial class ProjectRow(ProjectEntry entry) : ObservableObject
 {
     public ProjectEntry Entry { get; } = entry;
 
-    /// <summary>The project's name: what the row is called to screen readers and UI Automation (4.2B-3), not the type's name.</summary>
+    /// <summary>Project name, used as the row's accessible name (screen readers, UIA) instead of the type name.</summary>
     public string Name => Entry.Name;
 
     public override string ToString() => Name;
 
-    /// <summary>What the picture shows: the poster, or while the pointer is across it, the frame there.</summary>
+    /// <summary>Displayed image: the poster, or the hovered frame while scrubbing.</summary>
     [ObservableProperty] private ImageSource? _picture;
 
     [ObservableProperty] private Visibility _pictureVisibility = Visibility.Collapsed;
 
-    /// <summary>What the picture shows when the pointer is not across it: the project's baked thumbnail when it has one, else its video's poster.</summary>
+    /// <summary>Resting image: the baked thumbnail when present, else the video poster.</summary>
     public BitmapSource? Poster { get; set; }
 
-    /// <summary>The project's own thumbnail (Pass 5.2D: the Sequence as it was saved), decoded; null when its file has none.</summary>
+    /// <summary>Decoded baked thumbnail (Sequence at save time); null when absent.</summary>
     public BitmapSource? Baked { get; set; }
 
-    /// <summary>The media browser's strip of the main video's frames (its cache's file), and the video's shape.</summary>
+    /// <summary>Media Browser filmstrip cache file of the project's video, and its aspect.</summary>
     public string? Strip { get; set; }
 
     public double Shape { get; set; } = 16.0 / 9;
 
-    /// <summary>The strip's frames, decoded while the pointer is across the picture and let go when it leaves.</summary>
+    /// <summary>Filmstrip frames, decoded on hover and released on leave.</summary>
     public IReadOnlyList<BitmapSource>? Frames { get; set; }
 
     public bool DecodingFrames { get; set; }
 }
 
-/// <summary>The Project Manager's three modes (5.4A).</summary>
+/// <summary>Project Manager modes.</summary>
 public enum ProjectManagerMode
 {
-    /// <summary>New Project: a project's name and folder, frame, rate, colour space, Game Preset and media.</summary>
+    /// <summary>New Project: name, folder, frame, rate, colour space, Game Preset and media.</summary>
     NewProject,
 
-    /// <summary>Open / Manage Projects: save the open project, open a saved one, delete one (the window before 5.4A).</summary>
+    /// <summary>Open / Manage Projects: save the current project, open or delete saved ones.</summary>
     Manage,
 
-    /// <summary>Project Settings: the open project's frame, rate, colour space, pixel aspect and sample rate.</summary>
+    /// <summary>Project Settings: frame, rate, colour space, pixel aspect and sample rate.</summary>
     Settings,
 }
 
-/// <summary>A Game Preset card of the New Project studio: its name, its file (null for none) and what its tooltip says.</summary>
+/// <summary>New Project Game Preset card: name, file (null for None) and tooltip.</summary>
 public sealed record PresetCard(string Name, string? Path, string About)
 {
     public override string ToString() => Name;
 }
 
 /// <summary>
-/// The Project Manager (5.4A, a studio of three modes): New Project makes a project (a request the main window carries out: the dialog
-/// opens nothing itself), Open / Manage Projects saves the current session as a project and lists the saved ones (since 4.1.1-B with a
-/// 16:9 picture of each project's main video, the media browser's poster and strip, from its cache, made in the background when not
-/// kept, scrubbed by the pointer, while Settings' Show video &amp; hover previews in Project Manager is on), and Project Settings shows and
-/// sets the open project's settings.
+/// Project Manager with three modes: New Project (returns a request the main window executes), Open / Manage Projects (save current,
+/// list saved projects with 16:9 hover-scrubbable previews from the Media Browser cache when Show video &amp; hover previews is on), and
+/// Project Settings for the open project.
 /// </summary>
 public partial class ProjectManagerWindow : Window
 {
     private readonly MainViewModel _viewModel;
     private readonly CancellationTokenSource _closing = new();
 
-    // How tall the pictures are decoded: the list's picture is 72 pixels tall, at up to twice that on a high-DPI screen.
+    // Decode height: 72 DIP list picture at up to 2x DPI.
     private const int PictureHeight = 144;
 
-    // Set once the window's parts are all made: the format's handlers run while the XAML is read, before the later parts exist.
+    // Set after construction: XAML change handlers fire during InitializeComponent before later elements exist.
     private readonly bool _ready;
 
-    /// <param name="focusName">Opened to save (Ctrl+S on a new project, Save As): the name box has the keyboard, its text chosen (Open / Manage).</param>
-    /// <param name="mode">The mode it opens in (Open / Manage when opened to save).</param>
+    /// <param name="focusName">Opened to save (Ctrl+S on a new project, Save As): focus and select the name box (Open / Manage).</param>
+    /// <param name="mode">Initial mode (Open / Manage when opened to save).</param>
     public ProjectManagerWindow(MainViewModel viewModel, bool focusName = false, ProjectManagerMode mode = ProjectManagerMode.Manage)
     {
         InitializeComponent();
@@ -98,7 +95,7 @@ public partial class ProjectManagerWindow : Window
         else if (viewModel.HasSource)
             NameBox.Text = Path.GetFileNameWithoutExtension(viewModel.LocalMediaPath);
 
-        // New Project starts as Settings says every video starts: tall or wide, in the Projects folder, under the first name free there.
+        // New Project defaults: Settings orientation, Projects folder, first free name.
         NewFolderBox.Text = AppPaths.Projects;
         _offerTimer.Tick += OfferTimer_Tick;
         _offerTimer.Stop();
@@ -128,7 +125,7 @@ public partial class ProjectManagerWindow : Window
         PreviewsBox.IsChecked = AppSettings.Current.ShowProjectPreviews;
         RefreshList();
 
-        // Projects imported while the list is showing appear in it at once.
+        // Refresh the list when projects are imported while open.
         ProjectStore.Changed += RefreshList;
         Closed += (_, _) =>
         {
@@ -136,7 +133,7 @@ public partial class ProjectManagerWindow : Window
             _offerTimer.Stop();
             _closing.Cancel();
 
-            // The picker gives back its timers, its listing and its pictures (up to 32 MB of them) with the dialog.
+            // Dispose the picker's timers, listing and images (up to 32 MB) with the dialog.
             if (_picker is { } picker)
             {
                 picker.SelectedFilesChanged -= UpdatePicked;
@@ -147,24 +144,24 @@ public partial class ProjectManagerWindow : Window
         };
     }
 
-    /// <summary>The project the user chose to open, for the main window to load once this one has closed.</summary>
+    /// <summary>Project selected to open; loaded by the main window after this dialog closes.</summary>
     public string? ProjectToLoad { get; private set; }
 
-    // Opened to save: a project saved is what it was opened for.
+    // Opened to save: closing after a save completes the request.
     private readonly bool _closeOnSave;
 
     /// <summary>
-    /// A blank new project was asked for: the main window empties the session (asking about unsaved changes first). Kept for the main
-    /// window's handling; since 5.4A + New Project shows the New Project mode, whose request is <see cref="NewProjectToCreate"/>.
+    /// Blank-project request (main window clears the session after confirming unsaved changes). + New Project now uses the New Project
+    /// mode, whose request is <see cref="NewProjectToCreate"/>.
     /// </summary>
     public bool NewProjectRequested { get; private set; }
 
-    /// <summary>The project New Project's Create Project asked for (5.4A), for the main window to make once this one has closed; null for none.</summary>
+    /// <summary>Create Project request for the main window to execute after close; null for none.</summary>
     public NewProjectRequest? NewProjectToCreate { get; private set; }
 
     // ----- The modes -----
 
-    // The mode shown; null before the first. Whether the Game Preset cards were asked for (New Project shown once).
+    // Current mode (null initially) and whether Game Preset cards were loaded.
     private ProjectManagerMode? _shownMode;
     private bool _presetsAsked;
 
@@ -178,10 +175,10 @@ public partial class ProjectManagerWindow : Window
             : ProjectManagerMode.Manage);
     }
 
-    /// <summary>Shows a mode: its part of the window, its button chosen; New Project makes its picker and cards the first time.</summary>
+    /// <summary>Switches mode (panel and button); New Project builds its picker and cards on first show.</summary>
     private void ShowMode(ProjectManagerMode mode)
     {
-        // Choosing the mode's button below comes back here (Mode_Checked): the mode is shown once.
+        // Checking the mode button re-enters via Mode_Checked; guard so the mode applies once.
         if (_shownMode == mode)
             return;
 
@@ -219,7 +216,7 @@ public partial class ProjectManagerWindow : Window
 
     // ----- New Project -----
 
-    // The Media Browser as the picker (MediaBrowserPane.PickerMode), made when New Project is first shown.
+    // Media Browser in PickerMode, built on first New Project show.
     private Views.MediaBrowserPane? _picker;
 
     private void EnsurePicker()
@@ -243,7 +240,7 @@ public partial class ProjectManagerWindow : Window
 
     private void ClearPicked_Click(object sender, RoutedEventArgs e) => _picker?.ClearSelectedFiles();
 
-    /// <summary>The Game Preset cards: None first, then the Styles folder's presets (read off the interface), Overwatch 2 first when it is there.</summary>
+    /// <summary>Game Preset cards: None, then Styles folder presets (read off the UI thread), Overwatch 2 first when present.</summary>
     private async Task LoadPresetCardsAsync()
     {
         List<StyleFile> styles;
@@ -266,7 +263,7 @@ public partial class ProjectManagerWindow : Window
         PresetCards.SelectedIndex = 0;
     }
 
-    /// <summary>A Game Preset chosen: the frame turns tall or wide as the preset's layout is (the aspect can still be chosen after).</summary>
+    /// <summary>On Game Preset selection, sets orientation from its layout (aspect remains editable).</summary>
     private void PresetCards_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_ready || PresetCards.SelectedItem is not PresetCard { Path: { } path })
@@ -281,7 +278,7 @@ public partial class ProjectManagerWindow : Window
         }
     }
 
-    // The aspect, resolution, custom size, rate or colour space changed: the summary under them, and whether Create Project can be pressed.
+    // Format input changed: refresh the summary and Create Project's enabled state.
     private void Format_Changed(object sender, RoutedEventArgs e)
     {
         if (_ready)
@@ -296,7 +293,7 @@ public partial class ProjectManagerWindow : Window
         : SquareCard.IsChecked == true ? NewProjectRequest.Square
         : NewProjectRequest.Wide;
 
-    /// <summary>The frame chosen: the aspect at the resolution's short side, or the custom size; null for a custom size not yet a size.</summary>
+    /// <summary>Chosen frame: aspect at the resolution's short side, or the custom size; null for an incomplete custom size.</summary>
     private (int Width, int Height)? ChosenFrame()
     {
         var shortSide = ResolutionBox.SelectedItem is ComboBoxItem { Tag: string tag } && int.TryParse(tag, out var side) ? side : 1080;
@@ -309,7 +306,7 @@ public partial class ProjectManagerWindow : Window
             : null;
     }
 
-    /// <summary>The rate chosen; null for Auto from First Clip.</summary>
+    /// <summary>Chosen rate; null for Auto from First Clip.</summary>
     private Models.Timeline.FrameRate? ChosenRate() =>
         FrameRateBox.SelectedItem is ComboBoxItem { Tag: string tag } && int.TryParse(tag, out var fps) && fps > 0
             ? Models.Timeline.FrameRate.FromFps(fps)
@@ -330,11 +327,11 @@ public partial class ProjectManagerWindow : Window
         CreateButton.IsEnabled = frame is not null;
     }
 
-    // The name New Project offered last (5.4A): offered again for the folder chosen while the name box still holds it (or nothing).
+    // Last auto-offered name; re-offered for a new folder while the box still holds it (or is empty).
     private string _offeredName = "";
 
-    // The location box offers the free name again once typing rests (5.4A): each keystroke would otherwise look through the folder
-    // typed so far, a share's half-typed path among them, on the UI thread.
+    // Debounce re-offering the free name while typing a location: per-keystroke folder scans (including half-typed share paths)
+    // would block the UI thread.
     private readonly System.Windows.Threading.DispatcherTimer _offerTimer = new() { Interval = TimeSpan.FromMilliseconds(300) };
 
     private void NewFolder_TextChanged(object sender, TextChangedEventArgs e)
@@ -343,7 +340,7 @@ public partial class ProjectManagerWindow : Window
         _offerTimer.Start();
     }
 
-    // Typing has rested: the name offered again, only for a folder that is there (looked at once).
+    // Typing settled: re-offer the name if the folder exists (single check).
     private void OfferTimer_Tick(object? sender, EventArgs e)
     {
         _offerTimer.Stop();
@@ -351,7 +348,7 @@ public partial class ProjectManagerWindow : Window
             OfferFreeName();
     }
 
-    /// <summary>Offers the first of "New Project", "New Project 2"... that no project in the chosen folder has, unless a name of the user's own is typed.</summary>
+    /// <summary>Offers the first free "New Project [N]" in the folder unless a custom name was typed.</summary>
     private void OfferFreeName()
     {
         if (NewNameBox.Text.Trim().Length > 0 && NewNameBox.Text != _offeredName)
@@ -369,13 +366,13 @@ public partial class ProjectManagerWindow : Window
         if (dialog.ShowDialog(this) != true)
             return;
 
-        // A folder chosen is there: its free name at once, not after the location box's pause.
+        // Browsed folder exists: offer its free name immediately (no debounce).
         NewFolderBox.Text = dialog.FolderName;
         _offerTimer.Stop();
         OfferFreeName();
     }
 
-    /// <summary>Create Project: the request handed to the main window (which makes the project in a tab of its own), and the dialog closed.</summary>
+    /// <summary>Create Project: stores the request (the main window creates it in a new tab) and closes.</summary>
     private void Create_Click(object sender, RoutedEventArgs e)
     {
         if (ChosenFrame() is not { } frame)
@@ -414,17 +411,17 @@ public partial class ProjectManagerWindow : Window
 
     // ----- Project Settings -----
 
-    /// <summary>A frame rate as the Project Settings list offers it (null: the first clip's own).</summary>
+    /// <summary>Project Settings rate option (null = first clip's rate).</summary>
     private sealed record RateChoice(Models.Timeline.FrameRate? Rate, string Label)
     {
         public override string ToString() => Label;
     }
 
-    // What FillSettings showed in the frame boxes and the rate list (5.4A): Apply sends the frame and the rate only when they were changed.
+    // Values FillSettings displayed; Apply sends frame and rate only when changed from these.
     private (string Width, string Height) _shownFrame = ("", "");
     private RateChoice? _shownRate;
 
-    /// <summary>Shows the open project's settings in the boxes (the frame as it is output, Export's Resolution boxes and all), and what its source is.</summary>
+    /// <summary>Loads current project settings (output frame including Export Resolution) and their source into the fields.</summary>
     private void FillSettings()
     {
         var current = _viewModel.CurrentProjectSettings;
@@ -469,9 +466,8 @@ public partial class ProjectManagerWindow : Window
     }
 
     /// <summary>
-    /// Apply: the frame and the rate go to the project only when they were changed from what was shown (5.4A), so a change of the sample
-    /// rate alone neither resets Export's Resolution nor marks the frame and rate as chosen. The frame emptied, or Auto from First Clip
-    /// chosen again, on an empty Sequence leaves them to the first clip once more.
+    /// Apply: sends frame/rate only if changed, so e.g. a sample-rate-only change neither resets Export Resolution nor marks them explicit.
+    /// Clearing the frame or re-selecting Auto on an empty Sequence returns them to first-clip control.
     /// </summary>
     private void ApplySettings_Click(object sender, RoutedEventArgs e)
     {
@@ -490,11 +486,11 @@ public partial class ProjectManagerWindow : Window
                 return;
             }
 
-            // Even, as every frame the encoders take is.
+            // Round to even dimensions (encoder requirement).
             (width, height) = (width / 2 * 2, height / 2 * 2);
         }
 
-        // Emptied, or Auto again: the first clip's (an empty Sequence only; the view model refuses it otherwise).
+        // Cleared or Auto: revert to first clip (empty Sequence only; the VM refuses otherwise).
         _viewModel.LeaveToFirstClip(frame: frameChanged && widthText.Length == 0 && heightText.Length == 0, rate: rateChanged && chosenRate?.Rate is null);
 
         var rate = rateChanged ? chosenRate?.Rate : null;
@@ -506,12 +502,12 @@ public partial class ProjectManagerWindow : Window
         MessageText.Text = _viewModel.StatusText;
     }
 
-    // The listing asked for last: one that finishes after a newer one was asked for is dropped.
+    // Latest listing generation; stale completions are dropped.
     private int _listing;
 
     private void RefreshList()
     {
-        // Asked from elsewhere (projects imported: ProjectStore.Changed): listed on the window's own thread.
+        // External trigger (ProjectStore.Changed on import): marshal to the window's thread.
         if (!Dispatcher.CheckAccess())
         {
             _ = Dispatcher.InvokeAsync(RefreshList);
@@ -522,9 +518,8 @@ public partial class ProjectManagerWindow : Window
     }
 
     /// <summary>
-    /// Lists the saved projects. Each project file is read whole to say what it holds, which for a folder of them took
-    /// the interface's thread far past a frame as the window opened (4.3E): they are read on the thread pool, and the list
-    /// is filled once they are.
+    /// Lists saved projects. Each file is fully parsed, which blocked the UI thread for many frames, so parsing runs on the pool and
+    /// the list fills when done.
     /// </summary>
     private async Task RefreshListAsync()
     {
@@ -542,8 +537,7 @@ public partial class ProjectManagerWindow : Window
         if (listing != _listing || _closing.IsCancellationRequested)
             return;
 
-        // With previews on, every row has its picture's place from the start (dark until its picture comes, and dark for a
-        // source that has none, such as a link): the rows are one height and do not grow as their pictures arrive.
+        // With previews on, reserve each row's picture slot up front (dark until loaded or when none) so rows never resize.
         var previews = AppSettings.Current.ShowProjectPreviews ? Visibility.Visible : Visibility.Collapsed;
         var rows = entries.Select(e => new ProjectRow(e) { PictureVisibility = previews }).ToList();
         ProjectList.ItemsSource = rows;
@@ -556,10 +550,8 @@ public partial class ProjectManagerWindow : Window
     // ----- The pictures -----
 
     /// <summary>
-    /// Each project's picture: its baked thumbnail when its file carries one (Pass 5.2D: the Sequence as it was
-    /// saved, decoded off the interface), else its video's poster. The video's strip, which the pointer scrubs, from the media browser's
-    /// cache when it is kept there (read off the interface), otherwise made in the background (one piece of work for them all), at the
-    /// browser's own strip settings so that the browser and this list share one strip per video.
+    /// Loads row pictures: baked thumbnail (decoded off the UI thread), else video poster; plus the scrub filmstrip from the Media
+    /// Browser cache, or generated in one background job with the browser's strip settings so both share one strip per video.
     /// </summary>
     private async Task LoadPicturesAsync(IReadOnlyList<ProjectRow> rows)
     {
@@ -569,7 +561,7 @@ public partial class ProjectManagerWindow : Window
         var missing = new List<ProjectRow>();
         try
         {
-            // The baked thumbnails first, all of them: they are in the listing already, and each takes a moment to decode.
+            // Decode all baked thumbnails first (already in the listing).
             foreach (var row in rows)
             {
                 if (row.Entry.Thumbnail is not { Length: > 0 } jpeg)
@@ -614,13 +606,13 @@ public partial class ProjectManagerWindow : Window
         }
         catch (OperationCanceledException)
         {
-            // The window was closed: the rest are made another time.
+            // Window closed: stop; remaining strips are built on a later open.
         }
     }
 
     private void Show(ProjectRow row, string strip, double shape, BitmapSource? poster)
     {
-        // The baked thumbnail stays the picture: the video's strip is for the pointer's scrub, and its poster for a project without one.
+        // Keep the baked thumbnail as resting image; the strip is for scrubbing, the poster only for projects without a thumbnail.
         (row.Strip, row.Shape, row.Poster) = (strip, shape, row.Baked ?? poster);
         if (row.Poster is null || !AppSettings.Current.ShowProjectPreviews)
             return;
@@ -628,7 +620,7 @@ public partial class ProjectManagerWindow : Window
         (row.Picture, row.PictureVisibility) = (row.Poster, Visibility.Visible);
     }
 
-    // The pointer across a picture: the frame at that point of the video (the strip decoded once, on the way in).
+    // Hover scrub: show the frame at the pointer position (strip decoded once on enter).
     private void Picture_MouseMove(object sender, MouseEventArgs e) => Faults.Forget(Picture_MouseMoveAsync(sender, e), nameof(Picture_MouseMove));
 
     private async Task Picture_MouseMoveAsync(object sender, MouseEventArgs e)
@@ -703,7 +695,7 @@ public partial class ProjectManagerWindow : Window
         RefreshList();
     }
 
-    /// <summary>Asked for by Save as Bundle: the window closes and the main window asks where (Save As with the bundle type).</summary>
+    /// <summary>Save as Bundle request: closes, and the main window shows Save As with the bundle type.</summary>
     public bool BundleRequested { get; private set; }
 
     private void SaveBundle_Click(object sender, RoutedEventArgs e)
@@ -733,13 +725,13 @@ public partial class ProjectManagerWindow : Window
         DialogResult = true;
     }
 
-    // + New Project (5.4A): the New Project mode, where the project is made.
+    // + New Project switches to the New Project mode.
     private void NewProject_Click(object sender, RoutedEventArgs e) => ShowMode(ProjectManagerMode.NewProject);
 
     private void ProjectList_SelectionChanged(object sender, SelectionChangedEventArgs e) =>
         LoadButton.IsEnabled = DeleteButton.IsEnabled = ProjectList.SelectedItem is ProjectRow;
 
-    // On the thread pool (4.3E): making the folder and starting Explorer took the interface's thread for tens of milliseconds.
+    // On the pool: creating the folder and launching Explorer cost tens of ms on the UI thread.
     private void OpenDirectory_Click(object sender, RoutedEventArgs e) => Faults.Forget(OpenDirectory_ClickAsync(sender, e), nameof(OpenDirectory_Click));
 
     private async Task OpenDirectory_ClickAsync(object sender, RoutedEventArgs e)
@@ -749,7 +741,7 @@ public partial class ProjectManagerWindow : Window
         {
             try
             {
-                // The folder only comes into being with the first saved project.
+                // The folder is created with the first saved project.
                 Directory.CreateDirectory(folder);
                 ShellOpen.OpenFolder(folder);
                 return null;
@@ -786,7 +778,7 @@ public partial class ProjectManagerWindow : Window
             return;
         }
 
-        // Gone from the list at once (the list read afresh comes a moment later, from the thread pool).
+        // Remove immediately; the pool refresh follows.
         var left = ProjectList.Items.OfType<ProjectRow>().Where(r => !ReferenceEquals(r.Entry, entry)).ToList();
         ProjectList.ItemsSource = left;
         ProjectList.SelectedItem = null;
@@ -803,8 +795,7 @@ public partial class ProjectManagerWindow : Window
         if (ProjectList.SelectedItem is not ProjectRow { Entry: var entry })
             return;
 
-        // While something is encoding, the project is not loaded into the window: it goes into the
-        // queue as a new job instead, without disturbing what is running.
+        // During an encode, queue the project as a new job instead of loading it.
         ProjectToLoad = entry.FilePath;
         DialogResult = true;
     }

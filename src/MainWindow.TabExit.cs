@@ -3,62 +3,54 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- Closing HandPeg with project tabs (Pass 5.5A) -----
-// What closing does with the open project tabs is one plan, chosen as the close begins (MayCloseProjectTabs, from the settings):
-//   SuspendAll (Keep open project tabs suspended between sessions, off at first since the 5.5A addenda): nothing is asked; every tab holding
-//     work, the tab in front included, is kept in the session cache exactly as it is (its undo and redo history with it, never lagged),
-//     tabs.json with their order, and the next start brings them back (RecoverProjectTabs: the one in front last time in front again).
-//   KeepDirtyBehind (that setting off, Prompt to save before closing off): as before, nothing is asked, the tabs behind with unsaved changes
-//     are kept and the tab in front's are not.
-//   Forget (both settings as HandPeg comes: the 5.5A addenda, the user's call that closing asks): with two tabs or more holding work, one
-//     dialog lists every one of them (SaveTabsOnExitDialog: the unsaved ones checked to be saved, the saved ones shown as saved): Save
-//     Checked & Close, Keep Suspended for Next Launch (SuspendAll after all) or Discard & Close; Cancel stays. One tab holding work alone:
-//     with work not saved as a project (changes, or never saved at all) the classic question when it is in front (MayClose,
-//     SaveOnExitDialog), the dialog with its one row when it is behind; saved, nothing is asked.
-// Once the tabs have answered for the tab in front too (ExitAnsweredByTabs), MayClose asks nothing more. ForgetProjectTabs carries the plan
-// out as the window closes.
+// ----- Application exit with project tabs -----
+// MayCloseProjectTabs picks one TabExitPlan from settings when the close starts:
+//   SuspendAll (KeepOpenTabsOnClose, default off): no prompt; every non-empty tab, active included, is written to the session cache
+//     verbatim (full undo/redo history) with tabs.json order; RecoverProjectTabs restores them next start with the same active tab.
+//   KeepDirtyBehind (both settings off): no prompt; dirty background tabs keep their cache files, the active tab's do not.
+//   Forget (default: PromptToSaveOnExit on): two or more tabs holding work get one SaveTabsOnExitDialog (unsaved rows checked, saved rows
+//     shown as saved) with Save Checked & Close, Keep Suspended for Next Launch (falls back to SuspendAll) or Discard & Close; Cancel aborts.
+//     A single unsaved tab gets the classic SaveOnExitDialog when active (MayClose), else the one-row dialog; nothing asked if all saved.
+// ExitAnsweredByTabs suppresses MayClose's own prompt once the dialog covered the active tab; ForgetProjectTabs applies the plan on close.
 public partial class MainWindow
 {
-    /// <summary>What closing HandPeg does with the project tabs' cache files (Pass 5.5A; see the section above).</summary>
+    /// <summary>Exit-time handling of project tab cache files (see the section header).</summary>
     internal enum TabExitPlan
     {
-        /// <summary>Every tab's files go: nothing is offered back at the next start.</summary>
+        /// <summary>Delete all tab files; nothing is restored next start.</summary>
         Forget,
 
-        /// <summary>The tabs behind with unsaved changes keep their files (the prompt off, the tabs not kept): offered back at the next start.</summary>
+        /// <summary>Dirty background tabs keep their files (prompt and keep-open both off) and are offered next start.</summary>
         KeepDirtyBehind,
 
-        /// <summary>Every tab holding work keeps its file, the tab in front's written exactly as it is, and tabs.json their order.</summary>
+        /// <summary>Every non-empty tab keeps its file (active tab written verbatim) plus tabs.json order.</summary>
         SuspendAll,
     }
 
-    /// <summary>What closing HandPeg asks about the project tabs (Pass 5.5A addenda; see the section above).</summary>
+    /// <summary>Exit-time prompt for project tabs (see the section header).</summary>
     internal enum ExitQuestion
     {
-        /// <summary>Nothing: closing goes on (or the tabs are kept, or the prompt is off).</summary>
+        /// <summary>No prompt (tabs kept, prompt disabled, or nothing unsaved).</summary>
         None,
 
-        /// <summary>The one dialog listing every tab holding work (SaveTabsOnExitDialog).</summary>
+        /// <summary>SaveTabsOnExitDialog listing every non-empty tab.</summary>
         Tabs,
 
-        /// <summary>The classic question for one project alone, in front, with work not saved (MayClose, SaveOnExitDialog).</summary>
+        /// <summary>Single unsaved active project: classic SaveOnExitDialog via MayClose.</summary>
         Classic,
     }
 
-    // The plan the close under way carries out (MayCloseProjectTabs sets it, ForgetProjectTabs follows it), and what it asks.
+    // Current close's plan and prompt (set by MayCloseProjectTabs, applied by ForgetProjectTabs).
     private TabExitPlan _tabExitPlan;
     private ExitQuestion _exitQuestion;
 
-    /// <summary>Whether the close's answer covered the tab in front as well (Pass 5.5A): MayClose then asks nothing more.</summary>
+    /// <summary>True when the tab dialog already covered the active tab, so MayClose skips its prompt.</summary>
     private bool ExitAnsweredByTabs { get; set; }
 
     /// <summary>
-    /// The plan for closing HandPeg (pure: tabs-exit-plan), and what it asks: the tabs kept when <paramref name="keepOpen"/>
-    /// (AppSettings.KeepOpenTabsOnClose), nothing asked; else today's way with no <paramref name="prompt"/> (AppSettings.PromptToSaveOnExit);
-    /// else forgotten, and asked about only when closing would drop work not saved (<paramref name="unsavedTabs"/>: <see cref="UnsavedForExit"/>;
-    /// 5.5.0, the user's Q2 (b): every tab saved closes with no question): with two tabs or more holding work (<paramref name="heldTabs"/>)
-    /// the one dialog listing them all (the saved shown as saved); one alone the classic question when it is the project in front
-    /// (<paramref name="unsavedInFront"/>), else the dialog with its one row.
+    /// Pure exit decision (golden: tabs-exit-plan). <paramref name="keepOpen"/> (KeepOpenTabsOnClose) = SuspendAll, no prompt; no
+    /// <paramref name="prompt"/> (PromptToSaveOnExit) = KeepDirtyBehind; else Forget, prompting only if <paramref name="unsavedTabs"/> > 0
+    /// (<see cref="UnsavedForExit"/>): the tab dialog for <paramref name="heldTabs"/> >= 2, else Classic when <paramref name="unsavedInFront"/>.
     /// </summary>
     internal static (TabExitPlan Plan, ExitQuestion Ask) ExitPlanFor(bool keepOpen, bool prompt, int heldTabs, int unsavedTabs, bool unsavedInFront) =>
         keepOpen ? (TabExitPlan.SuspendAll, ExitQuestion.None)
@@ -68,19 +60,18 @@ public partial class MainWindow
         : (TabExitPlan.Forget, unsavedInFront ? ExitQuestion.Classic : ExitQuestion.Tabs);
 
     /// <summary>
-    /// Whether a tab holds work closing would lose unasked (pure, the 5.5A addenda): it holds something (not <paramref name="empty"/>) and
-    /// either has changes not saved (<paramref name="dirty"/>) or was never saved as a project at all (no <paramref name="projectPath"/>:
-    /// a video opened and left as it was is work too, though nothing changed since it was opened).
+    /// Pure: a tab would lose work on exit if not <paramref name="empty"/> and either <paramref name="dirty"/> or never saved (empty
+    /// <paramref name="projectPath"/>; an opened-but-unedited video still counts).
     /// </summary>
     internal static bool UnsavedForExit(bool dirty, bool empty, string projectPath) => !empty && (dirty || projectPath.Length == 0);
 
-    /// <summary><see cref="UnsavedForExit(bool, bool, string)"/> for a tab: the tab in front's file is the view model's (its header follows it).</summary>
+    /// <summary><see cref="UnsavedForExit(bool, bool, string)"/> for a tab; the active tab's path comes from the view model.</summary>
     private bool UnsavedForExit(ProjectTabHeader tab) =>
         UnsavedForExit(tab.Dirty, tab.Empty, KeptInFile(tab) ? tab.ProjectPath : _viewModel.CurrentProjectPath);
 
     /// <summary>
-    /// The tab in front kept for the next start as HandPeg closes (SuspendAll): written exactly as it is (<see cref="TrySuspendActiveTab"/>).
-    /// When it could not be and it has unsaved changes, closing anyway is the user's call (staying is the default). Whether to close.
+    /// SuspendAll: writes the active tab for next start (<see cref="TrySuspendActiveTab"/>). On failure with unsaved changes, asks whether to
+    /// close anyway (default: stay). Returns whether to close.
     /// </summary>
     private bool SuspendFrontForExit()
     {
@@ -97,17 +88,16 @@ public partial class MainWindow
             Owner = this, DefaultsToCancel = true, CancelText = "Keep HandPeg Open",
         }.ShowDialog() == true;
 
-        // Staying: the tab in front keeps no cache file while it is in front (one half written goes, after any write of it).
+        // Staying: the active tab must not keep a cache file; delete any partial write (queued after pending writes).
         if (!close)
             DeleteTabFiles(front.Id);
         return close;
     }
 
     /// <summary>
-    /// The tab in front written to its cache file exactly as it is (Pass 5.5A, SuspendAll; the window's thread, waited for): its project
-    /// with its undo and redo history (never lagged), its saved state's fingerprint when it has unsaved changes, its header with its window,
-    /// view and exact dot. On the tab's own queue, so it lands after its crash-recovery file's write, never beside it. A tab in front that
-    /// could not be brought back is its file already (kept as it is), and one holding nothing keeps none. False, and why, when it failed.
+    /// Synchronously writes the active tab's cache file (UI thread): project with full undo/redo, saved fingerprint if dirty, header with
+    /// window/view state and exact dirty dot. Runs on the tab's queue after any crash-recovery write. Unresumed tabs already are their file;
+    /// empty tabs write none. Returns false with the reason on failure.
     /// </summary>
     private bool TrySuspendActiveTab(out string? why)
     {
@@ -123,7 +113,7 @@ public partial class MainWindow
 
         try
         {
-            // Its window first, as a tab put behind takes it (PutActiveBehind), then playback stopped.
+            // Capture window state first (as PutActiveBehind does), then stop playback.
             _viewModel.StatusText = "Keeping tabs for the next start...";
             CaptureWindowStateForTab(tab);
             StopPlayingForTabs();
@@ -144,11 +134,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Every tab holding work asked about in one dialog as HandPeg closes (Pass 5.5A, the Forget plan; the 5.5A addenda: every one of them,
-    /// <paramref name="held"/>, the saved ones shown as saved; the tab in front's dot made exact by MayCloseProjectTabs). Save Checked &amp;
-    /// Close saves the checked tabs (the unchecked ones are let go; a save that fails asks whether to close anyway, staying by default), Keep
-    /// Suspended for Next Launch keeps every tab (SuspendAll), Discard &amp; Close lets them all go. False when the user chose to stay
-    /// (Cancel, Esc, the title bar's ×).
+    /// Forget plan: one dialog for all <paramref name="held"/> tabs (saved rows shown as saved; active dirty state refreshed by
+    /// MayCloseProjectTabs). Save Checked &amp; Close saves checked tabs and discards the rest (on save failure asks, default stay); Keep
+    /// Suspended switches to SuspendAll; Discard &amp; Close drops all. Returns false on Cancel, Esc or the title bar ×.
     /// </summary>
     private bool AskAboutTabsOnExit(IReadOnlyList<ProjectTabHeader> held)
     {
@@ -185,8 +173,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The checked rows' tabs saved (Pass 5.5A): the tab in front as Ctrl+S saves it (its project file, else a first save under the row's
-    /// name), a tab behind from its cache file without bringing it back (<see cref="SaveTabInPlace"/>). What failed goes into <paramref name="failed"/>.
+    /// Saves checked rows: the active tab like Ctrl+S (its project file, else a first save under the row name); background tabs from their
+    /// cache files without resuming (<see cref="SaveTabInPlace"/>). Failures are appended to <paramref name="failed"/>.
     /// </summary>
     private void SaveCheckedTabs(IReadOnlyList<TabExitRow> rows, List<string> failed)
     {
@@ -207,7 +195,7 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Whether to close HandPeg although some tabs could not be saved (never by default: Keep HandPeg Open).</summary>
+    /// <summary>Asks whether to close despite save failures (default: Keep HandPeg Open).</summary>
     private bool CloseAnyway(IReadOnlyList<string> failed) =>
         new ConfirmDialog("Projects Not Saved", $"{string.Join("\n", failed)}\n\nClose HandPeg anyway? The changes that were not saved are lost.", "Close Without Saving")
         {
@@ -215,10 +203,9 @@ public partial class MainWindow
         }.ShowDialog() == true;
 
     /// <summary>
-    /// The dialog's rows (Pass 5.5A): each its name, its project file (the tab in front's is the view model's) or "Never saved"
-    /// (<see cref="RowDetail"/>), and for one never saved a name to save it under: its own, or a dated one for a tab still called New
-    /// Project or Untitled Project, each name once in the list. The 5.5A addenda: a tab with nothing unsaved (<see cref="UnsavedForExit(ProjectTabHeader)"/>)
-    /// is a row shown as saved, with nothing to tick.
+    /// Builds dialog rows: title, detail (<see cref="RowDetail"/>; active tab path from the view model), and for never-saved tabs a unique
+    /// save name (its title, or a dated name for default/recovered titles). Tabs not <see cref="UnsavedForExit(ProjectTabHeader)"/> are
+    /// read-only "saved" rows.
     /// </summary>
     private List<TabExitRow> RowsOf(IEnumerable<ProjectTabHeader> tabs)
     {
@@ -251,30 +238,26 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A row's detail (pure, Pass 5.5A review): its project file or "Never saved"; for a tab whose file is a crash-recovery copy written actions
-    /// back (ProjectTabHeader.StepsBack), first that it was recovered so far back (saved or kept, it opens there with the last edits on Redo),
-    /// so a long path never hides it.
+    /// Pure row detail: project path or "Never saved", prefixed with "Recovered N actions back" for a lagging crash-recovery copy
+    /// (ProjectTabHeader.StepsBack; the latest edits are on Redo) so a long path never hides it.
     /// </summary>
     internal static string RowDetail(string path, int stepsBack) =>
         (stepsBack > 0 ? $"Recovered {stepsBack} action{(stepsBack == 1 ? "" : "s")} back · " : "") + (path.Length > 0 ? path : "Never saved");
 
-    // ----- The tabs a session left, brought back with the one in front last time in front (Pass 5.5A addenda, AD-1) -----
-    // The user: opening HandPeg with tabs left open must not also open a new blank tab. RecoverProjectTabs (at idle after the first frame:
-    // the first frame is still the blank Timeline with the strip collapsed) takes the tabs in; when the start-up tab is still untouched,
-    // the tab that was in front last time comes to the front through the switch's own steps (the blank tab put behind, the tab resumed
-    // from its cache file) and the blank tab goes (it holds nothing: nothing is asked). One step of a switch is left out: the tab's own
-    // window layout (Law 1: the first frame's single dock build is the only one until the user changes tabs), so the tab takes the window
-    // as it is, as a tab opened does. Its resume failing keeps the blank tab in front, as before, and says so. Pass 5.5A final review: only the
-    // tabs of a session that closed keeping them on purpose (ProjectTabs.WriteKeptManifest); a crash's stay behind the start-up tab, unopened.
+    // ----- Restoring kept tabs and reactivating the previous active tab -----
+    // Restoring kept tabs must not leave an extra blank tab. RecoverProjectTabs runs at idle after Frame 1 (blank Timeline, strip collapsed);
+    // if the start-up tab is untouched, the previously active tab is brought forward via the switch steps (blank tab backgrounded, target
+    // resumed from cache) and the blank tab is removed without prompting. The tab's own window layout is skipped (Law 1: single dock build
+    // until the user switches tabs). On resume failure the blank tab stays active with a status message. Only manifests from deliberate
+    // keep-on-close (ProjectTabs.WriteKeptManifest) are restored this way; crash leftovers stay unopened in the background.
 
-    // Pass 5.5A final review: RecoverProjectTabs came while a close was asking, and left the tabs a dead session left where they are; it runs
-    // again once that close is called off (MainWindow_Closing). Its keys for the strip's menu are set once (the first run).
+    // Set when RecoverProjectTabs ran during a pending close prompt and deferred the leftover tabs; it re-runs when that close is cancelled
+    // (MainWindow_Closing). Strip menu gestures are registered once, on the first run.
     private bool _leftTabsPutOff, _tabGesturesSet;
 
     /// <summary>
-    /// A close called off (MainWindow_Closing, once its <c>_closeAsked</c> is let go): the tabs a dead session left, put off while it was asking
-    /// (<see cref="RecoverProjectTabs"/>), taken in now, at idle as at start. Pass 5.5A fix round 3 (S-R3): a method of its own, so the goldens
-    /// drive it.
+    /// After a cancelled close (MainWindow_Closing, once <c>_closeAsked</c> clears): adopts the leftover tabs deferred during the prompt
+    /// (<see cref="RecoverProjectTabs"/>) at idle, as at start. Separate method so goldens can drive it.
     /// </summary>
     private void TakeInLeftTabsPutOff()
     {
@@ -286,18 +269,17 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Whether the tabs a session left bring the one in front last time to the front (pure: project-tabs-restored-front): the start-up tab
-    /// is the only tab but them and in front (<paramref name="startTabAlone"/>), still blank (it holds nothing and has no project file),
-    /// not shown on purpose by Ctrl+T or +, with nothing under way in it (a switch, an open, an import, a drop, a recording, a drag, the
-    /// close), and HandPeg was not started with a project to open. Otherwise the tabs stay behind it, as before.
+    /// Pure (golden: project-tabs-restored-front): bring the previous active tab forward only if the start-up tab is the sole other tab and
+    /// active (<paramref name="startTabAlone"/>), blank with no project path, not deliberately <paramref name="revealed"/> (Ctrl+T or +),
+    /// nothing <paramref name="underWay"/> (switch, open, import, drop, recording, drag, close), and not <paramref name="launchedWithProject"/>.
     /// </summary>
     internal static bool BringsRestoredForward(bool startTabAlone, bool holdsNothing, string projectPath, bool revealed, bool underWay, bool launchedWithProject) =>
         startTabAlone && holdsNothing && projectPath.Length == 0 && !revealed && !underWay && !launchedWithProject;
 
     /// <summary>
-    /// The tab the last session had in front, to bring forward now (<see cref="BringsRestoredForward"/>); null to leave the tabs behind the
-    /// start-up tab: <paramref name="leftFront"/> (ProjectTabs.TakeLeftBehind's) when it was adopted (<paramref name="adopted"/>), and
-    /// <paramref name="known"/> the tabs there were before them.
+    /// Previous active tab to bring forward per <see cref="BringsRestoredForward"/>, or null to leave restored tabs in the background.
+    /// <paramref name="leftFront"/> comes from ProjectTabs.TakeLeftBehind and must be in <paramref name="adopted"/>; <paramref name="known"/>
+    /// lists the tabs present before adoption.
     /// </summary>
     private ProjectTabHeader? RestoredFrontToBring(string? leftFront, IReadOnlyList<string> adopted, IReadOnlyList<string> known)
     {
@@ -314,8 +296,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The tabs' side of bringing <paramref name="front"/> forward (the goldens drive it on a ProjectTabs of their own): it is put in front
-    /// and the blank start-up tab taken off the strip. Where that tab was, to put a blank tab back there (<see cref="PutStartTabBack"/>).
+    /// Strip-side swap (golden-testable on a standalone ProjectTabs): activates <paramref name="front"/> and removes the blank start-up tab.
+    /// Returns the blank tab's index for <see cref="PutStartTabBack"/>.
     /// </summary>
     internal static int SwapStartTabFor(ProjectTabs tabs, ProjectTabHeader blank, ProjectTabHeader front)
     {
@@ -325,7 +307,7 @@ public partial class MainWindow
         return at;
     }
 
-    /// <summary>A blank tab put back in front where the start-up tab was (<see cref="SwapStartTabFor"/>), the tab brought forward behind it again.</summary>
+    /// <summary>Reverts <see cref="SwapStartTabFor"/>: inserts and activates a blank tab at the start-up tab's index.</summary>
     internal static ProjectTabHeader PutStartTabBack(ProjectTabs tabs, int at)
     {
         var blank = tabs.Insert(at, "New Project");
@@ -334,11 +316,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The tab the last session had in front brought to the front at start (AD-1), as a switch brings a tab only in its file (its window
-    /// layout left as it is: see the section above): the blank start-up tab put behind and taken off the strip, the strip shown with the
-    /// tab in front (<paramref name="shown"/>: RecoverProjectTabs shows the strip and slides the others out from behind it, at once, while
-    /// it is read), then the tab resumed from its cache file. True when it came back; false with a blank tab in front again (it could not
-    /// be read or opened: the tab stays behind with its files, to try again with a click, and the status line says why).
+    /// Brings the previous active tab forward at start like a content-only switch (window layout untouched; see section header): blank
+    /// start-up tab backgrounded and removed, <paramref name="shown"/> callback (RecoverProjectTabs reveals the strip while it loads), then
+    /// resume from cache. Returns false on failure with a blank tab reactivated; the tab keeps its files for a retry and the status
+    /// line reports why.
     /// </summary>
     private async Task<bool> BringRestoredTabForwardAsync(ProjectTabHeader front, Action shown)
     {
@@ -348,7 +329,7 @@ public partial class MainWindow
         _switchingTab = true;
         try
         {
-            // The blank tab put behind as a switch puts it (it keeps nothing), then gone from the strip.
+            // Background the blank tab as a switch would (it keeps nothing), then remove it from the strip.
             PutActiveBehind(out var write);
             QueueTabWrite(write);
             _unresumed.Remove(blank.Id);
@@ -369,7 +350,7 @@ public partial class MainWindow
         }
         finally
         {
-            // Not brought back: a blank tab in front where the start-up tab was, as HandPeg starts without this (the tab keeps its files).
+            // Failed: restore a blank active tab at the start-up position (the restored tab keeps its files).
             if (!resumed && at >= 0 && _tabs.Tabs.Contains(front))
             {
                 PutStartTabBack(_tabs, at);
@@ -383,20 +364,20 @@ public partial class MainWindow
         return resumed;
     }
 
-    // ----- The restored tab's own layout, kept until it is laid out (Pass 5.5A final review) -----
-    // AD-1 brings the tab forward without laying its layout out (Law 1), so the window keeps the start-up layout: that must never be taken for
-    // the tab's own as it goes behind (CaptureWindowStateForTab), or the arrangement it was kept with would be lost. Until its layout is laid
-    // out (a switch back to it: ApplyTabLayout), the user changes the window's by hand (the Layout Selector, a pane moved or a border dragged:
-    // DockManager.Changed, which a layout laid out for a tab never raises), or it closes, its header keeps its own.
+    // ----- Preserving a restored tab's saved layout -----
+    // The restored tab is brought forward without applying its layout (Law 1), so the window shows the start-up layout; CaptureWindowStateForTab
+    // must not overwrite the tab's saved layout with it when the tab is backgrounded. The header keeps its own layout until ApplyTabLayout
+    // runs (switch back), the user edits the dock (Layout Selector, pane move or splitter: DockManager.Changed, never raised by ApplyTabLayout),
+    // or the tab closes.
 
-    // The tab brought forward without its layout (null for none).
+    // Id of the tab restored without its layout applied (null for none).
     private string? _layoutNotTaken;
     private bool _layoutWatchHooked;
 
-    /// <summary>Whether a tab's header keeps the layout it was kept with as it goes behind (Pass 5.5A final review, see above).</summary>
+    /// <summary>True when backgrounding this tab must keep its saved layout (see section header).</summary>
     private bool LayoutNotTaken(ProjectTabHeader tab) => string.Equals(_layoutNotTaken, tab.Id, StringComparison.Ordinal);
 
-    /// <summary>The tab brought forward (AD-1) keeps its own layout, when it has one, until it is laid out (see above); the dock watched from now on.</summary>
+    /// <summary>Marks a restored tab's saved layout as preserved (if any) and hooks DockManager.Changed once to clear the mark.</summary>
     private void KeepLayoutNotTaken(ProjectTabHeader tab)
     {
         if (!AppSettings.Current.PerTabWindowLayouts || tab.LayoutJson is not { Length: > 0 })
@@ -409,41 +390,40 @@ public partial class MainWindow
         _dock.Changed += () => _layoutNotTaken = null;
     }
 
-    /// <summary>A tab's layout laid out, or the tab closed: nothing kept for it any more (see above).</summary>
+    /// <summary>Clears the preserved-layout mark when the tab's layout is applied or the tab closes.</summary>
     private void ForgetLayoutNotTaken(string id)
     {
         if (string.Equals(_layoutNotTaken, id, StringComparison.Ordinal))
             _layoutNotTaken = null;
     }
 
-    // The end of what ResumeTabAsync says of a tab opened from its project file, changed on the disk since the tab was kept (5.5A review).
+    // ResumeTabAsync status suffix: tab reopened from a project file modified on disk since the tab was kept.
     private const string ChangedOnDiskTail = ": opened from its project file, which changed on the disk since its tab was kept.";
 
-    /// <summary>What the status line says of a tab brought back from its project file, which changed on the disk since its tab was kept.</summary>
+    /// <summary>Status line for a tab reopened from its project file after the file changed on disk.</summary>
     internal static string ChangedOnDiskLine(string title) => title + ChangedOnDiskTail;
 
-    // The end of what ResumeTabAsync says of a tab whose project file changed on the disk but could not be read (Pass 5.5A final review, C-4b).
+    // ResumeTabAsync status suffix: project file changed on disk but unreadable, so the tab opened from its cache copy.
     private const string UnreadableOnDiskTail = "; opened from the copy kept with its tab, unsaved and tied to no file: Save asks for a name, and that file is left as it is.";
 
     /// <summary>
-    /// What the status line says of a tab brought back from its cache because its project file changed on the disk but could not be read (pure,
-    /// Pass 5.5A final review): the project, and why (<paramref name="why"/>: a newer format named as such, or what the read said).
+    /// Pure status line for a tab opened from cache because its changed project file was unreadable; <paramref name="why"/> names a newer
+    /// format or the read error.
     /// </summary>
     internal static string UnreadableOnDiskLine(string title, string why) =>
         $"{title}: its project file changed on the disk but could not be read{(why.Length > 0 ? $" ({why})" : "")}" + UnreadableOnDiskTail;
 
     /// <summary>
-    /// Whether the status line is a word of ResumeTabAsync's own about the tab it brought back (AD-1 keeps it after its own line): opened
-    /// <paramref name="stepsBack"/> actions back from a crash-recovery copy, or from its project file changed on the disk (or, Pass 5.5A final
-    /// review, from its cache because that file could not be read); not the open's own.
+    /// True when <paramref name="said"/> is a ResumeTabAsync-specific notice (kept instead of the restore line): recovered
+    /// <paramref name="stepsBack"/> actions back, project file changed on disk, or changed-but-unreadable fallback to cache.
     /// </summary>
     private static bool ResumeSaidOfItsOwn(string said, int stepsBack) =>
         (stepsBack > 0 && string.Equals(said, StepsBackLine(stepsBack), StringComparison.Ordinal)) || said.EndsWith(ChangedOnDiskTail, StringComparison.Ordinal)
         || said.EndsWith(UnreadableOnDiskTail, StringComparison.Ordinal);
 
     /// <summary>
-    /// What the status line says once the tabs a session left came back (pure, AD-1): with the one in front last time brought forward
-    /// (<paramref name="front"/>), which project is open and how many came back; else (as before) that they are back in the title bar.
+    /// Pure status line after restoring kept tabs: with <paramref name="front"/> brought forward, names it and the count; otherwise says
+    /// the tabs are back in the title bar.
     /// </summary>
     internal static string RestoredLine(string? front, int count) =>
         front is not null

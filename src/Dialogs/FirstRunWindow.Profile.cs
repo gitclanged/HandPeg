@@ -6,10 +6,9 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 /// <summary>
-/// One role card (5.5A; shared with Settings since 5.6A, RoleCardsPanel): the role, the card that holds it, why, the badge of its
-/// measurement ("Estimated", "Measuring...", "<fps> fps · <MB/s> MB/s"), whether that badge is a measurement, and its UI Automation id.
-/// 5.6A: its S-F tier pill and the pill's tooltip (none where nothing was measured, and never on the NPU), and the value its menu shows
-/// checked (a GPU role's card number, "-1" Auto; the NPU's Auto-Captions accelerator).
+/// Role card model (shared with Settings via RoleCardsPanel): role, assigned device, reason, measurement badge ("Estimated",
+/// "Measuring...", "fps · MB/s") and whether it is measured, UIA id, S-F tier pill and tooltip (absent when unmeasured; never on NPU),
+/// and the checked menu value (GPU card index or "-1" Auto; NPU Auto-Captions accelerator).
 /// </summary>
 public sealed record FirstRunRoleCard(string Role, string Card, string Detail, string Badge, bool Measured, string AutomationId)
 {
@@ -20,60 +19,56 @@ public sealed record FirstRunRoleCard(string Role, string Card, string Detail, s
     public string Value { get; init; } = "-1";
 }
 
-/// <summary>The roles picked by hand on the first-run window's role cards (5.6A): null where the recommendation stands.</summary>
+/// <summary>Manual role picks from first-run role cards; null keeps the recommendation.</summary>
 public sealed record FirstRunRolePicks(int? Compositor = null, int? Decode = null, int? Background = null, int? Export = null, string? Npu = null)
 {
     public bool Any => Compositor is not null || Decode is not null || Background is not null || Export is not null || Npu is not null;
 }
 
-// ----- The hardware profile: an instant estimate, then the full test (Pass 5.5A; the full test 5.6A) -----
-//
-// Phase 1, as the window is made: HandPeg.exe --hw-benchmark --estimate, started from a pool thread (Task.Run: CreateProcess and every
-// DXGI, DXCore and Media Foundation call stay off the UI thread and out of this process), its cards on the role cards the moment its
-// first line comes, then the estimated hardware encoders (from the Media Foundation encoders each card has) until FFmpeg's own answer.
-// Phase 2 (5.6A, the user's call), once the window is up, on a first start and opened from Settings alike: the full test
-// (HardwareBenchmarkService.RunAsync, started from a pool thread), its progress feeding the cards' figures and tier pills while the roles
-// stay the estimate's until its result; with no FFmpeg yet it measures the bus and the compositor, and runs once more with the decoding
-// when FFmpeg is installed. While it runs the Playback & A/V Sync Test waits. Start Editing and closing kill both workers. The roles
-// can be picked by hand on the cards (RoleCardsPanel's menus, from the profile's own cards: nothing lists them in this process).
+// ----- Hardware profile: instant estimate, then full test -----
+// Phase 1 (window construction): HandPeg.exe --hw-benchmark --estimate launched from a pool thread, keeping CreateProcess and all
+// DXGI/DXCore/MF calls off the UI thread and out of process; cards populate on its first line, then MF-derived encoder estimates
+// until FFmpeg answers.
+// Phase 2 (after show, every open): full test (HardwareBenchmarkService.RunAsync, pool thread) streaming figures and tier pills while
+// roles stay estimated until the result; without FFmpeg it measures bus and compositor, re-running with decode once FFmpeg is installed.
+// The A/V Sync Test waits for it. Start Editing and close kill both workers. Roles are pickable per card (RoleCardsPanel menus,
+// populated from the profile's own GPU list since this process does not enumerate GPUs).
 public partial class FirstRunWindow
 {
     private readonly CancellationTokenSource _profileCancellation = new();
 
-    // The estimate, as it is running or as it ended (null: it could not be made); the profile whose roles are shown (the estimate, or
-    // the test's result) and the one whose figures are (the test's progress while it runs, else the profile): UI thread only.
+    // Estimate (null if it failed), the profile driving roles (estimate or test result) and the one driving figures (test progress
+    // while running, else the role profile). UI thread only.
     private Task<HardwareBenchmarkResult?> _estimate = Task.FromResult<HardwareBenchmarkResult?>(null);
     private HardwareBenchmarkResult? _profile, _figures;
 
-    // The full test: whether it is measuring, running (and whether its run had an FFmpeg for the decoding), to run again when it ends,
-    // and whether the last result decoded the test clip.
+    // Full test state: measuring, running (with/without FFmpeg decode), rerun pending, and whether the last result included decode.
     private bool _measuring, _fullRunning, _runHasFfmpeg, _fullAgain, _decoded;
 
-    // The roles picked by hand on the cards (5.6A): written by Start Editing whatever the start (Finish).
+    // Manual card picks, always written by Start Editing (Finish).
     private FirstRunRolePicks _picks = new();
     private bool _rolesChosen;
 
-    // 5.6A review: opened again (from Settings, or with the engines missing), the roles the settings hold, shown where nothing was picked
-    // by hand. Display only: Start Editing writes the hand picks alone, and the recommended roles only on a first start (Finish).
+    // When reopened (Settings or missing engines), saved roles display where nothing is picked; display only (Start Editing writes
+    // manual picks, and recommendations only on a first start).
     private readonly FirstRunRolePicks _saved = SavedRoles(AppSettings.Current);
 
-    /// <summary>The roles picked by hand (the goldens read it).</summary>
+    /// <summary>Manual role picks (read by goldens).</summary>
     internal FirstRunRolePicks Picks => _picks;
 
     /// <summary>
-    /// The roles the settings hold, as the cards show them when the window is opened again (5.6A review; pure: the goldens check it):
-    /// every GPU role's card (-1 Auto, Background -2 Processor Only) and the Auto-Captions accelerator. Nothing on a first start, where
-    /// the cards show the recommendation Start Editing writes.
+    /// Saved roles for display on reopen (pure, golden-tested): each GPU role's card (-1 Auto, Background -2 Processor Only) and the
+    /// Auto-Captions accelerator. Empty on a first start, where recommendations show.
     /// </summary>
     internal static FirstRunRolePicks SavedRoles(AppSettings settings) => !settings.FirstRunComplete ? new()
         : new(settings.CompositorGpuAdapter, settings.DecodeGpuAdapter, settings.BackgroundGpu, settings.ExportGpuAdapter,
             AppSettings.CaptionAccelerators.Contains(settings.CaptionAccelerator) ? settings.CaptionAccelerator : null);
 
-    /// <summary>The roles the cards show (5.6A review; pure): each hand pick, else the role the settings hold (<see cref="SavedRoles"/>).</summary>
+    /// <summary>Displayed roles (pure): manual picks, else saved roles (<see cref="SavedRoles"/>).</summary>
     internal static FirstRunRolePicks ShownPicks(FirstRunRolePicks picks, FirstRunRolePicks saved) => new(
         picks.Compositor ?? saved.Compositor, picks.Decode ?? saved.Decode, picks.Background ?? saved.Background, picks.Export ?? saved.Export, picks.Npu ?? saved.Npu);
 
-    /// <summary>Phase 1: the estimate, started off the UI thread; its cards shown as soon as they come.</summary>
+    /// <summary>Phase 1: starts the estimate off the UI thread, showing cards as they arrive.</summary>
     private void StartProfile()
     {
         var progress = new UiProgress(this, step =>
@@ -99,12 +94,11 @@ public partial class FirstRunWindow
     }
 
     /// <summary>
-    /// The warning line over the roles (5.5.0, the user's Q10 b; 5.6A the full test's; pure: the goldens check it): the hardware test
-    /// stopped, why, and that the roles shown are the estimate's.
+    /// Warning above the roles (pure, golden-tested): the hardware test stopped, why, and that roles are estimated.
     /// </summary>
     internal static string ProfileWarning(string why) => $"Warning: the hardware test stopped ({why.Trim().TrimEnd('.')}); the roles shown are estimates.";
 
-    /// <summary>The warning line while Settings' own test holds the one benchmark gate (5.6A): a warning, never an error.</summary>
+    /// <summary>Warning (not error) while Settings' test holds the single benchmark gate.</summary>
     internal const string BusyWarning = "Warning: the hardware test is running in Settings; the roles shown are estimates.";
 
     private void ShowProfileWarning(string? why) => ShowWarningLine(why is { Length: > 0 } ? ProfileWarning(why) : null);
@@ -115,7 +109,7 @@ public partial class FirstRunWindow
         ProfileWarningText.Visibility = text is { Length: > 0 } ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    // Phase 2, once the window is up: the full test, on a first start and opened from Settings alike (5.6A).
+    // Phase 2 after show: the full test, on every open.
     private void Profile_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= Profile_Loaded;
@@ -123,8 +117,8 @@ public partial class FirstRunWindow
     }
 
     /// <summary>
-    /// Phase 2: the full test (5.6A), once the estimate has named the roles; again when asked meanwhile (FFmpeg installed). Never while the
-    /// Playback &amp; A/V Sync Test runs: it starts once that ends.
+    /// Phase 2: runs the full test after the estimate names roles, re-running if requested meanwhile (FFmpeg installed). Deferred while the
+    /// Playback &amp; A/V Sync Test runs.
     /// </summary>
     private void MeasureFully() => Faults.Forget(MeasureFullyAsync(), nameof(MeasureFully));
 
@@ -165,7 +159,7 @@ public partial class FirstRunWindow
                 HardwareBenchmarkResult? result;
                 try
                 {
-                    // From a pool thread: the worker's CreateProcess, the test clip and the saving never wait on this window's thread.
+                    // Pool thread: CreateProcess, test clip generation and saving never block the UI thread.
                     result = await Task.Run(() => HardwareBenchmarkService.RunAsync(progress, token), CancellationToken.None);
                 }
                 finally
@@ -200,7 +194,7 @@ public partial class FirstRunWindow
         }
     }
 
-    // The Playback & A/V Sync Test is running: the full test starts once it ends (both would measure the same cards at once).
+    // A/V Sync Test running: defer the full test (both would load the same GPUs).
     private void MeasureAfterSyncTest()
     {
         void Resume()
@@ -216,8 +210,7 @@ public partial class FirstRunWindow
     }
 
     /// <summary>
-    /// FFmpeg is here now (installed: DependencyUpdater.Installed): a full test that could not decode (no test clip without FFmpeg) is run
-    /// once more with the decoding, after the one running ends.
+    /// On FFmpeg install (DependencyUpdater.Installed): re-runs a decode-less full test with decoding after the current run ends.
     /// </summary>
     private void MeasureAgainWithDecoding()
     {
@@ -229,16 +222,16 @@ public partial class FirstRunWindow
     {
         _measuring = measuring;
 
-        // 5.5.2: the Playback & A/V Sync Test waits for the hardware test (both would measure the same cards at once).
+        // The A/V Sync Test waits for the hardware test (both would load the same GPUs).
         SyncTestCard.BlockedBy = measuring ? "Waits for the hardware check" : null;
-        // Done measuring: the figures are the profile's again (its result, shown next, or the roles' own when it gave none).
+        // Measurement done: figures revert to the role profile (the result shown next, or the existing one if none).
         if (!measuring && _profile is { } profile)
             _figures = profile;
         if (!_closed)
             ShowCards();
     }
 
-    // The profile's kinds, from the least to the most measured: one never gives way to a lesser one.
+    // Profile kinds ordered least to most measured; a profile is never replaced by a lesser kind.
     private static int MeasuredRank(HardwareBenchmarkResult result) => result.Kind switch
     {
         HardwareBenchmarkResult.KindEstimate => 0,
@@ -247,9 +240,8 @@ public partial class FirstRunWindow
     };
 
     /// <summary>
-    /// Shows a hardware profile: its roles and figures on the role cards, the roles Start Editing writes (a first start), and the encoders
-    /// estimated from it (until FFmpeg's answer, which always wins). A profile less measured than the one shown is ignored: an estimate
-    /// that comes after the test's result.
+    /// Shows a profile: roles and figures on the cards, roles for Start Editing (first start), and estimated encoders (until FFmpeg
+    /// answers). Ignores profiles less measured than the current one (e.g. a late estimate after the test result).
     /// </summary>
     internal void ShowProfile(HardwareBenchmarkResult result)
     {
@@ -266,14 +258,14 @@ public partial class FirstRunWindow
         ShowEstimatedEncoderStatus();
     }
 
-    /// <summary>The test's progress (5.6A): its figures and pills on the cards; the roles stay those shown until its result.</summary>
+    /// <summary>Test progress: updates figures and pills; roles stay until the result.</summary>
     private void ShowFigures(HardwareBenchmarkResult partial)
     {
         _figures = partial;
         ShowCards();
     }
 
-    // The role cards from the roles shown, the figures shown and the picks; the menus' cards; the System tier beside the title.
+    // Rebuilds role cards (roles, figures, picks), menu device lists and the System tier beside the title.
     private void ShowCards()
     {
         if ((_profile ?? _figures) is not { } roles)
@@ -284,13 +276,13 @@ public partial class FirstRunWindow
         RoleCards.HasNpu = roles.Npus.Count > 0;
         RoleCards.ItemsSource = RoleCardsOf(roles, figures, _measuring, ShownPicks(_picks, _saved));
 
-        // The System tier of a result, never of the test's progress (its figures come in a stage at a time).
+        // System tier from final results only; progress figures arrive stage by stage.
         var system = !_measuring && _profile is { } profile && MeasuredRank(profile) > 0 ? PerformanceTiers.System(profile) : null;
         SystemTierBadge.Child = system is { } tier ? RoleCardsPanel.TierPill(tier, PerformanceTiers.SystemTip(_profile!, tier)) : null;
         SystemTierBadge.Visibility = system is null ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    // A role picked on a card (RoleCardsPanel.RoleChosen): kept for Start Editing, the cards shown with it.
+    // Card role pick (RoleCardsPanel.RoleChosen): stored for Start Editing and reflected on the cards.
     private void RoleCards_RoleChosen(string role, string value)
     {
         int? Card() => int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var index) ? index : null;
@@ -308,8 +300,8 @@ public partial class FirstRunWindow
     }
 
     /// <summary>
-    /// The roles picked by hand written into the settings Start Editing saves (5.6A): a card the profile does not list is Auto; Background
-    /// may be Processor Only; the NPU's pick is what Auto-Captions run on. Never a card the user did not pick (CLAUDE.md 8).
+    /// Writes manual picks into the settings saved by Start Editing: unknown cards become Auto; Background may be Processor Only;
+    /// the NPU pick selects the Auto-Captions accelerator. Never assigns a card that was not explicitly picked.
     /// </summary>
     internal static void WritePicks(FirstRunRolePicks picks, AppSettings settings, IReadOnlyCollection<int> cardsHere)
     {
@@ -326,15 +318,14 @@ public partial class FirstRunWindow
             settings.CaptionAccelerator = npu;
     }
 
-    /// <summary>The role cards of a profile (5.5A, pure: the goldens check it), its figures its own, nothing picked.</summary>
+    /// <summary>Role cards for a profile with its own figures and no picks (pure, golden-tested).</summary>
     internal static IReadOnlyList<FirstRunRoleCard> RoleCardsOf(HardwareBenchmarkResult result, bool measuring) => RoleCardsOf(result, result, measuring, new FirstRunRolePicks());
 
     /// <summary>
-    /// The role cards (5.5A; 5.6A tiers and picks; pure): the Compositor (the card the roles name), Decode and Background (Auto, the
-    /// compositor's card: CLAUDE.md 8), Export (Auto, or the card that encodes more) and the NPU, each as <paramref name="picks"/> has it
-    /// where it was picked by hand. The roles come from <paramref name="roles"/>, the figures and tier pills from <paramref name="figures"/>
-    /// (the test's progress while it runs). A card's badge is its measurement ("62 fps · 9,870 MB/s"; the bus alone before the decoding
-    /// can be measured), else "Measuring..." while the test runs, else "Estimated".
+    /// Builds role cards (pure): Compositor (the profiled card), Decode and Background (Auto = compositor GPU, never a secondary GPU),
+    /// Export (Auto, or the stronger encoder) and NPU, overridden by <paramref name="picks"/>. Roles from <paramref name="roles"/>; figures
+    /// and tier pills from <paramref name="figures"/>. Badge: measurement ("62 fps · 9,870 MB/s", bus-only before decode), else
+    /// "Measuring..." during the test, else "Estimated".
     /// </summary>
     internal static IReadOnlyList<FirstRunRoleCard> RoleCardsOf(HardwareBenchmarkResult roles, HardwareBenchmarkResult figures, bool measuring, FirstRunRolePicks picks)
     {
@@ -342,9 +333,8 @@ public partial class FirstRunWindow
         HardwareBenchmarkAdapter? Listed(int index) => cards.FirstOrDefault(a => a.Index == index);
         HardwareBenchmarkAdapter? Measurement(HardwareBenchmarkAdapter? card) => card is null ? null : figures.Adapters.FirstOrDefault(a => a.Index == card.Index) ?? card;
 
-        // 5.5A review: roles that name no compositor (Auto: a quick check whose compositor's card could not be measured) show the card the
-        // listing named, with the most video memory (where Auto lands on such a machine), marked Auto and Not measured: never another card
-        // the check did not measure.
+        // Roles without a measured compositor (Auto) show the listed card with the most VRAM (where Auto resolves), marked Auto and
+        // Not measured; never another unmeasured card.
         var auto = roles.Recommended.Compositor < 0;
         var recommended = Listed(roles.Recommended.Compositor) ?? cards.OrderByDescending(a => a.DedicatedVideoMemoryMb).ThenBy(a => a.Index).FirstOrDefault();
         var compositor = picks.Compositor is >= 0 && Listed(picks.Compositor.Value) is { } pickedCompositor ? pickedCompositor : recommended;
@@ -365,8 +355,7 @@ public partial class FirstRunWindow
         bool Measured(HardwareBenchmarkAdapter? listed) => Measurement(listed) is { } card && (RoleCardsPanel.Figures(card).Length > 0 || card.CompositorMs > 0);
         FirstRunRoleCard Card(string role, string name, string detail, HardwareBenchmarkAdapter? holder, int tierCard, string id, int? picked)
         {
-            // 5.6A review: Processor Only is measured where the processor's tier is (Settings' rule); a card the profile does not list
-            // (a saved role on a card gone) shows Auto, so its menu still has one item checked.
+            // Processor Only uses the CPU tier (as Settings does); a saved role on a missing card shows Auto so one menu item stays checked.
             var (tier, tip) = PerformanceTiers.ForRole(figures, role, tierCard);
             var value = picked is >= 0 && Listed(picked.Value) is null ? HardwareRoles.Auto : picked ?? HardwareRoles.Auto;
             return new(role, name, detail, Badge(holder), Measured(holder) || tier is not null && tierCard == HardwareRoles.ProcessorOnly, id)
@@ -408,8 +397,8 @@ public partial class FirstRunWindow
             _ => npu is null ? "Auto-Captions run on the graphics card or the processor" : "Detected, not used yet: Auto-Captions on the NPU are planned with the AI worker",
         };
 
-        // 5.6A review: with nothing picked, the Compositor's and Export's menus check the card shown (the recommendation Start Editing
-        // writes), so choosing Auto (Recommended) is a deliberate move to Auto, and choosing the card shown changes nothing.
+        // With no pick, Compositor and Export menus check the recommended card, so selecting Auto is an explicit change and selecting the
+        // shown card is a no-op.
         return
         [
             Card(HardwareRoles.Compositor, compositorCard, memory, compositor, compositor?.Index ?? HardwareRoles.Auto, "CompositorRole", picks.Compositor ?? (auto ? null : recommended?.Index)),
@@ -421,12 +410,12 @@ public partial class FirstRunWindow
         ];
     }
 
-    // ----- The encoders estimated from the cards (5.5A) -----
+    // ----- Encoder estimates from GPUs -----
 
-    // The best hardware encoder is the first of these (an H.264 one) that is here, the Export card's own family first.
+    // Best hardware encoder: the first available H.264 entry, Export GPU family first.
     private static readonly string[] PreferredHardware = ["h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"];
 
-    /// <summary>The FFmpeg encoder family of a card's vendor: NVENC for NVIDIA, QuickSync for Intel, AMF for AMD, else Media Foundation (a Qualcomm Adreno).</summary>
+    /// <summary>Encoder family by GPU vendor: NVENC (NVIDIA), QSV (Intel), AMF (AMD), else MF (e.g. Qualcomm Adreno).</summary>
     internal static string EncoderSuffix(uint vendorId) => vendorId switch
     {
         0x10DE => "_nvenc",
@@ -436,9 +425,8 @@ public partial class FirstRunWindow
     };
 
     /// <summary>
-    /// The hardware encoders a profile points to before FFmpeg can be asked: for each card, its vendor's encoder of each codec Media
-    /// Foundation has a hardware encoder of on that card (H.264, HEVC, AV1), in the order the probe offers them (every vendor's own
-    /// first), a Media Foundation one only for a codec no vendor's encoder here covers (EncoderProber.CoveringVendorEncoder).
+    /// Pre-FFmpeg encoder estimate: per GPU, its vendor encoder for each codec MF reports hardware support for (H.264, HEVC, AV1), in
+    /// probe order (vendor encoders first); MF only for codecs no vendor encoder covers (EncoderProber.CoveringVendorEncoder).
     /// </summary>
     internal static IReadOnlyList<string> EstimatedEncoders(HardwareBenchmarkResult result)
     {
@@ -457,7 +445,7 @@ public partial class FirstRunWindow
         return [.. vendors, .. mediaFoundation];
     }
 
-    /// <summary>The encoder family of the Export role's card (the compositor's when Export is Auto); null with no profile or no card.</summary>
+    /// <summary>Encoder family of the Export GPU (compositor GPU when Auto); null without a profile or card.</summary>
     internal static string? ExportEncoderSuffix(HardwareBenchmarkResult? profile)
     {
         if (profile is null || profile.Adapters.Count == 0)
@@ -469,9 +457,8 @@ public partial class FirstRunWindow
     }
 
     /// <summary>
-    /// The hardware encoders in the order they are offered, and the one chosen when none was chosen by hand (5.5A, D1): the Export card's
-    /// family first, then NVENC, QuickSync, AMF and Media Foundation; the best is the first H.264 one of that order that is here, else
-    /// libx264.
+    /// Ordered hardware encoders and the default pick: Export GPU family first, then NVENC, QSV, AMF, MF; default is the first available
+    /// H.264 entry, else libx264.
     /// </summary>
     internal static (IReadOnlyList<string> Ordered, string Best) RankEncoders(IReadOnlyList<string> hardware, string? preferredSuffix)
     {
@@ -484,10 +471,10 @@ public partial class FirstRunWindow
         return (ordered, best);
     }
 
-    // A Qualcomm Adreno among the profile's cards: Media Foundation's encoders are named for it ("H.264 (Qualcomm Adreno)").
+    // With a Qualcomm Adreno present, MF encoders are labelled with it ("H.264 (Qualcomm Adreno)").
     private static bool HasQualcommAdreno(HardwareBenchmarkResult? profile) => profile?.Adapters.Any(a => a.Vendor == "Qualcomm") ?? false;
 
-    /// <summary>Progress passed to this window's thread whatever thread reports it (and whatever context the window was made in).</summary>
+    /// <summary>IProgress that marshals to the window's dispatcher regardless of the reporting thread or creation context.</summary>
     private sealed class UiProgress(FirstRunWindow window, Action<HardwareBenchmarkProgress> show) : IProgress<HardwareBenchmarkProgress>
     {
         public void Report(HardwareBenchmarkProgress value) => window.Dispatcher.BeginInvoke(() =>

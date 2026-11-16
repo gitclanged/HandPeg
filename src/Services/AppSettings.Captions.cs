@@ -1,30 +1,28 @@
 namespace HandPegApp.Services;
 
-// Remove Dead Air from the captions (4.4): its settings, kept beside the dead-air ones in AppSettings.cs; and what Auto-Captions run
-// on (5.2-Arm64AndNpu: the NPU, the graphics card or the processor).
+// Caption-based Remove Dead Air settings (alongside the audio ones in AppSettings.cs) and the Auto-Captions accelerator (NPU, GPU, CPU).
 public sealed partial class AppSettings
 {
     public const string DeadAirFromAudio = "audio", DeadAirFromCaptions = "captions";
 
-    /// <summary>What Remove Dead Air can go by: silence in the sound (by its loudness), or the gaps between captioned words.</summary>
+    /// <summary>Remove Dead Air detection sources: audio loudness or caption word gaps.</summary>
     public static IReadOnlyList<string> DeadAirSources { get; } = [DeadAirFromAudio, DeadAirFromCaptions];
 
     /// <summary>
-    /// What Remove Dead Air finds the dead air by: "audio", the stretches quieter than <see cref="DeadAirThresholdDb"/>; or
-    /// "captions", the gaps between the words the captions heard (transcribed first when there are none yet).
+    /// Detection mode: "audio" (below <see cref="DeadAirThresholdDb"/>) or "captions" (word gaps; transcribes first if needed).
     /// </summary>
     public string DeadAirSource { get; set; } = DeadAirFromAudio;
 
-    /// <summary>Remove Dead Air from the captions: a gap between two words has to last this long, in seconds, to be cut (0.1 to 3).</summary>
+    /// <summary>Caption mode: minimum word gap to cut (s, 0.1-3).</summary>
     public double DeadAirCaptionMinGapSeconds { get; set; } = 0.5;
 
-    /// <summary>Remove Dead Air from the captions: how much of a gap is kept before the next word, in seconds (0 to 0.5).</summary>
+    /// <summary>Caption mode: padding kept before the next word (s, 0-0.5).</summary>
     public double DeadAirCaptionPadBeforeSeconds { get; set; } = 0.08;
 
-    /// <summary>Remove Dead Air from the captions: how much of a gap is kept after the last word, in seconds (0 to 0.5).</summary>
+    /// <summary>Caption mode: padding kept after the last word (s, 0-0.5).</summary>
     public double DeadAirCaptionPadAfterSeconds { get; set; } = 0.12;
 
-    // ----- What Auto-Captions run on (5.2-Arm64AndNpu) -----
+    // ----- Auto-Captions accelerator -----
 
     public const string SpeechOnAuto = "auto", SpeechOnNpu = "npu", SpeechOnGpu = "gpu", SpeechOnCpu = "cpu";
 
@@ -32,18 +30,15 @@ public sealed partial class AppSettings
     public static IReadOnlyList<string> CaptionAccelerators { get; } = [SpeechOnAuto, SpeechOnNpu, SpeechOnGpu, SpeechOnCpu];
 
     /// <summary>
-    /// What Auto-Captions (whisper.cpp, and its voice activity detection, which runs inside it on the same back end) run on:
-    /// "auto" (the NPU when a speech build for it is installed, which none is yet; else the graphics card when the whisper.cpp
-    /// build in use has a back end for it that has not failed here; else the processor), "npu", "gpu" or "cpu". A choice the
-    /// installed build cannot honour runs on the next one down, and says so in the log (CaptionGenerator.ChooseSpeechAccelerator).
+    /// whisper.cpp (and its in-process VAD) back end: "auto" (NPU if a speech build exists, else GPU if supported and not previously
+    /// failed, else CPU), "npu", "gpu" or "cpu". Unsupported choices fall back down the chain with a log entry
+    /// (CaptionGenerator.ChooseSpeechAccelerator).
     /// </summary>
     public string CaptionAccelerator { get; set; } = SpeechOnAuto;
 
     /// <summary>
-    /// The whisper.cpp build, and the graphics cards and drivers, with which whisper.exe fell over on the graphics card (it
-    /// crashed rather than said why: b5454's Adreno OpenCL back end at model load with driver 31.0.170.0, measured): the run
-    /// was made again on the processor, and Auto keeps to the processor while the build and the drivers are those. Empty
-    /// when it never did. Written by CaptionGenerator, never shown.
+    /// Fingerprint (whisper.cpp build plus adapters and drivers) of a GPU back-end crash (e.g. an Adreno OpenCL crash at model load); the
+    /// run was retried on CPU and Auto stays on CPU while the fingerprint matches. Empty if never crashed. Internal (CaptionGenerator).
     /// </summary>
     public string WhisperGpuFailedOn { get; set; } = "";
 }

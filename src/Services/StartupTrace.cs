@@ -5,10 +5,9 @@ using System.Text;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// HANDPEG_LOG_STARTUP=1: the moments of a launch, each with the milliseconds since the process started, the working
-/// set, the managed heap and the memory the collector holds (committed) at that moment. They are kept in memory and written to the log in one go once the first
-/// frame is on screen and the window has gone idle: writing each as it happens would be disk work before the first frame.
-/// A dock rebuild or a tab made after "first frame" in the list is a pop-in, and is marked as one.
+/// HANDPEG_LOG_STARTUP=1 launch trace: milestones with ms since process start, working set, managed heap and GC committed memory,
+/// buffered and written once after Frame 1 when idle (no pre-Frame-1 disk I/O). Dock rebuilds or tab creation after Frame 1 are
+/// flagged as pop-in.
 /// </summary>
 public static class StartupTrace
 {
@@ -47,10 +46,8 @@ public static class StartupTrace
         lock (Gate)
         {
             var at = Now;
-            // The heap: what is in use; committed: what the collector holds from the system (in use, or kept for later). Then
-            // the collections so far (generations 0/1/2), the time they paused the process, and how often a thread waited
-            // for a lock: a moment that took long with none of them moving was spent elsewhere (a native call, the disk). Last (5.3):
-            // what was allocated so far, and the methods the JIT compiled and its time (what the ahead-of-time code did not cover).
+            // Heap in use and GC committed; gen0/1/2 collection counts, GC pause time and lock contention (slow steps with none of
+            // these moving were native or disk time); total allocated bytes, JIT-compiled method count and JIT time (ReadyToRun gaps).
             var line = string.Create(CultureInfo.InvariantCulture,
                 $"{at,8:0.0} ms  {Environment.WorkingSet / 1048576.0,6:0.0} MB ws  {GC.GetTotalMemory(false) / 1048576.0,6:0.0} MB heap  {GC.GetGCMemoryInfo().TotalCommittedBytes / 1048576.0,6:0.0} MB committed  gc {GC.CollectionCount(0)}/{GC.CollectionCount(1)}/{GC.CollectionCount(2)} {GC.GetTotalPauseDuration().TotalMilliseconds,5:0.0} ms  locks {Monitor.LockContentionCount,3}  {GC.GetTotalAllocatedBytes(false) / 1048576.0,6:0.0} MB allocated  jit {System.Runtime.JitInfo.GetCompiledMethodCount(false),5} {System.Runtime.JitInfo.GetCompilationTime(false).TotalMilliseconds,6:0.0} ms  {moment}");
             if (_flushed)
@@ -60,7 +57,7 @@ public static class StartupTrace
         }
     }
 
-    /// <summary>Something that changes what is on screen (a rebuild of the panes, a tab made): after the first frame, a pop-in.</summary>
+    /// <summary>Records a visible layout change (pane rebuild, tab creation); after Frame 1 it is flagged as pop-in.</summary>
     public static void Layout(string what) => Mark(FirstFrameDrawn ? $"{what} (after the first frame)" : what);
 
     public static void FirstFrame()

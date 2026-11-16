@@ -3,15 +3,15 @@ using System.Text;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// How surely a track's title names a voice, the surest first (<see cref="VoiceTrackScanner.Rank"/>). A title that names
-/// "chat" ranks after every other voice word: a chat track is more often the other players' voices than the recorder's own.
+/// Voice-title confidence, strongest first (<see cref="VoiceTrackScanner.Rank"/>). "Chat" ranks last among voice words (usually other
+/// players, not the recorder).
 /// </summary>
 public enum VoiceTitle
 {
-    /// <summary>Voice words alone, with track numbers and the like: "Mic", "Track 2: Microphone", "Voice", "Host Mic".</summary>
+    /// <summary>Only voice words plus neutral words: "Mic", "Track 2: Microphone", "Voice", "Host Mic".</summary>
     Only,
 
-    /// <summary>A voice word among other words, none of them naming game sound, music or the desktop: "Shure SM7B Mic".</summary>
+    /// <summary>Voice word among other non-excluding words: "Shure SM7B Mic".</summary>
     AmongWords,
 
     /// <summary>"Chat" with nothing but voice words: "Chat", "Voice Chat".</summary>
@@ -20,17 +20,15 @@ public enum VoiceTitle
     /// <summary>"Chat" among other words, none of them disqualifying: "Party Chat".</summary>
     ChatAmongWords,
 
-    /// <summary>Names no voice, or names one beside game sound, music or the desktop ("Game + Mic" is a mix, not a voice).</summary>
+    /// <summary>No voice word, or one alongside game/music/desktop words ("Game + Mic" is a mix).</summary>
     None,
 }
 
 /// <summary>
-/// Finds the voice among a file's audio tracks by their titles (4.3E). A recording with separate tracks names them (OBS
-/// writes each track's name as its title): "Game", "Mic", "Discord". The track named only for a microphone or a voice is
-/// the voice; failing that, one whose name has such a word among others, unless one of those others names game sound,
-/// music, the desktop or another program's sound. Words are whole words, in any case and with any punctuation, plurals
-/// included: "vox" is not found in "voxel", nor "host" in "ghost", and "Mics" is "Mic". Of two titles that rank the same,
-/// the first track's wins. Nothing is changed here: the view model marks the track this picks.
+/// Identifies the voice track from audio track titles (e.g. OBS: "Game", "Mic", "Discord"). Prefers titles with only voice words, then
+/// voice words among others unless any excluding word (game, music, desktop, other apps) appears. Whole-word, case- and
+/// punctuation-insensitive with plurals ("voxel" does not match "vox"; "Mics" matches "Mic"). Ties go to the first track. Pure; the
+/// view model applies the result.
 /// </summary>
 public static class VoiceTrackScanner
 {
@@ -40,12 +38,11 @@ public static class VoiceTrackScanner
         "mic", "microphone", "voice", "vocal", "vox", "commentary", "dialogue", "dialog", "host", "voiceover", "narration", "narrator",
     };
 
-    /// <summary>"Chat": a voice, but more often the other players' than the recorder's own (it ranks after the rest).</summary>
+    /// <summary>"Chat": voice, but usually other players (ranked last).</summary>
     public static IReadOnlySet<string> ChatWords { get; } = new HashSet<string>(StringComparer.Ordinal) { "chat" };
 
     /// <summary>
-    /// Words that say a track is not one voice, alone: game sound, music, the desktop, another program's sound, a mix.
-    /// A title with one of these is never taken for the voice, whatever voice word it has besides ("Game + Mic").
+    /// Excluding words (game, music, desktop, other apps, mix): titles containing any are never the voice ("Game + Mic").
     /// </summary>
     public static IReadOnlySet<string> DisqualifyingWords { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -55,8 +52,7 @@ public static class VoiceTrackScanner
     };
 
     /// <summary>
-    /// Words that say nothing of what a track is: the words around a track's number ("Track 2", "Stream #1", "Input 3"),
-    /// its channels, and words that only say it is the voice alone ("Mic (Raw)"). Numbers and single letters count as these.
+    /// Neutral words (track numbering, channel layout, qualifiers like "Raw"); numbers and single letters are neutral too.
     /// </summary>
     public static IReadOnlySet<string> FillerWords { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -64,8 +60,8 @@ public static class VoiceTrackScanner
         "mono", "stereo", "left", "right", "only", "raw", "clean", "iso", "isolated", "dry",
     };
 
-    /// <summary>The track whose title names a voice most surely (the first of equals), as its index; null when none does.</summary>
-    /// <param name="tracks">Each track's index (as used in "0:a:N") and its title as the file has it; blank for none.</param>
+    /// <summary>Index of the best voice track (first among ties); null when none.</summary>
+    /// <param name="tracks">Track index ("0:a:N") and title (blank if none).</param>
     public static int? Pick(IEnumerable<(int Index, string Title)> tracks)
     {
         (int Index, VoiceTitle Rank)? best = null;
@@ -101,8 +97,7 @@ public static class VoiceTrackScanner
     }
 
     /// <summary>
-    /// A title's words, in lower case: letters and digits, apart wherever anything else comes between them, where letters
-    /// turn to digits or back ("Mic2"), and where a small letter is followed by a capital ("MicTrack").
+    /// Lower-case tokens split on non-alphanumerics, letter/digit transitions ("Mic2") and camel case ("MicTrack").
     /// </summary>
     private static List<string> Words(string title)
     {

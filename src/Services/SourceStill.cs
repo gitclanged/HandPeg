@@ -8,8 +8,7 @@ namespace HandPegApp.Services;
 public static class SourceStill
 {
     /// <summary>
-    /// Writes the frame at a moment of a video to a picture file and reads it back, frozen for any thread: the thumbnail compositor's
-    /// exact frame at the video's own size (5.1-CleanupStudioAndFfmpegPurge), FFmpeg's only for what that cannot draw.
+    /// Renders an exact frame at native size to an image file via the thumbnail compositor (FFmpeg only as fallback) and returns it frozen.
     /// </summary>
     public static async Task<BitmapImage> TakeAsync(string source, double seconds, string pngPath, CancellationToken cancellationToken)
     {
@@ -31,7 +30,7 @@ public static class SourceStill
         return still;
     }
 
-    /// <summary>Deletes a still that is no longer shown; one that cannot be deleted is left for the session's clean-up.</summary>
+    /// <summary>Deletes an unused still; locked files are left for session cleanup.</summary>
     public static void Delete(string pngPath)
     {
         try

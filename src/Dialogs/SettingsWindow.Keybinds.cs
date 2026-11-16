@@ -6,9 +6,8 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// Settings > Keybinds & Lightning Dial (4.4): the list of every action's keys, the keyboard map on the stage, and the dial's
-// categories. They edit copies (a KeybindDraft, a dial) that go into the settings when they are saved; they are made when
-// the page is first shown, so opening Settings costs nothing for them.
+// Settings > Keybinds & Lightning Dial: action key list, stage keyboard map and dial categories. They edit copies (KeybindDraft, dial)
+// committed on Save, and are built lazily on first page show so opening Settings stays cheap.
 public partial class SettingsWindow
 {
     private KeybindDraft? _keybindDraft;
@@ -17,8 +16,8 @@ public partial class SettingsWindow
     private InputChord? _pickChord;
 
     /// <summary>
-    /// Opens at Keybinds &amp; Lightning Dial (from the map over the player while Tab is held, 4.4.0), with a key's menu of
-    /// actions open on the stage's keyboard when one was clicked there.
+    /// Opens on Keybinds &amp; Lightning Dial (from the Tab-hold player overlay map), with the clicked key's action menu open on the stage
+    /// keyboard when given.
     /// </summary>
     public void ShowKeybind(InputChord? chord)
     {
@@ -28,7 +27,7 @@ public partial class SettingsWindow
             map.Pick(picked);
     }
 
-    /// <summary>Fills the page's hosts (DialHost, KeybindsListHost, StageKeybindsHost) and names the dial's key; called as the screen is set up.</summary>
+    /// <summary>Populates DialHost, KeybindsListHost and StageKeybindsHost and labels the dial key; called during screen setup.</summary>
     private void InitializeKeybindsPage()
     {
         var draft = _keybindDraft = new KeybindDraft(_settings.KeybindPreset, _settings.CustomKeybinds);
@@ -42,13 +41,13 @@ public partial class SettingsWindow
         });
         WhenShown(DialHost, () => _dialEditor = new DialConfiguratorControl(KeybindManager.Normalized(_settings.LightningDial)));
 
-        // The dial's hint names the key that opens it as the keys are now (Mouse 5 unless it was changed).
+        // Dial hint shows its current open key (default Mouse 5).
         var keys = KeybindManager.GestureText("ui.dial");
         var opener = keys == "Mouse5" ? "The mouse's forward side button (Mouse 5)" : keys.Length > 0 ? keys : "Its key (it has none now: give it one under Keybinds)";
         DialHint.Text = $"{opener} opens the Lightning Dial under the pointer: one ring of eight slices, each an action run with one flick "
             + "(as it comes) or a category, which opens its seven actions in their place, with Back opposite. Choose what each slice holds here.";
 
-        // The preset box (bound to KeybindPreset) changes the preset the keys are shown and edited over.
+        // The KeybindPreset box switches the base preset shown and edited.
         if (FindPresetBox() is { } presets)
         {
             presets.SelectionChanged += (_, _) =>
@@ -60,9 +59,8 @@ public partial class SettingsWindow
     }
 
     /// <summary>
-    /// Puts the page's keys and dial into the settings being saved (called by Save). They are put into effect
-    /// (<see cref="KeybindManager.Reload"/>) only once the settings are written, so a save that fails leaves the keys
-    /// in use as the settings in effect have them.
+    /// Writes keys and dial into the settings being saved (called by Save). Applied via <see cref="KeybindManager.Reload"/> only after
+    /// a successful write, so a failed save leaves active bindings unchanged.
     /// </summary>
     private void SaveKeybinds()
     {
@@ -76,7 +74,7 @@ public partial class SettingsWindow
             _settings.LightningDial = KeybindManager.ForSettings(dial.Dial);
     }
 
-    // A host's content is made the first time the host is shown.
+    // Host content is created lazily on first show.
     private static void WhenShown(ContentControl host, Func<FrameworkElement> make)
     {
         if (host.IsVisible)
@@ -97,7 +95,7 @@ public partial class SettingsWindow
         host.IsVisibleChanged += shown;
     }
 
-    // The combo box of the page's panel that is bound to KeybindPreset.
+    // The page's combo box bound to KeybindPreset.
     private ComboBox? FindPresetBox()
     {
         for (DependencyObject? at = KeybindsListHost; at is not null; at = LogicalTreeHelper.GetParent(at))

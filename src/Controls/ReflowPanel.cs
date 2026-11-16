@@ -4,15 +4,14 @@ using System.Windows.Controls;
 namespace HandPegApp;
 
 /// <summary>
-/// Parts laid side by side while there is room for them, and one over the other (each the whole width) when there is
-/// not: a tab's columns, in a pane narrower than the tab bar they were laid out for. Side by side, each part is as wide
-/// as it wants to be, and the one marked <see cref="FillProperty"/> (the last, when none is) has what is left; they stay
-/// side by side while the other parts, the gaps and the filling part's least width fit (its MinWidth when it has one,
-/// otherwise the width it wants). A part that does not fit is never cut off at the edge.
+/// Lays children horizontally while they fit, otherwise stacks them vertically at full width (e.g. a tab's columns in a pane narrower
+/// than the layout they were designed for). Horizontally, each child gets its desired width and the <see cref="FillProperty"/> child
+/// (the last when none is marked) takes the remainder; it stays horizontal while the other children, gaps and the fill child's minimum
+/// (its MinWidth if set, else its desired width) fit. Children are never clipped at the edge.
 /// </summary>
 public sealed class ReflowPanel : Panel
 {
-    /// <summary>The gap between two parts side by side.</summary>
+    /// <summary>Horizontal gap between children in row layout.</summary>
     public static readonly DependencyProperty SpacingProperty = DependencyProperty.Register(
         nameof(Spacing), typeof(double), typeof(ReflowPanel), new FrameworkPropertyMetadata(16.0, FrameworkPropertyMetadataOptions.AffectsMeasure));
 
@@ -22,7 +21,7 @@ public sealed class ReflowPanel : Panel
         set => SetValue(SpacingProperty, value);
     }
 
-    /// <summary>The gap between two parts one over the other.</summary>
+    /// <summary>Vertical gap between children in stacked layout.</summary>
     public static readonly DependencyProperty RowSpacingProperty = DependencyProperty.Register(
         nameof(RowSpacing), typeof(double), typeof(ReflowPanel), new FrameworkPropertyMetadata(8.0, FrameworkPropertyMetadataOptions.AffectsMeasure));
 
@@ -32,7 +31,7 @@ public sealed class ReflowPanel : Panel
         set => SetValue(RowSpacingProperty, value);
     }
 
-    /// <summary>Marks the part that takes the room the others leave, side by side (the last part, when none is marked).</summary>
+    /// <summary>Marks the child that takes the remaining width in row layout (defaults to the last child).</summary>
     public static readonly DependencyProperty FillProperty = DependencyProperty.RegisterAttached(
         "Fill", typeof(bool), typeof(ReflowPanel), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsParentMeasure));
 
@@ -40,7 +39,7 @@ public sealed class ReflowPanel : Panel
 
     public static void SetFill(UIElement element, bool value) => element.SetValue(FillProperty, value);
 
-    /// <summary>Whether the parts stood one over the other at the last measure.</summary>
+    /// <summary>True when the last measure chose stacked layout.</summary>
     public bool IsStacked { get; private set; }
 
     private List<UIElement> Parts() => InternalChildren.Cast<UIElement>().Where(c => c.Visibility != Visibility.Collapsed).ToList();
@@ -53,7 +52,7 @@ public sealed class ReflowPanel : Panel
         if (parts.Count == 0)
             return default;
 
-        // What each part wants with no limit; the filling one counts with its least width.
+        // Unconstrained desired widths; the fill child counts at its minimum width.
         foreach (var part in parts)
             part.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var fill = FillOf(parts);
@@ -67,7 +66,7 @@ public sealed class ReflowPanel : Panel
             return new Size(others + fill.DesiredSize.Width, parts.Max(p => p.DesiredSize.Height));
         }
 
-        // One over the other, each as wide as the panel.
+        // Stacked: each child at full panel width.
         foreach (var part in parts)
             part.Measure(new Size(availableSize.Width, double.PositiveInfinity));
         return new Size(parts.Max(p => p.DesiredSize.Width), parts.Sum(p => p.DesiredSize.Height) + RowSpacing * (parts.Count - 1));
@@ -106,9 +105,9 @@ public sealed class ReflowPanel : Panel
 }
 
 /// <summary>
-/// A least width that gives way: what it holds is at least <see cref="Value"/> wide where the room is there (a column
-/// sized to its content, a wide pane), and only as wide as the room where it is not (a narrow pane), instead of being
-/// cut off at the edge as a MinWidth would have it. Without a child it only holds its column open.
+/// Soft minimum width: the child is at least <see cref="Value"/> wide when space allows (auto-sized column, wide pane), but shrinks
+/// to the available width otherwise (narrow pane) instead of being clipped as with MinWidth. Without a child it just reserves the
+/// column width.
 /// </summary>
 public sealed class SoftMinWidth : Decorator
 {

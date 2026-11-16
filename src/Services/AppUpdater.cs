@@ -5,9 +5,8 @@ using Velopack.Sources;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// HandPeg's own updates, through Velopack, from the releases of its public GitHub repository. Only a copy
-/// that Velopack installed (or its portable build) can update itself: one run from a build folder skips all
-/// of this. Nothing here shows a message. Whatever goes wrong, offline or otherwise, goes to the log.
+/// Velopack self-update from the public GitHub releases. Only Velopack installs (or their portable build) self-update; build folders
+/// skip it. Never shows messages; all failures (including offline) are logged.
 /// </summary>
 public static class AppUpdater
 {
@@ -20,7 +19,7 @@ public static class AppUpdater
         /// <summary>A newer release has been downloaded and goes in at the next restart.</summary>
         Ready,
 
-        /// <summary>A newer release that this copy can put in by itself has been found; the Update button in the status bar downloads it.</summary>
+        /// <summary>A self-installable newer release was found; the status bar Update button downloads it.</summary>
         Found,
 
         /// <summary>A newer release exists, but this copy cannot put it in by itself: it is fetched by hand.</summary>
@@ -30,7 +29,7 @@ public static class AppUpdater
         Failed,
     }
 
-    /// <summary>The version this copy is, as its releases are numbered: 2.6.3.</summary>
+    /// <summary>Current version in release numbering (major.minor.patch).</summary>
     public static Version CurrentVersion { get; } = typeof(AppUpdater).Assembly.GetName().Version is { } version
         ? new Version(version.Major, version.Minor, Math.Max(version.Build, 0))
         : new Version(0, 0, 0);
@@ -45,15 +44,13 @@ public static class AppUpdater
     private static readonly SemaphoreSlim Checking = new(1, 1);
 
     /// <summary>
-    /// Check for Updates, in the settings: looks now, and says what it found. A copy the installer put in is told
-    /// of a newer release, which the Update button in the status bar downloads (or which is downloaded at once when
-    /// Settings say to download in the background). A self-contained copy, or one run from a build folder, cannot
-    /// replace itself, so it is only told whether GitHub has a newer release than it is.
+    /// Settings "Check for Updates": checks now and reports. Installed copies get the release via the Update button (or immediately when
+    /// background download is enabled); self-contained or build copies cannot self-replace and only learn whether GitHub has a newer one.
     /// </summary>
-    /// <returns>The outcome, and with it the version found, or why the check failed.</returns>
+    /// <returns>Outcome plus the version found or the failure reason.</returns>
     public static Task<(CheckResult Result, string Detail)> CheckNowAsync() => Task.Run(async () =>
     {
-        // Velopack's bootstrap runs beside the window's start (Program.VelopackStarted): it is done before anything here asks Velopack.
+        // Velopack bootstrap runs alongside window startup (Program.VelopackStarted) and completes before any use here.
         await Program.VelopackStarted;
         await Checking.WaitAsync();
         try
@@ -109,9 +106,8 @@ public static class AppUpdater
     private static UpdateManager? _manager;
 
     /// <summary>
-    /// The Velopack channel of this copy's build (5.2.0's re-cut): "win-arm64" for the ARM64 installer's HandPeg (releases.win-arm64.json),
-    /// "win" for the x64 one's (releases.win.json, which an x64 copy run emulated on an ARM64 PC keeps). Named, never left to the copy's own
-    /// package, so an ARM64 copy is never offered the x64 release, nor the other way round.
+    /// Velopack channel for this build: "win-arm64" (releases.win-arm64.json) or "win" for x64 (releases.win.json, kept by an emulated x64
+    /// copy on ARM64). Set explicitly so architectures never receive each other's releases.
     /// </summary>
     public static string Channel => System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture == System.Runtime.InteropServices.Architecture.Arm64 ? "win-arm64" : "win";
 
@@ -127,10 +123,9 @@ public static class AppUpdater
     public static string? FoundVersion => _found is null || _ready is not null ? null : _found.TargetFullRelease.Version.ToString();
 
     /// <summary>
-    /// Looks for a newer release, off the UI thread (Settings: Check for App Updates on Startup). It is only downloaded
-    /// when Settings say so (Auto-Download App Updates in Background, off by default): otherwise the Update button
-    /// in the status bar downloads it, so closing and opening HandPeg never puts in an update nobody asked for.
-    /// Returns its version and whether it is downloaded, or null when there is nothing or the check could not be made.
+    /// Startup update check off the UI thread (Settings: Check for App Updates on Startup). Downloads only with Auto-Download App Updates
+    /// in Background (off by default); otherwise the Update button does, so restarts never apply unrequested updates. Returns version and
+    /// download state, or null when none or the check failed.
     /// </summary>
     public static Task<(string Version, bool Downloaded)?> CheckAtStartupAsync() => Task.Run(async () =>
     {
@@ -138,7 +133,7 @@ public static class AppUpdater
         if (AppPaths.IsSelfContained)
             return ((string, bool)?)null;
 
-        // Velopack's bootstrap runs beside the window's start (Program.VelopackStarted): it is done before anything here asks Velopack.
+        // Velopack bootstrap runs alongside window startup (Program.VelopackStarted) and completes before any use here.
         await Program.VelopackStarted;
         await Checking.WaitAsync();
         try
@@ -178,8 +173,7 @@ public static class AppUpdater
     });
 
     /// <summary>
-    /// Downloads the release found (the Update button), reporting 0 to 1. True once it is ready to be put in; it is put
-    /// in at the next restart, or when HandPeg closes: it was asked for.
+    /// Downloads the found release (Update button), reporting 0..1. True when ready; applied on restart or exit (explicitly requested).
     /// </summary>
     public static async Task<bool> DownloadFoundAsync(Action<double> progress, CancellationToken token)
     {
@@ -212,14 +206,12 @@ public static class AppUpdater
     }
 
     /// <summary>
-    /// Hands the downloaded release to the updater, which waits for this process to end, puts the new
-    /// version in and starts it. The caller then closes the application in the ordinary way.
+    /// Hands the download to the updater, which waits for exit, installs and relaunches; the caller then closes normally.
     /// </summary>
     public static bool BeginRestartIntoUpdate() => HandOver(restart: true);
 
     /// <summary>
-    /// At exit: an update that was downloaded (by the Update button, or in the background when Settings say so) and not
-    /// restarted into is put in quietly, ready for the next start. One only found is left alone.
+    /// At exit, silently applies a downloaded (not merely found) update for the next start.
     /// </summary>
     public static void ApplyOnExit() => HandOver(restart: false);
 

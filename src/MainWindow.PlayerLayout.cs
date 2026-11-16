@@ -12,15 +12,12 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// Edit Clips on Video Preview (4.1.1-B): the clips arranged on the player itself, as in the layout pane. Over the
-/// picture, in the window the video surface keeps above the video, each track's clip on screen at the playhead has a
-/// box where it is drawn: nearly see-through, so a click on a clip selects it (and a drag moves it straight away).
-/// Only the selected clip's box is outlined and has the handles (corner grip, rotation handle, anchor dot), and only
-/// while paused: the video is never cluttered with the others. A click on the video away from it hides the outline
-/// until another clip is selected. Moving, resizing, turning and the anchor go through the same code as the layout
-/// pane's (MoveTrackLayer, ResizeTrackLayer, WireGizmo). Shown over the composite (not while a rectangle is drawn). The caption box
-/// is one of them while captions are on (5.0-Verify, the user's bug 3): on top, moved and sized like the Canvas's (no turn,
-/// no anchor), selected by a press on it or on any caption on the timeline.
+/// Edit Clips on Video Preview: on-player layout editing, mirroring the Canvas pane. In the video surface's overlay window, each
+/// track's visible clip at the playhead gets a near-transparent hit box (click selects, drag moves immediately). Only the selected
+/// clip's box shows an outline and handles (corner grip, rotation, anchor), and only while paused; clicking empty picture hides the
+/// outline until the next selection. Move, resize, rotate and anchor reuse the Canvas code (MoveTrackLayer, ResizeTrackLayer,
+/// WireGizmo). Hidden while a rectangle is drawn. With captions on, the caption box is topmost, moved/sized like the Canvas's (no
+/// rotation or anchor), and selected by a press on it or on any timeline caption.
 /// </summary>
 public partial class MainWindow
 {
@@ -30,7 +27,7 @@ public partial class MainWindow
     private Rect _playerFrame;
     private double _playerScale;
 
-    // A click on the video away from the selected layer hides its outline, until a layer is selected again.
+    // Set by a click on empty picture: hides the selection outline until the next selection.
     private bool _playerOutlineHidden;
 
     private static readonly SolidColorBrush PlayerHitBrush = FrozenBrush(Color.FromArgb(0x01, 0, 0, 0));
@@ -52,13 +49,13 @@ public partial class MainWindow
                     _playerOutlineHidden = false;
                     UpdatePlayerSelection();
 
-                    // Another clip selected may be another box for the Canvas (4.4).
+                    // A new selection may change the Canvas's box set.
                     if (_viewModel.IsArrangeActive && !SameArrangeClips())
                         RedrawLayout();
                     break;
                 case nameof(MainViewModel.PositionMs):
-                    // Another clip may be on screen now: rebuilt only when the set of clips shown is not the same. The
-                    // Canvas's boxes are each track's clip at the playhead too (4.4). Not under a drag: after it.
+                    // Rebuild player and Canvas boxes only when the visible clip set changed; during a drag, defer until it
+                    // completes.
                     if (_dragHeld)
                         _redrawAfterDrag = true;
                     else
@@ -74,19 +71,17 @@ public partial class MainWindow
         };
         _viewModel.Layers.CollectionChanged += (_, _) => RedrawPlayerLayout();
 
-        // A drag of a box, a gizmo or a slider (in any window): while it lasts, the boxes are not rebuilt under the pointer as
-        // the playhead brings other clips, and the Crop boxes keep standing for the clip they were taken from (4.4); both catch
-        // up when it ends. The seek bar's and the scroll bars' drags hold nothing.
+        // Any Thumb drag (box, gizmo or slider, any window) freezes box rebuilds and the Crop target until it completes, then both
+        // catch up. Seek bar and scroll bar thumbs are exempt (DragHold.Exempt).
         EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragStartedEvent, new DragStartedEventHandler((sender, _) => HoldForDrag(sender, true)), handledEventsToo: true);
         EventManager.RegisterClassHandler(typeof(Thumb), Thumb.DragCompletedEvent, new DragCompletedEventHandler((sender, _) => HoldForDrag(sender, false)), handledEventsToo: true);
 
-        // A slider or a number box that declares the clip edge it shapes (NumericInput.EdgeKind: Layer Properties, the mask tools), in
-        // any window: while the pointer holds it, the player magnifies that edge of the clip it is bound to (the loupe). The Effects
-        // pane's cards say so themselves (their values are bound to the cards).
+        // Sliders/number boxes declaring a clip edge (NumericInput.EdgeKind: Layer Properties, mask tools) show the edge loupe on the
+        // player while held. Effects pane cards report their own edges (their values bind to the cards).
         NumericInput.EdgeHeld += HoldBoundEdge;
 
-        // Ping-to-Mark (5.2C): Alt + a click on the picture (pressed and let go without a drag: Alt + a drag still moves a clip without
-        // snapping) drops a highlight at the playhead, where on the picture it was clicked kept on it.
+        // Ping-to-Mark: Alt+click on the picture (no drag; Alt+drag still moves a clip without snapping) adds a highlight at the playhead
+        // with the clicked focal point.
         PlayerOverlay.PreviewMouseLeftButtonDown += (_, e) => _altPressAt = Keyboard.Modifiers == ModifierKeys.Alt && !_explodedUi ? e.GetPosition(PlayerOverlay) : null;
         PlayerOverlay.PreviewMouseLeftButtonUp += (_, e) =>
         {
@@ -100,14 +95,14 @@ public partial class MainWindow
             RunGuarded("Ping-to-Mark", () => _viewModel.PingToMark(focal.X, focal.Y));
         };
 
-        // A right-click on the picture that does not move: the player's menu (5.4.4-Final, MainWindow.PlayerMenu.cs).
+        // Stationary right-click on the picture opens the player context menu (MainWindow.PlayerMenu.cs).
         HookPlayerContextMenu();
     }
 
-    // Where an Alt press on the player was (Ping-to-Mark), while it is held.
+    // Overlay position of a pending Alt press (Ping-to-Mark); null otherwise.
     private Point? _altPressAt;
 
-    /// <summary>A point of the player (its overlay's) as a place on the picture: fractions of the output frame across and down; null off the picture.</summary>
+    /// <summary>Maps an overlay point to normalized output-frame coordinates (0..1); null outside the picture.</summary>
     private Point? PictureFocalAt(Point at)
     {
         var (width, height) = (PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
@@ -115,14 +110,14 @@ public partial class MainWindow
         if (width <= 0 || height <= 0 || frameWidth <= 0 || frameHeight <= 0)
             return null;
 
-        // The picture as the GPU engine fits it into the player: the output frame, letterboxed (as RedrawPlayerLayout lays the boxes).
+        // Letterboxed output frame as the GPU engine fits it (same fit RedrawPlayerLayout uses for boxes).
         var scale = Math.Min(width / frameWidth, height / frameHeight);
         var (left, top) = ((width - frameWidth * scale) / 2, (height - frameHeight * scale) / 2);
         var (x, y) = ((at.X - left) / (frameWidth * scale), (at.Y - top) / (frameHeight * scale));
         return x is >= 0 and <= 1 && y is >= 0 and <= 1 ? new Point(x, y) : null;
     }
 
-    // Whether the edge being tuned was begun by a bound slider or box (HoldBoundEdge): only its own letting go ends it.
+    // True when edge tuning was started by a bound slider/box (HoldBoundEdge); only that control's release ends it.
     private bool _boundEdgeHeld;
 
     private void HoldBoundEdge(FrameworkElement control, EdgeTuningKind kind, bool held)
@@ -145,7 +140,7 @@ public partial class MainWindow
         _viewModel.BeginEdgeTuning(layer, kind);
     }
 
-    // A drag holding the boxes and the Crop boxes' clip (HoldForDrag), and whether the playhead brought other clips during it.
+    // Drag freeze state (HoldForDrag) and whether the visible clip set may have changed during it.
     private bool _dragHeld, _redrawAfterDrag;
 
     private void HoldForDrag(object sender, bool started)
@@ -157,13 +152,13 @@ public partial class MainWindow
         _viewModel.HoldCropTarget(started);
         if (!started && _redrawAfterDrag)
         {
-            // After the drag's own handlers have finished with its box.
+            // Deferred so the drag's own completion handlers finish with its box first.
             _redrawAfterDrag = false;
             Dispatcher.BeginInvoke(RedrawForClipsShown, System.Windows.Threading.DispatcherPriority.Loaded);
         }
     }
 
-    /// <summary>The player's and the Canvas's boxes rebuilt when the clips on screen are not those they show.</summary>
+    /// <summary>Rebuilds player and Canvas boxes when the visible clip set differs from what they show.</summary>
     private void RedrawForClipsShown()
     {
         if (PlayerLayoutCanvas.Visibility == Visibility.Visible && !SamePlayerClips())
@@ -174,14 +169,14 @@ public partial class MainWindow
 
     private void PlayerLayoutCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawPlayerLayout();
 
-    /// <summary>Whether layers are edited on the player now: the frame engine (or the captions) on, paused, nothing else drawn on the video.</summary>
+    /// <summary>True when on-player layer editing is active: enabled, layout editable, source loaded, paused, no other overlay mode.</summary>
     private bool PlayerLayoutActive =>
         _viewModel.EditLayersOnPlayer && _viewModel.CanEditLayout && _viewModel.HasSource
         && !_viewModel.IsPlaying && CurrentOverlayMode == OverlayMode.None && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0;
 
     /// <summary>
-    /// Each track's clip on screen at the playhead (shown, a picture): the boxes the player has (4.3D); and last, over them all as
-    /// the captions are drawn, the caption box while captions are on (5.0-Verify).
+    /// Clips that get player boxes: each track's first visible, drawn picture clip at the playhead, then (topmost, matching caption
+    /// draw order) the caption layer while captions are on.
     /// </summary>
     private List<Layer> PlayerClips()
     {
@@ -198,7 +193,7 @@ public partial class MainWindow
         return clips;
     }
 
-    /// <summary>What the player outlines: the captions while they are what is selected (they are never the key layer), else the key layer.</summary>
+    /// <summary>Layer the player outlines: the caption layer when selected (never the key layer), otherwise the active key layer.</summary>
     private Layer PlayerSelected => _selectedClip is Layer { IsCaptions: true } captions ? captions : _viewModel.ActiveKeyLayer;
 
     private bool SamePlayerClips()
@@ -215,7 +210,7 @@ public partial class MainWindow
         if (!active || PlayerLayoutCanvas.ActualWidth <= 0 || PlayerLayoutCanvas.ActualHeight <= 0)
             return;
 
-        // The picture as the GPU engine fits it into the player: the output frame, letterboxed.
+        // Letterboxed output frame as the GPU engine fits it into the player.
         var (frameWidth, frameHeight) = ((double)_viewModel.FrameWidth, (double)_viewModel.FrameHeight);
         _playerScale = Math.Min(PlayerLayoutCanvas.ActualWidth / frameWidth, PlayerLayoutCanvas.ActualHeight / frameHeight);
         _playerFrame = new Rect((PlayerLayoutCanvas.ActualWidth - frameWidth * _playerScale) / 2, (PlayerLayoutCanvas.ActualHeight - frameHeight * _playerScale) / 2,
@@ -238,7 +233,7 @@ public partial class MainWindow
         };
         System.Windows.Automation.AutomationProperties.SetName(box, $"{clip.Name} on the video");
 
-        // A press selects the layer; the same press drags it.
+        // Press selects the layer; the same press can start a drag.
         var wasHeld = false;
         box.PreviewMouseLeftButtonDown += (_, _) =>
         {
@@ -250,7 +245,7 @@ public partial class MainWindow
             else
                 UpdatePlayerSelection();
         };
-        // One undo step for the drag, taken as the box first moves: a press that only selects the layer takes none (DragStep).
+        // One undo step per drag, taken on first movement; a select-only press records none (DragStep).
         var moveStep = new DragStep(_viewModel, $"move {clip.Name}");
         box.DragStarted += (_, _) => moveStep.Pressed();
         box.DragDelta += (_, e) =>
@@ -260,7 +255,7 @@ public partial class MainWindow
         };
         box.DragCompleted += (_, e) =>
         {
-            // A click with no drag on the selected layer, on a place other layers show too: the next one down is what was meant.
+            // Drag-free click on the already-selected layer where others overlap: cycle to the next layer down.
             if (wasHeld && !e.Canceled && Math.Abs(e.HorizontalChange) + Math.Abs(e.VerticalChange) < 2)
                 ClickThrough([.. _playerBoxes.Select(b => b.Box)], box, PlayerLayoutCanvas, next => SelectClip(next.Layer));
         };
@@ -299,8 +294,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The layer a press inside its box stays with, on the player and on the Canvas: what the user has selected and can see of it. With
-    /// nothing selected (the panes then show a clip by default), no box holds on to anything.
+    /// Layer that keeps presses inside its box (player and Canvas): the explicit, visible selection. With nothing explicitly selected (panes
+    /// then show a default clip), no box holds presses.
     /// </summary>
     private Layer? HeldLayer => !_playerOutlineHidden && (_selectedClip is Layer || _playheadVideoSelected) ? PlayerSelected : null;
 
@@ -321,15 +316,15 @@ public partial class MainWindow
         }
     }
 
-    // Whether a layer's picture is drawn at the playhead: what is not cannot be clicked or dragged.
+    // True when the layer is drawn at the playhead; undrawn layers are not hit-testable.
     private bool IsDrawnNow(Layer layer) => _viewModel.IsPictureDrawn(layer, _viewModel.PositionMs / 1000);
 
     private System.Windows.Threading.DispatcherTimer? _clickThrough;
 
-    // How long a click waits before it passes to the layer under it: the second press of a double-click (center it) is the box's own.
+    // Click-through delay, so a double-click's second press (center) stays with the original box.
     private static readonly TimeSpan ClickThroughWait = TimeSpan.FromMilliseconds(300);
 
-    /// <summary>After a click with no drag on the selected box: the next box down there is chosen, unless that click turns out to be half a double-click.</summary>
+    /// <summary>After a drag-free click on the selected box, selects the next box down at that point unless a double-click follows.</summary>
     /// <param name="boxes">The surface's boxes, bottom first.</param>
     private void ClickThrough(IReadOnlyList<LayerBox> boxes, LayerBox from, FrameworkElement surface, Action<LayerBox> choose)
     {
@@ -348,7 +343,7 @@ public partial class MainWindow
         timer.Start();
     }
 
-    /// <summary>Outlines the selected layer's box and gives it the handles; every other box is left see-through.</summary>
+    /// <summary>Outlines the selected layer's box and attaches its handles; all other boxes stay transparent.</summary>
     private void UpdatePlayerSelection()
     {
         if (_playerGizmo is not null)
@@ -369,7 +364,7 @@ public partial class MainWindow
             var name = clip.Name;
             if (clip.IsCaptions)
             {
-                // The caption box is not turned and has no anchor: only its corner grip, as on the Canvas.
+                // Caption box: corner grip only (no rotation or anchor), as on the Canvas.
                 var grip = new ResizeAdorner(box, (Style)FindResource("LayerGrip"), name);
                 var resizeStep = new DragStep(_viewModel, $"resize {name}");
                 grip.ResizeStarted += (_, _) => resizeStep.Pressed();
@@ -391,17 +386,17 @@ public partial class MainWindow
             shown = true;
         }
 
-        // With an outline shown, the canvas takes the clicks on the rest of the video (to hide it); otherwise they pass
-        // through to the video (a see-through pixel of the window over it takes no click).
+        // With an outline shown, the canvas hit-tests empty picture (to hide it); otherwise a null background lets clicks pass
+        // through to the video.
         PlayerLayoutCanvas.Background = shown ? PlayerHitBrush : null;
     }
 
-    // The tilted clips' outlines over the player (5.2B, the user's Q4), by their boxes: made the first time a box's clip is tilted.
+    // Perspective outlines for tilted clips, keyed by box; created lazily on first tilt.
     private readonly Dictionary<LayerBox, System.Windows.Shapes.Polygon> _playerTiltOutlines = [];
 
     /// <summary>
-    /// Outlines a clip's box over the player while it is the selected one (<paramref name="on"/>): the box's own border for a flat clip; for
-    /// a tilted one (5.2B) the four corners the GPU lays it at, in perspective, and no flat border (its handles on those corners, 5.2C).
+    /// Outlines a clip's player box while selected (<paramref name="on"/>): the box border for flat clips; for tilted clips, a polygon
+    /// through the four GPU-projected corners (handles sit on those corners) and no flat border.
     /// </summary>
     private void OutlinePlayerBox(LayerBox box, Layer clip, bool on)
     {
@@ -412,7 +407,7 @@ public partial class MainWindow
             _playerTiltOutlines[box] = placed;
     }
 
-    // A click on the video away from every layer's box: the outline goes until a layer is selected again.
+    // Click on empty picture: hide the outline until the next selection.
     private void PlayerLayoutCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (!ReferenceEquals(e.OriginalSource, PlayerLayoutCanvas))

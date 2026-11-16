@@ -8,23 +8,23 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Views;
 
-// ----- A sound's own cards (Pass 5.2B, the Studio Audio Suite) -----
-// A sound selected (an audio clip, a clip of a lane of a file's streams): its filters as cards of their own under its effects: Studio Voice
-// (its wet/dry mix and its mix keys), the De-Esser, the Equalizer with its parametric curve, and the Compressor and Gate. They edit a copy of
-// the sound's TrackAudioFilters and put it on the sound as the Audio Filters dialog's OK does (a checkpoint, then the filters set), a run of
-// changes one step of Undo (a checkpoint when the first comes after a pause, or as a gesture of the curve begins), and written at most
-// thirty times a second while a slider is dragged (each write is a new sound program for the engine).
+// ----- Audio filter cards (Studio Audio Suite) -----
+// For a selected audio source (audio clip, or a clip on a file-stream lane), its filters appear as cards below its effects: Studio Voice
+// (wet/dry mix and mix keys), De-Esser, Equalizer with parametric curve, and Compressor plus Gate. Cards edit a copy of the source's
+// TrackAudioFilters and apply it like the Audio Filters dialog's OK (checkpoint, then set). A run of changes is one Undo step (checkpoint
+// on the first change after a pause, or when a curve gesture begins); during slider drags writes are capped at 30 per second, since each
+// write rebuilds the engine's audio program.
 public partial class EffectsPane
 {
-    // The copy being edited and the sound it is put on; whether a write is owed (a drag's), and when the last one was made.
+    // Working filter copy and its target layer; flags for an in-progress write (ignores self-notification) and card construction.
     private TrackAudioFilters? _audio;
     private Layer? _audioLayer;
     private bool _writingAudio, _buildingAudio;
 
-    /// <summary>The sound's cards' "All Audio Filters..." button: the window opens the sound's Audio Filters dialog.</summary>
+    /// <summary>Raised by "All Audio Filters..." so the window opens that source's Audio Filters dialog.</summary>
     public event Action<Layer>? AudioFiltersRequested;
 
-    /// <summary>The cards of a sound's filters, after its effects (in the pinned panel: they are in the chain's own order, never reordered).</summary>
+    /// <summary>Adds the audio filter cards after the effects, in the pinned panel (fixed chain order, not reorderable).</summary>
     private void AddAudioCards(Layer sound)
     {
         _writes.Flush();
@@ -41,7 +41,7 @@ public partial class EffectsPane
             heading.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
             PinnedPanel.Children.Add(heading);
 
-            // Studio Voice: on or off, its wet/dry mix, and its mix keys at the playhead (seconds into the clip, as the dialog keys them).
+            // Studio Voice: toggle, wet/dry mix, and mix keys at the playhead (clip-local seconds, as the dialog keys them).
             var voice = AudioCard("Studio Voice", filters.StudioVoice, on => filters.StudioVoice = on,
                 "A voice made to sound recorded in a studio: its band isolated, the room and the noise between words gated away, its presence lifted, its level held even. Blended with the dry sound by the mix.",
                 out var voiceBody);
@@ -79,13 +79,13 @@ public partial class EffectsPane
             voiceBody.Children.Add(keysRow);
             PinnedPanel.Children.Add(voice);
 
-            // The De-Esser.
+            // De-Esser.
             var esser = AudioCard("De-Esser", filters.DeEsser, on => filters.DeEsser = on,
                 "Tames harsh S, SH and T sounds: their band (5.5 to 9 kHz) is turned down only while they are loud.", out var esserBody);
             esserBody.Children.Add(AudioSlider("Amount", "%", 0, 100, filters.DeEsserAmount, 50, 0, value => filters.DeEsserAmount = value));
             PinnedPanel.Children.Add(esser);
 
-            // The Equalizer: its curve, each band dragged, widened with the wheel, reset with a double-click.
+            // Equalizer: parametric curve (drag bands, wheel for width, double-click to reset).
             var curve = new ParametricEqControl { Height = 130, Margin = new Thickness(0, 2, 0, 2), Filters = filters };
             var equalizer = AudioCard("Equalizer", filters.Equalizer, on =>
             {
@@ -95,7 +95,7 @@ public partial class EffectsPane
             curve.EditStarted += _writes.Begin;
             curve.BandChanged += _ =>
             {
-                // A band moved is meant to be heard: the equalizer switched on with it.
+                // Moving a band implies intent to hear it: auto-enable the equalizer.
                 if (!filters.Equalizer)
                 {
                     filters.Equalizer = true;
@@ -108,7 +108,7 @@ public partial class EffectsPane
             equalizerBody.Children.Add(curve);
             PinnedPanel.Children.Add(equalizer);
 
-            // The dynamics: the compressor (threshold, ratio) and the gate (threshold), in one card.
+            // Dynamics card: compressor (threshold, ratio) and noise gate (threshold).
             var dynamics = AudioCard("Compressor", filters.Compressor, on => filters.Compressor = on,
                 "Evens out loud and quiet: everything above the threshold is turned down by the ratio.", out var dynamicsBody);
             dynamicsBody.Children.Add(AudioSlider("Threshold", "dB", -60, 0, filters.CompressorThreshold, -18, 0, value => filters.CompressorThreshold = value));
@@ -139,7 +139,7 @@ public partial class EffectsPane
         }
     }
 
-    /// <summary>A card of the sound's: its title as its On switch (a click one step of Undo), and the body its values go in.</summary>
+    /// <summary>Builds an audio card: a title checkbox as its On switch (each click one Undo step) and a body panel for its values.</summary>
     private Border AudioCard(string title, bool on, Action<bool> switched, string about, out StackPanel body) =>
         AudioCard(title, on, switched, about, out body, out _);
 
@@ -166,7 +166,7 @@ public partial class EffectsPane
         return border;
     }
 
-    /// <summary>A value of the sound's: its name, a slider and a number box (double-click resets to <paramref name="usual"/>).</summary>
+    /// <summary>Builds a labelled slider plus number box row (double-click resets to <paramref name="usual"/>).</summary>
     private FrameworkElement AudioSlider(string label, string unit, double min, double max, double value, double usual, int decimals, Action<double> set)
     {
         var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
@@ -202,8 +202,8 @@ public partial class EffectsPane
     }
 
     /// <summary>
-    /// A value of the sound's changed here: paced with the pane's other writes (<see cref="GestureWriter{TKey}"/>; a slider drag is one
-    /// undo step). <paramref name="newStep"/>: a step of its own (a switch, a key), written at once, never the end of a run of changes.
+    /// Handles a local audio value change, paced with the pane's other writes (<see cref="GestureWriter{TKey}"/>; one Undo step per slider
+    /// drag). <paramref name="newStep"/>: a discrete action (switch, key) written immediately as its own step, never merged into a run.
     /// </summary>
     private void AudioChanged(bool newStep)
     {
@@ -222,7 +222,7 @@ public partial class EffectsPane
         _writes.Queue(AudioWriteKey, () => WriteAudio(startRun: false));
     }
 
-    // The copy put on the sound, as the Audio Filters dialog's OK puts it: its undo step (one per drag or run), then the filters.
+    // Applies the working copy like the dialog's OK: undo step first (one per drag or run), then the filters.
     private void WriteAudio(bool startRun)
     {
         if (_vm is null || _audio is null || _audioLayer is not { } sound)
@@ -240,7 +240,7 @@ public partial class EffectsPane
         }
     }
 
-    /// <summary>The sound's filters changed elsewhere (its dialog, Undo): its cards are made again from them.</summary>
+    /// <summary>External filter change (dialog, Undo): schedules a card rebuild unless this pane is writing.</summary>
     private void AudioFiltersChangedElsewhere()
     {
         if (!_writingAudio)

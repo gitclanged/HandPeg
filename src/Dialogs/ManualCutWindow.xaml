@@ -9,7 +9,7 @@
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="Margin" Value="0,0,12,0" />
         </Style>
-        <!-- An I-frame suggestion: reads as a link, fills the time box when clicked. -->
+        <!-- I-frame suggestion link; click fills the time box. -->
         <Style x:Key="Suggestion" TargetType="Button">
             <Setter Property="Foreground" Value="{DynamicResource AccentHoverBrush}" />
             <Setter Property="FontFamily" Value="Consolas" />

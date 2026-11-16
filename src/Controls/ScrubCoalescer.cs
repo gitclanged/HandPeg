@@ -1,35 +1,34 @@
 namespace HandPegApp;
 
 /// <summary>
-/// Zero-lag scrubbing (5.4.2B): a drag of the playhead (the Timeline's ruler, the Sequence Overview Scrubber) moves its lines and seeks the
-/// engine on every raw pointer move, at once; the playhead's own value (MainViewModel.PositionMs, whose listeners redraw the readout, the
-/// Effects pane, the inspector and the key lanes) is set from here at most once per <see cref="FlushIntervalMs"/> while the drag lasts, and
-/// exactly once more as it is let go, with the last moment the pointer reached. Pure: the host passes the time and calls <see cref="Tick"/>
-/// from its frame loop; nothing here hooks one. Holds one number: nothing grows.
+/// Zero-lag scrub coalescer: during a playhead drag (Timeline ruler, Overview Scrubber) the host moves the lines and seeks the engine on
+/// every raw move, while this commits MainViewModel.PositionMs (whose listeners redraw the readout, Effects pane, inspector and key lanes)
+/// at most once per <see cref="FlushIntervalMs"/>, plus exactly once on release with the last position. Pure: the host supplies time and
+/// calls <see cref="Tick"/> from its frame loop; no hooks. Holds a single pending value, so state never grows.
 /// </summary>
 public sealed class ScrubCoalescer(Action<double> flush)
 {
-    /// <summary>The least time (ms) between two settings of the playhead's value during a drag: once per 60 Hz frame, however fast the pointer reports.</summary>
+    /// <summary>Minimum interval (ms) between PositionMs commits during a drag: one per 60 Hz frame regardless of input rate.</summary>
     public const double FlushIntervalMs = 16;
 
-    // The moment the pointer last moved the playhead to (ms) not yet given to the playhead's value, NaN for none; when it was last given.
+    // Uncommitted latest position (ms; NaN when none) and the time of the last commit.
     private double _pending = double.NaN;
     private double _flushedAt = double.NegativeInfinity;
 
-    /// <summary>A drag of the playhead is held: moves since its press go through <see cref="Move"/>.</summary>
+    /// <summary>True while a playhead drag is held (moves arrive via <see cref="Move"/>).</summary>
     public bool IsHeld { get; private set; }
 
-    /// <summary>Whether a moment is waiting for the playhead's value.</summary>
+    /// <summary>True when a position is waiting to be committed.</summary>
     public bool HasPending => !double.IsNaN(_pending);
 
-    /// <summary>The pointer moved the playhead to <paramref name="positionMs"/>: kept for the next <see cref="Tick"/> (the lines and the engine are the host's, now).</summary>
+    /// <summary>Records a scrub move to <paramref name="positionMs"/> for the next <see cref="Tick"/> (the host updates lines and engine itself).</summary>
     public void Move(double positionMs)
     {
         IsHeld = true;
         _pending = positionMs;
     }
 
-    /// <summary>A frame at <paramref name="nowMs"/>: the waiting moment is given to the playhead's value if the last was long enough ago. True when it was.</summary>
+    /// <summary>Frame tick at <paramref name="nowMs"/>: commits the pending position if the interval has elapsed; returns true when committed.</summary>
     public bool Tick(double nowMs)
     {
         if (!HasPending || nowMs - _flushedAt < FlushIntervalMs)
@@ -39,7 +38,7 @@ public sealed class ScrubCoalescer(Action<double> flush)
         return true;
     }
 
-    /// <summary>The drag let go (or taken away) at <paramref name="nowMs"/>: the last moment reached is given to the playhead's value now.</summary>
+    /// <summary>Drag released or cancelled at <paramref name="nowMs"/>: commits the last position immediately.</summary>
     public void Release(double nowMs)
     {
         IsHeld = false;

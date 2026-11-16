@@ -10,15 +10,14 @@ using Microsoft.Win32;
 namespace HandPegApp;
 
 /// <summary>
-/// Edits a copy of the application settings; nothing changes unless the user saves. Save writes back only the properties
-/// this window changed (<see cref="AppSettings.CopyEdited"/>), so changes made to the settings in effect while the window was
-/// open (a caption run marking a GPU as failed, the Automation tab, a hardware test) are kept.
+/// Edits a copy of the settings; Save writes back only properties changed here (<see cref="AppSettings.CopyEdited"/>), preserving
+/// concurrent changes to the live settings (GPU failure marks, Automation tab, hardware tests).
 /// </summary>
 public partial class SettingsWindow : Window
 {
     private readonly AppSettings _settings = AppSettings.Current.Clone();
 
-    // The settings as the window opened, unedited: what Save compares the edited copy against.
+    // Unedited snapshot at open; Save diffs the edited copy against it.
     private readonly AppSettings _opened = AppSettings.Current.Clone();
     private readonly System.Collections.ObjectModel.ObservableCollection<SquishPreset> _squishPresets;
 
@@ -75,7 +74,7 @@ public partial class SettingsWindow : Window
     private List<string> _allStyles = [];
     private System.Collections.ObjectModel.ObservableCollection<string> _overlayStyles = [];
 
-    // The list a button belongs to (one since 4.2: the encoding presets' went with Encoder Mode).
+    // The list a button operates on.
     private (System.Collections.ObjectModel.ObservableCollection<string> List, List<string> All, ComboBox Add) OverlayListOf(object sender) =>
         (_overlayStyles, _allStyles, OverlayStyleAddBox);
 
@@ -147,7 +146,7 @@ public partial class SettingsWindow : Window
     }
     private readonly MainViewModel _viewModel;
 
-    /// <summary>One entry of a drop-down whose saved value is not what it shows: an encoder by its FFmpeg name, or blank for the built-in default.</summary>
+    /// <summary>Drop-down entry whose stored value differs from its label (FFmpeg encoder name, or blank for the built-in default).</summary>
     public sealed record Choice(string Name, string Display)
     {
         public override string ToString() => Display;
@@ -169,7 +168,7 @@ public partial class SettingsWindow : Window
         e.Handled = true;
     }
 
-    /// <summary>Check for Updates: asks now, and says here what came of it. The main window offers the restart once this window is closed.</summary>
+    /// <summary>Check for Updates: queries now and shows the result; the main window offers the restart after this window closes.</summary>
     private void CheckForUpdates_Click(object sender, RoutedEventArgs e) => Faults.Forget(CheckForUpdates_ClickAsync(sender, e), nameof(CheckForUpdates_Click));
 
     private async Task CheckForUpdates_ClickAsync(object sender, RoutedEventArgs e)
@@ -190,7 +189,7 @@ public partial class SettingsWindow : Window
 
     // ----- Dependencies, from the General tab -----
 
-    /// <summary>Update Dependencies: the dependency panel's Install / Update All, run from here, its progress shown under the button.</summary>
+    /// <summary>Update Dependencies: runs the dependency panel's Install / Update All with progress under the button.</summary>
     private void UpdateDependencies_Click(object sender, RoutedEventArgs e) => Faults.Forget(UpdateDependencies_ClickAsync(sender, e), nameof(UpdateDependencies_Click));
 
     private async Task UpdateDependencies_ClickAsync(object sender, RoutedEventArgs e)
@@ -209,9 +208,9 @@ public partial class SettingsWindow : Window
         }
     }
 
-    // ----- Pinned dependency builds (v4.1) -----
+    // ----- Pinned dependency builds -----
 
-    /// <summary>Ticking Allow Untested Dependency Updates is asked about first (the same warning as Force Update); unticking needs no warning.</summary>
+    /// <summary>Enabling Allow Untested Dependency Updates confirms first (same warning as Force Update); disabling does not.</summary>
     private void AllowUnpinned_Click(object sender, RoutedEventArgs e)
     {
         if (AllowUnpinnedBox.IsChecked == true && !DependencyPanel.ConfirmUnpinned(this, installNow: false))
@@ -224,10 +223,10 @@ public partial class SettingsWindow : Window
         DependencyStatusText.SetResourceReference(TextBlock.ForegroundProperty, isProblem ? "WarningTextBrush" : "MutedTextBrush");
     }
 
-    /// <summary>Manage Dependencies: the tab with the full list, the tool paths and the update URLs, scrolled to the list.</summary>
+    /// <summary>Manage Dependencies: opens the tab with the full list, tool paths and update URLs, scrolled to the list.</summary>
     private void ManageDependencies_Click(object sender, RoutedEventArgs e)
     {
-        // A search that hides the tab is let go of first.
+        // Clear any search that hides the tab first.
         if (SearchBox.Text.Length > 0)
             SearchBox.Text = "";
 
@@ -267,7 +266,7 @@ public partial class SettingsWindow : Window
         RefreshStageSoon();
     }
 
-    /// <summary>Opens at the tab whose header begins with the given words ("Timeline", "Preview"...): a pane's "More ... Settings..." (4.2B-2).</summary>
+    /// <summary>Opens at the tab whose header starts with the given text ("Timeline", "Preview", ...), for a pane's "More > Settings...".</summary>
     public void ShowTab(string header)
     {
         foreach (var item in SettingsTabs.Items.OfType<TabItem>())
@@ -285,16 +284,16 @@ public partial class SettingsWindow : Window
         InitializeComponent();
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
 
-        // Laid over the editor at its size (CoverWindow): its content takes HandPeg's UI scale, its size never.
+        // Overlays the editor at its size (CoverWindow): content follows UiScale, window size does not.
         UiScale.SetKeepsItsSize(this, true);
         _viewModel = viewModel;
         DataContext = _settings;
 
-        // The Squisher's presets: the same objects as in the copy of the settings being edited, listed so that rows can come and go.
+        // Squisher presets: the edited copy's objects in an observable list so rows can be added and removed.
         _squishPresets = new System.Collections.ObjectModel.ObservableCollection<SquishPreset>(_settings.SquisherPresets);
         SquishPresetList.ItemsSource = _squishPresets;
 
-        // Every tab scrolls when the window is too short for it: a tab whose content is not already in a scroller is put in one.
+        // Wrap each tab's content in a ScrollViewer unless it already has one.
         foreach (var tab in FindTabs(this))
         {
             if (tab.Content is UIElement content and not ScrollViewer)
@@ -304,13 +303,13 @@ public partial class SettingsWindow : Window
             }
         }
 
-        // The scrollbars follow the slider as it moves; closed without saving, they go back to what is saved.
+        // Scrollbar style previews live with the slider; cancel reverts to the saved value.
         Closed += (_, _) => Application.Current.Resources["GlobalScrollBarThickness"] = Math.Clamp(AppSettings.Current.ScrollbarThickness, 4, 16);
 
-        // Nothing is installed while an encode, a preview or a transcription is using the tools.
+        // Block installs while an encode, preview or transcription uses the tools.
         Dependencies.AppIsBusy = viewModel.IsBusy;
 
-        // Update Dependencies on the General tab shows what the panel says, and how far it has got, under its button.
+        // Mirror the panel's status and progress under General's Update Dependencies button.
         Dependencies.MessageShown += ShowDependencyMessage;
         Dependencies.ProgressChanged += value => DependencyProgress.Value = value;
         Closed += (_, _) => Dependencies.CancelAll();
@@ -320,8 +319,7 @@ public partial class SettingsWindow : Window
             UpdateWhisperStatus();
         };
 
-        // Pinned dependency builds (v4.1): Force Update and Restore Pinned in the list change the setting at once, and the
-        // General tab's box, which edits this copy of the settings, follows them, so that Save keeps what they did.
+        // Force Update and Restore Pinned change the live setting immediately; sync General's box (bound to the copy) so Save keeps it.
         Dependencies.OffersPinnedBuilds = true;
         Dependencies.UnpinnedChanged += allowed =>
         {
@@ -335,7 +333,7 @@ public partial class SettingsWindow : Window
         YtDlpDefaultText.Text = $"Default: {AppSettings.DefaultYtDlpReleaseUrl}";
         FfmpegDefaultText.Text = $"Default: {AppSettings.DefaultFfmpegReleaseUrl}";
 
-        // About: which HandPeg this is, and whether it is a copy that can update itself.
+        // About: version and whether this install can self-update.
         AboutText.Text = $"Version {AppUpdater.CurrentVersion}  ·  " + (AppPaths.IsSelfContained
             ? "self-contained copy: it keeps everything in its own folder, and is updated by replacing that folder."
             : "updates itself from its GitHub releases when it was put in by the installer: a newer one is offered at startup, and downloaded when you press Update.");
@@ -353,8 +351,7 @@ public partial class SettingsWindow : Window
         DroppedClipsBox.SelectedIndex = _settings.DroppedClipsJoinTrack ? 1 : 0;
 
 
-        // What the drop overlay offers, in order: the lists start as the overlay stands now, the picked ones or
-        // the ones it falls back on, so that what is seen here is what it shows.
+        // Drop overlay lists, seeded with what the overlay currently shows (picked items or its fallbacks).
         _allStyles = StyleFile.All().Select(s => s.Name).ToList();
 
         var styles = _settings.SplashStylePresets.Select(Path.GetFileNameWithoutExtension).OfType<string>().Where(_allStyles.Contains).Distinct().ToList();
@@ -362,7 +359,7 @@ public partial class SettingsWindow : Window
         OverlayStyleList.ItemsSource = _overlayStyles;
         RefreshOverlayAddBoxes();
 
-        // A model saved under a name that is no longer offered still shows, so it is not silently replaced.
+        // Keep showing a saved model name that is no longer offered, so it is not silently replaced.
         var models = DependencyUpdater.WhisperModels.ToList();
         if (!models.Contains(_settings.WhisperModel) && !string.IsNullOrWhiteSpace(_settings.WhisperModel))
             models.Add(_settings.WhisperModel);
@@ -371,7 +368,7 @@ public partial class SettingsWindow : Window
         _settings.Theme = ThemeManager.Normalize(_settings.Theme);
         ThemeBox.SelectedItem = _settings.Theme;
 
-        // The graphics cards there are now: the four roles' lists (the Export GPU's among them, 5.4C: filled there alone).
+        // Current GPUs for the four role lists (the Export GPU list is filled only there).
         var adapters = GpuAdapters.All;
         InitializeGpuRoles(adapters);
         InitializeGpuEngine();
@@ -389,7 +386,7 @@ public partial class SettingsWindow : Window
         foreach (var (box, value) in new[] { (BackgroundJobsBox, _settings.BackgroundJobs), (BackgroundThreadsBox, _settings.BackgroundToolThreads),
                      (WhisperThreadsBox, _settings.WhisperThreads), (ReservedCoresBox, _settings.ReservedCores), (BackgroundGpuBox, _settings.BackgroundGpu) })
         {
-            // A value the list does not have (a number of cores from another machine) goes back to Auto.
+            // Values not in the list (e.g. a core count from another PC) reset to Auto.
             if (box.ItemsSource is List<NumberChoice> choices && choices.All(c => c.Value != value))
                 box.SelectedValue = choices[0].Value;
             else
@@ -407,15 +404,14 @@ public partial class SettingsWindow : Window
         WhisperModelBox.ItemsSource = models;
         WhisperModelBox.SelectedItem = _settings.WhisperModel;
 
-        // What whisper can be told is spoken; a language saved under a name no longer offered is English again.
+        // Whisper languages; a saved language no longer offered resets to English.
         DefaultLanguageBox.ItemsSource = MainViewModel.KnownWhisperLanguages;
         if (!MainViewModel.KnownWhisperLanguages.Contains(_settings.WhisperDefaultLanguage))
             _settings.WhisperDefaultLanguage = "en";
         DefaultLanguageBox.SelectedItem = _settings.WhisperDefaultLanguage;
         ShowDefaultCaptionStyle();
 
-        // The encoders a new window can start with: the ones found on this computer, and whichever was saved,
-        // found or not (a hardware encoder is only listed once the check for it has finished).
+        // Startup encoder choices: detected encoders plus the saved one even if undetected (hardware appears once probed).
         var video = viewModel.VideoEncoders.Where(e => e.Family != EncoderFamily.Copy).Select(e => new Choice(e.Name, e.DisplayName)).ToList();
         if (_settings.DefaultVideoEncoder.Length > 0 && video.All(c => c.Name != _settings.DefaultVideoEncoder))
             video.Add(new Choice(_settings.DefaultVideoEncoder, _settings.DefaultVideoEncoder));
@@ -444,13 +440,12 @@ public partial class SettingsWindow : Window
         RuleTypeColumn.ItemsSource = SmartRule.Types;
         PresetColumn.ItemsSource = viewModel.PresetNames;
 
-        // An install or a model download ends with IsBusy going back to false: time to look again at what is there.
+        // Refresh installed-state when IsBusy returns to false after an install or model download.
         viewModel.PropertyChanged += ViewModel_PropertyChanged;
         Closed += (_, _) => viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         UpdateWhisperStatus();
 
-        // The title bar, the editor's mirrored (4.4); the category rail and the live preview stage (4.3-0B), once every box
-        // above holds its value.
+        // Title bar (mirrors the editor's), category rail and live preview stage, after all fields are populated.
         InitializeTitleBar();
         InitializeScreen();
     }
@@ -521,7 +516,7 @@ public partial class SettingsWindow : Window
         RefreshEncodingDefaults();
     }
 
-    /// <summary>Shows the default encoding settings again after they were changed from code (the window's copy of the settings is not observable).</summary>
+    /// <summary>Refreshes default encoding fields after code changes them (the settings copy is not observable).</summary>
     private void RefreshEncodingDefaults()
     {
         var context = DataContext;
@@ -535,7 +530,7 @@ public partial class SettingsWindow : Window
         FillDefaultEncoderPresets();
     }
 
-    /// <summary>Shows how much each preview cache holds now, beside its size limit (and on the stage's gauges).</summary>
+    /// <summary>Shows each preview cache's usage beside its limit (and on the stage gauges).</summary>
     private void ShowCacheUsage()
     {
         var held = new long[3];
@@ -562,7 +557,7 @@ public partial class SettingsWindow : Window
             _ => PreviewCache.Timeline,
         };
 
-        // A large proxy cache takes a moment to delete: away from the window.
+        // Delete off the UI thread; large proxy caches take time.
         IsEnabled = false;
         try
         {
@@ -576,7 +571,7 @@ public partial class SettingsWindow : Window
         ShowCacheUsage();
     }
 
-    // The saved result of the hardware encoder tests is forgotten: they run again when Settings is saved (or at the next start).
+    // Discard the saved encoder probe; it reruns on Settings save or next start.
     private void RetestEncoders_Click(object sender, RoutedEventArgs e)
     {
         EncoderProber.ForgetSavedResult();
@@ -599,8 +594,8 @@ public partial class SettingsWindow : Window
         if (sender is not Button { Tag: TextBox target })
             return;
 
-        // A network folder is not looked at, nor opened in at first: a share out of reach would hold this window's thread for as long as
-        // Windows waits on it (Pass 5.2D). The dialog opens where it last was instead.
+        // Never probe or open a network folder initially: an unreachable share blocks the UI thread for the SMB timeout. Use the
+        // dialog's last location instead.
         var current = target.Text.Trim().Trim('"');
         var dialog = new OpenFolderDialog { Title = "Choose a folder" };
         if (current.Length > 0 && !IsNetworkPathForm(current) && Directory.Exists(current))
@@ -626,8 +621,8 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>
-    /// Shows the welcome window again. It saves on its own, so this window, which holds a copy of the
-    /// settings from before, closes without saving; the main window then takes up what was chosen.
+    /// Reopens the welcome window, which saves itself; this window closes without saving (its copy is stale) and the main window
+    /// applies the result.
     /// </summary>
     private void RunFirstRun_Click(object sender, RoutedEventArgs e)
     {
@@ -641,7 +636,7 @@ public partial class SettingsWindow : Window
 
     // ----- Diagnostics: crash reports (General tab; see CrashReporter) -----
 
-    /// <summary>Shows how many crash reports the folder holds and their size, now and whenever this window comes back to the front.</summary>
+    /// <summary>Shows crash report count and size; refreshed on activation.</summary>
     private void WatchCrashReports()
     {
         ShowCrashReportUsage();
@@ -660,7 +655,7 @@ public partial class SettingsWindow : Window
         ClearCrashReportsButton.IsEnabled = count > 0;
     }
 
-    // The policy's own box saves at once; this window's copy follows it, so pressing Save later keeps what was chosen there.
+    // The policy box saves immediately; mirror it into the copy so a later Save keeps it.
     private void PrivacyPolicy_Click(object sender, RoutedEventArgs e) =>
         PrivacyPolicyDialog.ShowFor(this, _settings.SendCrashReports, on =>
         {
@@ -680,26 +675,23 @@ public partial class SettingsWindow : Window
         ShowCrashReportUsage();
     }
 
-    // ----- Explorer's previews (General > Projects and saving, Pass 5.2D) -----
+    // ----- Explorer thumbnails (General > Projects and saving) -----
 
     private void InitializeExplorerPreviews()
     {
-        // Explorer's previews are a registration on the PC, which a self-contained copy never leaves behind.
+        // Thumbnail handler registration is machine state, which portable copies never create.
         if (AppPaths.IsSelfContained || AppPaths.IsPortable)
             (ExplorerThumbnailsCheck.IsEnabled, ExplorerThumbnailsHint.Visibility) = (false, Visibility.Visible);
     }
 
     // ----- Search -----
 
-    // Whether each folded section was open before a search opened or closed it, to put each back when the box is cleared.
+    // Pre-search expanded state per folded section, restored when the search clears.
     private Dictionary<Expander, bool>? _foldsOpenBeforeSearch;
 
     /// <summary>
-    /// Shows only what matches the search box. An option is one of the things stacked down a tab (a tick box,
-    /// a labelled row, a block of text); it matches when its own words, or its tool tip, or the title of the
-    /// section it is under, contain what was typed. Tabs left with nothing are hidden. Every folded section (Tools &amp;
-    /// Backup's Advanced, 4.3-0B) is searched as well: it opens while something in it matches,
-    /// and goes back to how it was when the box is cleared.
+    /// Filters options (each stacked child of a tab) by the search text against their words, tooltip or section title; empty tabs
+    /// hide. Folded sections (e.g. Tools &amp; Backup's Advanced) are searched too, expanding on match and restoring when cleared.
     /// </summary>
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
@@ -733,7 +725,7 @@ public partial class SettingsWindow : Window
             SettingsTabs.SelectedItem = firstMatch;
     }
 
-    // Every folded section of every tab, and any folded inside one: the shape ShowMatches walks.
+    // All folded sections (including nested) across tabs, walked by ShowMatches.
     private IEnumerable<Expander> Folds()
     {
         static IEnumerable<Expander> FoldsIn(Panel panel)
@@ -758,8 +750,8 @@ public partial class SettingsWindow : Window
         }
     }
 
-    /// <summary>Shows what matches among one panel's options (a tab's, or a folded section's); whether anything did.</summary>
-    /// <param name="allMatch">The title the panel is under matched: everything in it is shown.</param>
+    /// <summary>Filters one panel (tab or folded section); returns whether anything matched.</summary>
+    /// <param name="allMatch">The panel's title matched: show everything in it.</param>
     private bool ShowMatches(Panel panel, string query, bool allMatch)
     {
         var any = false;
@@ -775,7 +767,7 @@ public partial class SettingsWindow : Window
                 continue;
             }
 
-            // A folded section: its own options are searched (and shown again once the box is cleared); it opens on a match.
+            // Folded section: search its options and expand on match (restored when cleared).
             if (child is Expander { Content: Panel folded } fold)
             {
                 var found = ShowMatches(folded, query, query.Length > 0 && fold.Header is string header && Contains(header, query)) && query.Length > 0;
@@ -805,10 +797,10 @@ public partial class SettingsWindow : Window
         return any;
     }
 
-    // A path or an address Save cannot take: the folded section that holds them is opened, on its tab.
+    // Invalid path or URL on Save: reveal its folded section and tab.
     private void ShowAdvancedTools()
     {
-        // A search that hid it is cleared first: clearing puts the fold back as it was, so it is opened after.
+        // Clear the search first (which restores folds), then expand.
         if (AdvancedToolsExpander.Visibility != Visibility.Visible)
             SearchBox.Clear();
         AdvancedToolsExpander.IsExpanded = true;
@@ -818,7 +810,7 @@ public partial class SettingsWindow : Window
 
     private static bool Contains(string text, string query) => text.Contains(query, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Every word an option shows or explains itself with: its text, its content, its tool tip, and those of what is inside it.</summary>
+    /// <summary>All searchable text of an option: text, content and tooltip, recursively.</summary>
     private static string TextOf(DependencyObject element)
     {
         var text = new System.Text.StringBuilder();
@@ -830,7 +822,7 @@ public partial class SettingsWindow : Window
                     text.Append(block.Text).Append(' ');
                     break;
 
-                // A line written in parts (a shortcut's key, then what it does) keeps its words in its runs.
+                // Multi-run lines (shortcut key + action) keep their text in Inlines.
                 case System.Windows.Documents.Run run:
                     text.Append(run.Text).Append(' ');
                     break;
@@ -894,7 +886,7 @@ public partial class SettingsWindow : Window
     }
 
     // ----- Automation: smart rules -----
-    // The rules are saved as they are edited; the tab has no Save button of its own, and Cancel does not undo them.
+    // Rules save on edit; the tab has no Save button and Cancel does not revert them.
 
     private void AddFolderRule_Click(object sender, RoutedEventArgs e)
     {
@@ -945,8 +937,7 @@ public partial class SettingsWindow : Window
     private const string BackupFileFilter = "Text file (JSON)|*.txt;*.json|All files|*.*";
 
     /// <summary>
-    /// Where the export and import dialogs open: the HandPeg folder in Documents, above Projects and Layouts.
-    /// Not Projects itself: an export saved there would be listed as a project.
+    /// Initial folder for export/import dialogs: Documents\HandPeg (not Projects, where an export would be listed as a project).
     /// </summary>
     private static string BackupFolder()
     {
@@ -1018,8 +1009,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        // What is in memory is now older than what is on disk. Both are read again, so that nothing the
-        // application saves between now and the restart writes the old state back over the import.
+        // In-memory state is now stale: reload both so no save before the restart overwrites the import.
         AppSettings.Reload();
         _viewModel.ReloadPresets();
         _viewModel.OnSettingsSaved();
@@ -1030,7 +1020,7 @@ public partial class SettingsWindow : Window
             + "The files they replaced are kept as appsettings.json.bak and presets.json.bak.\n\nRestart HandPeg to apply all the changes. This window will now close.",
             "HandPeg", MessageBoxButton.OK, MessageBoxImage.Information);
 
-        // Closed without its Save: this window still holds the settings from before the import.
+        // Close without saving: this window's copy predates the import.
         DialogResult = false;
     }
 
@@ -1105,8 +1095,7 @@ public partial class SettingsWindow : Window
         SaveKeybinds();
         _settings.TidyForSave();
 
-        // Only what this window changed is written into the settings in effect. The Smart Rules and the default preset are edited
-        // on the Automation tab, which saves them as they change, so they no longer need copying back by hand.
+        // Write back only fields changed here; Smart Rules and the default preset are saved live by the Automation tab.
         try
         {
             AppSettings.Update(current => AppSettings.CopyEdited(_opened, _settings, current), saveNow: true);
@@ -1117,16 +1106,15 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        // The keys and the dial go into effect once they are saved (a failed save, then Cancel, keeps the old ones), and so
-        // does the GPU frame cache's budget (SettingsWindow.GpuEngine.cs).
+        // Keybinds, the dial and the GPU frame cache budget apply only after a successful save (SettingsWindow.GpuEngine.cs).
         KeybindManager.Reload(AppSettings.Current);
         ApplyGpuEngine();
 
-        // The verbose flight recorder follows its box at once (5.2.0's re-cut), off this thread: it reads the disk.
+        // Apply the verbose flight recorder setting immediately, off the UI thread (it touches the disk).
         _ = Task.Run(DevFlightRecorder.Follow);
         DialogResult = true;
     }
 }
 
-/// <summary>One entry of a Settings list whose value is a number: what it says, and the number it stands for.</summary>
+/// <summary>Numeric Settings list entry: label and value.</summary>
 public sealed record NumberChoice(string Display, int Value);

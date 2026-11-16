@@ -9,12 +9,11 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 /// <summary>
-/// A dialog's own Undo, over what its controls are bound to (4.3E; the Layer Tool's first, shared since). Each press of the
-/// pointer or a key that changes something (a slider dragged, a value typed and handed on, a box ticked, a button) is a step:
-/// what the shown controls are bound to is read as the press begins, and kept as a step when the press has changed it.
-/// Ctrl+Z puts the last step back; Ctrl+Y or Ctrl+Shift+Z goes forward again. A text box keeps the keys for its own typing
-/// until it has handed that on (Enter, or leaving the box). For a modal dialog: the main window's Undo can not be reached
-/// while it is open, so the two never fight, and the main window takes back the whole visit once it is closed.
+/// Dialog-local Undo over the visible controls' binding sources (shared by the Layer Tool and other dialogs). Each pointer or key press
+/// that changes something (slider drag, committed text, checkbox, button) becomes a step: bound values are snapshotted at press start and
+/// recorded if the press changed them. Ctrl+Z undoes; Ctrl+Y or Ctrl+Shift+Z redoes. A text box handles its own uncommitted typing first
+/// (until Enter or blur). Intended for modal dialogs: the main window's Undo is unreachable while open, so the two never conflict, and the
+/// main window's Undo reverts the whole dialog session afterwards.
 /// </summary>
 public sealed class BoundUndo
 {
@@ -23,22 +22,22 @@ public sealed class BoundUndo
     private static readonly DependencyProperty[] BoundProperties =
         [TextBox.TextProperty, RangeBase.ValueProperty, ToggleButton.IsCheckedProperty, Selector.SelectedValueProperty, Selector.SelectedItemProperty];
 
-    // A value kept: where it lives, and what it was.
+    // Snapshot entry: source object, property and value.
     private readonly record struct Kept(object Source, PropertyInfo Property, object? Value);
 
     private readonly Window _window;
     private readonly Func<IEnumerable<(object? Source, string Property)>>? _alsoKept;
     private readonly List<Kept[]> _undo = [], _redo = [];
 
-    // What the shown controls are bound to now, and their bindings (shown again after a step is put back: a model that does not
-    // say when it changes is not followed by its controls).
+    // Current binding sources of visible controls and their expressions (refreshed after a restore, since models without change
+    // notification would not update their controls).
     private (object Source, PropertyInfo Property)[] _bound = [];
     private BindingExpression[] _bindings = [];
 
-    // What the kept values were as the press now going on began; null between presses.
+    // Snapshot taken at the start of the current press; null between presses.
     private Kept[]? _beforePress;
 
-    /// <param name="alsoKept">Values the controls do not show but buttons set (the drawn mask's shapes), kept with the rest.</param>
+    /// <param name="alsoKept">Extra (source, property) pairs set by buttons but not shown by controls (e.g. drawn mask shapes).</param>
     public BoundUndo(Window window, Func<IEnumerable<(object? Source, string Property)>>? alsoKept = null)
     {
         (_window, _alsoKept) = (window, alsoKept);
@@ -49,7 +48,7 @@ public sealed class BoundUndo
         window.AddHandler(UIElement.KeyUpEvent, new KeyEventHandler((_, _) => EndPress()), handledEventsToo: true);
     }
 
-    /// <summary>Raised when there is newly something (or nothing) to undo or redo: for the dialog's buttons.</summary>
+    /// <summary>Raised when undo/redo availability may have changed (drives the dialog's buttons).</summary>
     public event Action? Changed;
 
     public bool CanUndo => _undo.Count > 0;
@@ -61,8 +60,8 @@ public sealed class BoundUndo
     public void Redo() => Step(_redo, _undo);
 
     /// <summary>
-    /// After a change that reaches beyond what the dialog shows (a mask given to every layer, layers made from it): its steps,
-    /// which know only what it shows, are let go. The main window's Undo takes it all back once the dialog is closed.
+    /// Clears local history after a change that reaches beyond the dialog's bindings (e.g. a mask applied to every layer, or layers
+    /// created from it). The main window's Undo reverts it after the dialog closes.
     /// </summary>
     public void Forget()
     {
@@ -73,8 +72,8 @@ public sealed class BoundUndo
     }
 
     /// <summary>
-    /// What the shown controls are bound to: the values kept. Looked for again as every press begins, so controls shown or
-    /// bound afresh since are kept too; each step holds where its values live, so older steps are still put back right.
+    /// Collects the visible controls' binding sources. Re-run at every press start so newly shown or rebound controls are included; each
+    /// step stores its own sources, so older steps still restore correctly.
     /// </summary>
     private void Find()
     {
@@ -102,7 +101,7 @@ public sealed class BoundUndo
 
         void Walk(object node)
         {
-            // A hidden panel's controls are not the dialog's now: another tool's, or the main video's place for another layer.
+            // Skip hidden panels: their controls belong to another tool or layer context.
             if (node is not DependencyObject element || element is UIElement { Visibility: not Visibility.Visible })
                 return;
 
@@ -128,7 +127,7 @@ public sealed class BoundUndo
     private static Kept[] Read(IEnumerable<(object Source, PropertyInfo Property)> where) =>
         [.. where.Select(w => new Kept(w.Source, w.Property, w.Property.GetValue(w.Source)))];
 
-    // The values a step holds, as they are now.
+    // Current values for a step's (source, property) pairs.
     private static Kept[] Now(Kept[] step) => Read(step.Select(k => (k.Source, k.Property)));
 
     private static bool Same(Kept[] step) => step.All(k => Equals(k.Property.GetValue(k.Source), k.Value));
@@ -142,7 +141,7 @@ public sealed class BoundUndo
         _beforePress = Read(_bound);
     }
 
-    // A press has ended (the pointer let go, a key let up): a step, when it changed something.
+    // Press ended (mouse up or key up): record a step if anything changed.
     private void EndPress()
     {
         if (_beforePress is not { } before)
@@ -169,7 +168,7 @@ public sealed class BoundUndo
             return;
         }
 
-        // A text box's own typing, not yet handed on, is taken back (or put back) in the box first.
+        // Uncommitted text box typing is undone or redone inside the box first.
         if (Keyboard.FocusedElement is TextBox box && (redo ? box.CanRedo : box.CanUndo)
             && BindingOperations.GetBindingExpression(box, TextBox.TextProperty) is not { IsDirty: false })
         {
@@ -191,13 +190,13 @@ public sealed class BoundUndo
         e.Handled = true;
     }
 
-    /// <summary>One step back (or forward again): the values as the step held them, and as they are now kept to come back to.</summary>
+    /// <summary>Moves one step between stacks: restores the step's values and pushes the current values onto the opposite stack.</summary>
     private void Step(List<Kept[]> from, List<Kept[]> to)
     {
-        // The press that asked for it (a click of a button, Ctrl held for the key) is not a change of its own.
+        // The triggering press (button click, Ctrl key) must not record its own step.
         _beforePress = null;
 
-        // A step that would change nothing (a text box's typing already taken back in the box) is passed over.
+        // Skip no-op steps (e.g. typing already undone inside the text box).
         while (from.Count > 0 && Same(from[^1]))
             from.RemoveAt(from.Count - 1);
 
@@ -216,7 +215,7 @@ public sealed class BoundUndo
 
     private void Put(Kept[] values)
     {
-        // Twice over: setting one value can move another with it (a mask chosen ticks its switch), which the second pass puts back.
+        // Two passes: setting one value can change another (choosing a mask enables its switch); the second pass restores it.
         for (var pass = 0; pass < 2; pass++)
         {
             foreach (var (source, property, value) in values)
@@ -233,7 +232,7 @@ public sealed class BoundUndo
             }
         }
 
-        // The controls show the values put back, also where the model does not say it changed (a caption style, audio filters).
+        // Force binding targets to refresh, covering models without change notification (caption style, audio filters).
         foreach (var binding in _bindings)
         {
             if (binding.Status == BindingStatus.Active)

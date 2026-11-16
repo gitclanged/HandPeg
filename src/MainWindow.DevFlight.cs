@@ -9,9 +9,9 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// The hidden developer flight recorder's window side (4.4.0, DevFlightRecorder): every key and click in any of HandPeg's
-// windows, with the playhead and the selection, and a snapshot of the open project after each edit, undo step or load.
-// The handlers are always there and do nothing while the recorder is off (it is decided after the first frame).
+// Window side of the hidden developer flight recorder (DevFlightRecorder): logs every key and click in any HandPeg window with
+// playhead and selection, and snapshots the open project after each edit, undo step or load. Handlers are always registered but
+// no-op while the recorder is off (enablement is decided after Frame 1).
 public partial class MainWindow
 {
     private Debounce? _flightSnapshot;
@@ -41,7 +41,7 @@ public partial class MainWindow
         _viewModel.MediaLoaded += _ => SnapshotForFlight();
     }
 
-    // What a key or a click went to: its window, and the element's type and name (or its UIA name).
+    // Input target description: window title, element type and Name (or UIA name).
     private static string Describe(object sender, object source)
     {
         var where = sender is Window { Title: { Length: > 0 } title } ? title : sender.GetType().Name;
@@ -60,8 +60,8 @@ public partial class MainWindow
         var other => other.GetType().Name,
     };
 
-    // After an edit, an undo step or a load: one snapshot 1.5 s after the last of a burst (a 30 Hz effect drag is one snapshot, at its end),
-    // at ContextIdle. The timeline is serialized on this thread from the live document: a copy would cost as much as the serialization.
+    // After an edit, undo step or load: one snapshot 1.5 s after the last event of a burst (a 30 Hz effect drag yields one, at its end),
+    // at ContextIdle. Serializes the live document on the UI thread, since copying it would cost as much as serializing.
     private void SnapshotForFlight()
     {
         if (DevFlightRecorder.IsEnabled)

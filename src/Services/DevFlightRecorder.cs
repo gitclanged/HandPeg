@@ -5,15 +5,12 @@ using System.Text;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The developer flight recorder (4.4.0): on only on a PC that has the flag file <see cref="FlagPath"/>
-/// (%AppData%\HandPeg\dev-verbose.flag) or "devVerboseLogging": true in appsettings.json (Settings > General > Diagnostics >
-/// Verbose flight recorder, which switches it on and off as Settings are saved: <see cref="Follow"/>). While on,
-/// it keeps the last <see cref="Capacity"/> events (every breadcrumb, log line, key and click, bound action, timeline edit,
-/// refusal, undo step, project and media path, each with the playhead and the selection) in a lock-free ring, written to
-/// <see cref="LogPath"/> about once a second off the window's thread, and a snapshot of the open project (its path, its
-/// media, its TimelineDocument as JSON) beside it. A crash report then carries all of it unredacted
-/// (<see cref="CrashDevVerbose"/>), the sentinel's too (read back from the disk), so a bug can be replayed exactly. Off,
-/// none of this runs, and crash reports stay as sanitized as ever.
+/// Developer flight recorder, enabled by <see cref="FlagPath"/> (%AppData%\HandPeg\dev-verbose.flag) or "devVerboseLogging": true
+/// (Settings > General > Diagnostics > Verbose flight recorder, applied on save via <see cref="Follow"/>). When on, keeps the last
+/// <see cref="Capacity"/> events (breadcrumbs, log lines, input, actions, edits, refusals, undo steps, paths, each with playhead and
+/// selection) in a lock-free ring flushed to <see cref="LogPath"/> about once a second off the UI thread, plus a project snapshot
+/// (path, media, TimelineDocument JSON). Crash reports (including the sentinel's, read from disk) then include it unredacted
+/// (<see cref="CrashDevVerbose"/>) for exact replay. When off, nothing runs and reports stay sanitized.
 /// </summary>
 public static class DevFlightRecorder
 {
@@ -25,8 +22,7 @@ public static class DevFlightRecorder
     public static string FlagPath { get; } = Path.Combine(AppPaths.Settings, "dev-verbose.flag");
 
     /// <summary>
-    /// The ring as text, newest last. In HandPeg's logs folder (%LocalAppData%\HandPeg-Data\logs), not the installer's
-    /// %LocalAppData%\HandPeg, which an update or an uninstall clears.
+    /// Ring log (newest last) in %LocalAppData%\HandPeg-Data\logs, not the installer's %LocalAppData%\HandPeg (cleared by update/uninstall).
     /// </summary>
     public static string LogPath { get; } = Path.Combine(AppPaths.Logs, "flight-recorder.log");
 
@@ -39,16 +35,14 @@ public static class DevFlightRecorder
     public static bool IsEnabled => _on;
 
     /// <summary>
-    /// What is selected and where the playhead is, asked on the window's thread for each input and action recorded
-    /// (set by the main window).
+    /// Selection and playhead provider, queried on the UI thread per recorded event (set by MainWindow).
     /// </summary>
     public static Func<string>? Where { get; set; }
 
-    // ----- The ring -----
+    // ----- Ring buffer -----
     //
-    // As the crash reporter's breadcrumbs: parallel arrays, a count that only goes up, a slot's number cleared before it is
-    // written and set after, so a reader on another thread skips a slot being written. Recording stores references and
-    // numbers and allocates nothing of its own.
+    // Same design as crash breadcrumbs: parallel arrays, a monotonic counter, and a per-slot sequence cleared before and set after
+    // writing so concurrent readers skip in-flight slots. Recording is allocation-free.
 
     private static readonly long[] Sequences = new long[Capacity];
     private static readonly long[] Stamps = new long[Capacity];
@@ -65,8 +59,8 @@ public static class DevFlightRecorder
         var sequence = Interlocked.Increment(ref _recorded);
         var slot = (int)((sequence - 1) % Capacity);
 
-        // A full fence, not a release store: the plain stores below must not become visible before the slot reads as being written
-        // (ARM64 can reorder a later store ahead of a release store).
+        // Full fence (not a release store): subsequent plain stores must not become visible before the slot is marked in-flight
+        // (ARM64 can reorder later stores ahead of a release).
         Interlocked.Exchange(ref Sequences[slot], 0);
         Stamps[slot] = DateTime.Now.Ticks;
         Categories[slot] = category;
@@ -74,7 +68,7 @@ public static class DevFlightRecorder
         Volatile.Write(ref Sequences[slot], sequence);
     }
 
-    /// <summary>Records an event of the user's (a key, a click, an action), with the playhead and the selection (<see cref="Where"/>).</summary>
+    /// <summary>Records an input event (key, click, action) with playhead and selection (<see cref="Where"/>).</summary>
     public static void RecordInput(string category, string detail)
     {
         if (!_on)
@@ -101,9 +95,8 @@ public static class DevFlightRecorder
         {
             var slot = (int)((sequence - 1) % Capacity);
 
-            // A seqlock read: the slot holds this sequence before the copy and still holds it after it (with a full barrier between
-            // the copy and the re-check), or the line is skipped. Without the first check a slot still being written for the newest
-            // sequence could be read half old, half new and pass the single check after it, on x64 as well.
+            // Seqlock read: sequence must match before and after the copy (full barrier before the re-check), else skip. The pre-check
+            // prevents a torn read of an in-flight newest slot passing the post-check (on x64 too).
             if (Volatile.Read(ref Sequences[slot]) != sequence)
                 continue;
             var (stamp, category, detail) = (Stamps[slot], Categories[slot], Details[slot]);
@@ -124,7 +117,7 @@ public static class DevFlightRecorder
     private static volatile Snapshot? _snapshot;
     private static long _snapshotWritten = -1, _snapshots;
 
-    /// <summary>The open project as it is now (taken on the window's thread after an edit, an undo or a load; written out by the timer).</summary>
+    /// <summary>Project snapshot taken on the UI thread after edit/undo/load; persisted by the timer.</summary>
     public static void TakeSnapshot(string projectPath, IReadOnlyList<string> media, string? timelineJson)
     {
         if (!_on)
@@ -138,21 +131,20 @@ public static class DevFlightRecorder
 
     private static Timer? _timer;
 
-    // Whether this process has started the recorder before (switched off and on again in Settings): its log is moved aside once only.
+    // Set after the first start in this process so re-enabling does not rotate the log again.
     private static bool _startedBefore;
 
     // Start, Stop and Follow, one at a time (Settings saved twice in a row runs two of them on the pool).
     private static readonly object SwitchGate = new();
 
     /// <summary>
-    /// Whether the recorder is asked for on this PC: the flag file, or the setting. Reads the disk (never before the first
-    /// frame); never throws.
+    /// True when enabled by the flag file or setting. Reads disk (never before Frame 1); never throws.
     /// </summary>
     public static bool IsWanted()
     {
         try
         {
-            // 5.4.4-Final: a preview build's always-on tracing too (PreviewTrace: preview-trace.flag beside HandPeg.exe, or HANDPEG_PREVIEW_TRACE=1).
+            // Also enabled by preview tracing (PreviewTrace: preview-trace.flag beside HandPeg.exe, or HANDPEG_PREVIEW_TRACE=1).
             return File.Exists(FlagPath) || AppSettings.Current.DevVerboseLogging || PreviewTrace.IsOn;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -162,8 +154,7 @@ public static class DevFlightRecorder
     }
 
     /// <summary>
-    /// Decides whether the recorder runs: the flag file, or the setting. Called off the window's thread after the first
-    /// frame (the disk is not touched before it); turns on the writer while on.
+    /// Starts the recorder if enabled (flag or setting). Called off the UI thread after Frame 1; starts the writer when on.
     /// </summary>
     public static void Start()
     {
@@ -175,8 +166,7 @@ public static class DevFlightRecorder
             if (_on)
                 return;
 
-            // The last session's log is kept beside this one's (a crash and a restart would otherwise write over it); switched
-            // on again in the same session, it is this session's that goes on.
+            // Rotate the previous session's log (a crash-restart would overwrite it); re-enabling within a session continues the current log.
             try
             {
                 if (!_startedBefore && File.Exists(LogPath))
@@ -194,8 +184,7 @@ public static class DevFlightRecorder
     }
 
     /// <summary>
-    /// Switched off in Settings (Pass 5.2D): the recorder writes its last lines and stops at once, and
-    /// records nothing more. Never throws.
+    /// Disabled in Settings: flushes remaining lines and stops recording immediately. Never throws.
     /// </summary>
     public static void Stop()
     {
@@ -213,8 +202,7 @@ public static class DevFlightRecorder
     }
 
     /// <summary>
-    /// Settings were saved: the recorder follows what is asked for now (<see cref="IsWanted"/>), started or stopped. Off the
-    /// window's thread; never throws.
+    /// On Settings save: starts or stops per <see cref="IsWanted"/>. Off the UI thread; never throws.
     /// </summary>
     public static void Follow()
     {
@@ -226,7 +214,7 @@ public static class DevFlightRecorder
 
     private static readonly object FlushGate = new();
 
-    /// <summary>Writes the ring and the snapshot when they changed. Never throws; called by the timer and by a crash report.</summary>
+    /// <summary>Flushes the ring and snapshot if changed (timer and crash report). Never throws.</summary>
     public static void Flush()
     {
         if (!_on || !Monitor.TryEnter(FlushGate))
@@ -284,7 +272,7 @@ public static class DevFlightRecorder
         FlightRecorder = lines,
     };
 
-    /// <summary>The unredacted part of a report the app writes itself: the snapshot, the ring's newest lines, the whole exception. Null while off.</summary>
+    /// <summary>Unredacted in-process crash section: snapshot, recent ring lines, full exception. Null when off.</summary>
     public static CrashDevVerbose? ForReport(Exception? exception)
     {
         if (!_on)
@@ -306,8 +294,7 @@ public static class DevFlightRecorder
     }
 
     /// <summary>
-    /// The same for the sentinel's report of a process that died natively: read back from what the recorder wrote (the
-    /// last snapshot and the log's newest lines). Null when the flag is not set on this PC or nothing was written.
+    /// Sentinel equivalent for native crashes, read from the last persisted snapshot and log lines. Null when disabled or nothing written.
     /// </summary>
     public static CrashDevVerbose? FromDisk()
     {

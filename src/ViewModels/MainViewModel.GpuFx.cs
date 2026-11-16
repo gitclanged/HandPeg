@@ -4,12 +4,12 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Pass 5.1-GpuFx: one click, and nothing locked: what these make is ordinary clips, effects and keyframes -----
+// ----- One-click GPU effects: output is ordinary, editable clips, effects and keyframes -----
 public partial class MainViewModel
 {
     /// <summary>
-    /// Drops a procedural effect at the playhead: an adjustment clip of its own on a new track, with the effect on it, as long as the effect runs (the Explosion's 1.6 s, 5 s
-    /// for what stays on). An adjustment clip works on everything under it, so its Light Spill falls on the video. Moved, trimmed and tuned as any clip is. One step of Undo.
+    /// Drops a procedural effect at the playhead as an adjustment clip on a new track, sized to the effect's run (Explosion 1.6 s; 5 s for
+    /// sustained effects). It affects everything beneath (so Light Spill lands on the video) and edits like any clip. One undo step.
     /// </summary>
     public Layer? AddVfxClip(string type)
     {
@@ -42,20 +42,19 @@ public partial class MainViewModel
         return clip;
     }
 
-    /// <summary>The Fly-In's beats, in seconds: out to the middle, held on the impact, and home.</summary>
+    /// <summary>Fly-In phase durations (s): out to centre, impact hold, return.</summary>
     public const double FlyOutSeconds = 0.42, ImpactHoldSeconds = 0.1, FlyBackSeconds = 0.58;
 
-    /// <summary>How long the impact's clip lasts: the Shockwave's own run.</summary>
+    /// <summary>Impact adjustment clip duration (the Shockwave's run time).</summary>
     public const double ImpactSeconds = 0.9;
 
-    /// <summary>How far the Fly-In swings the clip about its upright axis (Yaw) on its way out and on its way home, and leans it back (Pitch) as it rises, in degrees (5.2A).</summary>
+    /// <summary>Fly-In swing in degrees: Yaw about the vertical axis on the out/return legs and Pitch lean-back while rising.</summary>
     public const double FlySwingOut = -38, FlySwingHome = 18, FlyLean = 14;
 
     /// <summary>
-    /// The 3D Fly-In + Shockwave Impact: from the playhead the clip flies out to the middle of the frame, growing as it comes toward the viewer and swinging round in true 3D
-    /// (5.2A: a perspective Yaw about its upright axis, with a lean back about its horizontal one), lands square to the viewer with a Shockwave and a camera shake centred on it,
-    /// and glides back to where it was, swinging a little the other way. All of it ordinary: keyframes on the clip's X, Y, Scale, Rotation and Tilt X / Tilt Y (what it had
-    /// elsewhere is kept), and an adjustment clip with an Impact Shockwave effect at the moment it lands. One step of Undo.
+    /// 3D Fly-In + Shockwave Impact: from the playhead the clip flies to frame centre, scaling up with perspective Yaw and Pitch, lands
+    /// square with a centred Shockwave and camera shake, then returns with a slight counter-swing. Implemented as ordinary keyframes on
+    /// X, Y, Scale, Rotation, Tilt X/Y (keys outside the range kept) plus an Impact Shockwave adjustment clip at landing. One undo step.
     /// </summary>
     public bool FlyInWithShockwave(Layer layer)
     {
@@ -68,7 +67,7 @@ public partial class MainViewModel
         if (EffectRegistry.Find(EffectRegistry.Shockwave) is not { } shockwave)
             return false;
 
-        // From the playhead when it is on the clip, else from the clip's start; a clip too short for all of it has the beats shortened to fit.
+        // Start at the playhead if within the clip, else at clip start; scale phases down to fit short clips.
         var clipEnd = layer.StartTime + Math.Max(layer.Duration, 0);
         var begin = Math.Clamp(PositionMs / 1000, layer.StartTime, Math.Max(clipEnd, layer.StartTime));
         var whole = FlyOutSeconds + ImpactHoldSeconds + FlyBackSeconds;
@@ -118,7 +117,7 @@ public partial class MainViewModel
         StatusText = $"{layer.Name} flies in and lands with a shockwave: its keyframes and the Impact clip are yours to change. Ctrl+Z takes it all back.";
         return true;
 
-        // One property's four beats, in place of any keyframes it had in that stretch; each leaves as the beat calls for.
+        // Four phase keys for one property, replacing existing keys in that range, each with its phase's easing.
         void Beat(KeyProperty property, double there)
         {
             var (rest, restAfter) = (layer.Evaluate(property, from), layer.Evaluate(property, home));
@@ -130,8 +129,8 @@ public partial class MainViewModel
             layer.SetKeys(property, keys.OrderBy(k => k.Time));
         }
 
-        // A tilt's swing (5.2A): out of its rest to its turn partway through the flight, square again (at rest) on the impact and held there, then
-        // partway home a turn the other way (none for 0), and at rest at the end. Each tilt held to its limit.
+        // Tilt profile: rest -> swing mid-flight -> square at impact (held) -> counter-swing mid-return (none for 0) -> rest. Clamped
+        // to each tilt's limit.
         void Swing(KeyProperty property, double outward, double homeward)
         {
             var (rest, restAfter) = (layer.Evaluate(property, from), layer.Evaluate(property, home));

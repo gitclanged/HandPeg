@@ -6,8 +6,8 @@ using CliWrap;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// A size to squeeze a video under, for somewhere that will not take more: "Discord (10 MB)", 10 MB (5.4C: the chat's own limit for
-/// an account without its subscription; "Discord (Non-Nitro)" of 20 MB before, renamed in a settings file that kept it untouched).
+/// Target size preset for a destination's upload limit, e.g. "Discord (10 MB)" (free-tier limit; legacy untouched "Discord
+/// (Non-Nitro)" 20 MB entries are migrated).
 /// </summary>
 public sealed class SquishPreset
 {
@@ -26,8 +26,7 @@ public sealed class SquishPreset
 
     public SquishPreset Clone() => new() { Name = Name, TargetSizeMb = TargetSizeMb, AudioKbps = AudioKbps, Icon = Icon };
 
-    // The icons: each a few strokes in a square of 26, written as path geometry. They are drawn, not pictures,
-    // and are a plain sign of the kind of place (a chat bubble, an envelope, code brackets), not anybody's logo.
+    // Icons: simple 26-unit path geometry for the destination type (chat bubble, envelope, code brackets), never brand logos.
     private static readonly Dictionary<string, string> IconPaths = new(StringComparer.OrdinalIgnoreCase)
     {
         // Arrows pressing in on a square.
@@ -59,10 +58,8 @@ public sealed class SquishPreset
     public string IconData => IconPaths.GetValueOrDefault(Icon ?? "", IconPaths["squish"]);
 
     /// <summary>
-    /// The presets HandPeg starts with: places a clip is commonly shared from a PC, each with the largest
-    /// file it takes. All of them are made as H.264 with AAC sound in an .mp4, which every one of these plays
-    /// in place. The sizes are the services' upload limits as they were known when this was written; they
-    /// change from time to time, and each can be corrected under Settings, Startup Dialog.
+    /// Default presets for common sharing destinations with their max file size. All output H.264/AAC .mp4 (plays inline everywhere).
+    /// Limits reflect known upload caps at authoring time and are editable under Settings > Startup Dialog.
     /// </summary>
     public static List<SquishPreset> Defaults() =>
     [
@@ -83,12 +80,9 @@ public sealed class SquishPreset
 public sealed record SquishResult(string Path, long Bytes, string Encoder, int VideoKbps, int Attempts);
 
 /// <summary>
-/// The Social Sharing Squisher: one video in, one H.264 / AAC .mp4 out that is under a given size. The size
-/// decides the bitrate (the whole file's bits, less a margin, spread over its length, less the sound's
-/// share), the bitrate decides how large a picture is worth keeping, and the slowest, most careful preset of
-/// the encoder is used, since at these bitrates that is where the detail comes from. A hardware encoder is
-/// preferred (NVENC, then QuickSync, then AMF, then Media Foundation's, the ARM64 path) and libx264 does it otherwise. The result is weighed: if it
-/// is over after all, the bitrate comes down by as much and it is done again.
+/// Social Sharing Squisher: encodes one video to an H.264/AAC .mp4 under a target size. Size sets the bitrate (total bits minus margin,
+/// over duration, minus audio), bitrate sets the resolution, and the slowest preset maximizes detail. Prefers hardware (NVENC, QSV,
+/// AMF, then MF for ARM64), else libx264. Oversized results are re-encoded with the bitrate reduced proportionally.
 /// </summary>
 public static class SocialSquisher
 {
@@ -98,13 +92,12 @@ public static class SocialSquisher
     private const int MostAttempts = 5;
 
     /// <summary>
-    /// The video's share of the bits, in kilobits a second:
-    /// (((target - offset) megabytes x 8192 kilobits) / seconds) - the sound's kilobits a second.
+    /// Video bitrate (kbps): ((target - offset) MB x 8192 / seconds) - audio kbps.
     /// </summary>
     public static int VideoKbps(double targetMb, double offsetMb, double seconds, int audioKbps) =>
         (int)Math.Max(Math.Floor((targetMb - offsetMb) * 8192 / Math.Max(seconds, 0.1) - audioKbps), 40);
 
-    /// <summary>The encoders to try, in order: the hardware ones this computer has, by the hierarchy, and libx264 last.</summary>
+    /// <summary>Encoder fallback order: available hardware encoders by priority, then libx264.</summary>
     public static List<string> ChooseEncoders(IReadOnlyCollection<string> available) =>
         Hierarchy.Where(name => name == "libx264" || available.Contains(name, StringComparer.OrdinalIgnoreCase)).ToList();
 
@@ -120,7 +113,7 @@ public static class SocialSquisher
     /// <summary>The encoder's own options: its most careful preset, or the one named in the settings.</summary>
     private static string EncoderOptions(string encoder, string? presetOverride)
     {
-        // "veryslow" (the override's default since 5.4C) means each encoder's slowest: NVENC and AMF have no step of that name.
+        // "veryslow" (default override) maps to each encoder's slowest step (NVENC/AMF lack that name).
         var preset = string.IsNullOrWhiteSpace(presetOverride) ? null : presetOverride.Trim();
         if (string.Equals(preset, "veryslow", StringComparison.OrdinalIgnoreCase) && encoder is "h264_nvenc" or "h264_amf")
             preset = null;
@@ -129,13 +122,13 @@ public static class SocialSquisher
             "h264_nvenc" => $"-preset {preset ?? "p7"} -tune hq -rc vbr -multipass fullres",
             "h264_qsv" => $"-preset {preset ?? "veryslow"}",
             "h264_amf" => $"-quality {preset ?? "high_quality"} -rc vbr_peak",
-            // No preset step: peak-constrained VBR held to the -maxrate that follows, at its slowest (5.4C), on the hardware only.
+            // MF has no preset step: peak-constrained VBR capped by the following -maxrate, slowest quality, hardware only.
             "h264_mf" => $"-rate_control pc_vbr {MediaFoundationEncoder.SlowestStepArgument} {MediaFoundationEncoder.HardwareOnlyArgument}",
             _ => $"-preset {preset ?? "veryslow"}",
         };
     }
 
-    /// <summary>One still frame of the video, from a fifth of the way in, as a picture; null when it could not be taken.</summary>
+    /// <summary>Still frame at 20 % of duration; null on failure.</summary>
     public static async Task<ImageSource?> ExtractThumbnailAsync(string input, string imagePath, CancellationToken cancellationToken)
     {
         if (!File.Exists(DependencyUpdater.FfmpegPath))
@@ -151,8 +144,8 @@ public static class SocialSquisher
     }
 
     /// <summary>
-    /// Squeezes a video under a preset's size. Throws InvalidOperationException, with the reason, when it cannot be
-    /// done. Foreground work (see WorkScheduler): the progress chip shows it as well as the Squisher's own window.
+    /// Encodes under the preset size; throws InvalidOperationException with the reason on failure. Foreground work (WorkScheduler), shown
+    /// in the progress chip and the Squisher window.
     /// </summary>
     public static Task<SquishResult> SquishAsync(
         string input, SquishPreset preset, double offsetMb, IReadOnlyCollection<string> availableEncoders, string? presetOverride,
@@ -164,10 +157,10 @@ public static class SocialSquisher
                 work.Report(fraction);
             }), work.Token), cancellationToken);
 
-    /// <summary>Squeezes a video under a preset's size. Throws InvalidOperationException, with the reason, when it cannot be done.</summary>
-    /// <param name="offsetMb">Megabytes kept in hand below the target: what the container adds, and what a bitrate overshoots by.</param>
-    /// <param name="presetOverride">An encoder preset to use in place of the most careful one; null or empty for that one.</param>
-    /// <param name="progress">How far along the encode in hand is, 0 to 1.</param>
+    /// <summary>Encodes under the preset size; throws InvalidOperationException with the reason on failure.</summary>
+    /// <param name="offsetMb">Safety margin (MB) below the target for container overhead and bitrate overshoot.</param>
+    /// <param name="presetOverride">Encoder preset override; null or empty for the slowest.</param>
+    /// <param name="progress">Current encode progress, 0 to 1.</param>
     private static async Task<SquishResult> SquishNowAsync(
         string input, SquishPreset preset, double offsetMb, IReadOnlyCollection<string> availableEncoders, string? presetOverride,
         string outputPath, IProgress<double> progress, CancellationToken cancellationToken)
@@ -203,7 +196,7 @@ public static class SocialSquisher
             }
             catch (InvalidOperationException ex) when (encoders.Count > 1)
             {
-                // This encoder would not do it (a card that does not take these options, a driver too old): the next one down is tried.
+                // Encoder failed (unsupported options, old driver): fall back to the next.
                 AppLog.Write($"Squisher: {encoder} failed and the next encoder is tried", ex);
                 encoders.RemoveAt(0);
                 attempt--;

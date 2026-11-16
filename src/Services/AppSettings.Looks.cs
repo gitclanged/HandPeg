@@ -1,6 +1,6 @@
 namespace HandPegApp.Services;
 
-// ----- How new clips are placed on the frame (4.4) -----
+// ----- New clip placement -----
 
 public sealed partial class AppSettings
 {
@@ -8,9 +8,8 @@ public sealed partial class AppSettings
     public const string NewClipFit = "fit", NewClipFill = "fill";
 
     /// <summary>
-    /// How a picture or a video added to the timeline is sized: "fit" (the default: the whole picture shows, touching the
-    /// frame's edges on one side) or "fill" (it covers the whole frame, what reaches past its edges cut off). Either way its
-    /// middle is the frame's. Templates, styles and HUD pieces keep the places they were made with.
+    /// New visual clip sizing: "fit" (default, letterboxed) or "fill" (cover, cropped), centred either way. Templates, styles and HUD
+    /// pieces keep their authored placement.
     /// </summary>
     public string NewClipSizing { get; set; } = NewClipFit;
 
@@ -21,34 +20,29 @@ public sealed partial class AppSettings
         new(NewClipFill, "Fill (cover the frame)"),
     ];
 
-    /// <summary>Whether new clips cover the frame (<see cref="NewClipSizing"/> is "fill"); anything else fits them inside it.</summary>
+    /// <summary>True when <see cref="NewClipSizing"/> is "fill"; anything else means fit.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public bool NewClipsFill => string.Equals(NewClipSizing, NewClipFill, StringComparison.OrdinalIgnoreCase);
 
-    // ----- The UI's scale (5.1-Polish, the user's directive) -----
+    // ----- UI scale -----
 
     /// <summary>
-    /// Whether HandPeg is drawn at Windows' display scaling (125 %, 150 %...), as Windows scales every program. Off (the
-    /// default), it is drawn at a scale of its own (UiScale.BasePixelsPerDip, screen-aware since 5.2): 1:1 at the monitor's own
-    /// pixels on a desktop monitor, with as much more room, and about 1920 DIPs across on a high-PPI screen (1.5 pixels a DIP
-    /// on a 2880 x 1800 laptop at 200 %). Settings > General > Appearance; applied when the settings are saved.
+    /// When on, follow Windows display scaling. Off (default) uses screen-aware UiScale.BasePixelsPerDip: 1:1 on desktop monitors, about
+    /// 1920 DIPs wide on high-PPI screens (1.5 px/DIP on a 2880 x 1800 laptop at 200 %). Settings > General > Appearance; applied on save.
     /// </summary>
     public bool FollowWindowsDpiScaling { get; set; }
 
-    /// <summary>HandPeg's own scale on top of that, in percent (75 to 150; 100 as the setting above draws it). Settings > General > Appearance.</summary>
+    /// <summary>Additional UI zoom in percent (75-150; 100 = base). Settings > General > Appearance.</summary>
     public int UiScalePercent { get; set; } = 100;
 
     /// <summary>
-    /// The interface's extra motion (5.1-AutoHud-Part1): short, bounded transitions only (the Timeline's stacks and folds, the
-    /// Cutout Studio's eased zoom). Off, they snap in 0 ms. Since 5.2 nothing decorative hangs off it: the Media pane's tile tilt
-    /// and the 3D view's Studio Stage are gone, and the 3D view's depth rails and gizmo are tools, always shown. Settings >
-    /// General > Appearance.
+    /// UI motion: short bounded transitions (Timeline stacks and folds, Cutout Studio eased zoom); off snaps in 0 ms. No decorative
+    /// effects depend on it; 3D View depth rails and gizmo always show. Settings > General > Appearance.
     /// </summary>
     public bool EnableExtraAnimations { get; set; } = true;
 
     /// <summary>
-    /// The <see cref="GamePresetLibrary.Version"/> of the built-in Game Presets last written into the Styles folder (5.1-Release): a
-    /// newer version writes the ones missing there, never over a file. Not a choice: no control.
+    /// Last seeded <see cref="GamePresetLibrary.Version"/>; newer versions write missing built-ins (never overwriting). Internal, no UI.
     /// </summary>
     public int BuiltInGamePresetsVersion { get; set; }
 }

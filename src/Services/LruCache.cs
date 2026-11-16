@@ -1,11 +1,8 @@
 namespace HandPegApp.Services;
 
 /// <summary>
-/// A dictionary that holds no more than a set number of entries: when one more is put in, the one that was
-/// used longest ago is dropped. For pictures made of files (strips of frames, waveforms), which are quick
-/// to make again and should not pile up for as long as the session lasts.
-///
-/// Dropping an entry only lets go of the cache's hold on it: whatever is still showing the picture keeps it.
+/// Fixed-capacity LRU dictionary for cheap-to-regenerate imagery (filmstrips, waveforms) so it does not accumulate all session.
+/// Eviction only drops the cache reference; live consumers keep their instance.
 /// </summary>
 public sealed class LruCache<TKey, TValue>(int capacity, IEqualityComparer<TKey>? comparer = null) where TKey : notnull
 {

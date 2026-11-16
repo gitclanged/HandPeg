@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace HandPegApp.Compositor.Native;
 
-// ----- DXGI and Direct3D 11: the structures, numbers and methods the compositor uses (Pass 5.0-Core) -----
+// ----- DXGI and D3D11 structures, constants and method wrappers used by the compositor -----
 
 internal static class DxgiFormat
 {
@@ -18,7 +18,7 @@ internal static class D3D11
     public const uint MiscShared = 0x2, MiscSharedKeyedMutex = 0x100, MiscSharedNtHandle = 0x800;
     public const uint MapRead = 1, MapWrite = 2, MapWriteDiscard = 4;
 
-    /// <summary>D3D11_MAP_FLAG_DO_NOT_WAIT: Map answers DXGI_ERROR_WAS_STILL_DRAWING instead of waiting for the card.</summary>
+    /// <summary>D3D11_MAP_FLAG_DO_NOT_WAIT: Map returns DXGI_ERROR_WAS_STILL_DRAWING instead of waiting for the GPU.</summary>
     public const uint MapFlagDoNotWait = 0x100000;
     public const uint FilterPoint = 0, FilterLinear = 0x15;
     public const uint AddressWrap = 1, AddressClamp = 3, AddressBorder = 4;
@@ -62,7 +62,7 @@ internal unsafe struct SubresourceData
     public uint SysMemPitch, SysMemSlicePitch;
 }
 
-/// <summary>D3D11_SHADER_RESOURCE_VIEW_DESC: the format, the dimension, and its union (four numbers at most for the kinds used).</summary>
+/// <summary>D3D11_SHADER_RESOURCE_VIEW_DESC: format, dimension and its union (at most four values for the view kinds used).</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct ShaderResourceViewDesc
 {
@@ -174,7 +174,7 @@ internal unsafe struct AdapterDesc1
     public const uint FlagSoftware = 2;
 }
 
-/// <summary>An ID3D11Device (or ID3D11Device1: <see cref="OpenSharedResourceByName"/>) by its method table.</summary>
+/// <summary>ID3D11Device (or ID3D11Device1 for <see cref="OpenSharedResourceByName"/>) called through its vtable.</summary>
 internal readonly unsafe struct D3D11Device(nint pointer)
 {
     public readonly nint Pointer = pointer;
@@ -288,7 +288,7 @@ internal readonly unsafe struct D3D11Device(nint pointer)
     }
 }
 
-/// <summary>An ID3D11DeviceContext by its method table (the immediate context).</summary>
+/// <summary>ID3D11DeviceContext (the immediate context) called through its vtable.</summary>
 internal readonly unsafe struct D3D11Context(nint pointer)
 {
     public readonly nint Pointer = pointer;
@@ -376,7 +376,7 @@ internal readonly unsafe struct D3D11Context(nint pointer)
     public void Flush() => ((delegate* unmanaged<nint, void>)T[ID3D11DeviceContextSlot.Flush])(Pointer);
 }
 
-/// <summary>DXGI: the factory, the cards, shared handles and keyed mutexes.</summary>
+/// <summary>DXGI: factory, adapters, shared handles, keyed mutexes and swap chains.</summary>
 internal static unsafe partial class Dxgi
 {
     public const uint GpuPreferenceHighPerformance = 2;
@@ -397,7 +397,7 @@ internal static unsafe partial class Dxgi
         return factory;
     }
 
-    /// <summary>IDXGIFactory1::EnumAdapters1: the card at an index (DXGI's order), or 0 past the last.</summary>
+    /// <summary>IDXGIFactory1::EnumAdapters1: adapter at an index (DXGI order), or 0 past the last.</summary>
     public static nint EnumAdapter(nint factory, uint index)
     {
         nint adapter;
@@ -405,7 +405,7 @@ internal static unsafe partial class Dxgi
         return hr < 0 ? 0 : adapter;
     }
 
-    /// <summary>IDXGIFactory6::EnumAdapterByGpuPreference(0, high performance): the card Windows calls the fast one, or 0.</summary>
+    /// <summary>IDXGIFactory6::EnumAdapterByGpuPreference(0, high performance): Windows' preferred high-performance adapter, or 0.</summary>
     public static nint HighPerformanceAdapter(nint factory)
     {
         var factory6 = Com.Query(factory, Iid.DxgiFactory6);
@@ -474,19 +474,18 @@ internal static unsafe partial class Dxgi
         return hr;
     }
 
-    // ----- Swap chains (the GPU viewport in HandPeg's own process, 5.0-AudioAnd3D) -----
+    // ----- Swap chains (GPU viewport in the editor process) -----
 
     public const uint SwapEffectFlipDiscard = 4, ScalingStretch = 0, ScalingNone = 1, AlphaIgnore = 3, UsageRenderTargetOutput = 0x20;
     public const uint SwapChainFlagFrameLatencyWaitable = 64;
     public const int StatusOccluded = 0x087A0001;
 
     /// <summary>
-    /// A flip-model swap chain on a window (IDXGIFactory2::CreateSwapChainForHwnd through the factory that made the
-    /// device's card), two BGRA8 buffers, a frame-latency waitable object, Alt+Enter left to the app. <paramref name="scaling"/>
-    /// says what the desktop does with a buffer of another size than the window (5.4.1A): <see cref="ScalingNone"/> for the player,
-    /// whose frame the viewport lays in the middle of its buffer, never stretched across a resized window; <see cref="ScalingStretch"/>
-    /// for a side window's mirror, whose buffer is the canvas's region, fitted into a window that keeps its aspect.
-    /// (DXGI_SCALING_ASPECT_RATIO_STRETCH is refused for a swap chain on a window.)
+    /// Flip-model swap chain on a window (IDXGIFactory2::CreateSwapChainForHwnd via the device adapter's factory): two BGRA8 buffers, a
+    /// frame-latency waitable object, Alt+Enter left to the app. <paramref name="scaling"/> sets how DWM maps a buffer of another size than the
+    /// window: <see cref="ScalingNone"/> for the player (the viewport centres its frame, never stretched across a resized window);
+    /// <see cref="ScalingStretch"/> for a side-window mirror (canvas-region buffer fitted to an aspect-locked window).
+    /// DXGI_SCALING_ASPECT_RATIO_STRETCH is rejected for HWND swap chains.
     /// </summary>
     public static nint CreateSwapChain(nint device, nint window, int width, int height, uint scaling)
     {
@@ -515,7 +514,7 @@ internal static unsafe partial class Dxgi
             Com.Check(((delegate* unmanaged<nint, nint, nint, SwapChainDesc1*, nint, nint, nint*, int>)Com.Table(factory)[IDXGIFactory2Slot.CreateSwapChainForHwnd])(factory, device, window, &desc, 0, 0, &swapChain),
                 "CreateSwapChainForHwnd");
 
-            // No Alt+Enter to full screen (Alt is the 3D view's orbit), no Print Screen handling of DXGI's.
+            // Disable DXGI's Alt+Enter full screen (Alt orbits the 3D view) and its Print Screen handling.
             _ = ((delegate* unmanaged<nint, nint, uint, int>)Com.Table(factory)[IDXGIFactorySlot.MakeWindowAssociation])(factory, window, 0x2 | 0x4);
             return swapChain;
         }
@@ -526,7 +525,7 @@ internal static unsafe partial class Dxgi
         }
     }
 
-    /// <summary>IDXGISwapChain2: at most one frame queued, and the event that is set when the next may be drawn (0 if none).</summary>
+    /// <summary>IDXGISwapChain2: caps queued frames at one; returns the event signalled when the next may be drawn (0 if unsupported).</summary>
     public static nint FrameLatencyWaitable(nint swapChain)
     {
         var swapChain2 = Com.Query(swapChain, Iid.DxgiSwapChain2);
@@ -543,7 +542,7 @@ internal static unsafe partial class Dxgi
         }
     }
 
-    /// <summary>IDXGISwapChain::GetBuffer(0) as an ID3D11Texture2D (released by the caller before a resize).</summary>
+    /// <summary>IDXGISwapChain::GetBuffer(0) as an ID3D11Texture2D (the caller releases it before any resize).</summary>
     public static nint BackBuffer(nint swapChain)
     {
         var iid = Iid.D3D11Texture2D;
@@ -561,14 +560,14 @@ internal static unsafe partial class Dxgi
         return hr;
     }
 
-    // DXGI_FRAME_STATISTICS: the present shown at the last vblank, the refresh counts, and that vblank's QPC and GPU times.
+    // DXGI_FRAME_STATISTICS: present count shown at the last vblank, refresh counts, and that vblank's QPC and GPU times.
     private struct FrameStatisticsData
     {
         public uint PresentCount, PresentRefreshCount, SyncRefreshCount;
         public long SyncQpcTime, SyncGpuTime;
     }
 
-    /// <summary>IDXGISwapChain::GetLastPresentCount (slot 17): the count of the swap chain's last Present; 0 when it cannot say.</summary>
+    /// <summary>IDXGISwapChain::GetLastPresentCount: count of the swap chain's last Present; 0 on failure.</summary>
     public static uint LastPresentCount(nint swapChain)
     {
         if (swapChain == 0)
@@ -579,8 +578,8 @@ internal static unsafe partial class Dxgi
     }
 
     /// <summary>
-    /// IDXGISwapChain::GetFrameStatistics (slot 16, 5.4.4-Final): the present shown at the last vblank and that vblank's QPC; false when it
-    /// gives none (a windowed swap chain's frames are reported only while DWM composes its window; DISJOINT after a mode change).
+    /// IDXGISwapChain::GetFrameStatistics: the present shown at the last vblank and that vblank's QPC; false when unavailable (windowed swap
+    /// chains report only while DWM composes the window; DISJOINT after a mode change).
     /// </summary>
     public static bool FrameStatistics(nint swapChain, out uint presentCount, out long syncQpc)
     {
@@ -595,7 +594,7 @@ internal static unsafe partial class Dxgi
         return true;
     }
 
-    /// <summary>IDXGISwapChain::ResizeBuffers, keeping the count and format (every buffer reference let go first).</summary>
+    /// <summary>IDXGISwapChain::ResizeBuffers keeping count and format (all buffer references must be released first).</summary>
     public static int ResizeBuffers(nint swapChain, int width, int height)
     {
         var crumb = HandPegApp.Services.GpuNativeBreadcrumbs.Enter("ResizeBuffers", $"{width}x{height}");
@@ -605,8 +604,8 @@ internal static unsafe partial class Dxgi
     }
 
     /// <summary>
-    /// IDXGIAdapter3::QueryVideoMemoryInfo for the card's own memory (node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL): the budget
-    /// Windows gives this process and what it uses. False when the call failed.
+    /// IDXGIAdapter3::QueryVideoMemoryInfo for dedicated memory (node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL): the process's budget and current
+    /// usage. False on failure.
     /// </summary>
     public static bool QueryVideoMemory(nint adapter3, out VideoMemoryInfo info)
     {

@@ -10,14 +10,14 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- The shortcuts card (Pass 5.5.1, the user's) -----
-// The Cutout Studio's four lines of instructions over the view are gone: a '?' beside Fit and 100% opens a small card of its shortcuts, on
-// hover (closing as the pointer leaves the button and the card) and on a click (kept open until the '?' is clicked again, a press elsewhere
-// in the window, or the window is left). Placed against its button by UiScale.PlaceAgainst, as every header and button flyout is.
+// ----- Shortcuts card -----
+// A '?' beside Fit and 100% opens a compact shortcuts card on hover (closes when the pointer leaves button and card) or on click (pinned
+// until the '?' is clicked again, a press elsewhere in the window, or the window deactivates). Positioned with UiScale.PlaceAgainst like
+// every header/button flyout.
 
 public sealed partial class MaskDrawWindow
 {
-    /// <summary>The card's rows: what (four words at most) and its key or gesture.</summary>
+    /// <summary>Card rows: action (max four words) and key or gesture.</summary>
     internal static readonly IReadOnlyList<(string What, string Keys)> Shortcuts =
     [
         ("Close shape", "Enter / double-click"),
@@ -30,23 +30,23 @@ public sealed partial class MaskDrawWindow
         ("Pan", "Two fingers / right-drag / WASD"),
     ];
 
-    /// <summary>The '?' button's tooltip.</summary>
+    /// <summary>'?' button tooltip.</summary>
     internal const string ShortcutsTip = "Keyboard and mouse shortcuts";
 
-    // Segoe MDL2 Assets: Help (E897), a question mark.
+    // Segoe MDL2 Assets Help glyph (E897).
     private static readonly string HelpGlyph = char.ConvertFromUtf32(0xE897);
 
-    // How long the card stays after the pointer leaves the button and the card, opened by hovering: time to reach the card.
+    // Hover-close delay after leaving button and card, allowing travel between them.
     private static readonly TimeSpan HoverGrace = TimeSpan.FromMilliseconds(300);
 
     private readonly Popup _shortcutsCard = new() { AllowsTransparency = true, StaysOpen = true, Focusable = false };
     private readonly ToggleButton _shortcutsButton;
     private DispatcherTimer? _shortcutsGrace;
 
-    // Opened by hovering (the next Checked is that), and kept open by a click (pinned) rather than the pointer.
+    // Hover-open flag (the next Checked is hover-driven) and click-pinned flag.
     private bool _shortcutsHovering, _shortcutsPinned;
 
-    /// <summary>Whether the shortcuts card is open, for a test.</summary>
+    /// <summary>Test hook: whether the shortcuts card is open.</summary>
     internal bool ShortcutsOpen => _shortcutsCard.IsOpen;
 
     private ToggleButton ShortcutsButton()
@@ -66,7 +66,7 @@ public sealed partial class MaskDrawWindow
             _shortcutsCard.Child ??= ShortcutsCard();
             UiScale.PlaceAgainst(_shortcutsCard, button, UiScale.FlyoutSide.BelowEnd, 4);
 
-            // The card says it all: the tooltip would only cover it.
+            // Suppress the tooltip while the card is open (it would overlap).
             ToolTipService.SetIsEnabled(button, false);
         };
         button.Unchecked += (_, _) =>
@@ -76,7 +76,7 @@ public sealed partial class MaskDrawWindow
             ToolTipService.SetIsEnabled(button, true);
         };
 
-        // A hover opens it; a click on the card opened so keeps it open (rather than closing it, as a toggle's click would).
+        // Hover opens; a click while hover-open pins it instead of toggling closed.
         button.MouseEnter += (_, _) =>
         {
             _shortcutsGrace?.Stop();
@@ -100,7 +100,7 @@ public sealed partial class MaskDrawWindow
         return button;
     }
 
-    // The pointer left the button or the card: a card opened by hovering closes a moment later, unless the pointer is back on either.
+    // Pointer left button or card: a hover-opened card closes after the delay unless the pointer returns.
     private void LeftShortcuts()
     {
         if (_shortcutsPinned || _shortcutsButton.IsChecked != true)
@@ -123,15 +123,14 @@ public sealed partial class MaskDrawWindow
 
     private void CloseShortcuts() => _shortcutsButton.IsChecked = false;
 
-    // A press in the window closes the card, unless it is on the '?' itself, whose own click does what it does, or on the card (a press
-    // there routes up through the popup into the window).
+    // A window press closes the card except on the '?' (handled by its click) or on the card (popup presses bubble into the window).
     private void CloseShortcutsUnlessOnButton()
     {
         if (_shortcutsCard.IsOpen && !_shortcutsButton.IsMouseOver && _shortcutsCard.Child is not { IsMouseOver: true })
             CloseShortcuts();
     }
 
-    // The card: one row a shortcut, what on the left and its keys on the right, on the inspector card's surface. Made the first time it opens.
+    // Card UI: one row per shortcut (action left, keys right) on the inspector card surface; built lazily on first open.
     private static Border ShortcutsCard()
     {
         var grid = new Grid();
@@ -152,7 +151,7 @@ public sealed partial class MaskDrawWindow
             grid.Children.Add(key);
         }
 
-        // The theme's inspector card (#1E1E22 edged #2A2A30 on a dark theme, a light card on a light one), as its text is themed.
+        // Themed inspector card surface (#1E1E22 with #2A2A30 border on dark; light card on light), matching themed text.
         var card = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(12, 8, 12, 8), Child = grid };
         card.SetResourceReference(Border.BackgroundProperty, "InspectorCardBrush");
         card.SetResourceReference(Border.BorderBrushProperty, "InspectorCardBorderBrush");

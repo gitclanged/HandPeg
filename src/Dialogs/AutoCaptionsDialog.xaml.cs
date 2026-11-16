@@ -9,19 +9,17 @@ using Microsoft.Win32;
 namespace HandPegApp;
 
 /// <summary>
-/// Generate Auto-Captions (4.4): what the Subtitles tab held for making captions, asked where they are made. What to
-/// listen to (the voice clip or the Voice track by default; any audio stream of a video clip, any sound clip, a separate
-/// recording or the voiceover), the speech model, the language, translation and words to expect. Nothing is changed until
-/// Generate is pressed: the choices are then handed back for the main window to apply and run, so one click on Generate
-/// makes captions with the defaults. What it runs on (the NPU, the graphics card, the processor: 5.2-Arm64AndNpu) is the
-/// setting's (AppSettings.CaptionAccelerator), shown with what it comes to here, and kept when changed.
+/// Generate Auto-Captions dialog: source (default voice clip; any video stream, audio clip, separate recording or voiceover), speech
+/// model, language, translation and expected words. Nothing changes until Generate, which returns the choices for the main window to
+/// apply and run (one click uses defaults). The accelerator (NPU, GPU, CPU) is AppSettings.CaptionAccelerator, shown with its effective
+/// backend and persisted when changed.
 /// </summary>
 public partial class AutoCaptionsDialog : Window
 {
-    /// <summary>One entry of the Listen To box: a source, or (null) the choice to pick a separate file.</summary>
+    /// <summary>Listen To entry: a source, or null for "choose a separate file".</summary>
     private sealed record SourceItem(string Label, CaptionSource? Source);
 
-    /// <summary>One entry of the Runs On box: the setting's value and its name.</summary>
+    /// <summary>Runs On entry: setting value and label.</summary>
     private sealed record AcceleratorItem(string Name, string Display);
 
     private static readonly AcceleratorItem[] Accelerators =
@@ -35,7 +33,7 @@ public partial class AutoCaptionsDialog : Window
     private readonly MainViewModel _viewModel;
     private SourceItem? _lastChosen;
 
-    /// <summary>What to listen to, as chosen.</summary>
+    /// <summary>Selected audio source.</summary>
     public CaptionSource? Source { get; private set; }
 
     public string Model => ModelBox.SelectedItem as string ?? _viewModel.WhisperModelChoice;
@@ -43,15 +41,14 @@ public partial class AutoCaptionsDialog : Window
     public bool Translate => TranslateBox.IsChecked == true;
     public string Prompt => PromptBox.Text.Trim();
 
-    /// <param name="requested">What was asked for (a video's or a sound's track, a clip with sound), or null for what is set.</param>
+    /// <param name="requested">Requested source (video/audio track or clip with audio), or null for the current setting.</param>
     public AutoCaptionsDialog(MainViewModel viewModel, object? requested = null)
     {
         InitializeComponent();
         _viewModel = viewModel;
 
-        // A track's or a clip's own menu: all of its audio streams, and nothing else (the user's directive). Otherwise every sound the
-        // timeline can make captions from (5.2-AuditB: a file's streams are its clips' Sub-Lanes): each clip's file and stream once,
-        // the voiceover.
+        // From a track/clip menu: exactly its audio streams. Otherwise every captionable audio source on the timeline (each clip
+        // file/stream once, stream Sub-Lanes included) plus the voiceover.
         var items = new List<SourceItem>();
         var scoped = viewModel.CaptionStreamsOf(requested);
         if (scoped is { Count: > 0 })
@@ -67,7 +64,7 @@ public partial class AutoCaptionsDialog : Window
                 items.Add(Item(new CaptionSource(CaptionSourceKind.Voiceover, viewModel.VoiceoverPath, 0)));
         }
 
-        // What is set now (or asked for) comes first among equals; a separate file chosen before is offered as it was.
+        // Current/requested source wins ties; a previously chosen separate file is re-offered.
         var current = viewModel.ResolveCaptionSource(requested);
         if (current is { Kind: CaptionSourceKind.External } && current.Path.Length > 0)
             items.Add(Item(current));
@@ -97,7 +94,7 @@ public partial class AutoCaptionsDialog : Window
 
     private SourceItem Item(CaptionSource source) => new(_viewModel.DescribeCaptionSource(source), source);
 
-    /// <summary>The separate file entry asks for the file at once; the box then shows it, or goes back to what it showed.</summary>
+    /// <summary>Selecting the separate-file entry opens a picker; the box shows the file or reverts on cancel.</summary>
     private void Source_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (SourceBox.SelectedItem is not SourceItem item)
@@ -129,7 +126,7 @@ public partial class AutoCaptionsDialog : Window
         GenerateButton.IsEnabled = _lastChosen is not null;
     }
 
-    /// <summary>What the choice comes to here (the NPU, the graphics card, the processor) and why, worked out on a pool thread.</summary>
+    /// <summary>Resolves the effective accelerator (NPU, GPU, CPU) and reason on a pool thread.</summary>
     private void Accelerator_SelectionChanged(object sender, SelectionChangedEventArgs e) => Faults.Forget(Accelerator_SelectionChangedAsync(sender, e), nameof(Accelerator_SelectionChanged));
 
     private async Task Accelerator_SelectionChangedAsync(object sender, SelectionChangedEventArgs e)
@@ -159,7 +156,7 @@ public partial class AutoCaptionsDialog : Window
             return;
         }
 
-        // A changed choice of what it runs on is kept (the same setting as Settings' GPU & NPU Roles).
+        // Persist an accelerator change (shared with Settings > GPU & NPU Roles).
         if (AcceleratorBox.SelectedValue is string chosen && chosen != AppSettings.Current.CaptionAccelerator)
         {
             AppSettings.Update(settings => settings.CaptionAccelerator = chosen);

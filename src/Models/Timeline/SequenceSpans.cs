@@ -1,24 +1,22 @@
 namespace HandPegApp.Models.Timeline;
 
-// ----- The Sequence as stretches of files (5.2-AuditB) -----
-// No track and no file is privileged: what used to be asked of "the main video" (where its clips are, whether it is the
-// whole sequence untouched, what a stream copy cuts) is asked of the clips that show a file's picture, wherever they are.
-// Pure functions of a document, read in one pass over its clips: nothing is kept between calls (the document is changed in
-// place by every edit), and nothing is allocated beyond the lists returned.
+// ----- Sequence as file spans -----
+// No track or file is privileged: queries once asked of a "main video" (clip placement, whole-file identity, stream-copy cuts) are
+// answered from all clips showing a file's picture. Pure single-pass functions of a document: no state between calls (documents
+// mutate in place) and no allocation beyond returned lists.
 
 /// <summary>
-/// One clip that shows a file's picture, as a stretch of the Sequence: from <paramref name="Start"/> to
-/// <paramref name="End"/> (seconds of the Sequence) it plays <paramref name="Path"/> from <paramref name="MediaOffset"/>
-/// (seconds of the file, on its picture's clock) at <paramref name="Speed"/>, from its video stream
+/// A picture clip as a Sequence span: from <paramref name="Start"/> to <paramref name="End"/> (Sequence s) it plays
+/// <paramref name="Path"/> from <paramref name="MediaOffset"/> (file s, video clock) at <paramref name="Speed"/> using
 /// <paramref name="VideoStream"/>.
 /// </summary>
-/// <param name="Path">The clip's file, cleaned (trimmed, its quotes taken off).</param>
+/// <param name="Path">Normalized file path (trimmed, unquoted).</param>
 public readonly record struct ClipSpan(Guid ClipId, string Path, double Start, double End, double MediaOffset, double Speed, int VideoStream)
 {
     /// <summary>How long it lasts on the Sequence, in seconds.</summary>
     public double Duration => End - Start;
 
-    /// <summary>The moment of its file shown at a moment of the Sequence (inside the span or not: the line it lies on).</summary>
+    /// <summary>File time at a Sequence time (linear extrapolation outside the span).</summary>
     public double ToFile(double sequence) => MediaOffset + (sequence - Start) * Speed;
 
     /// <summary>The moment of the Sequence a moment of its file is shown at, on the line the span lies on.</summary>
@@ -26,42 +24,38 @@ public readonly record struct ClipSpan(Guid ClipId, string Path, double Start, d
 }
 
 /// <summary>
-/// What a Copy export (a stream copy: nothing encoded) cuts from one file (<see cref="SequenceSpans.CopyCutOf"/>): the
-/// file, the pieces of it the Sequence shows at speed 1 in the order they come (no two overlapping), and the names of the
-/// pictures a copy leaves out (other files, images, words, the file at another speed...): what to warn of.
+/// Stream-copy (Copy export) plan for one file (<see cref="SequenceSpans.CopyCutOf"/>): the file, its non-overlapping speed-1 pieces in
+/// order, and names of omitted pictures (other files, images, text, other speeds) for the warning.
 /// </summary>
 public sealed record CopyCut(string Path, IReadOnlyList<ClipSpan> Pieces, IReadOnlyList<string> LeftOut)
 {
-    /// <summary>More than one piece, or one piece that is not the whole file from its start (a Copy needs a cuts list).</summary>
+    /// <summary>True when a cut list is needed (multiple pieces, or one piece that is not the whole file from its start).</summary>
     public bool IsCut { get; init; }
 }
 
-/// <summary>The Sequence as stretches of the files whose pictures it shows (5.2-AuditB): read from a document, never changing it.</summary>
+/// <summary>Read-only queries over a document's picture spans.</summary>
 public static class SequenceSpans
 {
     // Two moments this close are one (a clip "at the start", a file's offset of "none"), as the lowering counts them.
     private const double Moment = 0.001;
 
-    // A speed this close to 1 is 1, and a length this close to its file's is the whole file (a frame or so, as 4.3B counted).
+    // Tolerances: speed counts as 1, and a duration as the whole file (about one frame).
     private const double SameSpeed = 0.0005, SameLength = 0.02;
 
     /// <summary>
-    /// Every clip the Sequence shows a file's picture by: a top-level video clip (<see cref="LayerKind.VideoFile"/>, no
-    /// <see cref="TimelineClip.ParentClipId"/>: no Cutout, no Sub-Lane clip) that is not switched off, on a Video or Switch
-    /// track that is not hidden (its own header or any it lies under: <see cref="TimelineDocument.IsHiddenWithParents"/>),
-    /// lasting more than a millisecond. In the order they start; two that start together, the lower track's first.
+    /// All visible picture clips: enabled top-level <see cref="LayerKind.VideoFile"/> clips (no <see cref="TimelineClip.ParentClipId"/>,
+    /// so no Cutouts or Sub-Lane clips) on unhidden Video/Switch tracks (<see cref="TimelineDocument.IsHiddenWithParents"/>), longer than
+    /// 1 ms. Sorted by start, lower track first on ties.
     /// </summary>
     public static IReadOnlyList<ClipSpan> PictureSpans(TimelineDocument document) => Collect(document, null);
 
-    /// <summary>The <see cref="PictureSpans"/> of one file (its path cleaned and compared without regard to case), in the order they start.</summary>
+    /// <summary><see cref="PictureSpans"/> for one file (normalized, case-insensitive path), sorted by start.</summary>
     public static IReadOnlyList<ClipSpan> SpansOf(TimelineDocument document, string path) => Collect(document, Clean(path));
 
     /// <summary>
-    /// The Sequence's length as it is played and exported (5.4A, no trailing black frame): to the end of its last picture (a video
-    /// file, a Cutout, an image or a title on a Video or Switch track, hidden or not), or further only where a standalone sound (an
-    /// Audio clip on an Audio track with no <see cref="TimelineClip.ParentClipId"/>: music, a voice-over) was placed past it. An
-    /// L-cut tail, a slipped sound or an adjustment past the last picture adds no frame of black. With no picture at all, it is
-    /// <see cref="TimelineDocument.TotalDuration"/>.
+    /// Playback/export length without trailing black: end of the last picture (video, Cutout, image or title on any Video/Switch track),
+    /// extended only by standalone audio (top-level Audio-track clips such as music or voice-over). L-cut tails, slipped audio and
+    /// adjustments add nothing. Without pictures: <see cref="TimelineDocument.TotalDuration"/>.
     /// </summary>
     public static double ProgramSeconds(TimelineDocument document)
     {
@@ -87,12 +81,10 @@ public static class SequenceSpans
     }
 
     /// <summary>
-    /// The files the whole Sequence is exactly one clip of: one of <see cref="PictureSpans"/> that starts the Sequence with
-    /// its file's first moment, at speed 1, plays the whole file (its length its file's, to a frame or so: to its picture's end
-    /// where the container runs on past it, <see cref="TimelineClip.WholeDuration"/>, 5.4A) and ends where
-    /// the Sequence does (<see cref="TimelineDocument.TotalDuration"/>). Whatever lies over it, such a file can be read as it
-    /// is: its soft subtitles, its chapters and a stream of its sound copied are still in time. Cleaned paths, compared
-    /// without regard to case.
+    /// Files of which the Sequence is exactly one whole, unaltered clip: a <see cref="PictureSpans"/> entry starting at 0 from file time 0,
+    /// speed 1, full length (within a frame; video end per <see cref="TimelineClip.WholeDuration"/>) and ending at
+    /// <see cref="TimelineDocument.TotalDuration"/>. Their soft subtitles, chapters and copied audio stay in sync regardless of overlays.
+    /// Normalized, case-insensitive paths.
     /// </summary>
     public static IReadOnlySet<string> WholeFiles(TimelineDocument document)
     {
@@ -111,13 +103,10 @@ public static class SequenceSpans
     }
 
     /// <summary>
-    /// What a Copy export cuts: the file with the most seconds of picture on the Sequence (of <see cref="PictureSpans"/>;
-    /// of two with as many, the one shown first). Its pieces are its spans at speed 1, in the order they start, two that
-    /// overlap laid as one track lays them, the later winning (the earlier ends where the later starts; a piece left
-    /// shorter than a millisecond goes). Every other picture shown (a clip of another file, an image, words, an adjustment,
-    /// a Cutout, the file at another speed) is left out, and named once in <see cref="CopyCut.LeftOut"/>: the clip's name,
-    /// else its file's, else its kind. Null when the Sequence shows no file's picture. The pieces are empty when every clip
-    /// of the file runs at another speed (then nothing can be copied: <see cref="CopyCut.IsCut"/> is true).
+    /// Copy export plan: the file with the most on-screen seconds (ties: shown first). Pieces are its speed-1 spans by start, overlaps
+    /// resolved later-wins (earlier piece truncated; sub-millisecond remnants dropped). All other pictures (other files, images, text,
+    /// adjustments, Cutouts, other speeds) are listed once in <see cref="CopyCut.LeftOut"/> by clip name, else file name, else kind.
+    /// Null without picture clips; empty pieces when every clip is off-speed (<see cref="CopyCut.IsCut"/> true).
     /// </summary>
     public static CopyCut? CopyCutOf(TimelineDocument document)
     {
@@ -136,8 +125,8 @@ public static class SequenceSpans
                 (file, most) = (span.Path, seconds[span.Path]);
         }
 
-        // Its pieces at speed 1; an overlap is laid out later-wins, from the last back (as 4.2.0 laid out a track that ran
-        // into itself). A clip of them wholly under a later one is not left out: it is the file, and the file is what is copied.
+        // Speed-1 pieces, overlaps resolved later-wins from the end backwards. A fully covered piece is not reported as left out
+        // (it is the copied file itself).
         var pieces = new List<ClipSpan>();
         var ofFile = new HashSet<Guid>();
         foreach (var span in spans)
@@ -166,7 +155,7 @@ public static class SequenceSpans
                 leftOut.Add(name);
         }
 
-        // A single piece is the file as it is only when it plays the whole of it from its first moment (to its picture's end, 5.4A).
+        // A single piece is uncut only if it plays the whole file from 0 (to the video end).
         var whole = false;
         if (pieces is [var only])
         {
@@ -181,11 +170,11 @@ public static class SequenceSpans
 
     private static string Clean(string? path) => (path ?? "").Trim().Trim('"');
 
-    /// <summary>Whether a track shows pictures that are seen: a Video or Switch track whose header (or that of any track it lies under) does not hide it.</summary>
+    /// <summary>True for a Video/Switch track not hidden by itself or any ancestor.</summary>
     private static bool ShowsPictures(TimelineDocument document, TimelineTrackModel track) =>
         track.Kind is TimelineTrackKind.Video or TimelineTrackKind.Switch && !document.IsHiddenWithParents(track);
 
-    /// <summary>The clips of <see cref="PictureSpans"/> with their track's place and their cleaned file, in the tracks' order (bottom first), each track's in time.</summary>
+    /// <summary><see cref="PictureSpans"/> clips with track index and normalized path, bottom track first, each track in time order.</summary>
     private static IEnumerable<(int TrackIndex, TimelineClip Clip, string Path)> Shown(TimelineDocument document)
     {
         for (var t = 0; t < document.Tracks.Count; t++)
@@ -202,7 +191,7 @@ public static class SequenceSpans
         }
     }
 
-    /// <summary>Every picture the Sequence shows, of any kind (a Cutout and an adjustment's effect too), in the order they start (the lower track's first).</summary>
+    /// <summary>All visible pictures of any kind (including Cutouts and adjustments), by start, lower track first.</summary>
     private static List<TimelineClip> Drawn(TimelineDocument document)
     {
         var drawn = new List<(int TrackIndex, TimelineClip Clip)>();
@@ -223,7 +212,7 @@ public static class SequenceSpans
         return drawn.ConvertAll(d => d.Clip);
     }
 
-    /// <summary>The spans of the clips shown (of one file, when <paramref name="path"/> is given), in the order they start (the lower track's first).</summary>
+    /// <summary>Visible clip spans (optionally for <paramref name="path"/> only), by start, lower track first.</summary>
     private static List<ClipSpan> Collect(TimelineDocument document, string? path)
     {
         var found = new List<(int TrackIndex, ClipSpan Span)>();

@@ -4,14 +4,11 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Models.Timeline;
 
-// ----- The timeline as one document (v4.3.0, .hproj format 5) -----
-// A sequence is tracks of clips, and no track is privileged: track 1 is VideoTracks[0], a video track like any other,
-// and every clip on every track is trimmed, split, crossfaded, J/L split and moved the same way. Times are seconds on
-// the sequence; while the document quantizes, every edge lies on a frame of its rate (FrameRate.Quantize), so clips
-// that touch share one exact double. Clips on a track never overlap: a same-track crossfade is the later clip's
-// TransitionIn across a cut where the two meet, centred on the cut and made from the files' handles when the graph is
-// built, as 4.2.0 does it. Edits go through a transaction (TimelineTransaction.cs), which keeps the tracks in order and
-// apart and can be rolled back whole.
+// ----- Sequence document model -----
+// A Sequence is tracks of clips with no privileged track; all clips are edited uniformly. Times are Sequence seconds; while
+// quantizing, every edge lies on a frame (FrameRate.Quantize) so abutting clips share one exact double. Clips on a track never
+// overlap: a same-track crossfade is the later clip's TransitionIn centred on the cut, built from source handles.
+// All edits go through a transaction (TimelineTransaction.cs) that keeps tracks sorted and non-overlapping and rolls back atomically.
 
 /// <summary>What a track holds. Saved by name in projects: new kinds are added at the end, and none is renamed.</summary>
 public enum TimelineTrackKind
@@ -22,10 +19,10 @@ public enum TimelineTrackKind
     /// <summary>Sound with no picture of its own: a file's audio stream, music, a voice-over.</summary>
     Audio,
 
-    /// <summary>A switch between the tracks under it (EasyCut, v5.2). Holds what a video track holds.</summary>
+    /// <summary>EasyCut switch over the tracks below it; accepts the same clips as a video track.</summary>
     Switch,
 
-    /// <summary>Clips with no picture of their own, whose effect stacks work on everything under them while they last.</summary>
+    /// <summary>Adjustment clips: no pixels of their own; their effect stacks apply to everything below for their duration.</summary>
     Adjustment,
 
     /// <summary>The captions' box.</summary>
@@ -69,66 +66,58 @@ public sealed class TimelineTrackModel
     public TrackAudioFilters? AudioFilters { get; set; }
 
     /// <summary>
-    /// The track it lies under (4.4: a mini-stack), or null for none: a style's or a preset's cut-out and mask tracks, the
-    /// captions' lane. It ripples and folds with that track (<see cref="TimelineDocument.ChildTracksOf"/>). A parent track
-    /// that is gone leaves it a track of its own; null is left out of the file.
+    /// Parent track for a mini-stack (preset Cutout/mask tracks, caption lane), or null. Ripples and folds with the parent
+    /// (<see cref="TimelineDocument.ChildTracksOf"/>); a missing parent makes it top-level. Omitted from JSON while null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? ParentTrackId { get; set; }
 
     /// <summary>
-    /// The captions are drawn right under this track's pictures (5.1-Polish, the user's Q2: their place in the stack, set by
-    /// lifting their plane in the 3D view or from their menu), over every track under it; on no track they are over
-    /// everything, the fades too, as they always were. One track at most (<see cref="ITimelineTransaction.SetCaptionsUnder"/>);
-    /// when this track is deleted they go under the next picture track down, keeping their depth (5.1-AutoHud-Part1, the
-    /// user's Q4; <see cref="ITimelineTransaction.RemoveTrack"/>). Left out of the file while false.
+    /// Captions render directly beneath this track's pixels (above all tracks below); with no such track they render on top of
+    /// everything including fades. At most one track (<see cref="ITimelineTransaction.SetCaptionsUnder"/>); deleting it moves the flag
+    /// to the next picture track down (<see cref="ITimelineTransaction.RemoveTrack"/>). Omitted from JSON while false.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool CaptionsUnder { get; set; }
 
     /// <summary>
-    /// Its row's own height on the Timeline in DIPs (5.1-AutoHud-Part1, the user's Q2: its lower edge dragged in the headers),
-    /// or null to go with the one Track Height. Left out of the file while null.
+    /// Per-track row height (DIP) set by dragging its header edge; null uses the global Track Height. Omitted from JSON while null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? Height { get; set; }
 
     /// <summary>
-    /// Which audio stream an audio lane under a video track holds for every clip on that track (5.2, in-line sub-lanes): 0 the
-    /// first stream of each clip's file ("Stream 1"), 1 the second, and so on, whatever numbers each file gives its streams,
-    /// so that the first streams of Clip 1, Clip 2 and Clip 3 lie in line on one row. -1 for a lane a stream was moved to on
-    /// its own (MainViewModel.MoveSoundToOwnLane), which no other clip's stream is put on. Null for any other track, and for a
-    /// lane from before 5.2. Left out of the file while null.
+    /// Audio Sub-Lane stream ordinal under a video track: 0 = each clip's first audio stream, 1 = second, ... (ordinal, not file
+    /// stream index), so equal streams align on one row. -1 for a lane holding one detached stream (MainViewModel.MoveSoundToOwnLane).
+    /// Null for other tracks. Omitted from JSON while null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? StreamOrdinal { get; set; }
 
     /// <summary>
-    /// The Game Preset this track gives its clips (5.2A, a Track Preset Node: the name of a saved preset in the Styles folder),
-    /// or null for none. A clip dropped or moved onto the track takes that preset's place, look, blur fill and Cutouts, in
-    /// place of any it had (MainViewModel.InheritTemplate); set on a track, it goes on the clips the track holds then too. A
-    /// picture track's only. Left out of the file while null.
+    /// Track Preset: Game Preset name (Styles folder) applied to clips on this track, or null. Clips dropped or moved here take its
+    /// placement, look, blur fill and Cutouts (MainViewModel.InheritTemplate); setting it applies to existing clips too. Picture tracks
+    /// only. Omitted from JSON while null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? PresetNodeName { get; set; }
 
     /// <summary>
-    /// What its clips shared in 4.2.0 (only an old document's: since 5.1-DogfoodPolish every clip's <see cref="TimelineClip.State"/> holds
-    /// all of its look and nothing makes this). Its timing fields are not used. Null: none, and each clip's State holds everything.
+    /// Legacy shared track look from old documents; new documents keep the full look in each <see cref="TimelineClip.State"/>.
+    /// Timing fields unused. Null means each clip's State is complete.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public LayerState? TrackLook { get; set; }
 
     /// <summary>
-    /// The clips in time: by <see cref="TimelineClip.Start"/>, and apart (one may start where the one before it ends), so
-    /// the ends are in order too. A crossfade does not overlap them: it is the later clip's <see cref="TimelineClip.TransitionIn"/>.
+    /// Clips sorted by <see cref="TimelineClip.Start"/> and non-overlapping (abutting allowed), so ends are sorted too. Crossfades are
+    /// the later clip's <see cref="TimelineClip.TransitionIn"/>, not overlaps.
     /// </summary>
     public List<TimelineClip> Clips { get; set; } = [];
 
     /// <summary>
-    /// The clips that show in the stretch from <paramref name="viewStart"/> to <paramref name="viewEnd"/> (seconds), found
-    /// by two binary searches: what a timeline draws, without looking at the clips off screen. A view onto
-    /// <see cref="Clips"/>: read it before the track is changed again.
+    /// Clips intersecting [<paramref name="viewStart"/>, <paramref name="viewEnd"/>] (seconds) via two binary searches. Returns a live
+    /// view of <see cref="Clips"/>; consume it before the track changes.
     /// </summary>
     public ReadOnlySpan<TimelineClip> ClipsIntersecting(double viewStart, double viewEnd)
     {
@@ -200,14 +189,14 @@ public sealed class TimelineTrackModel
         _ => TimelineTrackKind.Video,
     };
 
-    /// <summary>Whether a clip can go on this track: one of its kind (a switch track takes what a video track takes).</summary>
+    /// <summary>True when the clip kind fits this track kind (switch tracks accept video-track clips).</summary>
     public bool Accepts(TimelineClip clip) =>
         KindFor(clip.ContentKind) is var kind && (kind == Kind || (Kind == TimelineTrackKind.Switch && kind == TimelineTrackKind.Video));
 
-    /// <summary>A copy of its own values, sharing its clip list and look: what a rollback puts back (its clips are put back apart).</summary>
+    /// <summary>Shallow rollback snapshot sharing the clip list and look (clips are restored separately).</summary>
     internal TimelineTrackModel Snapshot() => (TimelineTrackModel)MemberwiseClone();
 
-    /// <summary>Takes every value of another track but its clips (its id too): a rollback, in place, so whoever holds this track keeps it.</summary>
+    /// <summary>In-place rollback of every field except clips (including the id), preserving reference identity.</summary>
     internal void RestoreFields(TimelineTrackModel from)
     {
         (Id, TrackNumber, Name, Kind) = (from.Id, from.TrackNumber, from.Name, from.Kind);
@@ -218,16 +207,15 @@ public sealed class TimelineTrackModel
 }
 
 /// <summary>
-/// One clip on a track: what it plays, when, which part of its file, its fades, and its look. Everything the main
-/// video's clips, cut segments, layers and audio pieces were, in one shape.
+/// A clip on a track: source, Sequence timing, source range, fades and look. One shape for every clip kind.
 /// </summary>
 public sealed class TimelineClip
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
-    /// Fields this version does not know (a newer HandPeg's), kept so that saving does not drop them. Read-only after loading:
-    /// copies (<see cref="Snapshot"/>, <see cref="Restore"/>) share the dictionary.
+    /// Unknown JSON fields from newer versions, preserved on save. Read-only after load: <see cref="Snapshot"/> and
+    /// <see cref="Restore"/> share the dictionary.
     /// </summary>
     [JsonExtensionData]
     public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
@@ -243,10 +231,9 @@ public sealed class TimelineClip
     /// <summary>Which audio stream of the file it plays; -1 for none.</summary>
     public int AudioStreamIndex { get; set; } = -1;
 
-    // ----- When: seconds on the sequence, on frames while the document quantizes -----
-    // Both edges are kept, and the length is what lies between them: a clip that ends where the next starts holds the
-    // very double the next one starts on. (A start and a length cannot promise that: some ends are not the sum of the
-    // start and any double.)
+    // ----- Timing: Sequence seconds, frame-aligned while quantizing -----
+    // Both edges are stored and the length derived, so abutting clips share the exact same double (start + length cannot
+    // guarantee that under floating-point rounding).
 
     public double Start { get; set; }
     public double End { get; set; }
@@ -260,20 +247,18 @@ public sealed class TimelineClip
     /// <summary>How many times as fast as recorded it runs: a second on the sequence plays this many of the file.</summary>
     public double Speed { get; set; } = 1;
 
-    /// <summary>How long the file is, in its own seconds; 0 for a still (an image, text), which lasts as long as it is made to.</summary>
+    /// <summary>Source duration in file seconds; 0 for stills (image, text), which have arbitrary length.</summary>
     public double SourceDuration { get; set; }
 
     /// <summary>
-    /// How long its file's picture lasts, in its own seconds, where that is shorter than <see cref="SourceDuration"/> (5.4A: a
-    /// container whose sound is padded past its last frame, the clip of it placed to end with the picture); 0 when not known or
-    /// no shorter, the container's length being the picture's. Left out of the file while 0.
+    /// Video stream duration when shorter than <see cref="SourceDuration"/> (audio padded past the last frame); 0 when unknown or
+    /// equal. Omitted from JSON while 0.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public double PictureDuration { get; set; }
 
     /// <summary>
-    /// How long a clip of the whole file lasts at speed 1 (5.4A): its picture's length (<see cref="PictureDuration"/>) where that is
-    /// known and shorter, else <see cref="SourceDuration"/>. What a whole-file test compares a clip's length with.
+    /// Whole-file clip length at 1x: <see cref="PictureDuration"/> when known and shorter, else <see cref="SourceDuration"/>.
     /// </summary>
     [JsonIgnore]
     public double WholeDuration => PictureDuration > 0 && SourceDuration > 0 ? Math.Min(PictureDuration, SourceDuration) : SourceDuration;
@@ -286,11 +271,8 @@ public sealed class TimelineClip
     public bool HasSound => AudioStreamIndex >= 0 || ContentKind == LayerKind.Audio;
 
     /// <summary>
-    /// It plays its own file through in time (a video file, a sound), so its edges move its <see cref="MediaOffset"/> and
-    /// stop at its file's ends, as in 4.2.0. Images, text and adjustments have no file to run out of. (A clip of the legacy
-    /// kind <see cref="LayerKind.MainVideo"/> plays its file too, until <c>LegacyMainVideo.Migrate</c> makes it a video file as a 5.1
-    /// project is opened (the golden tests' 4.2.0-shaped fixtures the same way); a legacy cut-out,
-    /// <see cref="LayerKind.Video"/>, had no clock of its own.)
+    /// True for time-based media (video, audio): trims shift <see cref="MediaOffset"/> and clamp at the file ends. Images, text and
+    /// adjustments are unbounded. Legacy <see cref="LayerKind.MainVideo"/> also counts until <c>LegacyMainVideo.Migrate</c> converts it.
     /// </summary>
     [JsonIgnore]
     public bool PlaysFile => ContentKind is LayerKind.VideoFile or LayerKind.Audio or LayerKind.MainVideo;
@@ -300,16 +282,15 @@ public sealed class TimelineClip
     /// <summary>Whether its sound moves and trims with its picture (as one clip), or on its own.</summary>
     public bool AudioLinked { get; set; } = true;
 
-    /// <summary>How far its sound is moved from its picture, in seconds, while unlinked (later when positive). Not on frames.</summary>
+    /// <summary>Audio offset from video in seconds while unlinked (positive = later); not frame-quantized.</summary>
     public double AudioSlipSeconds { get; set; }
 
     /// <summary>
-    /// How much sooner than its picture its sound starts, in seconds: a J-cut (negative: the sound starts later).
-    /// The sound takes the file from that much earlier.
+    /// J-cut lead: seconds the audio starts before the video (negative = later), reading the source that much earlier.
     /// </summary>
     public double AudioLeadInSeconds { get; set; }
 
-    /// <summary>How much longer than its picture its sound lasts, in seconds: an L-cut (negative: it stops sooner).</summary>
+    /// <summary>L-cut tail: seconds the audio extends past the video (negative = ends sooner).</summary>
     public double AudioTailOutSeconds { get; set; }
 
     // ----- Fades -----
@@ -320,10 +301,8 @@ public sealed class TimelineClip
     public TransitionStyle FadeOutStyle { get; set; }
 
     /// <summary>
-    /// A crossfade from the clip before it on the track, in seconds (0: a plain cut), across the cut where they meet: centred
-    /// on it, each file giving up to half of it from beyond its edge when the graph is built, or a dip through black where
-    /// they have nothing to give. At most <see cref="TimelineDocument.LongestCrossfade"/>. Set to 0 by any edit after
-    /// which the clip no longer meets the one before it.
+    /// Crossfade length (s) from the previous abutting clip, centred on the cut; each side supplies up to half from its handles,
+    /// else dips through black. Max <see cref="TimelineDocument.LongestCrossfade"/>; reset to 0 when the clips no longer abut.
     /// </summary>
     public double TransitionIn { get; set; }
 
@@ -337,48 +316,38 @@ public sealed class TimelineClip
     public ProxyChoice ProxyChoice { get; set; }
 
     /// <summary>
-    /// The clip it goes with (4.4: a child of that one, as a Cutout, a mask or a stream's Sub-Lane clip is), or null for
-    /// none. While it lies with its parent in time (overlaps it), the parent's splits, trims, moves, deletes and folds
-    /// carry it along (<see cref="TimelineDocument.ChildrenOf"/>). A parent that is gone leaves it a clip of its own; null
-    /// is left out of the file.
+    /// Parent clip (Cutout, mask, Sub-Lane stream), or null. While overlapping the parent, it follows the parent's splits, trims,
+    /// moves, deletes and folds (<see cref="TimelineDocument.ChildrenOf"/>); a missing parent makes it independent. Omitted while null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Guid? ParentClipId { get; set; }
 
     /// <summary>
-    /// Pass 5.5A: it was tethered to its parent clip by the Timeline's drag (MainViewModel.AttachClip). It follows its parent in time as
-    /// any child does, but it is never one of its parent's Game Preset pieces, wherever it lies: no preset, Track Preset or Cutouts put on
-    /// the parent deletes, copies or moves it. False for every other child (a Cutout, a template's piece, a stream's sound, a clip its Link
-    /// switch locked) and for a clip with no parent: an edit that clears <see cref="ParentClipId"/> clears it too, and one that points the
-    /// link at another clip keeps it. Left out of the file while false (<see cref="TimelineDocument.TethersMarked"/> says how a file
-    /// written before the mark is read).
+    /// User tether (MainViewModel.AttachClip): follows the parent in time but is never treated as a Game Preset piece, so presets,
+    /// Track Presets and Cutouts applied to the parent never delete, copy or move it. Cleared with <see cref="ParentClipId"/>; kept
+    /// when re-parented. Omitted while false (<see cref="TimelineDocument.TethersMarked"/> covers legacy files).
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool Tethered { get; set; }
 
     /// <summary>
-    /// The beats found in its sound (5.2B, Detect &amp; Snap to Audio Beats: Services/Audio/BeatDetector.cs), ascending, in seconds of its
-    /// file (media time, as <see cref="MediaOffset"/> is), so a trim, a move, a split or a change of speed keeps each on its moment of the
-    /// sound; null while none were looked for, and so left out of the file. Never changed in place: an edit puts a new array here
-    /// (<see cref="ITimelineTransaction.SetClipBeats"/>), so a snapshot that shares this one keeps what it had.
+    /// Detected beats (BeatDetector.cs), ascending, in media seconds like <see cref="MediaOffset"/>, so edits and speed changes keep
+    /// them aligned; null until detected (omitted from JSON). Immutable: edits replace the array (<see cref="ITimelineTransaction.SetClipBeats"/>).
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double[]? BeatTimes { get; set; }
 
     /// <summary>
-    /// Its look, as a layer is saved, so everything a <see cref="Layer"/> and an <see cref="EffectInstance"/> do works on it
-    /// unchanged: its name, keyframes (seconds from the clip's start; they may lie before it or past it, so a motion
-    /// carries across a cut), effect stack and the rest of what is its own, and, when its
-    /// track has no <see cref="TimelineTrackModel.TrackLook"/>, everything else too (place on the frame, crop, mask...).
-    /// Its timing, fades, gain, visibility and proxy fields are not used: the clip's own above are. An edit that
-    /// changes it puts a changed copy here; it never changes the one that is here.
+    /// Clip look stored as a <see cref="Layer"/> (name, keyframes relative to clip start and allowed outside it, effect stack, and,
+    /// without a <see cref="TimelineTrackModel.TrackLook"/>, placement, crop, mask). Its timing, fade, gain, visibility and proxy
+    /// fields are ignored. Copy-on-write: edits replace the instance.
     /// </summary>
     public LayerState State { get; set; } = new();
 
-    /// <summary>A copy with the same id and everything the same, sharing <see cref="State"/>: what a rollback puts back.</summary>
+    /// <summary>Rollback snapshot with the same id, sharing <see cref="State"/>.</summary>
     internal TimelineClip Snapshot() => (TimelineClip)MemberwiseClone();
 
-    /// <summary>Whether another clip has every value this one has (its look the very same object): a change that changed nothing.</summary>
+    /// <summary>True when every field matches and <see cref="State"/> is the same instance (a no-op change).</summary>
     internal bool SameValues(TimelineClip other) =>
         Id == other.Id && ContentKind == other.ContentKind && SourcePath == other.SourcePath && VideoStreamIndex == other.VideoStreamIndex
         && AudioStreamIndex == other.AudioStreamIndex && Start == other.Start && End == other.End && MediaOffset == other.MediaOffset
@@ -389,7 +358,7 @@ public sealed class TimelineClip
         && IsMuted == other.IsMuted && ProxyChoice == other.ProxyChoice && ParentClipId == other.ParentClipId && Tethered == other.Tethered
         && ReferenceEquals(BeatTimes, other.BeatTimes) && ReferenceEquals(State, other.State) && ReferenceEquals(Extra, other.Extra);
 
-    /// <summary>Takes every value of another clip (its id too): a rollback, in place, so whoever holds this clip keeps it.</summary>
+    /// <summary>In-place rollback of every field (including the id), preserving reference identity.</summary>
     internal void Restore(TimelineClip from)
     {
         Id = from.Id;
@@ -425,23 +394,20 @@ public sealed class TimelineClip
 }
 
 /// <summary>
-/// What a committed transaction changed: its name, the ids of the clips it made, changed or removed, and of the tracks
-/// it made, numbered again or whose clips it changed.
+/// Committed transaction summary: label, and ids of clips added/changed/removed and tracks added/renumbered/changed.
 /// </summary>
 public sealed record TimelineCommit(string Label, IReadOnlyList<Guid> TouchedClipIds, IReadOnlyList<Guid> TouchedTrackIds);
 
 /// <summary>
-/// A stretch folded out of the timeline (4.3D: Remove Dead Air's Split &amp; Mark): what lay there on each track it was taken
-/// out of, kept to be put back (<see cref="ITimelineTransaction.UnfoldSegment"/>). It belongs to the cut it was folded at,
-/// the seam: the start of the clip that came after it (<see cref="AtEnd"/>: the end of the one before, when none came after)
-/// on the track it was found on, which every edit carries along. A fold whose clip is gone has no seam and is passed over.
-/// What is on the timeline is what renders: a fold takes no time and shows nothing until it is put back.
+/// Range folded out of the Sequence (Remove Dead Air), holding the removed clips per track for <see cref="ITimelineTransaction.UnfoldSegment"/>.
+/// Anchored to a seam: the start of the following clip (or with <see cref="AtEnd"/> the end of the preceding one), which edits carry.
+/// A fold whose seam clip is gone is skipped. Folds occupy no time and do not render until unfolded.
 /// </summary>
 /// <param name="SeamClipId">The clip whose edge the seam is.</param>
 /// <param name="AtEnd">The seam is that clip's end rather than its start.</param>
-/// <param name="AllTracks">It was taken out of every unlocked track (the main video's dead air), not its own track alone.</param>
-/// <param name="Length">How long the stretch was, in seconds of the timeline.</param>
-/// <param name="Clips">What lay in it, each with its track's id: copies, their times counted from the seam (the stretch's start).</param>
+/// <param name="AllTracks">Folded from every unlocked track rather than only the seam's track.</param>
+/// <param name="Length">Folded length in Sequence seconds.</param>
+/// <param name="Clips">Removed clip copies with their track ids, times relative to the seam.</param>
 public sealed record FoldedSegment(Guid Id, Guid SeamClipId, bool AtEnd, bool AllTracks, double Length, IReadOnlyList<FoldedClip> Clips)
 {
     /// <summary>Where the seam is now: the edge of its clip in the document, or null when that clip is gone.</summary>
@@ -449,23 +415,22 @@ public sealed record FoldedSegment(Guid Id, Guid SeamClipId, bool AtEnd, bool Al
         document.FindClip(SeamClipId) is { } clip ? AtEnd ? clip.End : clip.Start : null;
 }
 
-/// <summary>A clip kept in a fold (<see cref="FoldedSegment"/>): a copy nobody changes, its times counted from the seam.</summary>
+/// <summary>Immutable clip copy inside a <see cref="FoldedSegment"/>, times relative to the seam.</summary>
 public sealed record FoldedClip(Guid TrackId, TimelineTrackKind TrackKind, TimelineClip Clip);
 
 /// <summary>
-/// A side of a fold (<see cref="FoldedSegment"/>) that a clip's edge at its seam opens or folds more into (4.4-BugHunt, Q11:
-/// <see cref="ITimelineTransaction.ResizeFold"/>).
+/// Side of a <see cref="FoldedSegment"/> that a seam-adjacent clip edge extends into or folds further (<see cref="ITimelineTransaction.ResizeFold"/>).
 /// </summary>
 public enum FoldSide
 {
-    /// <summary>Its first seconds, which lay against the clip before the seam: that clip's end opens or folds them.</summary>
+    /// <summary>Leading part, adjacent to the clip before the seam (resized by that clip's end).</summary>
     Head,
 
-    /// <summary>Its last seconds, which lay against the clip after the seam: that clip's start opens or folds them.</summary>
+    /// <summary>Trailing part, adjacent to the clip after the seam (resized by that clip's start).</summary>
     Tail,
 }
 
-/// <summary>An edge of a clip that a stretch put back is anchored to (<see cref="RestoredFold"/>): its start, or with <paramref name="AtEnd"/> its end.</summary>
+/// <summary>Clip edge anchoring a <see cref="RestoredFold"/>: its start, or its end with <paramref name="AtEnd"/>.</summary>
 public sealed record FoldEdge(Guid ClipId, bool AtEnd)
 {
     /// <summary>Where the edge is now, or null when its clip is gone.</summary>
@@ -473,24 +438,18 @@ public sealed record FoldEdge(Guid ClipId, bool AtEnd)
 }
 
 /// <summary>
-/// A folded stretch put back (4.4-BugHunt): kept so that the same stretch can be folded again (the Hide pill, "Hide / Fold
-/// Dead Air Segment", <see cref="ITimelineTransaction.FoldRestored"/>). It lies on its track from <paramref name="From"/>
-/// (the start of what came back) to <paramref name="To"/> (the start of the clip the fold's seam was), the one
-/// <paramref name="Length"/> from the other when only one of them is known. Its edges are clips' edges found by their ids,
-/// so it follows every edit that carries them (a move, a ripple, a split, whose first half keeps its id); it is let go when
-/// its stretch is no longer there (<see cref="SpanIn"/> null: the clip it starts with is gone, or on another track), and
-/// when it is folded again. Its id is the fold's it was, and the fold's it becomes. A value nobody changes.
+/// Immutable record of an unfolded range so it can be re-folded (Hide pill, <see cref="ITimelineTransaction.FoldRestored"/>). Spans
+/// <paramref name="From"/> to <paramref name="To"/> (or <paramref name="Length"/> from the known edge), both resolved by clip id so it
+/// follows edits. Dropped when the range disappears (<see cref="SpanIn"/> null) or is folded again. Keeps the original fold id.
 /// </summary>
-/// <param name="TrackId">The track the fold's seam was on, where the stretch lies.</param>
-/// <param name="AllTracks">It was folded out of every unlocked track, and is folded out of every one again.</param>
-/// <param name="Length">How long the stretch was when it was put back, in seconds of the timeline.</param>
+/// <param name="TrackId">Track of the original seam.</param>
+/// <param name="AllTracks">Folded from, and re-folds, every unlocked track.</param>
+/// <param name="Length">Length at unfold time, Sequence seconds.</param>
 public sealed record RestoredFold(Guid Id, Guid TrackId, FoldEdge? From, FoldEdge? To, bool AllTracks, double Length)
 {
     /// <summary>
-    /// Where the stretch lies now (seconds), or null when it is no longer there: the clip it starts with gone or on another
-    /// track, or what is left shorter than the shortest clip. Its end is the start of the clip after it while that is on its
-    /// track, or else its length from its start. A look through the clips; <see cref="TimelineDocument.RestoredSpans"/> finds
-    /// them all in one.
+    /// Current span in seconds, or null when the start clip is gone/moved tracks or the remainder is shorter than a minimum clip.
+    /// End = start of the following clip on the track, else start + length. Linear scan; use <see cref="TimelineDocument.RestoredSpans"/> for all.
     /// </summary>
     public (double From, double To)? SpanIn(TimelineDocument document) =>
         Span(id => document.Locate(id) is { } hit ? (hit.Clip, hit.Track.Id) : null);
@@ -527,15 +486,15 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     public Dictionary<string, System.Text.Json.JsonElement>? Extra { get; set; }
 
     /// <summary>
-    /// The unknown fields of the project file this timeline was opened from, outside the timeline itself (<see cref="ProjectExtras"/>):
-    /// carried with the timeline through copies, tabs and undo, and written back with the project. Not part of the timeline's JSON.
+    /// Unknown project-level JSON fields (<see cref="ProjectExtras"/>) carried through copies, tabs and undo and written back on save.
+    /// Not serialized as part of the timeline.
     /// </summary>
     [JsonIgnore]
     public ProjectExtras? CarriedProjectFields { get; set; }
-    /// <summary>The shortest a clip is made by an edit (as 4.2.0's layer edits keep it), in whole frames while quantizing.</summary>
+    /// <summary>Minimum clip length an edit can produce (whole frames while quantizing).</summary>
     public const double MinimumClipSeconds = 0.05;
 
-    /// <summary>The longest crossfade a clip dropped over its neighbour makes, and the overlap it may be dropped with (at most half of either clip).</summary>
+    /// <summary>Maximum drop-over crossfade and permitted overlap (also at most half of either clip).</summary>
     public const double LongestDragCrossfade = 2;
 
     /// <summary>The longest same-track crossfade, and the longest fade.</summary>
@@ -546,11 +505,8 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     public bool UseVerticalResolution { get; set; }
 
     /// <summary>
-    /// The Sequence's natural frame size in pixels (5.2-AuditB): the size its frame takes when nothing asks for another,
-    /// before Use Vertical Resolution turns it on its side. Set when the first file's picture goes onto an empty Sequence
-    /// (that picture as its crop leaves it, even), or, in a project 5.2-AuditB converted, by that conversion (what its main
-    /// video's size and crop made it); 0 while unset, and then left out of the file. It replaces "the main file's
-    /// size cut by its first clip's crop": cropping a clip later never resizes the Sequence.
+    /// Natural Sequence frame size in pixels, before Use Vertical Resolution rotates it. Set from the first video placed on an empty
+    /// Sequence (cropped, even dimensions) or by legacy migration; 0 while unset (omitted from JSON). Later crops never resize it.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int NaturalWidth { get => _naturalWidth; set => _naturalWidth = Math.Max(value, 0); }
@@ -568,24 +524,22 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     public FrameRate FrameRate { get; set; } = FrameRate.Fps60;
 
     /// <summary>
-    /// The project's colour space (5.4A, Project Settings): set from the first video's transfer characteristic, or chosen in the
-    /// New Project studio; BT.709 SDR, the default, is left out of the file. Export's "Match Project Settings" tone-maps an
-    /// HDR project to BT.709 SDR, the only output the pipeline writes.
+    /// Project colour space (Project Settings): from the first video's transfer function or the New Project studio; default BT.709 SDR
+    /// is omitted from JSON. "Match Project Settings" tone-maps HDR projects to BT.709 SDR, the only pipeline output.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public ProjectColorSpace ColorSpace { get; set; }
 
-    /// <summary>The project's pixel aspect (5.4A): square, the default, is left out of the file.</summary>
+    /// <summary>Project pixel aspect; default square is omitted from JSON.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public ProjectPixelAspect PixelAspect { get; set; }
 
-    /// <summary>The sample rate a project has unless it is given another, in hertz: 48 kHz, the user's standing choice.</summary>
+    /// <summary>Default project sample rate (Hz): 48 kHz.</summary>
     public const int DefaultSampleRate = 48000;
 
     /// <summary>
-    /// The project's sample rate in hertz (5.4A): every render is mixed at it under "Match Project Settings". Only 44100, 48000
-    /// and 96000 are taken; anything else reads as <see cref="DefaultSampleRate"/>, which a project file leaves out (as a fresh
-    /// document's value).
+    /// Project sample rate (Hz) used for every render under "Match Project Settings". Accepts 44100, 48000 or 96000; other values
+    /// read as <see cref="DefaultSampleRate"/>, which is omitted from JSON.
     /// </summary>
     public int SampleRate
     {
@@ -596,17 +550,17 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     private int _sampleRate = DefaultSampleRate;
 
     /// <summary>
-    /// The frame was chosen on purpose (5.4A, the New Project studio): the first file opened onto the empty Sequence keeps the
-    /// natural size, the vertical choice and the colour space instead of taking its own. Left out of the file while false.
+    /// Frame explicitly chosen in the New Project studio: the first file keeps the chosen size, orientation and colour space instead
+    /// of imposing its own. Omitted from JSON while false.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExplicitFrame { get; set; }
 
-    /// <summary>The frame rate was chosen on purpose (5.4A): the first file opened onto the empty Sequence keeps it. Left out of the file while false.</summary>
+    /// <summary>Frame rate explicitly chosen; the first file keeps it. Omitted from JSON while false.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ExplicitFrameRate { get; set; }
 
-    /// <summary>The project's settings in one read-only view (5.4A); never written to a file.</summary>
+    /// <summary>Read-only Project Settings view; not serialized.</summary>
     [JsonIgnore]
     public ProjectSettings ProjectSettings =>
         new(NaturalWidth, NaturalHeight, UseVerticalResolution, FrameRate, ColorSpace, PixelAspect, SampleRate);
@@ -617,7 +571,7 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     /// <summary>The tracks in their stacking order, bottom first.</summary>
     public List<TimelineTrackModel> Tracks { get; set; } = [];
 
-    /// <summary>The Sequence Output's effect stack: on the finished frame. Keyframe times are seconds of the sequence.</summary>
+    /// <summary>Sequence Output effect stack applied to the final frame; keyframe times in Sequence seconds.</summary>
     public List<EffectState> SequenceEffects { get; set; } = [];
 
     public bool SequenceEffectsBypassed { get; set; }
@@ -626,9 +580,8 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     public const double LoudestMasterGainDb = 12, QuietestMasterGainDb = -40;
 
     /// <summary>
-    /// The Sequence's master output fader in decibels (5.2B): a gain on the whole mix after every track is summed and before the
-    /// Sequence's fades, heard in the player and exported alike (AudioProgram.MasterGain), held to -40..+12. 0, no change at all, is
-    /// left out of the file (<see cref="ITimelineTransaction.SetMasterGain"/>).
+    /// Master fader (dB, clamped -40..+12): gain on the summed mix before Sequence fades, in playback and export
+    /// (AudioProgram.MasterGain). 0 is omitted from JSON (<see cref="ITimelineTransaction.SetMasterGain"/>).
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public double MasterGainDb
@@ -641,31 +594,27 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
 
     public List<TimelineMarker> Markers { get; set; } = [];
 
-    /// <summary>The stretches folded out of the timeline, each at its seam (4.3D); null while there are none, and so left out of the file.</summary>
+    /// <summary>Folded ranges, each anchored at its seam; null (omitted from JSON) when empty.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<FoldedSegment>? Folds { get; set; }
 
     /// <summary>
-    /// The folded stretches put back that can be folded again (4.4-BugHunt, <see cref="RestoredFold"/>), as they were put
-    /// back; null while there are none, and so left out of the file. The outermost commit of a change lets go of those no
-    /// longer there.
+    /// Unfolded ranges that can be re-folded (<see cref="RestoredFold"/>), in unfold order; null (omitted) when empty. The outermost
+    /// commit prunes stale entries.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<RestoredFold>? RestoredFolds { get; set; }
 
     /// <summary>
-    /// Project Media (5.4C): every file the project's bin holds, each once, in the order it came in. A file a clip plays is one of
-    /// them (<see cref="PoolsPlacedFiles"/>), and stays after its last clip is deleted, until it is taken out of the bin; files picked
-    /// in the New Project studio or dropped onto the Media Browser are here before any clip plays them. Changed only through a
-    /// transaction (<see cref="ITimelineTransaction.AddToMediaPool"/>), so Undo and a rollback put it back; empty, and then left out of
-    /// the file.
+    /// Project Media bin: unique file paths in insertion order. Placed clips add their file (<see cref="PoolsPlacedFiles"/>), which stays
+    /// after the last clip is deleted; New Project and Media Browser drops add files directly. Mutated only via transactions
+    /// (<see cref="ITimelineTransaction.AddToMediaPool"/>) so Undo covers it. Omitted from JSON when empty.
     /// </summary>
     public List<string> MediaPool { get; set; } = [];
 
     /// <summary>
-    /// Whether a clip placed on the Sequence puts its file into <see cref="MediaPool"/> (5.4C). The view model sets it on every document
-    /// it makes the timeline; a document made on its own (a golden test's, a project read for its thumbnail) leaves its pool alone.
-    /// Not saved.
+    /// When true, placing a clip adds its file to <see cref="MediaPool"/>. Set by the view model on its live document; standalone
+    /// documents (tests, thumbnail reads) leave the pool unchanged. Not serialized.
     /// </summary>
     [JsonIgnore]
     public bool PoolsPlacedFiles { get; set; }
@@ -674,8 +623,7 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     public static string PoolPath(string? path) => (path ?? "").Trim().Trim('"');
 
     /// <summary>
-    /// The file a clip puts into Project Media (5.4C): a video's, a sound's or a picture's own file; null for a clip with none (text,
-    /// an adjustment) or one read from the web.
+    /// File a clip contributes to Project Media (video, audio, image); null for text, adjustments and web sources.
     /// </summary>
     public static string? PoolFileOf(TimelineClip clip)
     {
@@ -702,16 +650,13 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
 
     public IReadOnlyList<TimelineTrackModel> TracksOf(TimelineTrackKind kind) => Tracks.Where(t => t.Kind == kind).ToList();
 
-    /// <summary>The track the captions are drawn right under (<see cref="TimelineTrackModel.CaptionsUnder"/>), or null: over everything.</summary>
+    /// <summary>Track captions render beneath (<see cref="TimelineTrackModel.CaptionsUnder"/>); null renders them on top.</summary>
     [JsonIgnore]
     public TimelineTrackModel? CaptionsUnderTrack => Tracks.FirstOrDefault(t => t.CaptionsUnder);
 
     /// <summary>
-    /// How long the sequence is: where the last clip ends, its sound included (an L-cut lasts past its picture, and so does
-    /// an unlinked sound slipped later). The timeline's own length, which the canvas of an export is: a clip switched off
-    /// or silenced, on a track hidden or muted, still holds its place on it (so hiding the last clip's picture never cuts
-    /// its sound, or the export, short). Only the captions' box does not count: it lasts as long as the rest, and does not
-    /// ripple. (4.3B: 4.3A left hidden and muted things out, which 4.2.0's sequence never did.)
+    /// Sequence duration: latest clip end including audio extensions (L-cuts, slipped unlinked audio). Hidden, muted or disabled
+    /// clips still count, so hiding the last clip never shortens the export. The caption clip is excluded (it spans the rest).
     /// </summary>
     [JsonIgnore]
     public double TotalDuration
@@ -735,11 +680,9 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     }
 
     /// <summary>
-    /// A copy that nothing done to this one reaches: its own tracks, clips, markers and sequence effects, the same ids.
-    /// The clips' looks (<see cref="TimelineClip.State"/>) and the tracks' are shared, which is safe because no edit
-    /// changes a look in place (it puts a changed copy on the clip); <paramref name="deep"/> copies them as well, for a
-    /// copy that is itself changed in place (a project file's looks get their masks' keys, say). The copy has no
-    /// subscribers and no open transactions.
+    /// Independent copy with its own tracks, clips, markers and Sequence effects (same ids). Looks (<see cref="TimelineClip.State"/>)
+    /// are shared since edits are copy-on-write; <paramref name="deep"/> also copies them for callers that mutate looks in place
+    /// (e.g. mask key assignment on save). No subscribers or open transactions.
     /// </summary>
     public TimelineDocument Clone(bool deep = false)
     {
@@ -790,9 +733,8 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     }
 
     /// <summary>
-    /// Each stretch put back that can be folded again (<see cref="RestoredFolds"/>), where it lies now: its record, the track
-    /// it lies on, and from and to (seconds), in the order they were put back; those no longer there are left out. One look
-    /// through the clips for them all (the timeline's pills, a commit letting go of the stale ones).
+    /// Current spans of all <see cref="RestoredFolds"/> (record, track, from/to seconds) in unfold order, excluding stale ones.
+    /// Single clip scan; used by timeline pills and commit-time pruning.
     /// </summary>
     public IReadOnlyList<(RestoredFold Restored, Guid TrackId, double From, double To)> RestoredSpans()
     {
@@ -816,13 +758,11 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
         return spans;
     }
 
-    // ----- Children (4.4): a clip or a track that goes with another -----
+    // ----- Parent/child clips and tracks -----
 
     /// <summary>
-    /// Every clip that names <paramref name="parent"/> as its parent (<see cref="TimelineClip.ParentClipId"/>), with its
-    /// track, wherever it lies: one moved wholly away from its parent on its own is among them, though the parent's edits
-    /// carry only those that lie with it. A look through every clip, for a menu or an edit, not for each frame drawn; read
-    /// it before the document is changed again.
+    /// All clips whose <see cref="TimelineClip.ParentClipId"/> is <paramref name="parent"/>, with their tracks, including non-overlapping
+    /// ones (parent edits only carry overlapping children). Full scan for menus and edits, not per frame; consume before the next change.
     /// </summary>
     public IEnumerable<(TimelineTrackModel Track, TimelineClip Clip)> ChildrenOf(TimelineClip parent)
     {
@@ -837,8 +777,8 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     }
 
     /// <summary>
-    /// Whether a track's pictures are hidden by a header (5.2): its own switch, or that of any track it lies under, since a track
-    /// header's switch is its whole family's. A clip's own switch (<see cref="TimelineClip.IsHidden"/>) is never counted here.
+    /// True when the track or any ancestor track header hides video (header switches apply to the whole family). Ignores
+    /// <see cref="TimelineClip.IsHidden"/>.
     /// </summary>
     public bool IsHiddenWithParents(TimelineTrackModel track)
     {
@@ -864,18 +804,15 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
         }
     }
 
-    // ----- Tethers (Pass 5.5A): a child that follows its parent in time but is none of its Game Preset pieces -----
-    // A clip's tether is a mark on it (TimelineClip.Tethered), set by the Timeline's drag and kept wherever the clip, its lane or its parent
-    // goes. A document written before the mark (a project, a kept tab or an undo step of 5.4.4 or of a 5.5A preview) has its tethers found
-    // as it is read: a template puts its pieces under its clip's own track, so a picture child that lies elsewhere is taken for one a 5.5A
-    // preview tethered. A Cutout (a video of its parent's own file) never is (AttachRefusal refuses that tether), so one a 5.4.4 block drag
-    // took off its lane is still one of its clip's pieces, as it was then.
+    // ----- Tethers: children that follow the parent in time but are not Game Preset pieces -----
+    // TimelineClip.Tethered is set by the Timeline drag and survives moves of the clip, lane or parent. Legacy documents without the
+    // mark infer tethers on read: preset pieces live under the parent's own track, so a picture child elsewhere is a tether. Cutouts
+    // (same source file as the parent) are never tethers (AttachRefusal), so a Cutout dragged off its lane stays a preset piece.
 
     /// <summary>
-    /// Whether this document's tethers are to be read as written, none found (Pass 5.5A): true when it holds a piece that lies where a reader
-    /// of an older document finds tethers (<see cref="LooseChildren"/>: a picture child off its parent's own track, no Cutout of it, not
-    /// tethered). Written only then, so every other document's file is as it was; a document read without it has each such child marked
-    /// tethered (<see cref="IJsonOnDeserialized.OnDeserialized"/>), which for a document written with the mark changes nothing.
+    /// True disables legacy tether inference on read. Serialized only when the document has an untethered loose child
+    /// (<see cref="LooseChildren"/>), so other files are unchanged; without it, loose children are marked tethered in
+    /// <see cref="IJsonOnDeserialized.OnDeserialized"/>.
     /// </summary>
     [JsonInclude, JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     internal bool TethersMarked
@@ -889,7 +826,7 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
 
     void IJsonOnDeserialized.OnDeserialized()
     {
-        // A Track Preset Node naming a Game Preset by its name before 5.5.0 takes the new one (Pass 5.5.1, the user's Q2(b)).
+        // Map legacy Game Preset names on Track Presets to current names.
         foreach (var track in Tracks)
             track.PresetNodeName = LegacyPresetNames.Map(track.PresetNodeName);
 
@@ -901,18 +838,14 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     }
 
     /// <summary>
-    /// The children a document written before the mark holds as tethers (Pass 5.5A): each clip with a parent here, on a picture track (not a
-    /// sound's or the captions'), whose track does not lie under its parent's own track (its Sub-Lanes, at any depth), and that is no Cutout
-    /// of its parent (a video of its parent's own file) nor of a kind from before 5.2-AuditB (a project of that shape had no tethers).
+    /// Legacy inferred tethers: parented clips on picture tracks (not audio or captions) outside the parent's track subtree, excluding
+    /// Cutouts (same source as parent) and pre-migration legacy kinds.
     /// </summary>
     internal List<TimelineClip> LooseChildren() => LooseIn(null);
 
     /// <summary>
-    /// The children an older document holds as tethers (<see cref="LooseChildren"/>), on its tracks and in its folds (5.5.0, the user's Q6:
-    /// a stretch folded away keeps its clips' tethers too), and, given <paramref name="bin"/> (the recycle bin a project or an undo step
-    /// keeps beside its document), in the bin: each child with the track it lay on (a folded clip's or a deleted one's own record, a
-    /// deleted one's own track gone: the track it lay under), its parent wherever it is (on the tracks, folded, or deleted with it or
-    /// before it).
+    /// <see cref="LooseChildren"/> across tracks, folds and, with <paramref name="bin"/>, the recycle bin. Each child resolves its track
+    /// from its own record (or the parent track when its track was deleted) and its parent wherever it now lives.
     /// </summary>
     internal List<TimelineClip> LooseIn(IReadOnlyList<DeletedClip>? bin)
     {
@@ -966,7 +899,7 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
         return loose;
     }
 
-    // Whether the track of that id (gone: the one it lay under, as its record kept it) lies under the track of the other id, at any depth.
+    // True when track id (or, if deleted, its recorded parent) descends from the other track id at any depth.
     private bool LiesUnder(Guid laneId, Guid? recordedParent, Guid trackId)
     {
         var up = Tracks.Find(t => t.Id == laneId) is { } lane ? lane.ParentTrackId : recordedParent;
@@ -992,37 +925,30 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
     internal readonly List<TimelineTransaction> OpenTransactions = [];
 
     /// <summary>
-    /// Raised once for each outermost transaction committed with something changed: what Undo keeps a step of
-    /// (4.3C) and what views redraw from.
+    /// Raised once per outermost committed transaction that changed something; drives Undo steps and view refresh.
     /// </summary>
     public event Action<TimelineCommit>? Committed;
 
     internal void RaiseCommitted(TimelineCommit commit) => Committed?.Invoke(commit);
 
     /// <summary>
-    /// Opens a change. Edit through it, then <see cref="ITimelineTransaction.Commit"/>; disposing it uncommitted puts
-    /// everything it changed back. One opened inside another folds into it (and rolls back only its own part).
+    /// Opens a transaction; edit through it and <see cref="ITimelineTransaction.Commit"/>. Disposing uncommitted rolls back.
+    /// Nested transactions merge into the outer one and roll back only their own part.
     /// </summary>
     public ITimelineTransaction BeginTransaction(string label) => new TimelineTransaction(this, label);
 
     // ----- What must always be true -----
 
     /// <summary>
-    /// How far past its file's end a clip may read and still count as inside it: a quantized edge is within half a
-    /// microsecond of its frame, so a clip's length moves by up to a microsecond as it moves, and its file by that times
-    /// its speed; a clip at its file's end may land a little over a microsecond out once or twice.
+    /// Tolerance for reading past the file end: quantized edges are within 0.5 us of their frame, so a moved clip's length (and
+    /// source span, times speed) can drift about a microsecond.
     /// </summary>
     internal static double FileSlack(TimelineClip clip) => 4e-6 * Math.Max(1, clip.Speed);
 
     /// <summary>
-    /// What is wrong with the document, in words (empty when nothing is): clips out of order or overlapping, crossfades
-    /// where clips do not meet, clips on a track of the wrong kind, tracks numbered out of order, numbers that are not
-    /// numbers, lengths, speeds, fades and file offsets out of range, and sound (a J or L cut) that starts before the
-    /// timeline or reads outside its file; and (4.4) a clip that is its own parent or a track under itself, and parents
-    /// that lead back to where they began (a parent that is gone is no problem: its child is one of its own), and (5.5A) a clip
-    /// marked tethered with no parent link. With
-    /// <paramref name="requireFrames"/>, also edges off the frames while the document quantizes (an edit asked to be free
-    /// may leave one). For tests, and for checking a project file written by hand.
+    /// Invariant check returning human-readable problems (empty when valid): ordering/overlap, crossfades without abutment, wrong track
+    /// kinds, track numbering, NaN, out-of-range lengths/speeds/fades/offsets, J/L audio before 0 or outside the file, parent cycles
+    /// (missing parents are fine) and tethers without a parent. <paramref name="requireFrames"/> also flags off-frame edges. Tests and hand-written files.
     /// </summary>
     public IReadOnlyList<string> FindProblems(bool requireFrames = false)
     {
@@ -1126,7 +1052,7 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
         return problems;
     }
 
-    /// <summary>The ids whose chain of parents (each id's parent, then that one's...) comes back to them; a parent not in the map ends a chain.</summary>
+    /// <summary>Ids on a parent cycle; a parent missing from the map terminates the chain.</summary>
     private static IEnumerable<Guid> LoopsIn(Dictionary<Guid, Guid> parents)
     {
         foreach (var (id, parent) in parents)

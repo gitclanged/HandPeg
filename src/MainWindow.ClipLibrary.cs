@@ -8,17 +8,16 @@ using HandPegApp.Views;
 
 namespace HandPegApp;
 
-// ----- The Personal Clip Library on a clip's menu (Pass 5.2C, Services/ClipLibrary.cs) -----
+// ----- Personal Clip Library: clip menu save and Timeline drag-to-library (Services/ClipLibrary.cs) -----
 public partial class MainWindow
 {
-    /// <summary>How long a clip dragged from the Timeline is held over the Clip Library's button before the pane shows the Clip Library (5.4.4).</summary>
+    /// <summary>Hover dwell over the Clip Library button during a Timeline clip drag before the pane switches to it, ms.</summary>
     internal const double LibraryDwellMs = 180;
 
     private const string LibraryDropWords = "+ Save Clip to Personal Clip Library...";
 
-    // A clip dragged from the Timeline onto the Clip Library (5.4.4), all made at its first use: the guide over where it would go, the
-    // dwell over the Clip Library's button, the zone the pointer is in (since when, where the guide was put, the pointer on the
-    // screen), and whether the dragged block can be saved at all (asked once per drag).
+    // Drag-to-library state (created lazily): drop guide, button dwell timer, current zone with entry time, guide rect and screen pointer,
+    // and the per-drag saveability cache.
     private DockGuide? _libraryGuide;
     private DispatcherTimer? _libraryDwell;
     private LibraryDropZone _libraryZone;
@@ -27,7 +26,7 @@ public partial class MainWindow
     private Point _libraryPointer;
     private (TimelineBlock Block, bool Saveable)? _libraryDrag;
 
-    /// <summary>The media browser lists the Clip Library again when a clip goes into it; a clip dragged from the Timeline onto it saves it (5.4.4).</summary>
+    /// <summary>Wires library refresh on save and the Timeline drag-out handlers for drag-to-library saving.</summary>
     private void InitializeClipLibrary()
     {
         _viewModel.ClipLibraryChanged += () => MediaBrowser.LibraryChanged();
@@ -37,7 +36,7 @@ public partial class MainWindow
         surface.DragEnded += ForgetLibraryDrag;
     }
 
-    /// <summary>"Save Clip to Personal Clip Library...": a title and tags asked for, then the span kept in the background.</summary>
+    /// <summary>"Save Clip to Personal Clip Library...": prompts for title and tags, then saves the span in the background.</summary>
     private void SaveToClipLibrary(Layer clip)
     {
         if (_viewModel.ClipOf(clip) is not { } model)
@@ -56,8 +55,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// What a clip dragged out of the Timeline does over the Media pane (5.4.4), for a zone and how long the pointer has been in it:
-    /// whether a drop is offered there, and whether the pane shows the Clip Library now (held <see cref="LibraryDwellMs"/> on its button).
+    /// Drop decision for a Timeline clip dragged over the Media pane, given the zone and dwell time: whether a drop is offered, and whether
+    /// to switch the pane to the Clip Library (after <see cref="LibraryDwellMs"/> on its button).
     /// </summary>
     internal static (bool Offers, bool ShowLibrary) LibraryDropDecision(LibraryDropZone zone, double heldMs) => zone switch
     {
@@ -66,8 +65,8 @@ public partial class MainWindow
         _ => (false, false),
     };
 
-    // A move of a clip's drag outside the Timeline (screen pixels; null: back inside). True offers the drop: the guide is shown over the
-    // Clip Library (or its button, the dwell started there) and the block waits where it began.
+    // Timeline drag moved outside (screen pixels; null = back inside). Returning true offers the drop: the guide shows over the Clip
+    // Library (or its button, starting the dwell) and the block stays parked at its origin.
     private bool Timeline_DragOutside(TimelineRow row, TimelineBlock block, Point? screen)
     {
         if (screen is not { } at || !SaveableByDrag(block))
@@ -97,8 +96,8 @@ public partial class MainWindow
         return true;
     }
 
-    // Let go where a drop was offered: the clip's "Save Clip to Personal Clip Library..." asked for once the mouse is let go and the rows
-    // are laid out again (never inside the release). The Timeline itself is not changed.
+    // Release over an offered drop: queue the save dialog after the release completes and rows re-layout (never inside the mouse-up
+    // handler). The Timeline is not modified.
     private bool Timeline_DropOutside(TimelineRow row, TimelineBlock block, Point screen)
     {
         if (block.Clip is not Layer clip || !SaveableByDrag(block) || !LibraryDropDecision(MediaBrowser.LibraryDropZoneAt(screen), 0).Offers)
@@ -109,8 +108,8 @@ public partial class MainWindow
         return true;
     }
 
-    // Whether the dragged block is a clip the Clip Library can keep (a video, a sound or a picture of a file), asked once per drag; a
-    // group's drag saves the pressed clip only.
+    // True when the dragged block is a savable file-backed clip (video, audio or image); cached per drag. Group drags save only the
+    // pressed clip.
     private bool SaveableByDrag(TimelineBlock block)
     {
         if (_libraryDrag is { } known && ReferenceEquals(known.Block, block))
@@ -134,7 +133,7 @@ public partial class MainWindow
         _libraryDwell.Start();
     }
 
-    // Held on the Clip Library's button: the pane shows the Clip Library, and the guide then covers the whole pane.
+    // Dwell elapsed on the Clip Library button: switch the pane to the library and expand the guide to the whole pane.
     private void LibraryDwell_Tick(object? sender, EventArgs e)
     {
         _libraryDwell?.Stop();
@@ -147,7 +146,7 @@ public partial class MainWindow
             return;
         if (!LibraryDropDecision(zone, held).ShowLibrary)
         {
-            // (A tick a little early: the rest of the dwell.)
+            // Timer fired early: wait out the remaining dwell.
             _libraryDwell!.Interval = TimeSpan.FromMilliseconds(Math.Max(1, LibraryDwellMs - held));
             _libraryDwell.Start();
             return;
@@ -159,7 +158,7 @@ public partial class MainWindow
         ShowLibraryGuide();
     }
 
-    // The guide over where the clip would go (the pane, with its words; or the Clip Library's button, without), moved only when that changed.
+    // Shows the drop guide over the target (the pane with caption text, or the button without); repositions only on change.
     private void ShowLibraryGuide()
     {
         var onButton = _libraryZone == LibraryDropZone.Tab;
@@ -177,7 +176,7 @@ public partial class MainWindow
 
         if (_libraryGuide is null)
         {
-            // Owned by the window, so it goes with it; a switch to another program never leaves it on top of that.
+            // Window-owned so it follows the main window; app deactivation hides it so it never stays above other programs.
             _libraryGuide = new DockGuide((Brush?)TryFindResource("AccentBrush") ?? Brushes.SteelBlue) { Owner = this };
             Application.Current.Deactivated += (_, _) => HideLibraryDrop();
         }
@@ -193,7 +192,7 @@ public partial class MainWindow
             guide.Hide();
     }
 
-    // Nothing offered any more (the pointer left the pane, came back inside the Timeline, or the program lost the foreground).
+    // Withdraws the offer (pointer left the pane, re-entered the Timeline, or the app lost focus).
     private void HideLibraryDrop()
     {
         _libraryDwell?.Stop();
@@ -201,7 +200,7 @@ public partial class MainWindow
         HideLibraryGuide();
     }
 
-    // A drag ended (dropped, committed, refused or taken away): nothing of it is kept.
+    // Drag ended (dropped, committed, refused or cancelled): clear all drag-to-library state.
     private void ForgetLibraryDrag()
     {
         HideLibraryDrop();

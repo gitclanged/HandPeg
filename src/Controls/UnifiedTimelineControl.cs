@@ -8,121 +8,115 @@ using System.Windows.Media;
 
 namespace HandPegApp;
 
-/// <summary>What a row of the unified timeline is: a picture track, a sound, the captions, the blur fill's settings, or an empty row to drop on.</summary>
+/// <summary>Unified timeline row kind: video track, audio, captions, blur fill settings, or empty drop row.</summary>
 public enum TimelineRowKind { Video, Audio, Captions, Background, Empty }
 
-/// <summary>The switches a row's header can show (and which of them are on).</summary>
+/// <summary>Row header switch flags (used for both visibility and on-state).</summary>
 [Flags]
 public enum RowSwitches { None = 0, Hidden = 1, Muted = 2, Locked = 4, Soloed = 8, Voice = 16 }
 
 /// <summary>
-/// A folded dead-air seam on a row: where it is (seconds), how long the fold is, the fold itself (FoldedSegment), and the
-/// rows that open or close up with it, by their keys (null: every row that is not locked): what slides as it is put back,
-/// or as a clip's edge is dragged into it.
+/// A folded dead-air seam: position and fold length (seconds), the FoldedSegment, and the row keys that slide when it is unfolded
+/// or an edge is dragged into it (null = all unlocked rows).
 /// </summary>
 public readonly record struct SeamMark(double Seconds, double FoldedSeconds, object Fold, IReadOnlyCollection<object>? Rows = null);
 
 /// <summary>
-/// A stretch of folded dead air that was put back (4.4 BugHunt): where it lies on its row (seconds), what it is (a
-/// RestoredFold), and the rows that close up when it is folded again (null: every row that is not locked). It stays
-/// shaded, with a pill that folds it out again.
+/// An unfolded dead-air range (seconds) with its RestoredFold and the row keys that close up on refold (null = all unlocked rows).
+/// Drawn shaded with a Hide pill that refolds it.
 /// </summary>
 public readonly record struct RevealMark(double From, double To, object Restored, IReadOnlyCollection<object>? Rows = null);
 
 /// <summary>
-/// Which of its parent's mini-stacks a child row is in (4.4 BugHunt): its Visual Sub-Lanes (HUD Cutouts and masks, the
-/// captions) or its Audio Sub-Lanes (an unlinked sound's lane, its file's audio streams). Each opens and closes by itself.
+/// Which parent mini-stack a child row belongs to: Visual Sub-Lanes (HUD Cutouts, masks, captions) or Audio Sub-Lanes (unlinked audio,
+/// file audio streams). Each stack expands independently.
 /// </summary>
 public enum ChildStack { Visual, Audio }
 
 /// <summary>
-/// One row of the unified timeline: a track, with its blocks laid out in pixels (seconds times the control's
-/// PixelsPerSecond), and the rows that belong to it (its mini-stack: HUD Cutouts, its file's sound streams, the
-/// captions), drawn under it as thin lanes until it is expanded (then those in front of it above it, <see cref="InFront"/>);
-/// a track's effect lanes take no room at all until it is (<see cref="HidesWhenClosed"/>).
+/// One unified timeline row: a track with blocks in pixels (seconds * PixelsPerSecond) and child rows (HUD Cutouts, audio streams,
+/// captions) drawn as thin lanes below it until expanded (then <see cref="InFront"/> children go above it). Effect lanes take no
+/// space while collapsed (<see cref="HidesWhenClosed"/>).
 /// </summary>
 public sealed class TimelineRow
 {
-    /// <summary>What the row is known by across a rebuild or an undo (Layer.TrackId, an audio track's index, "captions"): its expansion is kept by it.</summary>
+    /// <summary>Identity stable across rebuilds and undo (Layer.TrackId, audio track index, "captions"); expansion state is keyed by it.</summary>
     public required object Key { get; init; }
 
-    /// <summary>What menus and edits act on: a Layer row, an AudioTrack, the caption layer.</summary>
+    /// <summary>Menu/edit target: a Layer row, an AudioTrack, or the caption layer.</summary>
     public required object Data { get; init; }
 
     public string Name { get; set; } = "";
 
     public TimelineRowKind Kind { get; init; }
 
-    /// <summary>Its full height in DIPs (a collapsed child lane is a fifth of it, at least 8; an effect lane, <see cref="HidesWhenClosed"/>, none).</summary>
+    /// <summary>Expanded height in DIPs (collapsed child lanes use a fifth, min 8; <see cref="HidesWhenClosed"/> lanes use 0).</summary>
     public double Height { get; set; } = 56;
 
     /// <summary>
-    /// Its lower edge dragged sizes it alone (5.1-AutoHud-Part1, the user's Q2: a track's row); otherwise that drag, like Shift +
-    /// the drag on any row, is the one Track Height's.
+    /// True when dragging its lower edge resizes this row alone (track rows); otherwise that drag, like Shift+drag on any row, sets the
+    /// global Track Height.
     /// </summary>
     public bool SizedAlone { get; set; }
 
-    /// <summary>It has a height of its own, so the one Track Height leaves it as it is.</summary>
+    /// <summary>Has a per-row height override that the global Track Height ignores.</summary>
     public bool HasOwnHeight { get; set; }
 
-    /// <summary>Its blocks: Left and Width in laid-out pixels (seconds times PixelsPerSecond); Top and Height within the row, or both 0 to fill it.</summary>
+    /// <summary>Blocks: Left/Width in layout pixels (seconds * PixelsPerSecond); Top/Height within the row, or both 0 to fill it.</summary>
     public List<TimelineBlock> Blocks { get; } = [];
 
-    /// <summary>Its mini-stack's lanes, top to bottom.</summary>
+    /// <summary>Mini-stack child rows, top to bottom.</summary>
     public List<TimelineRow> Children { get; } = [];
 
-    /// <summary>The row it is a lane of; set by the control when the host leaves it unset.</summary>
+    /// <summary>Parent row; filled in by the control when the host leaves it null.</summary>
     public TimelineRow? Parent { get; set; }
 
-    /// <summary>Which of its parent's mini-stacks it is in: the layers' (the default) or the sound's. The host keeps each stack's lanes together.</summary>
+    /// <summary>Parent mini-stack: visual (default) or audio. The host keeps each stack's children contiguous.</summary>
     public ChildStack Stack { get; set; }
 
     /// <summary>
-    /// A child of the layers' stack drawn in front of its parent (the compositor draws it over it: the captions, a cut-out
-    /// over the video), as the host decides it from the draw order (5.0-Release). While the stack is open it is laid above
-    /// the parent's row (the frontmost at the top); the others under it. Closed, every child is in the mini-stack under it.
+    /// Visual child composited above its parent (captions, a Cutout), set by the host from draw order. With the stack open it is laid
+    /// above the parent row (topmost first); collapsed, all children sit in the mini-stack below.
     /// </summary>
     public bool InFront { get; set; }
 
     /// <summary>
-    /// A lane that takes no room while its parent's stack is closed (5.3, the user's call: a track's effect lanes, which a closed
-    /// Cutout showed as thin purple bars); every other child is a thin bar then. Open, it is laid as any lane, growing in with its
-    /// stack; under a parent that is itself a thin bar of a closed stack it takes no room either.
+    /// Takes zero height while its parent stack is collapsed (effect lanes) instead of a thin bar; grows in with the stack when it opens.
+    /// Also zero under a parent that is itself a collapsed thin bar.
     /// </summary>
     public bool HidesWhenClosed { get; set; }
 
-    /// <summary>Which switch glyphs its header shows.</summary>
+    /// <summary>Switch glyphs shown in the header.</summary>
     public RowSwitches Offered { get; set; }
 
-    /// <summary>Which of them are on.</summary>
+    /// <summary>Switches currently on.</summary>
     public RowSwitches State { get; set; }
 
-    /// <summary>The stripe down the left of its header (frozen); a child lane without one takes its parent's.</summary>
+    /// <summary>Frozen header accent stripe; a child without one inherits its parent's.</summary>
     public Brush? Accent { get; set; }
 
-    /// <summary>Where dead air was folded out of it: a seam each, a click on it puts the fold back.</summary>
+    /// <summary>Folded dead-air seams; clicking one unfolds it.</summary>
     public IReadOnlyList<SeamMark> Seams { get; set; } = [];
 
-    /// <summary>Where folded dead air was put back on it: each stretch shaded, its pill folding it out again.</summary>
+    /// <summary>Unfolded dead-air ranges, drawn shaded with a refold pill.</summary>
     public IReadOnlyList<RevealMark> Reveals { get; set; } = [];
 
-    /// <summary>What its header's tooltip says, over its name.</summary>
+    /// <summary>Header tooltip text (shown over the name).</summary>
     public string? Tip { get; set; }
 
-    /// <summary>Whether a click closes the gaps between its blocks (the pill shows in the gap the pointer is in): the host's say, for the rows of unlocked tracks.</summary>
+    /// <summary>Host flag (unlocked tracks): show a close-gap pill in the hovered gap between blocks.</summary>
     public bool ClosesGaps { get; set; }
 
     /// <summary>
-    /// Its header's preset badge (5.2A, a Track Preset Node): the name of the Game Preset its track gives its clips, drawn as a pill a click
-    /// opens the presets from (<see cref="UnifiedTimelineControl.BadgePressed"/>); null for none.
+    /// Track Preset Node badge: the Game Preset name applied to the track's clips, drawn as a pill that opens the preset list
+    /// (<see cref="UnifiedTimelineControl.BadgePressed"/>); null for none.
     /// </summary>
     public string? Badge { get; set; }
 
-    /// <summary>Its track can carry a preset: with no <see cref="Badge"/>, a faint "+ Preset" pill on a tall lane sets one.</summary>
+    /// <summary>Track accepts a preset: with no <see cref="Badge"/>, tall lanes show a faint "+ Preset" pill.</summary>
     public bool OffersBadge { get; set; }
 
-    // The control's own: the name laid out as words (and the name, size and colour it was laid out from), and the gaps
-    // between its blocks (laid-out pixels) that a pill can close.
+    // Control-owned caches: the formatted name (with the text, size and colour it was built from) and closable block gaps (layout pixels).
     internal FormattedText? NameText;
     internal string? NameTextOf;
     internal double NameTextSize;
@@ -130,50 +124,44 @@ public sealed class TimelineRow
     internal readonly List<(double Left, double Right)> Gaps = [];
 }
 
-/// <summary>A menu asked for on the unified timeline: the row and the block it was opened on (or none), whether on the row's header, the fade handle pressed (true: the fade in), and the menu for the host to fill.</summary>
+/// <summary>Context-menu request: row, block (or null), header flag, fade handle (true = fade in), and the menu for the host to fill.</summary>
 public sealed record TimelineMenuRequest(TimelineRow? Row, TimelineBlock? Block, bool OnHeader, bool? FadeIn, ContextMenu Menu);
 
 /// <summary>
-/// The unified timeline (4.4): every track of the sequence on one drawn surface, its headers on the left and its time
-/// area on the right. Nothing on it is an element of its own: the rows, their blocks (frames, waveforms, fades, gain
-/// lines, keys, crossfade pills), the mini-stacks of each row's children, the seams of folded dead air and the pills that
-/// close gaps are drawn, and found under the pointer by arithmetic. What moves often has a visual of its own so the rest is
-/// not drawn again for it: the playhead and the skim line slide; a pan or a scroll slides what was drawn (a margin either
-/// side is drawn too, so most pans draw nothing); the block being dragged is drawn on an overlay of its own.
-/// The host gives it rows (<see cref="SetRows"/>) and the view (<see cref="SetView"/>) and acts on what it raises; it edits
-/// nothing itself.
+/// The unified timeline: all sequence tracks on one immediate-mode surface (headers left, time area right). Rows, blocks, mini-stacks,
+/// dead-air seams and gap pills are drawn and hit-tested arithmetically, with no per-item elements. Frequently moving parts have their
+/// own visuals: playhead and skim line translate; pans/scrolls translate an over-drawn cache (margins on both sides); the dragged
+/// block draws on an overlay. The host supplies rows (<see cref="SetRows"/>) and view (<see cref="SetView"/>) and handles events;
+/// the control never edits the model.
 /// </summary>
 public sealed partial class UnifiedTimelineControl : FrameworkElement
 {
-    /// <summary>A collapsed child lane is this much of its height (at least 8 px).</summary>
+    /// <summary>Collapsed child lane height as a fraction of its full height (min 8 px).</summary>
     public const double MiniStackFraction = 0.2;
 
-    // A collapsed lane is never thinner than this (an effect lane, TimelineRow.HidesWhenClosed, is not a thin bar: it takes no room).
+    // Minimum collapsed lane height (HidesWhenClosed effect lanes are 0 instead).
     private const double MiniLeast = 8;
 
-    // Between lanes: the panel shows through, as it did between the old bars.
+    // Gap between lanes (panel background shows through).
     private const double LaneGap = 1;
 
-    // How fast a mini-stack opens or closes (4.4 BugHunt): each frame it goes this much of the way that is left, by the
-    // frame's time over this time constant (seconds; most of the way in three of them, the fastest at the start), and is
-    // where it was going once it is this close. A click while it moves turns it round from where it is.
+    // Mini-stack expand/collapse: exponential approach with time constant ExpandTau (seconds; ~95% in three), snapping to the target
+    // within ExpandSettle. A click mid-animation reverses from the current value.
     private const double ExpandTau = 0.028;
     private const double ExpandSettle = 0.002;
 
-    // How long a fold put back, or taken out again, slides what follows it into its place (4.4 BugHunt).
+    // Duration of the slide animation when a fold is unfolded or refolded.
     private const double FoldSlideSeconds = 0.12;
 
-    // Below this a lane is drawn plainly (its blocks' colours and sound only) and is not edited on.
+    // Below this height a lane draws simplified (block colours and audio only) and is not editable.
     private const double FullDetailHeight = 22;
 
-    // How far in each level of a mini-stack is set, in its header.
+    // Header indent per mini-stack nesting level.
     private const double DeckIndent = 14;
 
-    // One lane: its row, how deep in a mini-stack, where it is (DIPs from the top of all the rows) and how tall, whether
-    // it is drawn small (a lane of a collapsed stack), whether it is the first and the last of its stack of its parent's
-    // (down the control: above the parent, the first is the topmost), its parent's lane, whether its deck hangs from its
-    // parent's second chevron (the sound's, beside the layers'), which stacks of its own it has (its chevrons: Stacks bits,
-    // 1 the layers', 2 the sound's), and whether it is laid above its parent's lane (in front of it, its stack open).
+    // A laid-out lane: row, nesting depth, Top/Height (DIPs from the top of all rows), Small (collapsed), first/last within its parent
+    // stack (in screen order), parent lane index, whether its deck hangs from the parent's audio chevron, its own Stacks bits
+    // (1 = visual, 2 = audio), and whether it is laid above its parent (InFront with the stack open).
     private struct Lane
     {
         public TimelineRow Row;
@@ -188,7 +176,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         public int Stacks;
         public bool Above;
 
-        // The one bar a closed sound stack is, with all that is audible of it drawn in it as one waveform (5.1-TrackEqualityAndVram).
+        // Collapsed audio stack's single summary bar, drawing all audible lanes as one waveform.
         public bool Summary;
 
         public readonly double Bottom => Top + Height;
@@ -202,15 +190,14 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
     private static int StackBit(ChildStack stack) => stack == ChildStack.Audio ? 2 : 1;
 
-    // A row's stacks in the order their chevrons are laid in.
+    // A row's stacks in chevron order.
     private static readonly ChildStack[] StackOrder = [ChildStack.Visual, ChildStack.Audio];
 
     private readonly List<TimelineRow> _rows = [];
     private readonly List<Lane> _lanes = [];
 
-    // How open each of a row's stacks is (by its row's Key and the stack), and how open it is going to be: 0 closed, 1
-    // open (4.4 BugHunt). A closed one at rest is not kept. Kept for rows that go: rows are made again after every edit and
-    // undo, with the same keys.
+    // Current and target openness (0 closed, 1 open) per (row Key, stack); closed-at-rest entries are dropped. Survives row rebuilds
+    // after edits and undo because keys are stable.
     private struct Expansion
     {
         public double Current;
@@ -220,14 +207,12 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     private readonly Dictionary<(object Key, ChildStack Stack), Expansion> _expansion = [];
     private readonly List<(object Key, ChildStack Stack)> _expansionKeys = [];
 
-    // The one clock for what moves by itself (the stacks opening and closing, a fold sliding): hooked to the frames while
-    // anything moves, unhooked once everything is still.
+    // Single animation clock (stack expansion, fold slides, coasts): subscribed to CompositionTarget.Rendering only while something moves.
     private bool _ticking;
     private long _tickClock;
     private TimeSpan _lastRenderingTime;
 
-    // A fold put back (Opening) or taken out, sliding what follows it into place: where it is and how long (seconds), the
-    // rows that slide (their keys; null: every row that is not locked), when it began and how far along it is (0 to 1, eased).
+    // Active fold slide (Opening = unfold): position and length (seconds), sliding row keys (null = all unlocked), start time, eased progress 0..1.
     private sealed class FoldSlide
     {
         public double At { get; init; }
@@ -246,9 +231,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     private double _verticalOffset, _extent;
     private double _laidWidth = double.NaN;
 
-    // The visuals: the time area (clipped to it) holds what is drawn in laid-out pixels and slid into view (_scroller: the
-    // rows' content and the drag overlay), the blocks' words (kept in view as their blocks are panned), the skim line and
-    // the playhead; the headers are beside it.
+    // Visual tree: the clipped time area holds _scroller (row content + drag overlay in layout pixels, translated into view), block
+    // labels (pinned in view while panning), skim line and playhead; headers sit beside it.
     private readonly ContainerVisual _timeArea = new();
     private readonly ContainerVisual _scroller = new();
     private readonly DrawingVisual _content = new();
@@ -261,7 +245,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     private readonly TranslateTransform _labelsRise = new();
     private readonly TranslateTransform _headersRise = new();
 
-    // What needs drawing again at the next render (they are drawn together, once a frame, however often they are asked for).
+    // Dirty flags, coalesced into one redraw per frame.
     private bool _contentDirty = true, _labelsDirty = true, _headersDirty = true, _overlayDirty = true;
 
     public UnifiedTimelineControl()
@@ -270,8 +254,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         Focusable = false;
         SnapsToDevicePixels = true;
 
-        // The frames in a block are thumbnails, drawn smaller than they are and many at a time: the cheapest scaling
-        // there is, not the smooth one, which costs the most exactly while a timeline is scrolled.
+        // Thumbnails are many and downscaled: use the cheapest bitmap scaling (smooth scaling costs most while scrolling).
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.LowQuality);
 
         _scroller.Transform = _shift;
@@ -300,13 +283,13 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             _autoScroll.Stop();
             DisarmMenu();
 
-            // 5.5A: a track's header held or dragged is let go (nothing was moved), and the dwell's look again goes with any drag.
+            // Cancel any held/dragged track header (nothing moved) and any drag's pending dwell re-check.
             if (_rowDrag is not null)
                 AbortDrag();
             StopSettleTimer();
         };
 
-        // Hidden (its tab put behind another, its pane closed): a coast stops where it is (5.4C).
+        // Hidden (tab deactivated, pane closed): stop any coast in place.
         IsVisibleChanged += (_, e) =>
         {
             if (!(bool)e.NewValue)
@@ -319,7 +302,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
     protected override Visual GetVisualChild(int index) => index == 0 ? _timeArea : _headers;
 
-    /// <summary>How wide the rows' headers are (168 by default); the time area is what is left.</summary>
+    /// <summary>Header column width (default 168); the time area takes the remainder.</summary>
     public double HeaderWidth
     {
         get => _headerWidth;
@@ -336,19 +319,19 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         }
     }
 
-    /// <summary>The top-level rows, top to bottom.</summary>
+    /// <summary>Top-level rows, top to bottom.</summary>
     public IReadOnlyList<TimelineRow> Rows => _rows;
 
-    /// <summary>How many of the time area's pixels a second takes: its width over the view's span. Blocks are laid out in it.</summary>
+    /// <summary>Layout scale: time-area width / view span. Block coordinates use it.</summary>
     public double PixelsPerSecond => TimeAreaWidth > 0 && _viewSpan > 0 ? TimeAreaWidth / _viewSpan : 0;
 
-    /// <summary>How far along the laid-out rows the view begins, in pixels (the view's start times PixelsPerSecond).</summary>
+    /// <summary>View start in layout pixels (view start seconds * PixelsPerSecond).</summary>
     public double ViewOffsetX => _viewStart * PixelsPerSecond;
 
-    /// <summary>The width of the time area: the control's, less the headers'.</summary>
+    /// <summary>Time area width: control width minus header width.</summary>
     public double TimeAreaWidth => Math.Max(ActualWidth - _headerWidth, 0);
 
-    /// <summary>Where the playhead is, in seconds; NaN for none. Setting it slides its own visual: nothing else is drawn again.</summary>
+    /// <summary>Playhead time in seconds (NaN = none). Setting it only translates the playhead visual.</summary>
     public double PlayheadSeconds
     {
         get => _playheadSeconds;
@@ -362,7 +345,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         }
     }
 
-    /// <summary>How far the rows are scrolled down, in DIPs (kept within 0 and the extent less the control's height).</summary>
+    /// <summary>Vertical scroll in DIPs, clamped to [0, extent - control height].</summary>
     public double VerticalOffset
     {
         get => _verticalOffset;
@@ -378,157 +361,151 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         }
     }
 
-    /// <summary>How tall all the rows are together, with their lanes as they are now (opening or closing stacks included).</summary>
+    /// <summary>Total laid-out height of all lanes, including animating stacks.</summary>
     public double ExtentHeight => _extent;
 
-    /// <summary>The extent changed (rows, heights, a stack opened or closed): a scroll bar beside the control follows it.</summary>
+    /// <summary>Raised when the vertical extent changes (rows, heights, stack expansion), for an external scroll bar.</summary>
     public event Action? ExtentChanged;
 
-    /// <summary>The rows were scrolled (the wheel, or the offset kept within a smaller extent).</summary>
+    /// <summary>Raised when the vertical offset changes (wheel, or clamped by a smaller extent).</summary>
     public event Action? VerticalOffsetChanged;
 
     /// <summary>
-    /// PixelsPerSecond changed because the control (or its headers) changed width, not because of <see cref="SetView"/>:
-    /// the host lays its blocks out again for the new scale.
+    /// PixelsPerSecond changed due to a width change (not <see cref="SetView"/>): the host must re-layout blocks at the new scale.
     /// </summary>
     public event Action? ScaleChanged;
 
     /// <summary>
-    /// The moments a dragged edge, block or fade snaps to, in seconds; asked once, when a drag begins, with the blocks whose sound the drag
-    /// takes along (5.2B: a move's or a slip's; none for any other drag): their clips' beats go with them, so they are left out.
+    /// Snap targets in seconds, queried once at drag start with the blocks whose audio moves with the drag (move/slip only); those
+    /// clips' beats move with them and are excluded.
     /// </summary>
     public Func<IReadOnlyList<TimelineBlock>, IReadOnlyList<double>>? SnapTimes { get; set; }
 
     /// <summary>
-    /// The sequence's frame rate: while Shift is held, drags step from frame to frame of it, with no snapping (5.5A: but a move gone more than
-    /// the 6 DIP deadzone up or down keeps its time exactly while Shift is held).
+    /// Sequence frame rate: Shift-drags step per frame without snapping, except a move beyond the 6 DIP vertical deadzone, which keeps
+    /// its time exactly while Shift is held.
     /// </summary>
     public Func<double>? FrameRate { get; set; }
 
-    /// <summary>What is selected: the block that stands for it (its Clip) is outlined.</summary>
+    /// <summary>Selected item; the block whose Clip matches is outlined.</summary>
     public Func<object?, bool>? IsSelected { get; set; }
 
     /// <summary>
-    /// A button went down on the control, before anything is looked for under the pointer (4.4 BugHunt): the host lays out
-    /// the rows it still owes the control (an edit just made, still waiting), so what is pressed is the timeline as it is now.
+    /// Raised on mouse down before hit-testing so the host can flush pending row rebuilds and the press sees the current timeline.
     /// </summary>
     public event Action? PressStarting;
 
     /// <summary>
-    /// What the host did for something the control raised (a drag let go, a click, a menu) failed (4.4 BugHunt): the control
-    /// has put back what it had drawn moved, and the host says so and logs it. Never thrown on to the dispatcher.
+    /// A host handler (drag commit, click, menu) threw: the control has reverted its drawn state; the host reports and logs it. Never
+    /// rethrown to the dispatcher.
     /// </summary>
     public event Action<Exception>? CallbackFailed;
 
-    /// <summary>A block was pressed, with either button (on its row).</summary>
+    /// <summary>Block pressed with either button.</summary>
     public event Action<TimelineRow, TimelineBlock, MouseButtonEventArgs>? BlockPressed;
 
-    /// <summary>The time area was pressed beside the blocks (on a row, or below them all): the moment, in seconds. A click there seeks.</summary>
+    /// <summary>Empty time area pressed (on a row or below all rows): time in seconds; the host seeks.</summary>
     public event Action<TimelineRow?, double, MouseButtonEventArgs>? EmptyPressed;
 
-    /// <summary>A block that cannot be dragged right now was pressed: its reason.</summary>
+    /// <summary>Non-draggable block pressed: the refusal reason.</summary>
     public event Action<string>? DragRefused;
 
-    /// <summary>A drag ended, whether or not it changed anything.</summary>
+    /// <summary>Drag ended (with or without a change).</summary>
     public event Action? DragEnded;
 
-    /// <summary>Ctrl + wheel: zoom by a factor, about a point (pixels from the time area's left).</summary>
+    /// <summary>Ctrl+wheel: zoom factor about an anchor (pixels from the time area's left).</summary>
     public event Action<double, double>? ZoomRequested;
 
-    /// <summary>Shift + wheel, a drag with the middle button, or a drag held near an edge: move along by so many pixels.</summary>
+    /// <summary>Horizontal pan in pixels (Shift+wheel, middle-drag, or edge auto-scroll during a drag).</summary>
     public event Action<double>? PanRequested;
 
-    /// <summary>A switch on a row's header was clicked: the row, which switch, and whether Alt was held (solo this one alone).</summary>
+    /// <summary>Header switch clicked: row, switch, and Alt (exclusive solo).</summary>
     public event Action<TimelineRow, RowSwitches, bool>? HeaderSwitchToggled;
 
-    /// <summary>A right-click: the host fills the request's menu, which opens when it has items.</summary>
+    /// <summary>Right-click: the host fills the request's menu, which opens only if non-empty.</summary>
     public event Action<TimelineMenuRequest>? MenuRequested;
 
-    /// <summary>A seam of folded dead air was clicked: put the fold back.</summary>
+    /// <summary>Dead-air seam clicked: unfold it.</summary>
     public event Action<TimelineRow, SeamMark>? SeamClicked;
 
-    /// <summary>The Hide pill of a stretch of dead air that was put back was clicked: fold it out again.</summary>
+    /// <summary>Hide pill on an unfolded range clicked: refold it.</summary>
     public event Action<TimelineRow, RevealMark>? RevealHideRequested;
 
-    /// <summary>A gap's pill was clicked: the row, and where the gap starts and ends (seconds).</summary>
+    /// <summary>Gap pill clicked: row and gap start/end (seconds).</summary>
     public event Action<TimelineRow, double, double>? CloseGapRequested;
 
-    /// <summary>Alt + click on a block (without dragging it): split it there (seconds).</summary>
+    /// <summary>Alt+click (no drag) on a block: split at that time (seconds).</summary>
     public event Action<TimelineRow, TimelineBlock, double>? RazorRequested;
 
-    /// <summary>Alt + Shift + the wheel over the tracks (5.1-Polish; Alt alone since 5.4.1-M1 scrolls the rows, the user's directive): every track taller (notches up, positive) or lower.</summary>
+    /// <summary>Alt+Shift+wheel over tracks: change all track heights (positive notches = taller). Alt alone scrolls rows.</summary>
     public event Action<int>? TrackHeightStepped;
 
-    /// <summary>A row's lower edge in the headers pressed (5.1-Polish): a drag of the tracks' height begins.</summary>
+    /// <summary>Header lower edge pressed: a global track-height drag begins.</summary>
     public event Action? TrackHeightDragStarted;
 
     /// <summary>
-    /// The lower edge dragged: how much taller (DIPs; negative, lower) a picture row is to be than when the drag began, so the
-    /// edge stays under the pointer (the move shared among the rows from the top down to it, which all grow with it).
+    /// Global height drag delta in DIPs per video row since drag start, chosen so the edge tracks the pointer (spread over all rows
+    /// from the top down to it).
     /// </summary>
     public event Action<double>? TrackHeightDragged;
 
-    /// <summary>A row's lower edge double-clicked (5.1-Polish): the tracks back to their usual height.</summary>
+    /// <summary>Header lower edge double-clicked: reset track height to default.</summary>
     public event Action? TrackHeightReset;
 
-    /// <summary>A row's lower edge dragged (5.1-AutoHud-Part1, the user's Q2): the height the row is to have now, in DIPs.</summary>
+    /// <summary>Per-row height drag: the row's new height in DIPs.</summary>
     public event Action<TimelineRow, double>? RowHeightDragged;
 
-    /// <summary>That drag was let go of (true), or taken away (false: the row goes back).</summary>
+    /// <summary>Per-row height drag ended: committed (true) or cancelled (false, height reverts).</summary>
     public event Action<TimelineRow, bool>? RowHeightDragEnded;
 
-    /// <summary>A row's own height was given up: a double-click on its lower edge, back to the one Track Height.</summary>
+    /// <summary>Per-row height cleared (lower-edge double-click): the row reverts to the global Track Height.</summary>
     public event Action<TimelineRow>? RowHeightReset;
 
-    /// <summary>The pointer moved over the time area: the moment under it (seconds), the skim line's; null when it leaves.</summary>
+    /// <summary>Skim time under the pointer in the time area (seconds); null on leave.</summary>
     public event Action<double?>? SkimChanged;
 
     /// <summary>
-    /// The sequence moment under the pointer (seconds), for Instant Seek's hints (5.0): raised as the pointer moves over the
-    /// rows' time area (during a drag too) and, relayed by the host, over the ruler (<see cref="NotePointerOverRuler"/>); null
-    /// when it leaves the control or goes over the headers, or a drag ends with it outside. Raised only when the moment
-    /// changes, and allocates nothing.
+    /// Pointer time (seconds) for Instant Seek hints, over the time area (also mid-drag) and the ruler (via
+    /// <see cref="NotePointerOverRuler"/>); null over headers, outside, or when a drag ends outside. Raised only on change; allocation-free.
     /// </summary>
     public event Action<double?>? PointerSecondsChanged;
 
     /// <summary>
-    /// A block was clicked with the left button: pressed and let go without moving (5.0). What the host decides on a click
-    /// rather than on the press: Ctrl or Shift on a block already selected, a group narrowed to the one block clicked.
+    /// Left click (press + no-move release) on a block, for decisions deferred from the press: Ctrl/Shift on a selected block, or
+    /// narrowing a group to the clicked block.
     /// </summary>
     public event Action<TimelineRow, TimelineBlock>? BlockClicked;
 
     /// <summary>
-    /// Whether the press being told (<see cref="BlockPressed"/>) is a ripple of an edge: Ctrl on the edge of a block that can
-    /// be trimmed there, as <c>StartDrag</c> decides it (5.0-Verify). The host leaves the selection alone until it is let go.
+    /// True during <see cref="BlockPressed"/> when the press is an edge ripple (Ctrl on a trimmable edge, as <c>StartDrag</c> decides);
+    /// the host defers selection changes until release.
     /// </summary>
     public bool PressRipples { get; private set; }
 
-    /// <summary>A row's name in its header was clicked with the left button (not its chevron or a switch; 5.0-Verify).</summary>
+    /// <summary>Header name left-clicked (not a chevron or switch).</summary>
     public event Action<TimelineRow>? HeaderClicked;
 
-    /// <summary>A header's preset badge was clicked (5.2A): the row, and the badge's box on the control, for a list of presets to drop from it.</summary>
+    /// <summary>Preset badge clicked: row and badge bounds (control coordinates) to anchor the preset list.</summary>
     public event Action<TimelineRow, Rect>? BadgePressed;
 
     /// <summary>
-    /// A rubber band was drawn over empty space on the rows and let go (5.2A): the blocks it touched, top to bottom, on lanes drawn in full,
-    /// and whether Ctrl or Shift was held (they join what was selected rather than take its place).
+    /// Rubber-band selection released: intersected blocks on full-size lanes (top to bottom) and whether Ctrl/Shift was held (add to the
+    /// selection instead of replacing it).
     /// </summary>
     public event Action<IReadOnlyList<TimelineBlock>, bool>? MarqueeSelected;
 
     /// <summary>
-    /// Makes several edits as one (5.0: a group of selected blocks dragged together): the step's label and what makes them;
-    /// true when it was made. The host makes them one step of Undo, refused or failed as a whole (MainViewModel.EditTogether).
-    /// Without it, each block's edit is made by itself.
+    /// Batches a group drag's edits into one Undo step (label, action), all-or-nothing (MainViewModel.EditTogether); returns true when
+    /// applied. When unset, each block's edit commits separately.
     /// </summary>
     public Func<string, Action, bool>? Together { get; set; }
 
-    /// <summary>A row's mini-stack was opened or closed (by a click on its chevron or <see cref="SetExpanded(TimelineRow, bool)"/>).</summary>
+    /// <summary>A row's mini-stack expanded or collapsed (chevron click or <see cref="SetExpanded(TimelineRow, bool)"/>).</summary>
     public event Action<TimelineRow>? ExpansionChanged;
 
     /// <summary>
-    /// Takes the top-level rows, top to bottom (their children are their mini-stacks). Each row's expansion is kept by its
-    /// Key, so rows made again after an edit or an undo open as they were. A drag in progress goes on while its block is
-    /// still among them, and is let go (put back, and said why) when it is not: what it was dragging was changed under it.
+    /// Replaces the top-level rows (children form their mini-stacks). Expansion is keyed by row Key, so rebuilt rows keep their state.
+    /// An active drag continues if its block is still present; otherwise it is cancelled and reverted with a reason.
     /// </summary>
     public void SetRows(IReadOnlyList<TimelineRow> rows)
     {
@@ -540,7 +517,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             Raise(() => DragRefused?.Invoke("What was being dragged changed meanwhile (an undo or another edit), so it was let go where it was."));
         }
 
-        // A track's header held or dragged (5.5A) whose row is not among them (the rows were made again): let go, nothing moved.
+        // Held/dragged track header whose row instance is gone (rows rebuilt): cancel, nothing moved.
         if (_rowDrag is { } rowDrag && !ListsRow(_rows, rowDrag.Row))
             AbortDrag();
 
@@ -549,10 +526,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>
-    /// Sets the view: its start and span (seconds) and how long the sequence is (seconds; what lies after it is shaded).
-    /// When the span is unchanged (a pan) nothing needs laying out again: what was drawn slides, and is drawn again only
-    /// when the view leaves what was drawn. When the span changes the host lays its blocks out again for the new
-    /// PixelsPerSecond (and gives them with <see cref="SetRows"/> or <see cref="Redraw"/>).
+    /// Sets view start/span and sequence duration (seconds; beyond the end is shaded). Same span (pan): the drawn cache translates and
+    /// redraws only when the view leaves it. New span: the host re-lays blocks at the new PixelsPerSecond and passes them via
+    /// <see cref="SetRows"/> or <see cref="Redraw"/>.
     /// </summary>
     public void SetView(double viewStart, double viewSpan, double sequenceSeconds)
     {
@@ -565,7 +541,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         _sequenceSeconds = sequenceSeconds;
         if (PixelsPerSecond != scale || sequenceChanged)
         {
-            // A zoom, a fit, another sequence: a coast along the old view stops (5.4C).
+            // Zoom, fit or sequence change: stop any coast on the old view.
             _momentumX?.Stop();
             Invalidate();
             PlaceLine(_playhead, _playheadSeconds, ref _playheadHeight, playhead: true);
@@ -577,27 +553,27 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         }
     }
 
-    /// <summary>The blocks changed in place (moved, selected, their sound or pictures arrived): everything is drawn again.</summary>
+    /// <summary>Blocks changed in place (moved, selected, waveform/thumbnails arrived): full redraw.</summary>
     public void Redraw()
     {
         Relayout();
     }
 
-    /// <summary>Whether a row's mini-stack is open (or, with a stack of layers and one of sound, either of them): where it is going, while it moves.</summary>
+    /// <summary>Whether any of a row's mini-stacks is open (target state while animating).</summary>
     public bool IsExpanded(TimelineRow row) => IsExpanded(row, ChildStack.Visual) || IsExpanded(row, ChildStack.Audio);
 
-    /// <summary>Whether one of a row's mini-stacks is open: where it is going, while it moves.</summary>
+    /// <summary>Whether a specific mini-stack is open (target state while animating).</summary>
     public bool IsExpanded(TimelineRow row, ChildStack stack) => _expansion.TryGetValue((row.Key, stack), out var expansion) && expansion.Target >= 0.5;
 
     /// <summary>
-    /// The mini-stacks open now (or on their way open), by their rows' keys (Pass 5.4D-TabPerf): a project tab put behind keeps them, since
-    /// another project's rows have the same keys ("captions", "background", a track's number).
+    /// Snapshot of open (or opening) mini-stacks by row key, stored per project tab on deactivation because keys ("captions",
+    /// "background", track numbers) repeat across projects.
     /// </summary>
     public IReadOnlyList<(object Key, ChildStack Stack)> SaveExpansion() => [.. _expansion.Where(e => e.Value.Target >= 0.5).Select(e => e.Key)];
 
     /// <summary>
-    /// The mini-stacks a project tab kept (<see cref="SaveExpansion"/>) open again as it comes back to the front, at once, and every other
-    /// one closed (Pass 5.4D-TabPerf). Nothing moves: the lanes are laid out where they are.
+    /// Restores a tab's <see cref="SaveExpansion"/> snapshot on activation: listed stacks open, all others closed, applied instantly
+    /// (no animation).
     /// </summary>
     public void RestoreExpansion(IReadOnlyList<(object Key, ChildStack Stack)>? open)
     {
@@ -609,7 +585,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         Relayout();
     }
 
-    /// <summary>Opens or closes every mini-stack of a row (see <see cref="SetExpanded(TimelineRow, ChildStack, bool)"/>).</summary>
+    /// <summary>Expands or collapses all of a row's mini-stacks (see <see cref="SetExpanded(TimelineRow, ChildStack, bool)"/>).</summary>
     public void SetExpanded(TimelineRow row, bool expanded)
     {
         var changed = false;
@@ -624,8 +600,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>
-    /// Opens or closes one of a row's mini-stacks: its lanes grow to their full height (or shrink to a fifth of it), fast at
-    /// first and easing in (most of the way in under 90 ms). Asked again while it moves, it turns round from where it is.
+    /// Animates one mini-stack between full and 1/5 lane height (ease-out, ~95% within 90 ms); a repeat call mid-animation reverses
+    /// from the current value.
     /// </summary>
     public void SetExpanded(TimelineRow row, ChildStack stack, bool expanded)
     {
@@ -633,8 +609,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             AfterExpansion(row);
     }
 
-    // Sets where a stack is going; false when it was going there already. With nothing to see moving (no lanes in the stack,
-    // the control not shown) it is simply there.
+    // Sets a stack's target; false if unchanged. Snaps immediately when nothing visible would animate (no lanes, control hidden).
     private bool Target(TimelineRow row, ChildStack stack, bool expanded)
     {
         var key = (row.Key, stack);
@@ -666,17 +641,16 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     private static bool HasStack(TimelineRow row, ChildStack stack) => row.Children.Exists(child => child.Stack == stack);
 
     /// <summary>
-    /// Slides what follows a fold into place over about 120 ms, after the host put the fold back (<paramref name="opening"/>:
-    /// the stretch from <paramref name="atSeconds"/>, <paramref name="lengthSeconds"/> long, wipes in and what follows slides
-    /// out to make room) or took it out (what follows slides in over where the stretch was). The rows are already as they
-    /// end: only the drawing moves, on the rows given by their keys (null: every row that is not locked). A press ends it at once.
+    /// Animates (~120 ms) content after a fold the host just unfolded (<paramref name="opening"/>: the range at <paramref name="atSeconds"/>,
+    /// <paramref name="lengthSeconds"/> long, wipes in and later content slides out) or refolded (later content slides in). Rows already
+    /// hold the final state; only drawing is offset, for the given row keys (null = all unlocked). A press finishes it immediately.
     /// </summary>
     public void AnimateFold(double atSeconds, double lengthSeconds, bool opening, IReadOnlyCollection<object>? rowKeys)
     {
         if (!IsVisible || !(lengthSeconds > 0) || !double.IsFinite(atSeconds) || !double.IsFinite(lengthSeconds))
             return;
 
-        // The rows are already as they end: with the flair off, that is simply what is drawn (5.1-AutoHud-Part1).
+        // Rows already hold the final state: with animations off, just draw it.
         if (!Services.AppSettings.Current.EnableExtraAnimations)
             return;
 
@@ -691,7 +665,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         StartTicking();
     }
 
-    /// <summary>A fold sliding into place is where it was going (a press, a drag: what is drawn is what is there).</summary>
+    /// <summary>Completes a fold slide immediately (on press or drag, so drawing matches hit-testing).</summary>
     private void FinishSlide()
     {
         if (_slide is null)
@@ -702,7 +676,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         InvalidateVisual();
     }
 
-    /// <summary>The moment at a point across the control (its own coordinates), in seconds.</summary>
+    /// <summary>Time in seconds at an x position (control coordinates).</summary>
     public double TimeAt(double x)
     {
         var scale = PixelsPerSecond;
@@ -710,11 +684,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>
-    /// What a file dragged over the control would land on: the row (or open lane) under the point, the open row a collapsed
-    /// stack's strip is drawn under, null below them all; the
-    /// moment under it (seconds, never before 0); and whether it is over the headers (it then goes after the row's last clip).
-    /// The captions' strip in a collapsed stack is the captions' row itself (4.4 BugHunt): a file let go on it is never
-    /// taken for one let go on the row above it (on a video's, that would take that video's place).
+    /// File-drop hit test: the row/open lane under the point (a collapsed strip maps to its nearest full ancestor; null below all rows),
+    /// the time (seconds, >= 0), and whether over headers (append after the last clip). A collapsed caption strip resolves to the
+    /// caption row itself, never the video row above it.
     /// </summary>
     public (TimelineRow? Row, double Seconds, bool LeftEdgeZone) HitTestDrop(Point p)
     {
@@ -724,8 +696,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>
-    /// Shows where files dragged over the control would land: on a row (or, null, a new row under them all), at a moment,
-    /// how many, and whether they would be stacked onto tracks of their own rather than laid one after another.
+    /// Shows the drop preview: target row (null = new row below all), time, file count, and whether files stack onto separate tracks
+    /// instead of sequencing.
     /// </summary>
     public void ShowDropMark(TimelineRow? row, double seconds, int count, bool stack)
     {
@@ -748,13 +720,13 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         InvalidateVisual();
     }
 
-    /// <summary>Whether a block, a fade, a gain line, a J/L cut or (5.5A, once it has begun) a track's header is being dragged (the host leaves the rows alone meanwhile).</summary>
+    /// <summary>True while a block, fade, gain line, J/L cut or started track-header drag is active; the host must not replace rows meanwhile.</summary>
     public bool IsDragging => _drag is not null || _gainDrag is not null || _fadeDrag is not null || _splitDrag is not null || _crossfadeDrag is not null
         || _rowDrag is { Started: true };
 
     // ----- Laying out -----
 
-    /// <summary>Lays the lanes out again (rows, heights, stacks), and draws everything again at the next render.</summary>
+    /// <summary>Re-lays all lanes (rows, heights, stacks) and schedules a full redraw.</summary>
     private void Relayout()
     {
         _lanes.Clear();
@@ -774,14 +746,14 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         {
             ExtentChanged?.Invoke();
 
-            // A shorter extent may leave the rows scrolled past their end.
+            // Re-clamp: a shorter extent may leave the offset past the end.
             VerticalOffset = _verticalOffset;
         }
 
         KeepLaneInView();
     }
 
-    /// <summary>While stacks a click opened grow, the lane clicked is scrolled into view (its whole height, when it fits).</summary>
+    /// <summary>While click-opened stacks grow, keeps the clicked lane scrolled into view (fully, when it fits).</summary>
     private void KeepLaneInView()
     {
         if (_keepInView is not { } row)
@@ -806,29 +778,22 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>
-    /// The lanes as they are laid now, top to bottom (for the golden tests, timeline-effect-lanes-fold): each row's key, where its lane
-    /// is and how tall (DIPs; 0 for an effect lane of a closed stack), whether it is drawn small or in full, which stacks of its own it
-    /// has (its chevrons: 1 the layers', 2 the sound's), and whether it is the last of its stack that shows.
+    /// Golden-test snapshot (timeline-effect-lanes-fold) of laid-out lanes top to bottom: row key, Top/Height in DIPs (0 for collapsed
+    /// effect lanes), Small, Stacks bits (1 = visual, 2 = audio), and whether it is the last visible lane of its stack.
     /// </summary>
     internal IReadOnlyList<(object Key, double Top, double Height, bool Mini, bool Detailed, int Stacks, bool Last)> LaidLanes =>
         _lanes.ConvertAll<(object Key, double Top, double Height, bool Mini, bool Detailed, int Stacks, bool Last)>(
             lane => (lane.Row.Key, lane.Top, lane.Height, lane.Mini, lane.Detailed, lane.Stacks, lane.LastChild));
 
-    // A lane above its parent's, laid before the parent's index is known: set once it is.
+    // Lanes laid above their parent before the parent's index exists; patched once it is known.
     private const int PendingParent = int.MinValue;
 
-    // A row's lane and its children's: a child is as tall as its stack of its parent's is open (a fifth of its height
-    // closed, all of it open; the openness is already eased, fastest at first), and a child of a closed one is closed too.
-    // The one exception is an effect lane (5.3, TimelineRow.HidesWhenClosed): closed, or under a closed ancestor, it takes no
-    // room at all, and it grows in from nothing as its stack opens.
-    // Each of the parent's stacks (the layers', the sound's) is laid together under it, the layers' first. While the
-    // layers' stack is open or opening, its children drawn in front of the parent (TimelineRow.InFront: the captions, a
-    // cut-out over the video) are laid above the parent's row instead, in their order (the frontmost at the top), and only
-    // those behind it under it (5.0-Release, the user's directive 4); closed, they are all the thin mini-stack under it, as
-    // ever. Neither end of the move jumps: while the stack opens, those in front grow above it from nothing as their thin
-    // lanes under it shrink away (closing, the other way round), so the parent's row and everything under it move smoothly;
-    // every lane of a subtree that comes or goes so is <paramref name="fade"/> as tall as it would be, its gap with it. The
-    // lanes stay in order down the control (LaneAt). <paramref name="above"/>: this row is laid above its parent's.
+    // Lays a row's lane and its children recursively. Child height = lerp(1/5, 1, eased stack openness); children of a collapsed
+    // child are collapsed. HidesWhenClosed effect lanes are 0 when collapsed (or under a collapsed ancestor) and grow from 0.
+    // Visual stack then audio stack go below the parent. While the visual stack is open/opening, InFront children are laid above
+    // the parent (topmost first) and the rest below; collapsed, all are thin lanes below. During the transition the above-copies
+    // grow from 0 while the below-copies shrink, so nothing jumps; such lanes and their gaps scale by <paramref name="fade"/>.
+    // Lanes stay sorted top to bottom (LaneAt relies on it). <paramref name="above"/>: this row is laid above its parent.
     private void AddLanes(TimelineRow row, TimelineRow? parent, int depth, int parentLane, double openness, double fade, bool firstChild, bool lastChild,
         bool secondDeck, bool above, bool summary, ref double top)
     {
@@ -843,8 +808,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         foreach (var child in row.Children)
             stacks |= StackBit(child.Stack);
 
-        // The children in front of it, while its layers' stack shows at all: above it, each with its own stacks; until the
-        // stack is open, their thin lanes are under it as well, shrinking away (leaving).
+        // InFront children while the visual stack is at all open: laid above it with their own stacks; until fully open their thin
+        // copies below it shrink away (leaving).
         var layersOpen = Math.Min(openness, Openness(row, ChildStack.Visual));
         var aboveCount = 0;
         if (layersOpen > 0)
@@ -891,9 +856,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         if (row.Children.Count == aboveCount && !leaving)
             return;
 
-        // The rest under it (and, leaving, those in front: thin and closed, as the closed stack has them), each stack
-        // together: first and last of its stack among those laid under it that take room (an effect lane of a closed stack
-        // takes none, so the deck's line ends at the last lane that shows).
+        // Remaining children below (plus leaving InFront copies, thin and collapsed), grouped per stack; first/last are computed over
+        // lanes with non-zero height so the deck line ends at the last visible lane.
         bool Under(TimelineRow child) => leaving || !Above(child);
         bool Shows(TimelineRow child) => !child.HidesWhenClosed || (!Above(child) && Math.Min(openness, Openness(row, child.Stack)) > 0);
         var two = stacks == 3;
@@ -914,14 +878,12 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             var last = after >= row.Children.Count || row.Children[after].Stack != child.Stack;
             var (open, share) = Above(child) ? (0.0, fade * (1 - layersOpen)) : (Math.Min(openness, Openness(row, child.Stack)), fade);
 
-            // An effect lane (5.3, the user's call) is never a thin bar: it takes room only as far as its own track's stack is open (and
-            // that track is shown in full), growing in with it, its gap with it; closed, or under a closed ancestor, it is nothing.
+            // Effect lane: height (and gap) scale with its track's stack openness, only when the track is full size; otherwise 0.
             if (child.HidesWhenClosed)
                 share *= open;
 
-            // Every other child keeps the rule that a stack is never hidden (5.1-CleanupStudioAndFfmpegPurge, the user's directive): closed,
-            // it is its thin bars, a fifth of a lane each. A closed sound stack is one bar, its first lane's, with every stream that is heard:
-            // the others come only as it opens.
+            // Other children are never hidden: collapsed, each is a 1/5-height bar. A collapsed audio stack is a single bar (its first lane)
+            // drawing all audible streams; the others appear as it opens.
             var stackOpen = Openness(row, child.Stack);
             var oneBar = child.Stack == ChildStack.Audio && first && stackOpen < 0.999;
             if (child.Stack == ChildStack.Audio && !first)
@@ -932,9 +894,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
     private double Openness(TimelineRow row, ChildStack stack) => _expansion.TryGetValue((row.Key, stack), out var expansion) ? expansion.Current : 0;
 
-    // The gaps between a lane's blocks that a pill can close: on the rows the host lets close them (unlocked tracks) whose
-    // blocks can be dragged, from the end of what comes before to the next block's start (the room before the first block
-    // is no gap). Kept in laid-out pixels; only those wide enough for the pill.
+    // Closable gaps (layout pixels) between draggable blocks on full-size video/audio rows with ClosesGaps: from a block's end
+    // to the next block's start, plus the leading gap from 0 s on top-level rows (sub-lanes follow their parent clip), only those
+    // wide enough for the pill.
     private readonly List<(double Left, double Right)> _spans = [];
 
     private void FindGaps(Lane lane)
@@ -949,6 +911,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             _spans.Add((block.Left, block.Left + block.Width));
         _spans.Sort(static (a, b) => a.Left.CompareTo(b.Left));
 
+        if (lane.Depth == 0 && _spans[0].Left >= GapLeast)
+            row.Gaps.Add((0, _spans[0].Left));
+
         var reach = _spans[0].Right;
         for (var i = 1; i < _spans.Count; i++)
         {
@@ -959,7 +924,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         }
     }
 
-    // The lane at a height (DIPs from the top of all the rows); the gap under a lane counts as the lane. -1 for none.
+    // Lane index at a y (DIPs from the top of all rows); the gap below a lane belongs to it. -1 for none.
     private int LaneAt(double y)
     {
         if (_lanes.Count == 0 || y < 0)
@@ -978,8 +943,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         return y < _lanes[low].Bottom + LaneGap ? low : -1;
     }
 
-    // A lane of a collapsed stack stands for the open row it is drawn under (its nearest ancestor shown in full): what is
-    // dropped or dragged onto the thin strip goes to that row, never to the hidden track the strip is. -1 stays -1.
+    // Maps a collapsed lane to its nearest full-size ancestor, so drops/drags onto a thin strip target that row, never the hidden
+    // track. -1 maps to -1.
     private int OpenLaneOf(int index)
     {
         while (index >= 0 && _lanes[index].Mini)
@@ -1009,7 +974,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         return false;
     }
 
-    // Whether a row is among these (at any depth of their stacks): the very row, not one made again with its key (5.5A).
+    // Reference-equality search through all stack depths (a rebuilt row with the same key does not match).
     private static bool ListsRow(List<TimelineRow> rows, TimelineRow row)
     {
         foreach (var each in rows)
@@ -1021,9 +986,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         return false;
     }
 
-    // ----- What moves by itself: stacks opening and closing, a fold sliding into place, a coast -----
+    // ----- Animation: stack expansion, fold slides, momentum coasts -----
 
-    // Whether anything is on its way: a stack not yet where it is going, a fold still sliding, or the view coasting (5.4C).
+    // True while any stack is off target, a fold is sliding, or the view is coasting.
     private bool IsMoving()
     {
         if (_slide is not null || _momentumX?.IsCoasting == true || _momentumY?.IsCoasting == true)
@@ -1057,11 +1022,11 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         CompositionTarget.Rendering -= OnRenderingTick;
     }
 
-    // A frame: each moving stack goes its share of the way that is left (so a click mid-way turns it round from where it
-    // is, at full speed), the fold slides on; laid out and drawn again once for all of it. Still once all is still.
+    // Per-frame tick: advance stacks exponentially (mid-way reversals restart at full speed) and the fold slide, then lay out and
+    // redraw once. Unsubscribes when everything has settled.
     private void OnRenderingTick(object? sender, EventArgs e)
     {
-        // Rendering can come more than once for one frame: the frame's own time tells.
+        // Rendering may fire more than once per frame: dedupe by RenderingTime.
         if (e is RenderingEventArgs rendering)
         {
             if (rendering.RenderingTime == _lastRenderingTime)
@@ -1071,7 +1036,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
         var now = Stopwatch.GetTimestamp();
 
-        // A stall (a heavy frame, the window dragged) never makes a jump of more than this.
+        // Clamp dt so a stall (heavy frame, window drag) cannot cause a large jump.
         var seconds = Math.Clamp((now - _tickClock) / (double)Stopwatch.Frequency, 0, 0.05);
         _tickClock = now;
 
@@ -1080,7 +1045,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         {
             var done = Math.Clamp((now - slide.Began) / (double)Stopwatch.Frequency / FoldSlideSeconds, 0, 1);
 
-            // An ease out: fast at first, settling into place.
+            // Ease-out.
             slide.Eased = 1 - Math.Pow(1 - done, 3);
             if (done >= 1)
                 _slide = null;
@@ -1096,10 +1061,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>
-    /// One frame of momentum at <paramref name="nowMs"/> (<see cref="MomentumScroller.Now"/>'s clock, 5.4C): the view pans on by what the
-    /// coast along it covered (through <see cref="PanRequested"/>; the host moves the view at once), the rows scroll on by theirs. A view
-    /// or rows that did not move (an end reached, the view fitted) stop that coast; so does a drag. Whether anything moved. The frame
-    /// loop calls it; a test steps it with its own clock.
+    /// Advances momentum to <paramref name="nowMs"/> (<see cref="MomentumScroller.Now"/> clock): pans the view via <see cref="PanRequested"/>
+    /// (host applies synchronously) and scrolls rows. A coast that made no progress (end reached, view fitted) or a drag stops it.
+    /// Returns whether anything moved. Called by the frame loop; tests step it with their own clock.
     /// </summary>
     internal bool StepMomentum(double nowMs)
     {
@@ -1141,7 +1105,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         return moved;
     }
 
-    /// <summary>Stops any coast of the view or the rows where it is (a press, the playhead turning the page, another pan taking over).</summary>
+    /// <summary>Stops view and row coasts in place (press, playhead page turn, another pan).</summary>
     public void StopMomentum()
     {
         _momentumX?.Stop();
@@ -1149,10 +1113,10 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         _wheelGlide?.StopPan();
     }
 
-    /// <summary>Whether the view or the rows are coasting (5.4C).</summary>
+    /// <summary>True while the view or rows are coasting.</summary>
     public bool IsCoasting => _momentumX?.IsCoasting == true || _momentumY?.IsCoasting == true;
 
-    // Moves every stack that is on its way; whether any moved (the lanes are laid out again for it).
+    // Advances every animating stack; returns true if any moved (caller re-lays lanes).
     private bool StepExpansion(double seconds)
     {
         if (seconds <= 0)
@@ -1181,7 +1145,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         return moved;
     }
 
-    // Leaving the screen: whatever was moving is where it was going, a coast stops where it is, and the clock stops.
+    // On unload/hide: snap animations to their targets, stop coasts in place, and unsubscribe the clock.
     private void SettleMotion()
     {
         StopMomentum();
@@ -1208,9 +1172,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             Relayout();
     }
 
-    // ----- Sliding and drawing again -----
+    // ----- Translation and redraw -----
 
-    /// <summary>Everything is drawn again at the next render.</summary>
+    /// <summary>Schedules a full redraw at the next render.</summary>
     private void Invalidate()
     {
         _contentDirty = _labelsDirty = _headersDirty = _overlayDirty = true;
@@ -1218,8 +1182,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>
-    /// The view moved without changing its scale (a pan, a scroll): what was drawn slides; it is drawn again only when
-    /// the view has left the part of the rows that was drawn. The words, which keep to the view, are laid again.
+    /// Same-scale view move (pan/scroll): translates the drawn cache and redraws only when the view leaves the cached range. View-pinned
+    /// labels are re-laid.
     /// </summary>
     private void Slide()
     {
@@ -1276,7 +1240,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         Invalidate();
     }
 
-    // ----- The theme's look -----
+    // ----- Theme -----
 
     private Brush _panel = Brushes.DimGray, _card = Brushes.DimGray, _inset = Brushes.Black, _text = Brushes.White, _muted = Brushes.Gray;
     private Brush _accent = Brushes.DodgerBlue, _warning = Brushes.Orange, _gold = Brushes.Gold, _edge = Brushes.Gray;
@@ -1291,7 +1255,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         Invalidate();
     }
 
-    /// <summary>Reads the theme's look tokens (the same ones the old time bars and wells were drawn with), frozen.</summary>
+    /// <summary>Reads the theme's timeline brush/pen tokens and freezes them.</summary>
     private void ReadLook()
     {
         _panel = Look("PanelBrush", _panel);
@@ -1329,8 +1293,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     // ----- UI Automation -----
-    // The control is one element named "Timeline" with its place on screen; each lane is a child with its row's name and
-    // its own place, so a test (or a screen reader) can find a row. What is drawn in a lane has no peers.
+    // One automation element named "Timeline"; each lane is a child peer with its row name and bounds so tests and screen readers
+    // can locate rows. Lane contents have no peers.
 
     protected override AutomationPeer OnCreateAutomationPeer() => new TimelinePeer(this);
 
@@ -1346,7 +1310,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
         protected override List<AutomationPeer>? GetChildrenCore()
         {
-            // (A row has two lanes for a moment while its stack moves, AddLanes: one peer.)
+            // A row may briefly have two lanes during a stack transition (AddLanes): emit one peer.
             var children = new List<AutomationPeer>(owner._lanes.Count);
             foreach (var lane in owner._lanes)
             {

@@ -5,18 +5,17 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 /// <summary>
-/// Save Current Layout (the Layout button's flyout): a name for the panes as they are now, and which of the mode's
-/// three places to keep them in, each shown with the layout it holds (choosing a full one writes over it). The first
-/// empty place is chosen to start with, or the first one when all are full.
+/// Save Current Layout (Layout button flyout): names the current pane layout and picks one of the mode's three slots, each showing
+/// its stored layout (overwriting a full one). Defaults to the first empty slot, else the first.
 /// </summary>
 public partial class SaveLayoutDialog : Window
 {
     private readonly List<RadioButton> _slots = [];
 
-    // The name the place chosen offered, while it has not been typed over.
+    // Slot-suggested name, until overwritten by typing.
     private string _offered = "";
 
-    /// <param name="kept">The layouts kept in this mode, by place (1 to <see cref="AppSettings.SavedLayoutSlots"/>).</param>
+    /// <param name="kept">Saved layouts for this mode by slot (1 to <see cref="AppSettings.SavedLayoutSlots"/>).</param>
     public SaveLayoutDialog(IReadOnlyList<SavedDockLayout> kept)
     {
         InitializeComponent();
@@ -35,7 +34,7 @@ public partial class SaveLayoutDialog : Window
             var name = held?.Name ?? $"My Layout {slot}";
             choice.Checked += (_, _) =>
             {
-                // Each place offers a name (the one it holds, when full), until a name of one's own is typed.
+                // Each slot suggests a name (its stored one when full) until a custom name is typed.
                 if (NameBox.Text.Trim().Length == 0 || NameBox.Text == _offered)
                     NameBox.Text = _offered = name;
             };
@@ -52,10 +51,10 @@ public partial class SaveLayoutDialog : Window
         };
     }
 
-    /// <summary>The name given, once saved.</summary>
+    /// <summary>Entered name (after save).</summary>
     public string LayoutName => NameBox.Text.Trim();
 
-    /// <summary>The place chosen, 1 to <see cref="AppSettings.SavedLayoutSlots"/>.</summary>
+    /// <summary>Chosen slot, 1 to <see cref="AppSettings.SavedLayoutSlots"/>.</summary>
     public int Slot => _slots.FirstOrDefault(s => s.IsChecked == true)?.Tag as int? ?? 1;
 
     private void NameBox_TextChanged(object sender, TextChangedEventArgs e) => SaveButton.IsEnabled = NameBox.Text.Trim().Length > 0;

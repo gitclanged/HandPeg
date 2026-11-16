@@ -8,25 +8,22 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// ----- Player: the few places that drive the GPU preview engine, J/K/L, scrubbing, solo and waveform seeks -----
+// ----- Player transport: GPU engine entry points, J/K/L, scrubbing, solo and waveform seeks -----
 public partial class MainWindow
 {
-    // ----- The player -----
-    // The player is the GPU preview engine (MainWindow.GpuPreview.cs; the only one since 5.0-Verify, libmpv is gone): the
-    // compositor draws the sequence's scene plan into the video surface, the WASAPI mixer plays its sound, and the mixer's
-    // clock is the playhead. Whatever moves or changes the player goes through the members here (PlayerSeek, PlayerSetPause,
-    // PlayerIsPlaying, TakePlayerPosition, OpenInPlayer), which keep their names from the libmpv days so that their callers
-    // need not know, and ScheduleGpuState (MainWindow.GpuPreview.cs): an edit is a new scene plan, a jump an exact seek.
+    // ----- Player -----
+    // The player is the GPU preview engine (MainWindow.GpuPreview.cs): the compositor renders the scene plan, the WASAPI mixer plays
+    // audio, and the mixer clock is the playhead. All player changes go through these members (PlayerSeek, PlayerSetPause,
+    // PlayerIsPlaying, TakePlayerPosition, OpenInPlayer) or ScheduleGpuState: an edit is a new scene plan, a jump an exact seek.
 
     private bool _shellDrawn;
 
-    // What to open once the engine has started: the moment the sequence was loaded at (or a reload brings it back to), and
-    // whether paused.
+    // Deferred open for when the engine finishes starting: start time (load or reload position) and paused state.
     private (long StartMs, bool Paused)? _pendingMedia;
 
     private bool PlayerIsPlaying => _gpu is { IsPlaying: true };
 
-    // Whether the paused player was last sent to an exact moment by the user, which the playhead then keeps.
+    // Paused player was last seeked explicitly; the playhead keeps that exact time instead of the engine's.
     private bool _pausedOnUsersMoment;
 
     private void PlayerSetPause(bool paused)
@@ -35,22 +32,21 @@ public partial class MainWindow
             GpuSetPaused(gpu, paused);
     }
 
-    /// <summary>Sends the player to a moment: always the exact frame, answered at once (Instant Seek shows the nearest one meanwhile).</summary>
+    /// <summary>Exact-frame seek (Instant Seek shows the nearest frame meanwhile); updates the pending open while the engine starts.</summary>
     private void PlayerSeek(long positionMs)
     {
         if (_gpu is { } gpu)
             GpuSeek(gpu, positionMs);
 
-        // The engine starting (or starting again after a fault): it opens where the user went meanwhile.
+        // Engine (re)starting: retarget the pending open to the new position.
         else if (_pendingMedia is { } pending)
             _pendingMedia = (positionMs, pending.Paused);
     }
 
     /// <summary>
-    /// The video surface (a native window, which nothing of WPF's can be drawn over) is shown only while there is a
-    /// video and a player to draw it. Otherwise it is hidden (it keeps its window, and the engine its swap chain), and
-    /// what lies under it in the pane shows: the drop hint while nothing is loaded, the engine notice while the player
-    /// is stopped (see OnGpuFaulted). Being content of the pane, they belong to whichever window holds the player.
+    /// Shows the native video surface (which WPF cannot draw over) only with media and a running engine; otherwise hides it (HWND and swap
+    /// chain kept) to reveal the pane content beneath: drop hint when empty, engine notice when stopped (OnGpuFaulted). That content moves
+    /// with whichever window hosts the player.
     /// </summary>
     private void UpdateVideoVisibility()
     {
@@ -58,12 +54,11 @@ public partial class MainWindow
         DropHint.Visibility = _viewModel.HasSource ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    // Whether anything has asked for the player yet: a video to open, a file dragged over the window, the Source box or
-    // Browse being used. Until then the engine is not started (its worker, its swap chain and the audio device are well
-    // over a hundred megabytes of an idle window).
+    // Set once the player is needed (media to open, file dragged over the window, Source box or Browse used). The engine stays unstarted
+    // until then: its worker, swap chain and audio device cost over 100 MB of idle memory (Law 2).
     private bool _playerWanted;
 
-    /// <summary>Starts the player ahead of need: something is about to be opened (a file is being dragged in, a path typed).</summary>
+    /// <summary>Pre-starts the engine when an open is imminent (file drag-in, typed path).</summary>
     private void WarmUpPlayer()
     {
         if (_gpu is not null || _playerWanted)
@@ -76,8 +71,7 @@ public partial class MainWindow
     private readonly CancellationTokenSource _windowClosing = new();
 
     /// <summary>
-    /// Opens a newly loaded source in the player, paused on its first frame (a project or a file opened is looked at
-    /// before it is played, Pass 4.1C).
+    /// Opens a newly loaded source paused on its first frame and fits the timeline.
     /// </summary>
     private void PlayMedia(string path)
     {
@@ -90,11 +84,11 @@ public partial class MainWindow
         StopShuttle();
         OpenInPlayer(0, paused: true);
 
-        // A new video is seen whole on the time bars.
+        // Fit the timeline to the new media.
         FitTimeline(announce: false);
     }
 
-    /// <summary>The sequence into the player at a moment, paused or playing; given to the engine once it has started when it has not yet.</summary>
+    /// <summary>Opens the sequence at <paramref name="startMs"/>, paused or playing; deferred until the engine has started.</summary>
     private void OpenInPlayer(long startMs, bool paused)
     {
         if (_gpu is not null)
@@ -108,13 +102,12 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Reload Player: for when the player has locked up or stopped (see OnGpuFaulted). The engine is replaced with a new
-    /// one (a new worker, audio device and viewport, on the graphics card again after a fall back to the processor), and
-    /// the sequence is opened again where it was.
+    /// Reload Player (for a hung or stopped player, see OnGpuFaulted): replaces the engine (new worker, audio device and viewport, back
+    /// on hardware after a WARP fallback) and reopens the sequence at the same position and play state.
     /// </summary>
     private void ReloadPlayer_Click(object sender, RoutedEventArgs e)
     {
-        // An engine that gave up is let start again whatever is loaded (the notice says Reload Player starts it).
+        // A gave-up engine restarts even with no usable media (the notice promises Reload Player restarts it).
         if (!_viewModel.HasSource || !File.Exists(_viewModel.LocalMediaPath))
         {
             if (_gpu is null && !_startingGpu)
@@ -142,12 +135,11 @@ public partial class MainWindow
         EnsureGpuEngine();
     }
 
-    // ----- Following the player -----
-    // While it plays, the position is read once per screen refresh (CompositionTarget.Rendering): one look per frame
-    // drawn, and nothing queued behind a busy UI thread. Paused, the refresh is not followed (it would keep WPF drawing
-    // for nothing).
+    // ----- Playhead follow -----
+    // While playing, the position is sampled once per display refresh (CompositionTarget.Rendering): one read per frame, nothing queued
+    // behind a busy UI thread. Paused, the hook is removed so WPF does not keep rendering for nothing.
 
-    // UI thread only (it guards a CompositionTarget.Rendering subscription).
+    // UI thread only (guards the CompositionTarget.Rendering subscription).
     private bool _followingByFrame;
 
     private void FollowPlayerByFrame(bool on)
@@ -164,7 +156,7 @@ public partial class MainWindow
         {
             CompositionTarget.Rendering -= FollowPlayer_Rendering;
 
-            // Where it was when it stopped being followed by frame.
+            // Take the final position at unhook.
             TakePlayerPosition();
         }
     }
@@ -173,32 +165,32 @@ public partial class MainWindow
 
     private void TakePlayerPosition() => TakeGpuPosition();
 
-    // ----- One audio track on its own -----
+    // ----- Solo audio track -----
 
     private void OnSoloTrackChanged()
     {
         if (_gpu is null || !_viewModel.HasSource)
             return;
 
-        // A track played on its own is played without the layers' sound (the engine's program is built for it).
+        // Soloed tracks play without layer audio; the engine's program is rebuilt for it.
         ScheduleGpuState();
 
-        // The button is a play button: choosing a track starts it, and letting go of the last one pauses.
+        // Solo acts as play: the first solo starts playback; clearing the last one pauses.
         if (_viewModel.SoloedTracks.Count > 0 && !PlayerIsPlaying)
             PlayPause_Click(this, new RoutedEventArgs());
         else if (_viewModel.SoloedTracks.Count == 0 && PlayerIsPlaying)
             PlayerSetPause(true);
     }
 
-    // ----- Seeking from a waveform -----
-    // A track's waveform on the Audio tab covers the whole video from edge to edge, so a point on it is a time.
+    // ----- Waveform seek -----
+    // Audio tab waveforms span the full duration edge to edge, so x maps linearly to time.
 
     private void Waveform_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is not FrameworkElement waveform || _viewModel.DurationMs <= 0 || !waveform.CaptureMouse())
             return;
 
-        // Handled, so the list the track's row is in does not take the mouse for itself and end the drag.
+        // Mark handled so the containing list does not steal capture and end the drag.
         e.Handled = true;
         SeekToWaveformPoint(waveform, e);
     }
@@ -213,7 +205,7 @@ public partial class MainWindow
 
     private void SeekToWaveformPoint(FrameworkElement waveform, MouseEventArgs e)
     {
-        // Setting the position moves the timeline, which seeks the player. The master mix shows the whole sequence.
+        // Setting PositionMs moves the timeline, which seeks the player (the master mix waveform spans the sequence).
         var x = e.GetPosition(waveform).X;
         if (waveform.ActualWidth > 0)
             _viewModel.PositionMs = Math.Clamp(x / waveform.ActualWidth, 0, 1) * _viewModel.DurationMs;
@@ -221,11 +213,11 @@ public partial class MainWindow
 
     // ----- Playback / scrubbing -----
 
-    // ----- J, K, L -----
-    // L plays; pressed again it plays twice as fast, then four times. J does the same backwards (silent). K stops. The
-    // engine's clock runs at the speed asked, either way (GpuShuttle).
+    // ----- J/K/L shuttle -----
+    // L plays, repeated L doubles to 2x then 4x; J mirrors in reverse (silent); K stops. The engine clock runs at the requested rate
+    // (GpuShuttle).
 
-    // 0 while not shuttling; otherwise the speed, negative for backwards.
+    // Shuttle speed: 0 when inactive, negative for reverse.
     private int _shuttle;
 
     private void Shuttle(int direction)
@@ -234,7 +226,7 @@ public partial class MainWindow
             GpuShuttle(gpu, direction);
     }
 
-    /// <summary>Ends J/K/L shuttling, and puts the playback speed back to the one chosen in the speed box.</summary>
+    /// <summary>Ends shuttling and restores the selected playback rate.</summary>
     private void StopShuttle()
     {
         if (_shuttle == 0)
@@ -254,7 +246,7 @@ public partial class MainWindow
         }
         else if (_gpu is { } gpu)
         {
-            // At the end: Play starts again from the beginning.
+            // At the end: Play restarts from 0.
             if (!gpu.IsPlaying && gpu.Position >= gpu.SequenceSeconds - 0.001)
                 PlayerSeek(0);
             GpuSetPaused(gpu, gpu.IsPlaying);
@@ -265,19 +257,19 @@ public partial class MainWindow
         }
         else
         {
-            // Not started yet (or about to start again, see OnGpuFailed): it starts, and opens what is loaded.
+            // Engine not started (or awaiting retry, see OnGpuFailed): start it and open the loaded media.
             EnsureGpuEngine();
         }
     }
 
     private void OnPlayerTimeChanged(long timeMs)
     {
-        // Don't fight the user for the playhead while they are dragging it (the overview's thumb, a ruler).
+        // Ignore engine time while a scrub holds the playhead (overview thumb, ruler).
         if (IsScrubHeld)
             return;
 
-        // Paused on a moment the user sent it to (a seek, a frame or key step, a click on the timeline), the playhead
-        // stays exactly there (4.2D). Paused by Pause, the position it stopped at is still taken.
+        // Paused after an explicit seek (seek, frame/key step, timeline click): keep the exact requested time. Paused via Pause: take
+        // the engine's stop position.
         if (PlayerIsPlaying)
             _pausedOnUsersMoment = false;
         else if (_pausedOnUsersMoment)
@@ -287,7 +279,7 @@ public partial class MainWindow
         _viewModel.PositionMs = timeMs;
         _updatingFromPlayer = false;
 
-        // While playing: Play Start to Stop and Loop kept to their stretch, and the engine told where Loop goes back to.
+        // While playing: enforce Play Start to Stop and Loop ranges, and update the engine's loop points.
         if (PlayerIsPlaying)
         {
             if (_gpu is { } engine)
@@ -301,30 +293,28 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The scrubber's value moved. Its binding to the playhead waits to be told (UpdateSourceTrigger=Explicit, 5.4.2B): a click beside its
-    /// playhead or a key sets the playhead here at once (FollowPlayheadInPlayer then sends the player there); a drag of its playhead scrubs
-    /// (ScrubPlayheadTo: the lines and the player now, the playhead's value once per frame).
+    /// Overview Scrubber value changed (binding is UpdateSourceTrigger=Explicit): clicks beside the thumb or keys set the playhead
+    /// immediately (FollowPlayheadInPlayer seeks); thumb drags scrub via ScrubPlayheadTo (lines and player now, playhead once per frame).
     /// </summary>
     private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (_updatingFromPlayer)
             return;
 
-        // Not a move of the playhead (4.1.1): the value pushed down by a timeline that became shorter (the slider
-        // coerces it to its new end; what the sequence does about it is RefreshSequence's), or a step of less than a
-        // millisecond (a position given back in other units).
+        // Ignore non-playhead moves: coercion to a shorter Maximum (RefreshSequence handles the sequence side) and sub-millisecond
+        // round-trips from unit conversion.
         if (e.NewValue == TimelineSlider.Maximum && e.OldValue > TimelineSlider.Maximum)
             return;
         if (!_isScrubbing)
         {
-            // The playhead's own value come back (its binding), or a step of less than a millisecond: nothing to tell.
+            // Skip binding echoes and sub-millisecond steps.
             if (Math.Abs(e.NewValue - _viewModel.PositionMs) >= 1)
                 _viewModel.PositionMs = e.NewValue;
             return;
         }
 
-        // Magnetism: while dragging, a thumb that comes close enough to an I-frame is pulled onto it.
-        // The drag continues from wherever the thumb is, so it sticks until the pointer has moved clear.
+        // I-frame magnetism while dragging: within reach, snap the thumb to the I-frame; the drag continues from the thumb, so it sticks
+        // until the pointer moves clear.
         var settings = AppSettings.Current;
         if (_isScrubbing && !_applyingMagnet && settings.SnapTimelineToIFrames
             && TimelineSlider.ActualWidth > 0 && _viewModel.DurationMs > 0
@@ -341,29 +331,25 @@ public partial class MainWindow
             }
         }
 
-        // The engine answers every position of a drag, exactly (Instant Seek): nothing to pace. Already there: not sent again, so a drag's
-        // heading is not reset by a second seek to the same moment (ScrubPlayheadTo).
+        // Instant Seek serves every drag position exactly, so no pacing; ScrubPlayheadTo skips repeats so the drag direction is not reset.
         ScrubPlayheadTo(e.NewValue);
     }
 
     /// <summary>
-    /// The playhead moved by anything but the player itself (the Timeline's ruler and rows, the keys, the studios): the player goes there.
-    /// 5.4.1-M3 fix: this used to be left to the Sequence Overview Scrubber's slider, bound to the playhead, so with the scrubber hidden
-    /// (out of the window, its binding dead) the player never followed a scrub. A moment the player is already at is not sent again
-    /// (the slider, when it is shown, may have sent it first).
+    /// Seeks the player when the playhead moves from any non-player source (ruler, rows, keys, studios). Independent of the Overview
+    /// Scrubber binding, which is dead while the scrubber is hidden. Skips times the paused player is already at (the slider may have sent it).
     /// </summary>
     private void FollowPlayheadInPlayer()
     {
         if (_updatingFromPlayer || _gpu is null)
             return;
 
-        // A tab's paused still (MainWindow.ProjectTabs.cs) is of the moment the tab came back at: gone the moment the playhead moves, so it
-        // never stands over a scrub. The switch's own move of the playhead, restoring the tab's (5.4.2A: also a tab read from its file, whose
-        // view is restored after the switch), keeps it until the engine's first frame of the tab (WatchForFirstFrame).
+        // The tab still (MainWindow.ProjectTabs.cs) shows the resume time, so hide it on any playhead move except the switch's own restore
+        // (including file-loaded tabs whose view restores after the switch), which keeps it until the first frame (WatchForFirstFrame).
         if (!_switchingTab && !_restoringTabView)
             HideTabStill();
 
-        // A scrub's value, set once per frame: the player was sent there as the pointer moved (MainWindow.Scrub.cs).
+        // Scrub flush (once per frame): the player was already seeked during the pointer move (MainWindow.Scrub.cs).
         if (_scrubFlushing)
             return;
         var ms = (long)_viewModel.PositionMs;
@@ -371,16 +357,13 @@ public partial class MainWindow
             PlayerSeek(ms);
     }
 
-    // Whether the paused player is at a moment already (its paused clock, set at once by a seek), to the millisecond.
+    // True if the paused engine clock (set immediately by a seek) is already at this time within 1 ms.
     private bool PlayerAt(long positionMs) =>
         _gpu is { IsPlaying: false } engine && Math.Abs(engine.Position * 1000 - positionMs) < 1;
 
     /// <summary>
-    /// A press anywhere on the Sequence Overview Scrubber, not only on the playhead: the playhead goes to where the
-    /// pointer is, and the press is then handed to it, so that it is held from that moment exactly as if it
-    /// had been pressed itself. Holding and dragging scrubs; letting go ends it, by the same steps as any
-    /// drag of the playhead (DragStarted, DragCompleted). The slider has usually moved the playhead to the
-    /// pointer already by the time this runs; what it does not do by itself is take hold of it.
+    /// Press anywhere on the Overview Scrubber: jumps the thumb to the pointer and forwards the press to the thumb, so dragging scrubs and
+    /// release ends it through the normal DragStarted/DragCompleted path. The slider may already have moved the thumb; it does not grab it.
     /// </summary>
     private void TimelineSlider_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
@@ -390,9 +373,8 @@ public partial class MainWindow
             return;
         }
 
-        // The track works out a value from where its playhead was last laid out. The slider may just have moved
-        // the playhead (it does, for a press beside it), so the track is laid out first: asked before that, it
-        // would add the distance to the pointer a second time.
+        // Track.ValueFromPoint uses the thumb's last layout; the slider may have just moved it, so lay out first to avoid adding the
+        // pointer offset twice.
         TimelineSlider.UpdateLayout();
         var value = track.ValueFromPoint(e.GetPosition(track));
         if (!double.IsFinite(value))
@@ -400,7 +382,7 @@ public partial class MainWindow
 
         TimelineSlider.Value = Math.Clamp(value, TimelineSlider.Minimum, TimelineSlider.Maximum);
 
-        // The playhead is laid out where it now is before it is pressed: it measures the drag from there.
+        // Lay out the thumb at its new position before the synthetic press; it measures the drag from there.
         TimelineSlider.UpdateLayout();
         thumb.RaiseEvent(new MouseButtonEventArgs(e.MouseDevice, e.Timestamp, MouseButton.Left) { RoutedEvent = MouseLeftButtonDownEvent, Source = thumb });
         e.Handled = true;
@@ -413,7 +395,7 @@ public partial class MainWindow
         _isScrubbing = false;
         EndScrub();
 
-        // Let go (and a click on the timeline is a press let go at once): the exact frame, straight away.
+        // Release (a click is press + immediate release): exact-frame seek now.
         PlayerSeek((long)TimelineSlider.Value);
     }
 }

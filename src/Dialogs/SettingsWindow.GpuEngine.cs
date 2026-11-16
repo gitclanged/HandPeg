@@ -6,23 +6,21 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// Settings > Export & Hardware > GPU Preview Engine (Pass 5.0-AudioAnd3D, 5.0D): Instant Seek's frame cache (its maximum,
-// put into effect in the running player when Save is pressed; a readout of what the running player's cache holds,
-// refreshed while the page is shown; and Clear), and the compositor's decode threads. The threads are read when the
-// player's compositor starts: they apply after a restart, as their row says.
+// Settings > Export & Hardware > GPU Preview Engine: Instant Seek frame cache (maximum applied to the running player on Save; live
+// readout while the page is visible; Clear) and compositor decode threads (read at compositor start, so they need a restart).
 //
-// 5.4D-TabPerf (the user's U3): the cache is adaptive, a baseline grown on demand, so the setting is its Maximum Frame Cache in GB
-// (AppSettings.GpuFrameCacheMb, still megabytes: 0 Auto, the hardware's ceiling; -1 Off): a list of Auto, Off, 1, 2, 4, 8, 12 and 16 GB
-// that also takes a typed number (6, 2.5, "3 GB"). The readout says what is in use of the budget now and what it may grow to.
+// The cache is adaptive (baseline grown on demand), so the setting is Maximum Frame Cache (AppSettings.GpuFrameCacheMb in MB: 0 Auto
+// = hardware ceiling, -1 Off), offered as Auto, Off, 1/2/4/8/12/16 GB or a typed value (6, 2.5, "3 GB"). The readout shows current
+// use and growth headroom.
 public partial class SettingsWindow
 {
-    // The readout's refresh, twice a second, only while it is on screen (its page shown, this screen open).
+    // Readout refresh at 2 Hz, only while the page is visible.
     private readonly DispatcherTimer _gpuCacheTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
 
-    /// <summary>The maximums the list offers, in GB (any other is typed, and joins the list).</summary>
+    /// <summary>Preset maximums in GB (typed values are appended).</summary>
     internal static readonly int[] FrameCacheChoicesGb = [1, 2, 4, 8, 12, 16];
 
-    // The most a typed maximum may be (MB): 64 GB, as the old box's limit.
+    // Upper bound for a typed maximum (MB): 64 GB.
     private const int MostFrameCacheMb = 65536;
 
     private void InitializeGpuEngine()
@@ -61,8 +59,8 @@ public partial class SettingsWindow
     }
 
     /// <summary>
-    /// The list of maximums (MB values): Auto (with the hardware's ceiling when the running player knows it), Off, the GB steps, and
-    /// <paramref name="current"/> in its place when it is none of them (a typed or an older setting).
+    /// Maximum choices (MB): Auto (with hardware ceiling when known), Off, GB steps, plus <paramref name="current"/> in order when it
+    /// is a custom or legacy value.
     /// </summary>
     internal static List<NumberChoice> FrameCacheChoices(int current, long ceilingBytes)
     {
@@ -77,14 +75,14 @@ public partial class SettingsWindow
         return [new(auto, 0), new("Off", -1), .. sizes.Select(mb => new NumberChoice(DescribeFrameCacheMb(mb), mb))];
     }
 
-    /// <summary>A maximum as the list shows it: whole gigabytes as "8 GB", others to two places ("2.5 GB").</summary>
+    /// <summary>Display label: whole GB as "8 GB", otherwise up to two decimals ("2.5 GB").</summary>
     internal static string DescribeFrameCacheMb(int megabytes) => megabytes % 1024 == 0
         ? string.Create(CultureInfo.InvariantCulture, $"{megabytes / 1024} GB")
         : string.Create(CultureInfo.InvariantCulture, $"{megabytes / 1024.0:0.##} GB");
 
     /// <summary>
-    /// What a typed maximum means, in MB (the setting's unit): "Auto" 0, "Off" -1, a number of gigabytes (a "GB" or "G" after it, the
-    /// user's own decimal mark or a point) that many, at most 64 GB, 0 Auto, below 0 Off; null when it is none of these.
+    /// Parses a typed maximum to MB: "Auto" = 0, "Off" = -1, or a GB number (optional "GB"/"G" suffix, culture or invariant decimal
+    /// separator) capped at 64 GB, 0 = Auto, negative = Off. Null when unparseable.
     /// </summary>
     internal static int? ParseFrameCacheGb(string? typed)
     {
@@ -110,8 +108,7 @@ public partial class SettingsWindow
         return megabytes <= 0 ? 0 : (int)Math.Min(megabytes, MostFrameCacheMb);
     }
 
-    // A number typed into the list (Enter, or the focus leaving it): taken as the maximum, joining the list; anything else puts back
-    // what is chosen.
+    // Commit typed text on Enter or focus loss: valid values become the maximum and join the list; invalid text reverts.
     private void TakeTypedFrameCache()
     {
         var chosen = GpuFrameCacheBox.SelectedItem as NumberChoice;
@@ -134,7 +131,7 @@ public partial class SettingsWindow
             GpuFrameCacheBox.Text = shown.Display;
     }
 
-    /// <summary>What the running player's frame cache holds and does now; a word on why there is none while the player is not running.</summary>
+    /// <summary>Live frame cache status of the running player, or why none is available.</summary>
     private void ShowGpuCache()
     {
         var engine = GpuPreviewEngine.Current;
@@ -146,7 +143,7 @@ public partial class SettingsWindow
             return;
         }
 
-        // In use of the budget now, and what the budget may grow to when a project needs it (5.4D-TabPerf).
+        // Current budget use and the ceiling it may grow to on demand.
         var stats = engine.CacheStats;
         var client = engine.Client;
         var maximum = client.CacheMaximumBytes;
@@ -163,7 +160,7 @@ public partial class SettingsWindow
             $"{stats.Frames:N0} frames  ·  {stats.Hits:N0} hits, {stats.Misses:N0} misses{share}  ·  last exact frame {latency}{held}");
     }
 
-    // Clear: every frame, and what the worker kept beside them (5.4D-TabPerf: a trim after the clear, both counted requests).
+    // Clear: drops all frames and worker-side state (clear followed by trim, both counted as requests).
     private void ClearGpuFrameCache_Click(object sender, RoutedEventArgs e)
     {
         if (GpuPreviewEngine.Current is { } engine)
@@ -175,14 +172,14 @@ public partial class SettingsWindow
         ShowGpuCache();
     }
 
-    /// <summary>After Save: the frame cache's maximum goes into effect in the running player at once (the worker reads it on its next turn).</summary>
+    /// <summary>On Save, pushes the cache maximum to the running player (the worker applies it on its next cycle).</summary>
     private static void ApplyGpuEngine()
     {
         if (GpuPreviewEngine.Current is { } engine)
             engine.Client.FrameCacheBudget = FrameCacheBytes(AppSettings.Current.GpuFrameCacheMb);
     }
 
-    /// <summary>The setting as the compositor takes it (<see cref="CompositorClient.FrameCacheBudget"/>): 0 automatic, -1 off, else bytes.</summary>
+    /// <summary>Setting in compositor units (<see cref="CompositorClient.FrameCacheBudget"/>): 0 auto, -1 off, else bytes.</summary>
     internal static long FrameCacheBytes(int megabytes) => megabytes switch
     {
         < 0 => -1L,

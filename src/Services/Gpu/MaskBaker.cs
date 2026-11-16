@@ -7,53 +7,50 @@ using System.Windows.Media.Imaging;
 namespace HandPegApp.Services.Gpu;
 
 /// <summary>
-/// What a layer's mask is baked from, as the export's graph made it before 5.2-Audit (BuildMaskSource), step
-/// for step: the picture read by its brightness or its transparency, the part of it under the layer cut out, scaled to the
-/// layer's size, turned inside out, grown or shrunk by so many passes, nudged, and its outline softened. All in the
-/// layer's own pixels, as the export builds it.
+/// Mask bake recipe, step for step as the export's mask chain: the picture read by luma or alpha, the region under the layer cropped,
+/// scaled to the layer size, inverted, grown or shrunk by N passes, offset, and its outline softened, all in layer pixels.
 /// </summary>
-/// <param name="Cut">The part of the mask picture that lies under the layer, as fractions of it: left, top, width, height.</param>
-/// <param name="Grow">Passes of a 3 x 3 dilation (above 0) or erosion (below 0).</param>
-/// <param name="OffsetX">How far the mask is moved inside the layer, in its pixels; what it uncovers is hidden.</param>
-/// <param name="BlurRadius">The radius of the box blur run twice over its outline (Soft Edges); 0 for none.</param>
+/// <param name="Cut">Region of the mask picture under the layer, as fractions: left, top, width, height.</param>
+/// <param name="Grow">Passes of 3x3 dilation (positive) or erosion (negative).</param>
+/// <param name="OffsetX">Mask offset inside the layer in its pixels; uncovered areas are hidden.</param>
+/// <param name="BlurRadius">Radius of the box blur run twice over the outline (Soft Edges); 0 for none.</param>
 public readonly record struct MaskRecipe(
     string Path, bool FromAlpha, int Width, int Height, (double X, double Y, double Width, double Height) Cut,
     bool Invert, int Grow, int OffsetX, int OffsetY, int BlurRadius)
 {
-    /// <summary>The recipe's content hash, with the file's size and last write (a mask drawn again is a new mask).</summary>
+    /// <summary>Content hash of the recipe including the file's size and last write (a redrawn mask is a new mask).</summary>
     public long ContentHash()
     {
-        // A drawn mask's key is its outlines' hash already: there is no file to ask about.
+        // Drawn masks are already keyed by their outline hash: no file to stat.
         var file = MaskStore.IsDrawn(Path) ? default : FileState.Get(Path);
         return default(GpuHash).Add("mask").Add(Path).Add(file.Length).Add(file.WrittenUtc.Ticks).Add(FromAlpha).Add(Width).Add(Height)
             .Add(Cut.X).Add(Cut.Y).Add(Cut.Width).Add(Cut.Height).Add(Invert).Add(Grow).Add(OffsetX).Add(OffsetY).Add(BlurRadius).Value;
     }
 
-    /// <summary>What the mask is apart from its size and the steps measured in the layer's pixels: an older bake of the same family stands in while a new one is made.</summary>
+    /// <summary>Hash of the recipe without its size and pixel-measured steps: an older bake of the same family stands in while a new one is made.</summary>
     public long FamilyHash() =>
         default(GpuHash).Add("mask-family").Add(Path).Add(FromAlpha).Add(Cut.X).Add(Cut.Y).Add(Cut.Width).Add(Cut.Height).Add(Invert).Value;
 }
 
 /// <summary>
-/// Bakes masks and decodes stills for the GPU engine, on the processor: everything a mask needs that the compositor's one
-/// pass (PSLayerMask) cannot do as the export does, above all the soft edge (a box blur run twice), is done here once and
-/// handed over as a <see cref="GpuResourceKind.Mask2D"/> (then sent with its grow, invert and offset at nothing). Grow and
-/// blur are separable and cost the same whatever their radius (van Herk / Gil-Werman for the square's maximum, running sums
-/// for the box). Thread-safe: every call works on its own arrays (called on a background lane).
+/// Bakes masks and decodes stills for the GPU engine on the CPU: what PSLayerMask's single pass cannot match the export on (above all the
+/// soft edge, a box blur run twice) is done here once and uploaded as a <see cref="GpuResourceKind.Mask2D"/>, then drawn with zero grow,
+/// invert and offset. Grow and blur are separable and radius-independent (van Herk / Gil-Werman for the square max, running sums for the
+/// box). Thread-safe: every call uses its own arrays (runs on a background lane).
 /// </summary>
 public static class MaskBaker
 {
-    /// <summary>The longest side a still read from a file is kept at (the worker scales it to its box).</summary>
+    /// <summary>Longest side kept for stills read from files (the worker scales them to their box).</summary>
     public const int LargestStillSide = 4096;
 
-    /// <summary>The mask as BGRA8 (its value in every colour, solid), its recipe's size; null when the picture cannot be read.</summary>
+    /// <summary>Bakes the mask as BGRA8 (value in every channel, opaque) at the recipe's size; null when the picture cannot be read.</summary>
     public static byte[]? Bake(in MaskRecipe recipe)
     {
         var (width, height) = (Math.Clamp(recipe.Width, 1, 16384), Math.Clamp(recipe.Height, 1, 16384));
         float[] mask;
         if (MaskStore.IsDrawn(recipe.Path))
         {
-            // A drawn mask (5.1-Release): its outlines filled in memory, the part under the layer at exactly the layer's size.
+            // Drawn mask: outlines rasterized in memory, the region under the layer at exactly the layer size.
             if (MaskStore.Rasterize(recipe.Path, recipe.Cut, width, height) is not { } drawn)
                 return null;
             mask = drawn;
@@ -65,7 +62,7 @@ public static class MaskBaker
 
             var (grey, sourceWidth, sourceHeight) = picture;
 
-            // The part under the layer (crop: x and y truncated, each side at least a pixel).
+            // Region under the layer (crop: x and y truncated, each side at least 1 px).
             var cutX = Math.Clamp((int)(sourceWidth * Math.Clamp(recipe.Cut.X, 0, 1)), 0, sourceWidth - 1);
             var cutY = Math.Clamp((int)(sourceHeight * Math.Clamp(recipe.Cut.Y, 0, 1)), 0, sourceHeight - 1);
             var cutWidth = Math.Clamp((int)(sourceWidth * Math.Clamp(recipe.Cut.Width, 0, 1)), 1, sourceWidth - cutX);
@@ -98,8 +95,8 @@ public static class MaskBaker
     }
 
     /// <summary>
-    /// The mask as BGRA8: each value times 255, rounded (to even, as MathF.Round), held to 0..255 and written in every colour,
-    /// solid. A whole vector of values at a time (the same multiply and rounding in each lane), then one at a time for the rest.
+    /// Packs the mask as BGRA8: value x 255, rounded to even (as MathF.Round), clamped to 0..255, written to every channel, opaque.
+    /// Vectorized with identical per-lane arithmetic, then scalar for the tail.
     /// </summary>
     private static byte[] Pack(float[] mask)
     {
@@ -124,7 +121,7 @@ public static class MaskBaker
         return pixels;
     }
 
-    /// <summary>A picture file as BGRA8, straight alpha, at its own size (at most <see cref="LargestStillSide"/> on its longer side); null when it cannot be read.</summary>
+    /// <summary>Decodes a picture file as BGRA8 straight alpha at native size (longest side at most <see cref="LargestStillSide"/>); null when unreadable.</summary>
     public static (byte[] Pixels, int Width, int Height)? ReadStill(string path)
     {
         if (Decode(path, LargestStillSide) is not { } bitmap)
@@ -136,7 +133,7 @@ public static class MaskBaker
 
     // ----- Reading -----
 
-    /// <summary>A picture as grey values 0..1: its transparency, or its brightness (FFmpeg's format=gray: BT.601 weights).</summary>
+    /// <summary>Picture as grey 0..1: its alpha, or its luma (FFmpeg format=gray: BT.601 weights).</summary>
     private static (float[] Grey, int Width, int Height)? ReadGrey(string path, bool fromAlpha)
     {
         if (Decode(path, 0) is not { } bitmap)
@@ -155,7 +152,7 @@ public static class MaskBaker
         return (grey, width, height);
     }
 
-    /// <summary>A picture file decoded from a stream (never a URI, never cached), as straight BGRA, frozen; null when it cannot be.</summary>
+    /// <summary>Decodes a picture file from a stream (never a URI, never cached) as frozen straight BGRA; null on failure.</summary>
     private static BitmapSource? Decode(string path, int largestSide)
     {
         try
@@ -181,11 +178,11 @@ public static class MaskBaker
         }
     }
 
-    // ----- The steps -----
+    // ----- Bake steps -----
 
     /// <summary>
-    /// A part of a grey picture scaled to a new size: each output pixel the mean of the source it covers where it shrinks
-    /// (a box of the footprint), linear between source pixels where it grows; across, then down.
+    /// Scales a region of a grey picture: box average over the footprint when shrinking, linear interpolation when enlarging; horizontal,
+    /// then vertical.
     /// </summary>
     private static float[] Resample(float[] source, int stride, int x0, int y0, int width, int height, int toWidth, int toHeight)
     {
@@ -198,9 +195,8 @@ public static class MaskBaker
         return result;
     }
 
-    // Resample's pass down, every column at once, a row at a time: an output row takes the same source rows with the same
-    // weights in every column, so the columns go side by side, in rows as the picture is laid out (one walked alone reads a
-    // cache line for every pixel), each through the very operations Line gives a column alone.
+    // Vertical pass over all columns at once, row by row: each output row uses the same source rows and weights in every column, so columns
+    // are processed side by side in memory order (a lone column walk misses cache per pixel), with exactly the arithmetic Line applies.
     private static void Down(float[] source, int width, int count, float[] target, int size)
     {
         var scale = (double)count / size;
@@ -238,7 +234,7 @@ public static class MaskBaker
         }
     }
 
-    // One line of Resample: count samples from `from` (every `step`) into `size` samples at `to` (every `toStep`).
+    // One Resample line: count samples from `from` (stride `step`) into `size` samples at `to` (stride `toStep`).
     private static void Line(float[] source, int from, int step, int count, float[] target, int to, int toStep, int size)
     {
         var scale = (double)count / size;
@@ -247,7 +243,7 @@ public static class MaskBaker
             double value;
             if (scale > 1)
             {
-                // The footprint [i, i + 1) * scale, each source pixel weighed by how much of it lies inside.
+                // Footprint [i, i + 1) * scale, each source pixel weighted by its overlap.
                 var (start, end) = (i * scale, (i + 1) * scale);
                 var (sum, weight) = (0.0, 0.0);
                 for (var k = (int)start; k < Math.Min((int)Math.Ceiling(end), count); k++)
@@ -273,10 +269,9 @@ public static class MaskBaker
     }
 
     /// <summary>
-    /// Passes of a 3 x 3 dilation (or erosion): the most (least) within a square of radius <paramref name="passes"/>, edges
-    /// clamped, as many passes of FFmpeg's dilation and erosion give. Separable, by van Herk / Gil-Werman: three
-    /// comparisons a pixel whatever the radius. The columns go a vector's width at a time, side by side (each lane a column,
-    /// through the same comparisons as one alone), so the picture is read a run of pixels a row, not a cache line a pixel.
+    /// N passes of 3x3 dilation (or erosion): max (min) within a square of radius <paramref name="passes"/>, edges clamped, matching repeated
+    /// FFmpeg dilation/erosion. Separable van Herk / Gil-Werman: three comparisons per pixel at any radius. Columns are processed a vector
+    /// width at a time (one column per lane, identical comparisons), reading runs of a row rather than a cache line per pixel.
     /// </summary>
     private static void Spread(float[] mask, int width, int height, int passes, bool grow)
     {
@@ -318,7 +313,7 @@ public static class MaskBaker
         }
     }
 
-    // The most (or least) of each window of 2r + 1 along a line, edges clamped. (Its runs are the caller's, used again line after line.)
+    // Max (or min) of each 2r + 1 window along a line, edges clamped. The run buffers are the caller's, reused per line.
     private static void Extreme(float[] line, float[] output, int count, int radius, bool most, float[] forward, float[] backward)
     {
         var size = 2 * radius + 1;
@@ -327,8 +322,8 @@ public static class MaskBaker
         float At(int i) => line[Math.Clamp(i - radius, 0, count - 1)];
         float Pick(float a, float b) => most ? MathF.Max(a, b) : MathF.Min(a, b);
 
-        // Window by window (the block is a whole number of them): a run forward from each one's start, and back from its end,
-        // each carried along in a local rather than read back from the run it is written to.
+        // Per window (the block holds whole windows): a forward run from each start and a backward run from each end, carried in a
+        // local rather than read back from the buffer.
         for (var start = 0; start < block; start += size)
         {
             var run = forward[start] = At(start);
@@ -339,12 +334,12 @@ public static class MaskBaker
                 run = backward[i] = Pick(run, At(i));
         }
 
-        // The window of padded positions [i, i + size - 1] is the backward run from i and the forward run to its end.
+        // Window [i, i + size - 1] of padded positions = backward run from i combined with the forward run to its end.
         for (var i = 0; i < count; i++)
             output[i] = Pick(backward[i], forward[Math.Min(i + size - 1, block - 1)]);
     }
 
-    // The same along lines side by side, each of a vector's lanes a line of its own (Vector.Max and Min are MathF.Max and Min, lane by lane).
+    // Vector variant: each lane is its own line (Vector.Max/Min match MathF.Max/Min per lane).
     private static void Extreme(Vector<float>[] line, Vector<float>[] output, int count, int radius, bool most, Vector<float>[] forward, Vector<float>[] backward)
     {
         var size = 2 * radius + 1;
@@ -353,8 +348,7 @@ public static class MaskBaker
         Vector<float> At(int i) => line[Math.Clamp(i - radius, 0, count - 1)];
         Vector<float> Pick(Vector<float> a, Vector<float> b) => most ? Vector.Max(a, b) : Vector.Min(a, b);
 
-        // Window by window (the block is a whole number of them): a run forward from each one's start, and back from its end,
-        // each carried along in a local rather than read back from the run it is written to.
+        // Per window: forward and backward runs, as in the scalar variant.
         for (var start = 0; start < block; start += size)
         {
             var run = forward[start] = At(start);
@@ -369,7 +363,7 @@ public static class MaskBaker
             output[i] = Pick(backward[i], forward[Math.Min(i + size - 1, block - 1)]);
     }
 
-    /// <summary>The mask moved by (dx, dy) inside its own size: what it uncovers is hidden (FFmpeg's geq with its between()s).</summary>
+    /// <summary>Shifts the mask by (dx, dy) within its own size; uncovered areas are hidden (FFmpeg geq with between()).</summary>
     private static float[] Shift(float[] mask, int width, int height, int dx, int dy)
     {
         var moved = new float[mask.Length];
@@ -389,10 +383,9 @@ public static class MaskBaker
         return moved;
     }
 
-    // A box of radius r across each row (running sums, edges clamped), as boxblur's one pass across.
-    // Four rows at a time, each with its own sum: a sum waits on its last step, so four of them side by side keep the
-    // processor busy. Each row is copied with its first and last values repeated r + 1 times beyond its ends (no position to
-    // clamp), and takes the same values in the same order as Box, so the result is the same to the bit.
+    // Box blur of radius r along each row (running sums, edges clamped), as boxblur's horizontal pass. Four rows at a time with
+    // independent sums hide the add latency. Each row is copied with its end values repeated r + 1 times beyond each end (no clamping),
+    // and sums the same values in the same order as Box, so results are bit-identical.
     private static void BoxRows(float[] mask, int width, int height, int radius)
     {
         var (pad, size) = (radius + 1, 2 * radius + 1);
@@ -435,10 +428,9 @@ public static class MaskBaker
         }
     }
 
-    // The same down each column, as boxblur's pass down: every column's running sum kept side by side and moved a row at a
-    // time, so the picture is read in rows (a column walked alone reads a cache line for every pixel). Each column takes the
-    // same values in the same order as Box along one line (the difference made in float, then added), so the result is the
-    // same to the bit. The rows a sum has still to take away are kept as they were before being written over: r + 1, in turn.
+    // Vertical box pass (boxblur's vertical pass): all column sums kept side by side and advanced a row at a time, reading in memory order.
+    // Each column sums the same values in the same order as Box (differences in float, then added), so results are bit-identical. The r + 1
+    // rows a sum must still subtract are saved, round-robin, before being overwritten.
     private static void BoxColumns(float[] mask, int width, int height, int radius)
     {
         var (sums, kept, size) = (new double[width], new float[(radius + 1) * width], 2 * radius + 1);
@@ -455,7 +447,7 @@ public static class MaskBaker
         }
     }
 
-    // sums[x] += row[x], each value widened to double first (as Box's first sum).
+    // sums[x] += row[x], widened to double first (as Box's initial sum).
     private static void AddRow(Span<double> sums, ReadOnlySpan<float> row)
     {
         var x = 0;
@@ -491,7 +483,7 @@ public static class MaskBaker
             row[x] = (float)(sums[x] / size);
     }
 
-    // sums[x] += add[x] - take[x], the difference made in float and then widened, as Box moves its sum along.
+    // sums[x] += add[x] - take[x], difference in float then widened, as Box advances its sum.
     private static void MoveRow(Span<double> sums, ReadOnlySpan<float> add, ReadOnlySpan<float> take)
     {
         var x = 0;

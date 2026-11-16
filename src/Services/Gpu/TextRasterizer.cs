@@ -8,18 +8,15 @@ using HandPegApp.Models;
 namespace HandPegApp.Services.Gpu;
 
 /// <summary>
-/// Words drawn by WPF into stills for the GPU engine (<see cref="GpuResourceKind.Still2D"/>, BGRA8 straight alpha), as the
-/// export draws them: a text clip as FFmpeg's drawtext writes it (the export's graph before 5.2-Audit, AppendTextSource: the same
-/// layout, TextLayout, the same font, size, colours and outline, each line centred on its baseline), drawn whole and cut
-/// by its crop; and the captions as libass draws the .ass file the export burns in (CaptionGenerator.WriteAss: bold, the
-/// style's colours, outline and size at the caption box's scale, centred at the box's bottom margin).
-/// <para>A caption is one still per cue, every state of it stacked in it (a caption's words while TikTok Pop has each one
-/// of them up, or Karaoke Sweep's words before and after they are sung), so one resource is enough for all its moments:
-/// the plan picks a state by its crop, and sweeps a karaoke line by cutting the sung state at the sweep.</para>
-/// <para>WPF draws on the UI thread: text clips when a plan is made (cached by their content), captions near the playhead
-/// in <see cref="PrepareAround"/> (a budget per call, the rest next call). A caption not drawn yet is not shown for that
-/// frame: nothing ever waits for one. What the thread that evaluates plans reads (<see cref="CueAt"/>) is published whole and
-/// read lock-free.</para>
+/// Renders text with WPF into stills for the GPU engine (<see cref="GpuResourceKind.Still2D"/>, BGRA8 straight alpha), matching the
+/// export: text clips laid out as FFmpeg drawtext does (TextLayout: same font, size, colours and outline, each line centred on its
+/// baseline), drawn whole and cut by the crop; captions as libass renders the burned-in .ass (CaptionGenerator.WriteAss: bold, style
+/// colours, outline and size at the caption box scale, centred on the bottom margin).
+/// <para>Each caption cue is one still with all its states stacked (TikTok Pop's per-word highlight, Karaoke Sweep's unsung/sung), so one
+/// resource serves every moment: the plan picks a state by crop and sweeps karaoke by cropping the sung state.</para>
+/// <para>WPF renders on the UI thread: text clips at plan build (cached by content), captions near the playhead in
+/// <see cref="PrepareAround"/> (time-budgeted, remainder next call). An undrawn caption is skipped for that frame; nothing waits. Data the
+/// evaluating thread reads (<see cref="CueAt"/>) is published atomically and read lock-free.</para>
 /// </summary>
 public sealed class TextRasterizer
 {
@@ -30,9 +27,8 @@ public sealed class TextRasterizer
     // ----- Text clips -----
 
     /// <summary>
-    /// A text layer's words drawn on a see-through canvas of <paramref name="width"/> x <paramref name="height"/> pixels,
-    /// as drawtext draws them there: the layout's lines at its scale to the canvas, each centred across, its baseline where
-    /// the layout puts it; the outline round the letters, under them.
+    /// Renders a text layer on a transparent <paramref name="width"/> x <paramref name="height"/> canvas as drawtext does: layout lines scaled
+    /// to the canvas, each centred horizontally at its layout baseline, with the outline drawn beneath the fill.
     /// </summary>
     internal GpuResourceRef TextStill(Layer layer, int width, int height)
     {
@@ -67,7 +63,7 @@ public sealed class TextRasterizer
 
     // ----- Captions -----
 
-    /// <summary>One caption on the sequence (one .ass event, or a TikTok Pop line's events), and its still once drawn.</summary>
+    /// <summary>One caption on the sequence (one .ass event, or a TikTok Pop line's events) and its still once drawn.</summary>
     internal sealed class CaptionCue
     {
         public required double From { get; init; }
@@ -75,12 +71,12 @@ public sealed class TextRasterizer
         public required bool Pop { get; init; }
         public required string[] Words { get; init; }
 
-        /// <summary>When each word is spoken: its state (Pop) or its sweep (Karaoke) runs from its start to the next word's.</summary>
+        /// <summary>Per-word start times: a word's state (Pop) or sweep (Karaoke) runs until the next word starts.</summary>
         public required double[] WordStarts { get; init; }
 
         public required long Hash { get; init; }
 
-        // Set once on the UI thread when drawn; read by the thread that evaluates plans.
+        // Written once on the UI thread when drawn; read by the plan-evaluating thread.
         private CaptionRaster? _raster;
 
         public CaptionRaster? Raster
@@ -89,7 +85,7 @@ public sealed class TextRasterizer
             set => Volatile.Write(ref _raster, value);
         }
 
-        /// <summary>Which word is being said at a moment of the cue (0 before the second starts).</summary>
+        /// <summary>Index of the word spoken at <paramref name="t"/> (0 before the second word starts).</summary>
         public int WordAt(double t)
         {
             var word = 0;
@@ -98,14 +94,14 @@ public sealed class TextRasterizer
             return word;
         }
 
-        /// <summary>When the word's state (or sweep) ends: the next word's start, the caption's end for the last.</summary>
+        /// <summary>End of a word's state or sweep: the next word's start, or the cue end for the last word.</summary>
         public double WordEnd(int word) => word + 1 < WordStarts.Length ? WordStarts[word + 1] : To;
     }
 
     /// <summary>
-    /// A cue's still: <paramref name="States"/> pictures of the caption box stacked down it, each <paramref name="Height"/>
-    /// tall with <see cref="Gap"/> see-through rows between (so no state bleeds into the next when it is sampled), and each
-    /// word's left edge and where the next begins, in the box's pixels (a karaoke line's sweep).
+    /// A cue's still: <paramref name="States"/> images of the caption box stacked vertically, each <paramref name="Height"/> tall with
+    /// <see cref="Gap"/> transparent rows between (no bleed when sampled), plus each word's left edge and the next word's start in box pixels
+    /// (karaoke sweep).
     /// </summary>
     internal sealed record CaptionRaster(GpuResourceRef Still, int Width, int Height, int States, float[] Lefts, float[] Rights)
     {
@@ -113,7 +109,7 @@ public sealed class TextRasterizer
 
         public int TotalHeight => States * Height + (States - 1) * Gap;
 
-        /// <summary>The state's rows as fractions of the still: top and bottom.</summary>
+        /// <summary>A state's top and bottom rows as fractions of the still height.</summary>
         public (float Top, float Bottom) Rows(int state)
         {
             var top = state * (Height + Gap);
@@ -127,9 +123,9 @@ public sealed class TextRasterizer
     private (int Width, int Height) _box = (16, 16);
 
     /// <summary>
-    /// The captions to draw (on the UI thread): each line's words in sequence seconds (the anchored captions lane projected
-    /// onto the timeline: what the export's caption file is written from), the style, and what the style's sizes, given for a
-    /// 1080-pixel frame, are multiplied by (as WriteCaptionFile works it out for the box). Null or none for no captions.
+    /// Sets the captions (UI thread): per-line words in sequence seconds (the anchored captions lane projected onto the timeline, as the
+    /// export's caption file is written), the style, and the factor applied to style sizes specified for a 1080-px frame (as
+    /// WriteCaptionFile computes for the box). Null or empty clears the captions.
     /// </summary>
     public void SetCaptions(IReadOnlyList<IReadOnlyList<CaptionWord>>? lines, CaptionStyle? style, double textScale)
     {
@@ -143,7 +139,7 @@ public sealed class TextRasterizer
             if (line is not { Count: > 0 })
                 continue;
 
-            // Gone when its last word ends, unless the next caption follows within a breath (CaptionGenerator.WriteAss).
+            // A cue ends with its last word unless the next follows within the silent gap (CaptionGenerator.WriteAss).
             var (start, end) = (line[0].Start, line[^1].End);
             if (c + 1 < lines.Count && lines[c + 1] is { Count: > 0 } next && next[0].Start - end <= CaptionGenerator.SilentGapSeconds)
                 end = next[0].Start;
@@ -158,9 +154,8 @@ public sealed class TextRasterizer
 
         cues.Sort(static (a, b) => a.From.CompareTo(b.From));
 
-        // A caption drawn already keeps its still (5.0-Release): every edit hands the captions over again, and a cue made
-        // anew undrawn left the caption off the frames drawn until PrepareAround drew it again (a blink on every step of a
-        // slider dragged; in the 3D view the stack's camera swung with it). Its words, style, scale and box are its hash.
+        // Carry already-drawn stills over by hash (words, style, scale, box): every edit resubmits the captions, and undrawn new cues would
+        // blink off until PrepareAround redrew them (visible on every slider step, and as camera jumps in the 3D view).
         var before = Volatile.Read(ref _cues);
         if (before.Length > 0 && cues.Count > 0)
         {
@@ -181,7 +176,7 @@ public sealed class TextRasterizer
         Volatile.Write(ref _cues, [.. cues]);
     }
 
-    /// <summary>The caption box's size in the canvas's pixels (from the plan, as the export's caption canvas is): a new size draws every caption again.</summary>
+    /// <summary>Sets the caption box size in canvas pixels (from the plan, like the export's caption canvas); a new size redraws every caption.</summary>
     internal void UseCaptionBox(int width, int height)
     {
         var box = (Math.Max(width, 16), Math.Max(height, 16));
@@ -197,11 +192,10 @@ public sealed class TextRasterizer
     }
 
     /// <summary>
-    /// Draws the captions around a moment of the sequence that are not drawn yet (the UI thread, as the playhead moves):
-    /// those within <see cref="PrepareWindowSeconds"/> of it, nearest first, for about <see cref="PrepareBudgetMs"/> per
-    /// call; the rest on the next call. A caption whose still was let go is drawn again.
+    /// Draws undrawn captions near <paramref name="sequenceSeconds"/> (UI thread, as the playhead moves): within
+    /// <see cref="PrepareWindowSeconds"/>, nearest first, about <see cref="PrepareBudgetMs"/> per call, the rest next call. Evicted stills are redrawn.
     /// </summary>
-    /// <returns>Whether a caption was drawn (a new frame shows it).</returns>
+    /// <returns>True when a caption was drawn (a new frame will show it).</returns>
     public bool PrepareAround(double sequenceSeconds)
     {
         var cues = Volatile.Read(ref _cues);
@@ -213,7 +207,7 @@ public sealed class TextRasterizer
         var at = Math.Max(Find(cues, sequenceSeconds), 0);
         for (var step = 0; step < 2 * cues.Length; step++)
         {
-            // Outwards from the playhead: at, at + 1, at - 1, at + 2...
+            // Spiral outward from the playhead: at, at + 1, at - 1, at + 2, ...
             var i = at + (step % 2 == 0 ? step / 2 : -(step / 2 + 1));
             if (i < 0 || i >= cues.Length)
                 continue;
@@ -242,10 +236,9 @@ public sealed class TextRasterizer
     }
 
     /// <summary>
-    /// For an export (5.1-Polish, the user's Q2: the captions through the GPU stack; on the thread that owns the broker then,
-    /// an STA one): draws every caption on between <paramref name="fromSeconds"/> and <paramref name="toSeconds"/> that is not
-    /// drawn yet, however long that takes, and keeps those drawn (the rest are let go as the table fills). True when the
-    /// caption on at <paramref name="fromSeconds"/>, if one is, is drawn and handed over.
+    /// Export path (captions through the GPU stack, on the broker's STA thread): draws every undrawn caption between
+    /// <paramref name="fromSeconds"/> and <paramref name="toSeconds"/> with no time budget and touches drawn ones (others are evicted as the
+    /// table fills). True when the caption visible at <paramref name="fromSeconds"/>, if any, is drawn and uploaded.
     /// </summary>
     internal bool PrepareFor(double fromSeconds, double toSeconds)
     {
@@ -273,13 +266,13 @@ public sealed class TextRasterizer
         return CueAt(fromSeconds) is not { } now || now.Raster is { } raster && _broker.StateOf(raster.Still) == GpuResourceState.Ready;
     }
 
-    /// <summary>How far either side of the playhead captions are drawn ahead, in seconds.</summary>
+    /// <summary>Caption pre-draw window either side of the playhead, seconds.</summary>
     public const double PrepareWindowSeconds = 10;
 
-    /// <summary>About how long one <see cref="PrepareAround"/> may draw for, in milliseconds.</summary>
+    /// <summary>Approximate draw-time budget per <see cref="PrepareAround"/> call, ms.</summary>
     public const double PrepareBudgetMs = 2;
 
-    /// <summary>The caption shown at a moment, if there is one (lock-free: the thread that evaluates plans).</summary>
+    /// <summary>Caption visible at <paramref name="t"/>, if any (lock-free; called on the plan-evaluating thread).</summary>
     internal CaptionCue? CueAt(double t)
     {
         var cues = Volatile.Read(ref _cues);
@@ -287,7 +280,7 @@ public sealed class TextRasterizer
         return i >= 0 && t < cues[i].To ? cues[i] : null;
     }
 
-    /// <summary>The last cue that starts at or before a moment; -1 for none.</summary>
+    /// <summary>Last cue starting at or before <paramref name="t"/> (binary search); -1 when none.</summary>
     private static int Find(CaptionCue[] cues, double t)
     {
         int low = 0, high = cues.Length - 1, found = -1;
@@ -313,11 +306,9 @@ public sealed class TextRasterizer
     }
 
     /// <summary>
-    /// A cue's states drawn as libass draws its events: bold, the font at the style's size times the scale (a size libass
-    /// takes as the line's ascent and descent together), the outline round the letters, the line centred across between
-    /// the margins (a 40th of the box at each side) and standing on the bottom margin (a 12th of it). Karaoke: its words
-    /// before they are sung (the style's colour), then sung (the highlight). TikTok Pop: one state per word, that word in
-    /// the highlight and a seventh larger.
+    /// Renders a cue's states as libass renders its events: bold, style size x scale (libass treats the size as ascent + descent), outline
+    /// beneath the fill, line centred horizontally on a bottom margin of 1/12 of the box. Karaoke: unsung (style colour), then sung
+    /// (highlight). TikTok Pop: one state per word, that word highlighted and 15 % larger.
     /// </summary>
     private CaptionRaster? DrawCue(CaptionCue cue)
     {
@@ -343,7 +334,7 @@ public sealed class TextRasterizer
         var pen = outline > 0 ? FrozenPen(edge, 2 * outline) : null;
         var space = new FormattedText(" ", CultureInfo.InvariantCulture, FlowDirection.LeftToRight, typeface, em, primary, 1.0).WidthIncludingTrailingWhitespace;
 
-        // Each state's words laid out first (a karaoke line's sweep needs where its words are, drawn now or found drawn).
+        // Lay out every state first (the karaoke sweep needs word positions whether drawn now or found cached).
         var (lefts, rights) = (new float[cue.Words.Length], new float[cue.Words.Length]);
         var layouts = new (FormattedText Text, double X)[states][];
         for (var state = 0; state < states; state++)
@@ -393,7 +384,7 @@ public sealed class TextRasterizer
 
     // ----- Drawing -----
 
-    /// <summary>Draws into a see-through picture of the given size and gives it back as BGRA8 with straight alpha (WPF draws premultiplied).</summary>
+    /// <summary>Renders into a transparent bitmap of the given size and returns BGRA8 with straight alpha (WPF renders premultiplied).</summary>
     private static (byte[] Pixels, int Width, int Height)? Draw(int width, int height, Action<DrawingContext> draw)
     {
         try
@@ -425,7 +416,7 @@ public sealed class TextRasterizer
         }
     }
 
-    /// <summary>#RRGGBB as drawtext and the caption file read it; anything else is the fallback.</summary>
+    /// <summary>Parses #RRGGBB as drawtext and the caption file do; anything else yields the fallback.</summary>
     private static Color Colour(string? text, Color fallback)
     {
         var hex = (text ?? "").Trim().TrimStart('#');

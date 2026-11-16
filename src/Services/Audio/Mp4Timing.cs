@@ -5,25 +5,23 @@ using System.IO;
 namespace HandPegApp.Services.Audio;
 
 /// <summary>
-/// When an MP4 / MOV track's first sample is presented, as FFmpeg's mov demuxer has it (5.0C): the edit list's leading
-/// empty edits (the track starts that much later), its first edit's media time (what FFmpeg skips: an AAC encoder's
-/// priming samples, a video's composition delay), and the first sample's composition offset. FFmpeg's first presented
-/// pts of a track is emptyEdit + firstCts - mediaTime; its sound's decoded sample k is at emptyEdit + (k - mediaTime) / rate.
-/// Media Foundation's Source Reader may or may not apply the same list, so the decoder counts samples from MF's own first
-/// one and places them by these numbers, which come from the file and are the same whatever reads it.
+/// MP4/MOV track presentation timing as FFmpeg's mov demuxer computes it: leading empty edits (track delay), the first edit's media
+/// time (skipped samples: AAC priming, video composition delay) and the first sample's composition offset. FFmpeg's first pts is
+/// emptyEdit + firstCts - mediaTime; decoded audio sample k is at emptyEdit + (k - mediaTime) / rate. The MF Source Reader may or may
+/// not apply the edit list, so the decoder counts from MF's first sample and places samples by these file-derived values.
 /// </summary>
 internal static class Mp4Timing
 {
-    /// <summary>One track: its handler ("soun", "vide"), its time scale, and the three numbers (seconds).</summary>
+    /// <summary>One track: handler ("soun", "vide"), time scale, and the three timing values in seconds.</summary>
     public sealed record Track(string Handler, uint TimeScale, double EmptyEdit, double MediaTime, double FirstCts)
     {
-        /// <summary>FFmpeg's presentation time of the track's first sample (its first frame, its first sound after the priming).</summary>
+        /// <summary>FFmpeg presentation time of the track's first sample (first frame, or first sound after priming).</summary>
         public double FirstPts => EmptyEdit + FirstCts - MediaTime;
     }
 
     private static readonly ConcurrentDictionary<string, (long Length, long Written, Track[]? Tracks)> Known = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>The file's tracks in their order, or null for a file that is not an MP4 / MOV (or cannot be read). Learnt once per file as it is.</summary>
+    /// <summary>Tracks in file order; null when not MP4/MOV or unreadable. Cached per path, length and write time.</summary>
     public static Track[]? Read(string path)
     {
         long length, written;
@@ -63,7 +61,7 @@ internal static class Mp4Timing
         using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096, FileOptions.RandomAccess);
         Span<byte> header = stackalloc byte[16];
 
-        // The top level: an MP4 starts with ftyp (or a box of its own family); moov may be anywhere, at the end for most recorders.
+        // Top level: an MP4 starts with ftyp (or a related box type); moov may be anywhere, usually at the end for recorders.
         long at = 0;
         var first = true;
         while (at + 8 <= file.Length)
@@ -94,8 +92,7 @@ internal static class Mp4Timing
 
             if (type == "moov")
             {
-                // Bounded by the file itself as well as by 256 MB: a moov that claims more than the file holds is refused before
-                // anything is allocated for it.
+                // Bounded by both the file size and 256 MB: an oversized moov is rejected before allocating.
                 if (size > 256L << 20 || at + size > file.Length)
                     return null;
                 var moov = new byte[size - body];
@@ -160,7 +157,7 @@ internal static class Mp4Timing
         if (scale == 0 || handler.Length == 0)
             return null;
 
-        // Leading empty edits (media time -1) delay the track; the first real one says where in the media it starts.
+        // Leading empty edits (media time -1) delay the track; the first real edit gives the media start.
         if (edits.Length >= 8)
         {
             var version = edits[0];
@@ -185,7 +182,7 @@ internal static class Mp4Timing
         return new Track(handler, scale, emptyEdit, (double)mediaTime / scale, (double)firstCts / scale);
     }
 
-    // The first sample's composition offset (ctts), in the track's units; 0 without one (a fragmented file keeps it in its fragments).
+    // First sample's composition offset (ctts) in track units; 0 when absent (fragmented files keep it in the fragments).
     private static long FirstCompositionOffset(ReadOnlySpan<byte> minf)
     {
         foreach (var (type, box) in Children(minf))
@@ -208,7 +205,7 @@ internal static class Mp4Timing
             chars[i] = (char)bytes[i];
     });
 
-    /// <summary>The boxes inside a box's body (each: its type and its body), as slices of the parent: nothing is copied.</summary>
+    /// <summary>Child boxes of a box body (type and body) as zero-copy slices of the parent.</summary>
     private static Boxes Children(ReadOnlySpan<byte> data) => new(data);
 
     private readonly ref struct Boxes(ReadOnlySpan<byte> data)
@@ -242,7 +239,7 @@ internal static class Mp4Timing
                 size = _data.Length - _at;
             }
 
-            // A child larger than its parent (or smaller than its own header) ends the walk; sizes are compared in 64 bits.
+            // A child larger than its parent (or smaller than its header) ends the walk; sizes compare in 64 bits.
             if (size < body || size > _data.Length - _at)
                 return false;
             Current = new Box(type, _data[(_at + body)..(int)(_at + size)]);

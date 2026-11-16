@@ -4,7 +4,7 @@
         Title="Save Clip to Personal Clip Library" Width="440" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-    <!-- A clip's span kept in the user's own library (Services/ClipLibrary.cs): its title, its tags, and what is kept. -->
+    <!-- Saves a clip span to the Personal Clip Library (Services/ClipLibrary.cs): title, tags and a summary. -->
     <StackPanel Margin="16">
         <TextBlock x:Name="WhatText" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10" />
         <TextBlock Text="Title:" Margin="0,0,0,4" />

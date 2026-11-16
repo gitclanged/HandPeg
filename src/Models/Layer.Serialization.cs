@@ -8,8 +8,8 @@ namespace HandPegApp.Models;
 public sealed partial class Layer
 {
     /// <summary>
-    /// The look's fields this version does not know (<see cref="LayerState.Extra"/>, a newer HandPeg's), taken by <see cref="FromState"/>
-    /// and written back by <see cref="ToState"/>, so a look edit does not drop them. Never changed after it is read.
+    /// Unknown look fields (<see cref="LayerState.Extra"/>) captured by <see cref="FromState"/> and re-emitted by <see cref="ToState"/>
+    /// so edits do not drop them. Immutable after read.
     /// </summary>
     internal Dictionary<string, System.Text.Json.JsonElement>? UnknownState { get; init; }
 
@@ -119,13 +119,13 @@ public sealed partial class Layer
     /// <summary>A saved length of a fade or a crossfade: not below 0, nor beyond a minute.</summary>
     private static double Seconds(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 60) : 0;
 
-    /// <summary>A saved transition style, one that exists (an unknown number, from a later HandPeg, is a dissolve).</summary>
+    /// <summary>Validated transition style (unknown values map to dissolve).</summary>
     private static TransitionStyle Style(TransitionStyle saved) => Enum.IsDefined(saved) ? saved : TransitionStyle.Dissolve;
 
     /// <summary>A saved crop, held to what leaves something of the layer: at most 95% from one edge.</summary>
     private static double Crop(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 0.95) : 0;
 
-    /// <summary>Takes the look of a saved layer (style, mask, key, filters, turning) and leaves place, size and timing as they are.</summary>
+    /// <summary>Applies a saved look (style, mask, key, filters, rotation), keeping position, size and timing.</summary>
     public void ApplyLook(LayerState? state)
     {
         state ??= new LayerState();
@@ -150,9 +150,8 @@ public sealed partial class Layer
         (SourceX, SourceY, SourceWidth, SourceHeight) = (state.SourceX, state.SourceY, state.SourceWidth, state.SourceHeight);
 
     /// <summary>
-    /// Takes what places a saved layer on the frame: its corner,
-    /// size and shape, its turn and anchor, its crop and its blur fill. Its corner goes where the state says, however the
-    /// layer grows when it is sized.
+    /// Applies saved placement: corner, size, shape, rotation, anchor, crop and blur fill. The corner lands exactly as saved regardless
+    /// of resize anchoring.
     /// </summary>
     public void ApplyPlace(LayerState state)
     {
@@ -170,8 +169,7 @@ public sealed partial class Layer
     }
 
     /// <summary>
-    /// Rebuilds a layer from saved state. Presets saved before positions became fractions hold pixel
-    /// values; those are converted using the sizes given (or 1920 x 1080 and 1080 x 1920 when unknown).
+    /// Rebuilds a layer from saved state, converting legacy pixel positions with the given sizes (default 1920 x 1080 / 1080 x 1920).
     /// </summary>
     public static Layer FromState(LayerState state, int sourceWidth, int sourceHeight, int frameWidth, int frameHeight)
     {
@@ -288,8 +286,8 @@ public sealed partial class Layer
 public sealed class LayerState
 {
     /// <summary>
-    /// A copy whose own values can be set without touching this one's, sharing its lists (keys, effects, filters): for
-    /// a layer to be made from a look with some values changed, by <see cref="Layer.FromState"/>, which copies the lists.
+    /// Shallow copy sharing lists (keys, effects, filters) for building a layer from a modified look via <see cref="Layer.FromState"/>
+    /// (which copies the lists).
     /// </summary>
     internal LayerState ShallowCopy() => (LayerState)MemberwiseClone();
 
@@ -332,11 +330,11 @@ public sealed class LayerState
     public bool Shadow { get; set; }
     public double ShadowOpacity { get; set; } = 0.5;
 
-    /// <summary>The shadow's offset on both axes, as layers saved before 4.1.1-B have it. Read into the distance; never written.</summary>
+    /// <summary>Legacy two-axis shadow offset; read into the distance, never written.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public int? ShadowOffset { get; set; }
 
-    /// <summary>Null in layers saved before 4.1.1-B (their <see cref="ShadowOffset"/> then says how far).</summary>
+    /// <summary>Null in legacy layers (use <see cref="ShadowOffset"/>).</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public int? ShadowDistance { get; set; }
 
@@ -353,12 +351,11 @@ public sealed class LayerState
     public const double DefaultShadowAngle = 135;
     public const int DefaultShadowSoftness = 8;
 
-    /// <summary>The softness a shadow saved before 4.1.1-B is given: the 2 px blur it was always drawn with.</summary>
+    /// <summary>Softness for legacy shadows: their fixed 2 px blur.</summary>
     private const int EarlierShadowSoftness = 2;
 
     /// <summary>
-    /// The distance, or for a layer saved with an offset on both axes the distance that moves it just as far
-    /// (at 135 degrees: an offset of 10 is a distance of 14, which comes back as 10 right and 10 down).
+    /// Shadow distance, or the equivalent distance for a legacy two-axis offset (at 135 degrees, offset 10 becomes distance 14).
     /// </summary>
     public int ReadShadowDistance() =>
         ShadowDistance is { } distance ? Math.Clamp(distance, 0, 100)
@@ -382,7 +379,7 @@ public sealed class LayerState
     public bool MaskInvert { get; set; }
     public string? MaskShapes { get; set; }
 
-    // Percent of the layer's width and height (4.2B-1); left out of the file at 0, so older projects read the same.
+    // Percent of layer width/height; omitted at 0 so older projects read unchanged.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public double MaskOffsetX { get; set; }
 
@@ -393,7 +390,7 @@ public sealed class LayerState
     public double CropTop { get; set; }
     public double CropBottom { get; set; }
 
-    /// <summary>The clip's blur fill (see <see cref="Layer.BlurFill"/>): null, its kind's, is left out of the file.</summary>
+    /// <summary>Clip blur fill (<see cref="Layer.BlurFill"/>); null (kind default) is omitted.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public bool? BlurFill { get; set; }
 
@@ -402,8 +399,8 @@ public sealed class LayerState
     public double MediaOffset { get; set; }
     public double Speed { get; set; } = 1;
 
-    // The Speed & Time card's options (5.6.0, Layer.Speed.cs): null is the default (Smooth Slow-Mo off, Keep Pitch on, Spectral
-    // Audio off) and is left out of the file, so older projects read the same and a clip that keeps the defaults writes nothing.
+    // Speed & Time card options (Layer.Speed.cs): null = defaults (Smooth Slow-Mo off, Keep Pitch on, Spectral Audio off), omitted
+    // from the file so older projects read unchanged.
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public bool? SmoothSlowMo { get; set; }
 
@@ -419,7 +416,7 @@ public sealed class LayerState
     public bool IsDeleted { get; set; }
     public bool HasAudio { get; set; }
 
-    /// <summary>Which audio stream of its file a lowered clip is heard from (TimelineClip.AudioStreamIndex): the document says, so it is never saved here.</summary>
+    /// <summary>Audio stream index of a lowered clip; owned by TimelineClip.AudioStreamIndex, never saved here.</summary>
     [System.Text.Json.Serialization.JsonIgnore]
     public int AudioStream { get; set; }
     public double AudioOffset { get; set; }
@@ -434,7 +431,7 @@ public sealed class LayerState
     public double TransitionIn { get; set; }
     public double Rotation { get; set; }
 
-    /// <summary>True 3D (5.2A): its Pitch and Yaw in degrees (see Layer.TiltX); 0, and left out of a project, for a flat one.</summary>
+    /// <summary>3D pitch and yaw in degrees (Layer.TiltX); 0 (omitted) for flat layers.</summary>
     public double TiltX { get; set; }
     public double TiltY { get; set; }
 
@@ -454,9 +451,8 @@ public sealed class LayerState
     public string FilterLut { get; set; } = "";
 
     /// <summary>
-    /// The effect stack, in order (see Models/Effects). Null in what was saved before stacks: the flips and filters
-    /// above, and the key, mask, edges and shadow, are then made into cards in the order they were applied.
-    /// The Flip and Filter values above are read only then; a layer with a stack writes them as defaults.
+    /// Ordered effect stack (Models/Effects). Null in legacy files: flips, filters, key, mask, edges and shadow are converted to cards in
+    /// original order. The legacy Flip/Filter fields are read only then and written as defaults.
     /// </summary>
     public List<EffectState>? Effects { get; set; }
 
@@ -494,9 +490,8 @@ public sealed class LayerState
     public List<Keyframe>? KeysTiltY { get; set; }
 
     /// <summary>
-    /// Every keyframed motion channel of a look, in one list. The timeline's timing transforms (a split, a join, a trim's shift, a
-    /// speed change: TimelineTransaction.Looks) walk this list, so a channel listed here moves with its clip; the motion-channels
-    /// golden fails when a <see cref="List{Keyframe}"/> property of the look is missing from it.
+    /// All keyframed motion channels of a look. Timing transforms (split, join, trim shift, speed change; TimelineTransaction.Looks)
+    /// iterate this list; golden motion-channels fails if any <see cref="List{Keyframe}"/> property is missing.
     /// </summary>
     internal static readonly MotionChannel[] MotionChannels =
     [

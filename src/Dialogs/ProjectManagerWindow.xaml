@@ -5,7 +5,7 @@
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <Window.Resources>
-        <!-- One side of the mode bar (New Project | Open / Manage Projects | Project Settings): the mode shown is filled with the accent -->
+        <!-- Mode bar segment (New Project | Open / Manage Projects | Project Settings); active mode filled with accent -->
         <Style x:Key="ModeButton" TargetType="RadioButton">
             <Setter Property="GroupName" Value="StudioMode" />
             <Setter Property="Cursor" Value="Hand" />
@@ -30,7 +30,7 @@
             </Setter>
         </Style>
 
-        <!-- A card of related settings: its title, then its rows (the inspector cards' look: 6 px corners, 12 px inside, 8 px between rows) -->
+        <!-- Settings card: title then rows (inspector card style: 6 px radius, 12 px padding, 8 px row gap) -->
         <Style x:Key="StudioCard" TargetType="Border">
             <Setter Property="Background" Value="{DynamicResource CardBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderBrush}" />
@@ -48,7 +48,7 @@
             <Setter Property="Margin" Value="0,0,0,4" />
         </Style>
 
-        <!-- A choice shown as a card (the aspects): outlined, filled with the accent while chosen -->
+        <!-- Choice card (aspect ratios): outlined, accent-filled when selected -->
         <Style x:Key="ChoiceCard" TargetType="RadioButton">
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -80,7 +80,7 @@
     </Window.Resources>
 
     <DockPanel Margin="12">
-        <!-- The three modes (5.4A): make a new project, open or manage the saved ones, or set the open project's settings -->
+        <!-- Three modes: new project, open/manage saved projects, or edit the open project's settings -->
         <Border DockPanel.Dock="Top" HorizontalAlignment="Left" Margin="0,0,0,10" Padding="2" CornerRadius="7" Background="{DynamicResource InsetBrush}"
                 BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1">
             <StackPanel Orientation="Horizontal" AutomationProperties.Name="Project Manager Mode">
@@ -96,7 +96,7 @@
             </StackPanel>
         </Border>
 
-        <!-- What is said, and Close, under every mode -->
+        <!-- Shared status text and Close button -->
         <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
             <Button DockPanel.Dock="Right" Content="Close" Margin="6,0,0,0" MinWidth="80" IsCancel="True" />
             <TextBlock x:Name="MessageText" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,12,0" />
@@ -233,7 +233,7 @@
                     </StackPanel>
                 </ScrollViewer>
 
-                <!-- The media the project starts with: the Media Browser as a picker (a click chooses a file, or lets it go) -->
+                <!-- Initial project media: Media Browser as a picker (click toggles a file's selection) -->
                 <Border Grid.Column="2" Style="{StaticResource StudioCard}" Margin="0">
                     <DockPanel>
                         <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
@@ -256,7 +256,7 @@
                 </DockPanel>
             </Grid>
 
-            <!-- ===== Open / Manage Projects: save the open project, open a saved one, delete one ===== -->
+            <!-- ===== Open / Manage Projects: save current, open or delete saved projects ===== -->
             <DockPanel x:Name="ManageMode">
                 <Border DockPanel.Dock="Top" Style="{StaticResource Panel}" Margin="0,0,0,10">
                     <Grid>
@@ -305,7 +305,7 @@
                 </DockPanel>
                 <ListBox x:Name="ProjectList" SelectionChanged="ProjectList_SelectionChanged" MouseDoubleClick="ProjectList_MouseDoubleClick"
                          VirtualizingStackPanel.IsVirtualizing="True" VirtualizingStackPanel.VirtualizationMode="Recycling" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                    <!-- Each row is named by its project for screen readers and UI Automation (ProjectRow.Name). -->
+                    <!-- Row automation name = project name (ProjectRow.Name) for screen readers and UI Automation. -->
                     <ListBox.ItemContainerStyle>
                         <Style TargetType="ListBoxItem" BasedOn="{StaticResource {x:Type ListBoxItem}}">
                             <Setter Property="AutomationProperties.Name" Value="{Binding Name}" />
@@ -319,7 +319,7 @@
                                     <ColumnDefinition Width="*" />
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
-                                <!-- The project's baked thumbnail (else the opened video's picture), in a 16:9 box; the pointer across it scrubs through the video's frames -->
+                                <!-- Baked project thumbnail (else source video frame) in a 16:9 box; horizontal hover scrubs video frames -->
                                 <Border Width="128" Height="72" Margin="0,0,12,0" Background="#FF0E0E0E" CornerRadius="3" ClipToBounds="True"
                                         Visibility="{Binding PictureVisibility}" MouseMove="Picture_MouseMove" MouseLeave="Picture_MouseLeave"
                                         ToolTip="Move the pointer across the picture to see the video's frames.">
@@ -339,7 +339,7 @@
                 </ListBox>
             </DockPanel>
 
-            <!-- ===== Project Settings: the open project's, through one undo step ===== -->
+            <!-- ===== Project Settings: open project's settings, applied as one undo step ===== -->
             <Grid x:Name="SettingsMode" Visibility="Collapsed">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="420" MinWidth="320" />

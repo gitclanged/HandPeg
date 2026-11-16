@@ -7,20 +7,20 @@
              mc:Ignorable="po"
              Focusable="False" VerticalAlignment="Center">
     <!--
-        The title bar's project tabs (Pass 5.4A): [ • Name × ] for each open project, then [ + ]. Each tab, its ×, and + take their own
-        clicks in the title bar (WindowChrome.IsHitTestVisibleInChrome, read by MainWindow.FrameHitTest in real pixels); the gaps between
-        them and everything right of + stay the window's caption (no background here), so the window is still dragged and maximized
-        from there. Never taller than the caption (CaptionBarHeight, 26). Only dynamic theme brushes: the control is made before the
-        theme and in tests that have none. With too little room the tabs narrow to their dot and initial (Compact), and past that the
-        strip shows a run of them round the one in front and a count of the rest (+N), which lists them (ProjectTabStrip.LayoutFor):
-        the strip is never wider than the room the title bar gives it, so + and the caption right of it always stay. Pass 5.4B: tabs are
-        dragged along the strip (the strip holds the mouse; still no background, so the gaps stay caption), have a right-click menu made in
-        code as it opens, and a tab behind shows a hover card. The main window's instance starts collapsed (MainWindow.xaml), never this root.
+        Title-bar project tabs: [ • Name × ] per open project, then [ + ]. Tabs, close buttons and + are hit-testable in the chrome
+        (WindowChrome.IsHitTestVisibleInChrome, evaluated by MainWindow.FrameHitTest in physical pixels); gaps and everything right of +
+        remain window caption (no background), so the window can still be dragged and maximized from there.
+        Height never exceeds the caption (CaptionBarHeight, 26). Uses only dynamic theme brushes, since the control is built before the
+        theme and in theme-less tests. When space is short, tabs compact to dot plus initial; beyond that the strip shows a window of
+        tabs around the active one plus a +N overflow count that lists the rest (ProjectTabStrip.LayoutFor). The strip never exceeds
+        the title bar's allotted width, so + and the caption to its right always remain. Tabs can be dragged to reorder (the strip
+        captures the mouse; still no background, so gaps remain caption), have a context menu built on open, and background tabs show a
+        hover card. The main window's instance starts collapsed (MainWindow.xaml), never this root.
     -->
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="Visible" />
 
-        <!-- A tab: the project's name, a dot while it has unsaved changes, its × at the right; the one in front lit. -->
+        <!-- Tab: project name, unsaved-changes dot, close × at the right; the active tab is highlighted. -->
         <Style x:Key="TabButton" TargetType="Button">
             <Setter Property="Focusable" Value="False" />
             <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True" />
@@ -50,7 +50,7 @@
             </Setter>
         </Style>
 
-        <!-- A small glyph button of the strip: a tab's × and the + after the tabs. -->
+        <!-- Small glyph button used for a tab's × and the trailing +. -->
         <Style x:Key="GlyphButton" TargetType="Button">
             <Setter Property="Focusable" Value="False" />
             <Setter Property="WindowChrome.IsHitTestVisibleInChrome" Value="True" />
@@ -101,9 +101,9 @@
                             <TextBlock x:Name="InitialLabel" Text="{Binding Initial}" VerticalAlignment="Center" Visibility="Collapsed" />
                         </DockPanel>
                     </Button>
-                    <!-- Narrowed (Compact): the dot and the initial alone; the name is in the tooltip, and a middle click or Ctrl+W still closes it. -->
+                    <!-- Compact: dot and initial only; full name in the tooltip; middle-click or Ctrl+W still closes. -->
                     <DataTemplate.Triggers>
-                        <!-- Dragged along the strip (Pass 5.4B): drawn faded under the pointer; the gaps round it stay the caption. -->
+                        <!-- While dragged to reorder: drawn faded under the pointer; surrounding gaps remain caption. -->
                         <DataTrigger Binding="{Binding IsDragged}" Value="True">
                             <Setter TargetName="Tab" Property="Opacity" Value="0.6" />
                         </DataTrigger>
@@ -118,7 +118,7 @@
                 </DataTemplate>
             </ItemsControl.ItemTemplate>
         </ItemsControl>
-        <!-- The tabs there is no room for: their count, which lists them (shown only then). -->
+        <!-- Overflow count (+N) for tabs without room; click lists them. Shown only when overflowing. -->
         <Button x:Name="OverflowButton" Style="{StaticResource GlyphButton}" FontFamily="Segoe UI" FontSize="11" Width="28" Height="22" VerticalAlignment="Center"
                 Visibility="Collapsed" Click="Overflow_Click" AutomationProperties.Name="More Project Tabs" />
         <Popup x:Name="OverflowPopup" StaysOpen="False" AllowsTransparency="True">
@@ -140,13 +140,13 @@
             </Border>
         </Popup>
         <!--
-            A tab behind's hover card (Pass 5.4B): its paused still or saved thumbnail, its frame and frame rate, and whether it is saved.
-            Placed under the tab by UiScale.PlaceAgainst. An inspector card's surface (the outer border's panel brush shows only while a
-            theme has no card brushes). 5.4C (the user's): the picture fills the whole card in its own shape (a vertical project's card is
-            tall), cut to its corners, and the text lies over its foot on a dark band that fades up into the picture; with no picture the card
-            is the text alone, in the theme's colours. 5.4.4 (the user's): the card takes the pointer: across it, it scrubs the tab's whole
-            Sequence (HoverSurface's handlers), a click on it brings the tab to the front, and it stays open while the pointer is over the
-            tab or the card and a moment across the gap between them (HoverCardHold).
+            Background tab hover card: paused still or saved thumbnail, frame size and rate, and saved state. Placed under the tab via
+            UiScale.PlaceAgainst on an inspector card surface (the outer panel brush shows only when a theme lacks card brushes). The
+            picture fills the card at its own aspect (portrait projects get a tall card), clipped to the corners, with text over a dark
+            gradient band at its foot; without a picture the card shows text only in theme colours. The card is interactive: moving across
+            it scrubs the tab's whole Sequence (HoverSurface handlers), clicking activates the tab, and it stays open while the pointer is
+            over the tab or card plus a short grace across the gap between them
+            (HoverCardHold).
         -->
         <Popup x:Name="HoverCard" StaysOpen="True" AllowsTransparency="True" Focusable="False">
             <Border x:Name="HoverSurface" Background="{DynamicResource PanelBrush}" CornerRadius="6"
@@ -155,7 +155,7 @@
                 <Border Background="{DynamicResource InspectorCardBrush}" BorderBrush="{DynamicResource InspectorCardBorderBrush}" BorderThickness="1"
                         CornerRadius="6">
                     <Grid x:Name="HoverBody" Width="{Binding CardWidth}">
-                        <!-- The picture in its own shape (5.4C: a tall project's card is tall), its corners cut to the card's by the border. -->
+                        <!-- Picture at its own aspect (portrait projects get a tall card), clipped to the card corners by the border. -->
                         <Border x:Name="HoverPicture" Height="{Binding PictureHeight}" CornerRadius="5">
                             <Border.Background>
                                 <ImageBrush ImageSource="{Binding Preview}" Stretch="UniformToFill" RenderOptions.BitmapScalingMode="HighQuality" />
@@ -207,7 +207,7 @@
                                 <TextBlock Text="{Binding SavedText}" FontSize="11" Opacity="0.8" Margin="0,4,0,0" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
-                        <!-- 5.4.2A: where the pointer is scrubbing (5.4.4: along the tab or across the card), as a thin bar at the picture's foot (none while not scrubbing). -->
+                        <!-- Scrub position (along the tab or across the card) as a thin bar at the picture's foot; hidden when not scrubbing. -->
                         <Border x:Name="HoverScrubBar" VerticalAlignment="Bottom" HorizontalAlignment="Left" Height="2" Width="{Binding ScrubWidth}"
                                 Background="{DynamicResource AccentBrush}" Visibility="{Binding IsScrubbing, Converter={StaticResource Visible}}" />
                     </Grid>

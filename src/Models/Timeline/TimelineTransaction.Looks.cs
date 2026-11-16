@@ -5,14 +5,13 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Models.Timeline;
 
-// ----- The timeline transaction: ripple, a clip's look copied and split, and two clips joined back (split from TimelineTransaction.cs, 5.4.1-M5) -----
+// ----- Timeline transaction: ripple, look shifting/splitting, and clip re-joining -----
 internal sealed partial class TimelineTransaction
 {
     // ----- Ripple -----
 
     /// <summary>
-    /// The track a ripple starts on, or every unlocked track but the subtitles (which never ripple, as in 4.2.0); with them
-    /// (4.4) the unlocked tracks that lie under any of them, the captions' lane of a mini-stack among them.
+    /// Ripple track set: the start track, or all unlocked non-subtitle tracks, plus their unlocked child tracks (including mini-stack caption lanes).
     /// </summary>
     private List<TimelineTrackModel> RippleTracks(TimelineTrackModel track, bool all) =>
         WithChildTracks(all ? _doc.Tracks.Where(t => !t.IsLocked && (ReferenceEquals(t, track) || t.Kind != TimelineTrackKind.Subtitle)).ToList() : [track]);
@@ -30,10 +29,9 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// How much of <paramref name="delta"/> the clips from <paramref name="from"/> can move: all of it later; earlier,
-    /// only as far as lets none run into a clip that stays nor before the timeline's start (its sound neither).
-    /// <paramref name="moving"/> is a clip whose end moves with them, so that it holds none of them back, and so are its
-    /// <paramref name="riders"/> (4.4: its children that a ripple trim of it carries, <see cref="Riders"/>).
+    /// Achievable portion of <paramref name="delta"/> for clips from <paramref name="from"/>: all of it when later; when earlier, limited by
+    /// collisions with stationary clips and time 0 (audio included). <paramref name="moving"/> and its <paramref name="riders"/>
+    /// (<see cref="Riders"/>) move with them and never block.
     /// </summary>
     private double RippleLimit(IReadOnlyList<TimelineTrackModel> tracks, double from, double delta, TimelineClip? moving,
                                List<(TimelineTrackModel Track, TimelineClip Clip)>? riders = null) =>
@@ -59,8 +57,7 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// The clip on a track that stays where it is just before the first that moves (<paramref name="first"/>), or null: not
-    /// <paramref name="moving"/>, whose end moves with them; riders (whose ends move with it, or which go) are passed over.
+    /// Last stationary clip before <paramref name="first"/>, or null; skips <paramref name="moving"/> and riders.
     /// </summary>
     private static TimelineClip? Staying(List<TimelineClip> clips, int first, TimelineClip? moving, List<(TimelineTrackModel Track, TimelineClip Clip)>? riders)
     {
@@ -74,8 +71,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// Moves every clip that starts at or after <paramref name="from"/> on these tracks by one amount (see
-    /// <see cref="RippleLimit"/>), and looks at the crossfades of every track again. Returns the amount moved.
+    /// Shifts all clips starting at/after <paramref name="from"/> on these tracks by one clamped amount (<see cref="RippleLimit"/>) and
+    /// reconciles crossfades. Returns the amount moved.
     /// </summary>
     private double Ripple(IReadOnlyList<TimelineTrackModel> tracks, double from, double delta, TimelineClip? moving,
                           List<(TimelineTrackModel Track, TimelineClip Clip)>? riders = null)
@@ -94,7 +91,7 @@ internal sealed partial class TimelineTransaction
                 Remember(clip);
                 var start = Moved(clip.Start, delta, whole);
 
-                // Put back on its frame, the first to move may land a microsecond before the end of a free clip that holds it back: it meets it instead.
+                // Frame snapping can land 1 us before a free-trimmed blocker's end: abut it exactly instead.
                 if (i == first[t] && stays is not null && start < stays.End)
                     start = stays.End;
                 SetSpan(clip, start, Moved(clip.End, delta, whole));
@@ -106,13 +103,12 @@ internal sealed partial class TimelineTransaction
         return moves ? delta : 0;
     }
 
-    // ----- A speed that ripples (5.6.0) -----
+    // ----- Rippling speed change -----
 
     /// <summary>
-    /// A clip's speed set (<see cref="Respeed"/>), and everything that started at or after its old end on the ripple tracks moved by
-    /// as much as its end moved, earlier or later (as far as a ripple can move them earlier: <see cref="Ripple"/>). Respeed itself moves
-    /// what the clip grows into on its own track; when it did, the ripple moves the other tracks alone, so nothing moves twice. Grown,
-    /// its speed family grows here too, after the ripple (5.6.0); shrunk, the caller has set theirs first.
+    /// Sets speed (<see cref="Respeed"/>) and ripples everything from the old end by the end delta (limited as <see cref="Ripple"/>).
+    /// If Respeed already pushed its own track, only the other tracks ripple (no double move). On growth the speed family is respeeded
+    /// here after the ripple; on shrink the caller respeeds it first.
     /// </summary>
     private double RespeedRippling(TimelineClip clip, double speed, bool free, bool all)
     {
@@ -122,10 +118,8 @@ internal sealed partial class TimelineTransaction
         var next = index >= 0 && index + 1 < track.Clips.Count ? track.Clips[index + 1] : null;
         var nextStart = next?.Start ?? 0;
 
-        // 5.6.0: what rides it, as what rides a ripple trim of its end does (Riders): its children on its end or in the stretch it may give
-        // up, taken on its old span (from its start: one that ends before its new end is never run into, as every clip that moves lands at
-        // or after that end), so that none holds the ripple back. Its speed family is not among them: the caller sets their speed as its own
-        // (first when it shrinks), and when it grows they are respeeded here, after the ripple (below).
+        // Riders as for a ripple trim (Riders), computed on the old span so none blocks the ripple. The speed family is excluded: the
+        // caller respeeds it (first on shrink) or it is respeeded below after the ripple (on growth).
         var riders = Riders(clip, head: false, lostFrom: start);
         riders?.RemoveAll(r => IsSpeedFamily(clip, r.Clip));
         if (riders is { Count: 0 })
@@ -141,10 +135,8 @@ internal sealed partial class TimelineTransaction
             tracks.RemoveAll(t => ReferenceEquals(t, track));
         var whole = WholeFrames(delta);
 
-        // 5.6.0: shrunk, how far what follows can come back (the answer Ripple's own Limit gives after the Ride: Staying passes over
-        // riders, and none starts at or after its old end). Held back (another track's clips meet across the cut), nothing comes back into
-        // a rider's place: one left too short stays where it is, unlinked, as on a track the ripple does not close up, and never goes.
-        // Only those still linked then pass for riders, so one left where it was holds back what would slide into it on its own track.
+        // On shrink, compute how far followers can return (Ripple's limit after riding). If blocked by another track, nothing fills a rider's
+        // gap: short riders are unlinked in place rather than removed, and only still-linked riders are skipped as blockers.
         var held = delta < 0 && RippleLimit(tracks, oldEnd, delta, clip, riders) > delta + Slack / 1000;
         if (riders is not null && delta < 0)
             Ride(riders, start, oldEnd, clip.End, delta, whole, head: false, free, held ? [] : tracks);
@@ -154,9 +146,8 @@ internal sealed partial class TimelineTransaction
         if (riders is not null && delta > 0)
             Ride(riders, start, oldEnd, clip.End, delta, whole, head: false, free, tracks);
 
-        // 5.6.0: grown, its speed family (its streams' lanes, its Cutouts) grows now, after the ripple moved what follows (so nothing
-        // moves twice) and before the crossfades are looked at, so that a lane's clip meets the one after it again and keeps its crossfade.
-        // The caller's own pass over them afterwards finds each at its speed already (and still sets them when its end could not move).
+        // On growth, respeed the speed family (Sub-Lane streams, Cutouts) after the ripple (no double move) and before crossfade reconciliation
+        // so lane clips re-abut and keep crossfades. The caller's later pass is then a no-op (still applied when the end could not move).
         if (delta > 0)
         {
             foreach (var child in _doc.Tracks.SelectMany(t => t.Clips).Where(c => IsSpeedFamily(clip, c)).ToList())
@@ -166,11 +157,11 @@ internal sealed partial class TimelineTransaction
         return set;
     }
 
-    /// <summary>A clip of a speed's family (5.6.0): its child that plays its own file, at the same moment (MainViewModel.SetClipSpeed's test).</summary>
+    /// <summary>Speed-family test: a child playing the same file at the same time (as MainViewModel.SetClipSpeed).</summary>
     private static bool IsSpeedFamily(TimelineClip clip, TimelineClip child) =>
         child.ParentClipId == clip.Id && child.PlaysFile && string.Equals(child.SourcePath, clip.SourcePath, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>On each track, the clip a ripple from <paramref name="from"/> moves first and the clip just before it (5.6.0), where both exist.</summary>
+    /// <summary>Per track, the first clip a ripple from <paramref name="from"/> moves and its predecessor, when both exist.</summary>
     private static List<(TimelineTrackModel Track, TimelineClip Before, TimelineClip First)> SeamsAt(IReadOnlyList<TimelineTrackModel> tracks, double from)
     {
         var first = FirstMovers(tracks, from);
@@ -184,10 +175,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// The crossfades a speed's ripple closed up again (5.6.0): its Respeed (and its family's, set first when it shrinks) parted each
-    /// seam before the ripple brought what follows back, or (grown) the ripple moved what follows before its family grew back up to it
-    /// (RespeedRippling), and Reconcile took their crossfades. Where two clips that met before this
-    /// transaction meet again, the crossfade they had comes back, held to what fits (as Crossfade holds it).
+    /// Restores crossfades lost while a rippling respeed temporarily separated seams (RespeedRippling, then Reconcile): pairs that abutted
+    /// before the transaction and abut again regain their crossfade, clamped as Crossfade does.
     /// </summary>
     private void KeepCrossfades(List<(TimelineTrackModel Track, TimelineClip Before, TimelineClip First)> seams)
     {
@@ -215,11 +204,9 @@ internal sealed partial class TimelineTransaction
         JsonSerializer.Deserialize<LayerState>(JsonSerializer.SerializeToUtf8Bytes(state, CopyOptions), CopyOptions) ?? new LayerState();
 
     /// <summary>
-    /// A look with every keyframe, effect keyframe and effect range moved by <paramref name="seconds"/>, as
-    /// <see cref="Layer.ShiftKeys"/> moves a layer's, but to the microsecond (the grain of a quantized time, so that keys
-    /// stay on their frames at NTSC rates) and with ranges not held at 0 (so that a trim and its undoing give the range
-    /// back whole): for a clip whose start moved while what it shows stayed. A copy, unless <paramref name="inPlace"/> or
-    /// nothing moves.
+    /// Shifts all keyframes and effect keys/ranges by <paramref name="seconds"/> like <see cref="Layer.ShiftKeys"/>, but rounded to 1 us
+    /// (keeps NTSC keys on frames) and without clamping ranges at 0 (trim and undo round-trip). Used when the start moves but content stays.
+    /// Returns a copy unless <paramref name="inPlace"/> or zero shift.
     /// </summary>
     private static LayerState Shifted(LayerState state, double seconds, bool inPlace = false)
     {
@@ -241,7 +228,7 @@ internal sealed partial class TimelineTransaction
                 effect.Range = [Math.Round(from + seconds, 6), Math.Round(to + seconds, 6)];
         }
 
-        // Studio Voice's mix keys (5.2B) count from the clip's start as its motion does, so they stay on the same moments of its sound.
+        // Studio Voice mix keys are clip-relative too; shift them to stay aligned with the audio.
         if (look.AudioFilters is { } filters)
             filters.StudioVoiceMixKeys = Shift(filters.StudioVoiceMixKeys);
         return look;
@@ -251,24 +238,21 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// Whether a look has anything placed in time: keyframes, an effect's keyframes or its range, Studio Voice's mix keys (5.2B: on the
-    /// clip's clock, as its motion is).
+    /// True when the look has time-based data: keyframes, effect keys or ranges, or Studio Voice mix keys.
     /// </summary>
     private static bool IsTimed(LayerState state) =>
         LayerState.MotionChannels.Any(channel => channel.Get(state) is { Count: > 0 })
         || state.Effects?.Any(e => e.Keys is { Count: > 0 } || e.Range is not null) == true
         || state.AudioFilters?.StudioVoiceMixKeys is { Count: > 0 };
 
-    // ----- A look split with its clip (4.3D): each half keeps its own keyframes, baked at the cut -----
+    // ----- Look splitting: each half keeps its keyframes with a baked key at the cut -----
 
     // How near the cut a keyframe is on it (keys are kept to the microsecond).
     private const double KeyOnCut = 5e-7;
 
     /// <summary>
-    /// The looks of the two halves of a clip split <paramref name="cut"/> seconds into it, each a copy: every keyframe
-    /// and effect keyframe goes to the half it is in (the second's counted from the cut), with a key on the cut where a
-    /// stretch runs across it (<see cref="SplitKeys"/>); an effect's range that runs across the cut ends there on the first
-    /// half and starts there on the second, one wholly on one side moves with it. Neither half jumps or changes its motion.
+    /// Splits a look at <paramref name="cut"/> into two copies: keys go to their half (second rebased to the cut) with a baked key at the
+    /// cut where a segment crosses it (<see cref="SplitKeys"/>); crossing effect ranges are cut, others follow their side. Motion is preserved.
     /// </summary>
     private static (LayerState First, LayerState Second) SplitLook(LayerState state, double cut)
     {
@@ -304,7 +288,7 @@ internal sealed partial class TimelineTransaction
             }
         }
 
-        // Studio Voice's mix keys (5.2B), on the clip's clock: each half keeps its own, so its automation stays on its sound.
+        // Split Studio Voice mix keys the same way so automation stays on the audio.
         if (state.AudioFilters is { } filters && first.AudioFilters is { } firstFilters && second.AudioFilters is { } secondFilters)
             (firstFilters.StudioVoiceMixKeys, secondFilters.StudioVoiceMixKeys) = SplitKeys(filters.StudioVoiceMixKeys, cut);
 
@@ -312,11 +296,9 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// One property's keyframes for the two halves of a clip split <paramref name="cut"/> seconds into it: each half keeps
-    /// the keys on its side (the second's moved back by the cut), a key on the cut going to both. Where a stretch runs
-    /// across the cut, each half gets a key on it with the value there (as <see cref="EasingCurves.ValueAt"/> works it
-    /// out, as the graph does), and each half's stretch is its part of the curve (<see cref="EasingCurves.Cut"/>), so that
-    /// the motion on either side is exactly what it was. A half with none of the keys holds the value it had.
+    /// Splits one property's keys at <paramref name="cut"/>: each half keeps its side (second rebased), a key exactly at the cut goes to
+    /// both. A crossing segment gets a key at the cut (<see cref="EasingCurves.ValueAt"/>) and each half keeps its curve portion
+    /// (<see cref="EasingCurves.Cut"/>), preserving motion exactly. A half with no keys holds its value.
     /// </summary>
     private static (List<Keyframe>? First, List<Keyframe>? Second) SplitKeys(List<Keyframe>? keys, double cut)
     {
@@ -346,13 +328,12 @@ internal sealed partial class TimelineTransaction
         return (earlier, [right with { Time = 0, Value = value }, .. later]);
     }
 
-    // ----- Two clips joined back into one (4.4-BugHunt): a split undone, where a fold opened at an edge shows its piece -----
+    // ----- Re-joining split clips (partial fold reveal) -----
 
     /// <summary>
-    /// The look of two clips joined into one, the second starting <paramref name="cut"/> seconds after the first (a split
-    /// undone): the first's keys and the second's moved on by the cut (<see cref="JoinKeys"/>), an effect's range that a split
-    /// cut in two whole again; with nothing timed in either, the second's look (<paramref name="keepSecond"/>) or the
-    /// first's. Null when the two are not one look cut in two: anything else differs, or their keys do not join.
+    /// Joined look for two clips where the second starts <paramref name="cut"/> after the first: keys merged (<see cref="JoinKeys"/>) and
+    /// split ranges reunited; with no timed data, the second's look (<paramref name="keepSecond"/>) or the first's. Null when they are not
+    /// halves of one look (other differences or non-joinable keys).
     /// </summary>
     private static LayerState? JoinLook(LayerState first, LayerState second, double cut, bool keepSecond)
     {
@@ -399,7 +380,7 @@ internal sealed partial class TimelineTransaction
         return look;
     }
 
-    /// <summary>A look as JSON without where its keys, and its effects' keys and ranges, lie in time: what the two halves of a split share.</summary>
+    /// <summary>Look JSON with timing removed (keys, effect keys, ranges): the part shared by split halves.</summary>
     private static string Timeless(LayerState look)
     {
         var node = JsonSerializer.SerializeToNode(look, CopyOptions);
@@ -423,11 +404,9 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// One property's keys of two clips joined into one, the second starting <paramref name="cut"/> seconds after the first:
-    /// the first's keys before the cut, its key on the cut only where the second has none there, and the second's moved on
-    /// by the cut; then the key a split put on the cut taken out again where the motion is the same without it
-    /// (<see cref="Unsplit"/>). False when the two do not join into one motion: one has keys and the other none, a key lies
-    /// past the first's end or before the second's start, or the value is not the same on both sides of the cut.
+    /// Joins one property's keys: first's keys before the cut, its cut key only if the second lacks one, second's keys shifted by
+    /// <paramref name="cut"/>; then removes the split-inserted cut key when redundant (<see cref="Unsplit"/>). False when not one motion
+    /// (keys on only one side, keys outside the halves, or a value discontinuity at the cut).
     /// </summary>
     private static bool JoinKeys(List<Keyframe>? first, List<Keyframe>? second, double cut, out List<Keyframe>? joined)
     {
@@ -450,10 +429,8 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// Keys joined at a cut without the key a split put on it, where the motion stays the same without it: the key before it
-    /// and it leaving by parts of one curve (<see cref="EasingCurves.Cut"/> undone: the two parts one again; Linear and Hold
-    /// are whole on both sides), or the key only repeating the value it is reached with. Checked on the curve itself, as
-    /// <see cref="EasingCurves.ValueAt"/> (and so the graph) reads it, around the cut; the keys as they are otherwise.
+    /// Removes the cut key when motion is unchanged without it: adjacent segments are sub-ranges of one curve (<see cref="EasingCurves.Cut"/>
+    /// reversed; Linear/Hold trivially), or the key repeats its incoming value. Verified by sampling <see cref="EasingCurves.ValueAt"/> around the cut.
     /// </summary>
     private static List<Keyframe> Unsplit(List<Keyframe> keys, double cut)
     {
@@ -480,8 +457,7 @@ internal sealed partial class TimelineTransaction
         without.RemoveAt(at);
         candidates.Add(without);
 
-        // The motion the key on the cut takes part in: from the key before it to the key after it (a second either way where
-        // there is none, past which both hold the same value).
+        // Verification window: previous to next key (1 s either side when absent; values hold beyond).
         var (from, to) = (previous?.Time ?? cut - 1, at + 1 < keys.Count ? keys[at + 1].Time : cut + 1);
         foreach (var candidate in candidates)
         {
@@ -491,7 +467,7 @@ internal sealed partial class TimelineTransaction
         return keys;
     }
 
-    /// <summary>Whether two key lists give the same values from <paramref name="from"/> to <paramref name="to"/> (33 moments, to a billionth).</summary>
+    /// <summary>True when two key lists agree over [<paramref name="from"/>, <paramref name="to"/>] at 33 samples within 1e-9.</summary>
     private static bool SameMotion(List<Keyframe> a, List<Keyframe> b, double from, double to)
     {
         for (var i = 0; i <= 32; i++)
@@ -505,8 +481,7 @@ internal sealed partial class TimelineTransaction
     }
 
     /// <summary>
-    /// An effect's range of two clips joined into one (see <see cref="JoinLook"/>): one range again where a split cut it in two
-    /// (the first's ending on the cut, the second's starting on it), or the first's where a split moved it whole into both.
+    /// Joined effect range (<see cref="JoinLook"/>): reunites a range cut at the split, or keeps the first's when the split copied it whole.
     /// False when the two are not one range: only one has one, or they lie apart.
     /// </summary>
     private static bool JoinRange(double[]? first, double[]? second, double cut, out double[]? joined)
@@ -549,7 +524,7 @@ internal sealed partial class TimelineTransaction
                 effect.Range = [Math.Round(from * stretch, 6), Math.Round(to * stretch, 6)];
         }
 
-        // Studio Voice's mix keys (5.2B) too: on the clip's clock, they stay on the moments of its sound they were set on.
+        // Studio Voice mix keys too: clip-relative, so they stay aligned with the audio.
         if (look.AudioFilters is { } filters)
             filters.StudioVoiceMixKeys = Scale(filters.StudioVoiceMixKeys);
         return look;

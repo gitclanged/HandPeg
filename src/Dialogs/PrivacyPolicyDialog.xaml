@@ -13,7 +13,7 @@
             <Setter Property="TextWrapping" Value="Wrap" />
             <Setter Property="Margin" Value="0,0,0,5" />
         </Style>
-        <!-- An item's mark: a cross for what is never collected, a tick for what a report holds (Segoe MDL2 glyphs). -->
+        <!-- Item glyph: cross = never collected, tick = included in reports (Segoe MDL2). -->
         <Style x:Key="Mark" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
             <Setter Property="FontSize" Value="11" />
@@ -22,14 +22,14 @@
         </Style>
     </Window.Resources>
 
-    <!-- Scrolls on a screen too short for all of it; the window is never taller than the work area. -->
+    <!-- Scrolls on short screens; window height capped to the work area. -->
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">
         <StackPanel Margin="20">
             <TextBlock Text="Crash reports and your privacy" FontSize="18" FontWeight="SemiBold" />
             <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,6,0,12"
                        Text="When HandPeg falls over, it writes a crash report: a small text file that helps find and fix what went wrong. It is kept on this PC, in your crash reports folder, and is never sent anywhere by HandPeg: to share one, attach it to an issue on HandPeg's GitHub page. Nothing is written while the box below is clear." />
 
-            <!-- The switch itself (AppSettings.SendCrashReports), saved as soon as it is changed. -->
+            <!-- AppSettings.SendCrashReports toggle, persisted on change. -->
             <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="14,10" Margin="0,0,0,16">
                 <StackPanel>
                     <CheckBox x:Name="SendBox" Content="Save anonymous crash reports" FontWeight="SemiBold"
@@ -47,7 +47,7 @@
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
 
-                <!-- What is never collected -->
+                <!-- Never collected -->
                 <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="14,12">
                     <StackPanel>
                         <TextBlock Text="Never collected" Style="{StaticResource ListTitle}" />
@@ -82,7 +82,7 @@
                     </StackPanel>
                 </Border>
 
-                <!-- What a crash report holds -->
+                <!-- Crash report contents -->
                 <Border Grid.Column="2" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="14,12">
                     <StackPanel>
                         <TextBlock Text="What a crash report holds" Style="{StaticResource ListTitle}" />

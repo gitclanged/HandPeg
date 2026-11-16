@@ -1,13 +1,13 @@
 namespace HandPegApp.Models.Effects;
 
-// ----- 5.6.0: the Color Grade card of the Color Studio -----
-// One card holds the whole grade of a clip or of the Sequence Output: white balance, exposure, the three wheels, contrast, saturation,
-// vibrance, the curves and a .cube LUT with its mix. Sixteen number lanes (two packets, GpuShaderSlot.ColorStudio); the lane order is a
-// contract with Effects.hlsl (PSColorStudio) and ColorGradeMath: neither the keys nor their order change. No lane that can be -1 sits in
-// a packet's last lane (GpuEffectPacket.PulseMarker). The wheels and the curves are edited in the Color Studio only (EffectParam.StudioOnly).
+// ----- Color Studio: Color Grade card -----
+// One card holds a clip's or Sequence Output's full grade: white balance, exposure, three wheels, contrast, saturation, vibrance, curves
+// and a .cube LUT with mix. Sixteen numeric lanes (two packets, GpuShaderSlot.ColorStudio) whose keys and order are a contract with
+// Effects.hlsl PSColorStudio and ColorGradeMath. No lane that can be -1 occupies a packet's last lane (GpuEffectPacket.PulseMarker).
+// Wheels and curves are Color Studio-only (EffectParam.StudioOnly).
 public static partial class EffectRegistry
 {
-    /// <summary>The Color Studio's grade (5.6.0).</summary>
+    /// <summary>Color Studio grade card definition.</summary>
     public const string ColorStudio = "builtin.color.studio";
 
     private static void RegisterColorStudio()

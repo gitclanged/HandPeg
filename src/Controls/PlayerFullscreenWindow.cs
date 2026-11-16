@@ -19,21 +19,18 @@ using static HandPegApp.Native.User32;
 namespace HandPegApp;
 
 /// <summary>
-/// The Fullscreen Preview's window (5.4.4, MainWindow.Fullscreen.cs): borderless, black, owned by the main window and covering one whole
-/// monitor, its taskbar's strip included. The player's own surface is lifted into <see cref="Host"/> while it is up (the same swap chain:
-/// no copy of the picture, no second engine) and handed back before it closes. It has no frame to draw, so it takes none of the main
-/// window's frame handling (its chrome, hook or client-area messages). It covers the monitor it is put on again whenever Windows moves
-/// it or its scale changes, and says so when the displays change (<see cref="DisplayChanged"/>), which ends the fullscreen preview.
-/// Closed any other way than by its owner (Alt+F4), it refuses and asks to be left instead (<see cref="ExitAsked"/>), so the surface is
-/// never closed with it.
+/// Fullscreen Preview window (MainWindow.Fullscreen.cs): borderless, black, owned by the main window, covering a whole monitor including
+/// the taskbar. The player surface is reparented into <see cref="Host"/> (same swap chain: no copy, no second engine) and returned before
+/// close. No frame handling (no chrome, hook or NC messages). Re-covers its monitor after any Windows move or DPI change; raises
+/// <see cref="DisplayChanged"/> on display changes (ending fullscreen). Non-owner closes (Alt+F4) are cancelled and raise
+/// <see cref="ExitAsked"/>, so the surface is never destroyed with it.
 /// </summary>
 public sealed partial class PlayerFullscreenWindow : Window
 {
     private const int WmDisplayChange = 0x007E, WmWindowPosChanging = 0x0046;
     private const uint SwpNoSize = 0x0001, SwpNoMove = 0x0002, SwpNoZOrder = 0x0004, SwpNoActivate = 0x0010, SwpNoOwnerZOrder = 0x0200, MonitorDefaultToNearest = 2;
 
-    // The monitor it covers (the screen's own pixels); whether it has been put there yet (until then a move of Windows' own, as its handle
-    // is made, is not followed); whether its owner has let it close.
+    // Covered monitor rect (physical pixels); placed flag (Windows' own moves during HWND creation are ignored until set); owner close permit.
     private Int32Rect _monitor;
     private bool _placed, _mayClose;
 
@@ -50,23 +47,23 @@ public sealed partial class PlayerFullscreenWindow : Window
         Host = new Grid { Background = Brushes.Black };
         Content = Host;
 
-        // Sized by what it covers: its content takes HandPeg's UI scale, its size never.
+        // Window size comes from the monitor; only content takes UI scale.
         UiScale.SetKeepsItsSize(this, true);
         LocationChanged += (_, _) => CoverOwnMonitor();
         DpiChanged += (_, _) => Dispatcher.BeginInvoke(CoverOwnMonitor);
         Loaded += (_, _) => CoverOwnMonitor();
     }
 
-    /// <summary>What holds the player's surface while the window is up.</summary>
+    /// <summary>Container for the reparented player surface.</summary>
     public Grid Host { get; }
 
-    /// <summary>The window was asked to close by anything but its owner (Alt+F4): the fullscreen preview is to be left.</summary>
+    /// <summary>Raised on a non-owner close request (Alt+F4); the owner should exit fullscreen.</summary>
     public event Action? ExitAsked;
 
-    /// <summary>The displays changed (one added or taken away, a resolution changed): the fullscreen preview is to be left.</summary>
+    /// <summary>Raised on WM_DISPLAYCHANGE (monitor added/removed, resolution change); the owner should exit fullscreen.</summary>
     public event Action? DisplayChanged;
 
-    /// <summary>Its owner has taken the player's surface back: it may close now.</summary>
+    /// <summary>Called after the owner reclaims the player surface; allows the close.</summary>
     internal void LetClose() => _mayClose = true;
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -75,7 +72,7 @@ public sealed partial class PlayerFullscreenWindow : Window
         var handle = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(handle)?.AddHook(Message);
 
-        // Put on its monitor as its handle is made, before it is first shown.
+        // Place on the target monitor at HWND creation, before first show.
         Cover(_monitor);
         _placed = true;
     }
@@ -102,9 +99,8 @@ public sealed partial class PlayerFullscreenWindow : Window
     }
 
     /// <summary>
-    /// Every move or resize proposed for the window (WPF's own sizing as it is shown, the rectangle Windows suggests on a DPI change,
-    /// a move to another monitor) is turned into the whole of the monitor the proposed rectangle lands on, in physical pixels, before
-    /// it happens: the window never shows at a scaled-up or default size, whatever the monitor's scale or HandPeg's UI scale.
+    /// WM_WINDOWPOSCHANGING: rewrites any proposed move/resize (WPF show sizing, DPI-change suggestion, cross-monitor move) to the full
+    /// physical rect of the monitor it lands on, so the window never appears at a scaled or default size regardless of DPI or UI scale.
     /// </summary>
     private void SnapToMonitor(nint lParam)
     {
@@ -112,7 +108,7 @@ public sealed partial class PlayerFullscreenWindow : Window
         if ((position.Flags & (SwpNoMove | SwpNoSize)) == (SwpNoMove | SwpNoSize))
             return;
 
-        // A move alone keeps the monitor's size; a resize alone keeps the current corner.
+        // Move-only keeps the monitor size; resize-only keeps the monitor origin.
         var (x, y) = (position.Flags & SwpNoMove) != 0 ? (_monitor.X, _monitor.Y) : (position.X, position.Y);
         var (width, height) = (position.Flags & SwpNoSize) != 0 ? (_monitor.Width, _monitor.Height) : (position.Width, position.Height);
         var proposed = new NativeRect { Left = x, Top = y, Right = x + Math.Max(1, width), Bottom = y + Math.Max(1, height) };
@@ -125,7 +121,7 @@ public sealed partial class PlayerFullscreenWindow : Window
         Marshal.StructureToPtr(position, lParam, false);
     }
 
-    // The monitor it is on now (Windows moved it: another monitor, a scale changed), covered whole.
+    // Re-covers the current monitor after Windows moved the window (monitor or DPI change).
     private void CoverOwnMonitor()
     {
         var handle = new WindowInteropHelper(this).Handle;
@@ -145,7 +141,7 @@ public sealed partial class PlayerFullscreenWindow : Window
         SetWindowPos(handle, 0, area.X, area.Y, area.Width, area.Height, SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
     }
 
-    /// <summary>The whole of the monitor that holds most of <paramref name="pixels"/> (the screen's own pixels), or the nearest one.</summary>
+    /// <summary>Full rect of the monitor containing most of <paramref name="pixels"/> (physical), or the nearest monitor.</summary>
     internal static Int32Rect MonitorAround(Rect pixels)
     {
         var rect = new NativeRect
@@ -157,7 +153,7 @@ public sealed partial class PlayerFullscreenWindow : Window
             ?? new Int32Rect(rect.Left, rect.Top, Math.Max(1, rect.Right - rect.Left), Math.Max(1, rect.Bottom - rect.Top));
     }
 
-    /// <summary>Whether <paramref name="other"/> is on the monitor this window covers.</summary>
+    /// <summary>True when <paramref name="other"/> is on this window's monitor.</summary>
     internal bool SharesMonitorWith(Window other)
     {
         var (mine, theirs) = (new WindowInteropHelper(this).Handle, new WindowInteropHelper(other).Handle);
@@ -176,19 +172,18 @@ public sealed partial class PlayerFullscreenWindow : Window
 }
 
 /// <summary>
-/// What the player's HUD is made of and how it comes and goes (5.4.4): the Fullscreen button over the docked player and the fullscreen
-/// preview's transport bar, both dark over the picture whatever the theme (as the RAW / ENCODED pills of the Live Encoded Preview's wipe),
-/// made at their first use; the rests after which they go; their fades.
+/// Player HUD building blocks: the Fullscreen button over the docked player and the fullscreen transport bar, theme-independent dark
+/// overlays (like the Live Encoded Preview RAW / ENCODED pills) built on first use, plus idle timeouts and fades.
 /// </summary>
 internal static class HudChrome
 {
     /// <summary>
-    /// How long the pointer rests before the Fullscreen button goes (ms), and before the fullscreen bar does; how often a HUD held up
-    /// (the pointer on it, a drag of its scrubber, its Volume pill open) is looked at again.
+    /// Idle timeouts (ms) before the Fullscreen button and the fullscreen bar hide, and the recheck interval while a HUD is held (hovered,
+    /// scrubber dragged, Volume pill open).
     /// </summary>
     internal const double ButtonRestMs = 1500, BarRestMs = 1800, RecheckMs = 250;
 
-    // The fades: in, out (ms).
+    // Fade-in and fade-out durations (ms).
     private const double FadeInMs = 120, FadeOutMs = 150;
 
     internal static readonly SolidColorBrush Face = Frozen(0xCC, 0x18, 0x18, 0x1C), Edge = Frozen(0xFF, 0x38, 0x38, 0x42),
@@ -198,18 +193,17 @@ internal static class HudChrome
     private static DoubleAnimation? _fadeIn, _fadeOut;
     private static Style? _button, _toggle;
 
-    /// <summary>Whether the Fullscreen button stays up: the pointer on it, or moved over the player less than <see cref="ButtonRestMs"/> ago.</summary>
+    /// <summary>Fullscreen button visible: hovered, or pointer moved over the player within <see cref="ButtonRestMs"/>.</summary>
     internal static bool ButtonShown(double sinceMoveMs, bool overButton) => overButton || sinceMoveMs < ButtonRestMs;
 
     /// <summary>
-    /// Whether the fullscreen bar stays up: the pointer on it, something of it held (its scrubber dragged, its Volume pill open), or the
-    /// pointer moved less than <see cref="BarRestMs"/> ago.
+    /// Fullscreen bar visible: hovered, held (scrubber drag, Volume pill open), or pointer moved within <see cref="BarRestMs"/>.
     /// </summary>
     internal static bool BarShown(double sinceMoveMs, bool overBar, bool held) => overBar || held || sinceMoveMs < BarRestMs;
 
     /// <summary>
-    /// The Fullscreen button over the docked player: top right, 10 DIPs in, Segoe's Full Screen glyph on a dark chip. Hidden (and taking
-    /// no clicks) until it is faded in.
+    /// Fullscreen button for the docked player: top-right, 10 DIP margin, Segoe Full Screen glyph on a dark chip; collapsed and not
+    /// hit-testable until faded in.
     /// </summary>
     internal static Button HoverButton()
     {
@@ -235,8 +229,8 @@ internal static class HudChrome
     }
 
     /// <summary>
-    /// The HUD's look for a button or a toggle (<paramref name="basedOn"/>, when given, keeps that style's content and triggers: Play's
-    /// glyph turning to Pause): its glyph light on nothing, lit under the pointer, the accent while a toggle is on; it never takes the keyboard.
+    /// HUD style for a button or toggle (<paramref name="basedOn"/> keeps that style's content triggers, e.g. Play/Pause glyph): light glyph
+    /// on transparent, lit on hover, accent when checked; never focusable. Unbased styles are cached.
     /// </summary>
     internal static Style ButtonStyle(Type type, Style? basedOn)
     {
@@ -265,7 +259,7 @@ internal static class HudChrome
         return style;
     }
 
-    // A rounded box round the content, lit under the pointer and pressed; a toggle's box the accent while it is on; dimmed when disabled.
+    // Rounded border template: hover and pressed fills, accent when a toggle is checked, 40% opacity when disabled.
     private static ControlTemplate Chrome(Type type)
     {
         var box = new FrameworkElementFactory(typeof(Border), "box");
@@ -300,8 +294,8 @@ internal static class HudChrome
     }
 
     /// <summary>
-    /// Fades a part of the HUD in or out (120 ms in, 150 ms out; at once with <paramref name="instant"/> or with Windows' animations off).
-    /// It takes clicks only while shown, and once faded out it is collapsed (nothing of it laid out or drawn).
+    /// Fades a HUD element (120 ms in, 150 ms out; immediate with <paramref name="instant"/> or when Windows animations are off). Hit-testable
+    /// only while shown; collapsed after fading out.
     /// </summary>
     internal static void Fade(UIElement element, bool shown, bool instant = false)
     {
@@ -321,7 +315,7 @@ internal static class HudChrome
         var clock = (shown ? _fadeIn ??= Faded(1, FadeInMs) : _fadeOut ??= Faded(0, FadeOutMs)).CreateClock();
         if (!shown)
         {
-            // Collapsed at the end, unless it was shown again meanwhile.
+            // Collapse on completion unless re-shown meanwhile.
             clock.Completed += (_, _) =>
             {
                 if (!element.IsHitTestVisible)
@@ -342,21 +336,20 @@ internal static class HudChrome
 }
 
 /// <summary>
-/// The Fullscreen Preview's transport (5.4.4): a dark rounded bar along the bottom of the picture, at most 900 DIPs wide, with Play / Pause,
-/// the Volume pill (it opens to the right, over the scrubber's start), the playhead's scrubber and the time, the 3D Exploded View and Live
-/// Encoded Preview toggles, and Exit. None of it takes the keyboard (Space stays Play / Pause). Its owner sets its DataContext to the view
-/// model (the volume, the mute, the Live Encoded Preview and Play's glyph are bound to it), binds the 3D toggle to the bar's own, and tells
-/// it the time while it is shown (<see cref="ShowTime"/>): nothing of it moves while it is hidden.
+/// Fullscreen Preview transport: a dark rounded bar along the picture's bottom (max 900 DIPs) with Play/Pause, the Volume pill (opens
+/// rightward over the scrubber start), playhead scrubber and time, 3D Exploded View and Live Encoded Preview toggles, and Exit. Nothing is
+/// focusable (Space stays Play/Pause). The owner sets DataContext to the view model (volume, mute, Live Encoded Preview, Play glyph),
+/// binds the 3D toggle, and pushes time via <see cref="ShowTime"/> only while shown.
 /// </summary>
 public sealed class FullscreenTransportBar : Border
 {
-    // The 3D Exploded View's icon (three planes apart), as the playback bar's toggle has it.
+    // 3D Exploded View icon (three separated planes), matching the playback bar toggle.
     private static readonly Geometry PlanesIcon = FrozenGeometry("M 2,3 L 9,0.8 L 16,3 L 9,5.2 Z M 2,8 L 9,5.8 L 16,8 L 9,10.2 Z M 2,13 L 9,10.8 L 16,13 L 9,15.2 Z");
 
     private readonly Run _position = new(), _duration = new();
     private string? _durationShown;
 
-    // Whether the time is being set from outside (not the user's move), and whether the scrubber's playhead is held.
+    // Re-entrancy flag while ShowTime sets the scrubber, and thumb-drag-in-progress flag.
     private bool _showing, _dragging;
 
     public FullscreenTransportBar(Style? playPauseStyle)
@@ -373,7 +366,7 @@ public sealed class FullscreenTransportBar : Border
         TextElement.SetForeground(this, HudChrome.Text);
         AutomationProperties.SetName(this, "Fullscreen Preview Controls");
 
-        // Play / Pause: the playback bar's own style (its glyph and its name follow IsPlaying), in the HUD's look.
+        // Play/Pause based on the playback bar style (glyph and name follow IsPlaying), in HUD chrome.
         PlayPause = new Button { Style = HudChrome.ButtonStyle(typeof(Button), playPauseStyle), Padding = new Thickness(12, 6, 12, 6) };
         if (playPauseStyle is null)
         {
@@ -381,21 +374,21 @@ public sealed class FullscreenTransportBar : Border
             AutomationProperties.SetName(PlayPause, "Play");
         }
 
-        // The volume as the playback bar has it: the pill, its speaker the player's mute.
+        // Volume pill as on the playback bar; the speaker toggles player mute.
         Volume = new ExpandablePillSlider
         {
             Icon = PillIcon.Speaker, Minimum = 0, Maximum = 100, SmallChange = 5, LargeChange = 20, DefaultValue = 100, ReadoutFormat = "{0:0}%",
             IsIconToggle = true, IconAutomationName = "Mute Player", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 0, 0),
             ToolTip = "Volume. Click the speaker to mute the player (the export is not affected). Double-click the track to reset.",
 
-            // Drawn in the HUD's colours, not the theme's: the bar is dark whatever the theme (5.4.4).
+            // HUD colours, not theme colours: the bar is dark in every theme.
             IconBrush = HudChrome.Text, SurfaceBrush = HudChrome.Lit, EdgeBrush = HudChrome.Edge, TrackBrush = HudChrome.Muted,
         };
         AutomationProperties.SetName(Volume, "Volume");
         Volume.SetBinding(ExpandablePillSlider.ValueProperty, new Binding("Volume"));
         Volume.SetBinding(ExpandablePillSlider.IsIconCheckedProperty, new Binding("IsPlayerMuted"));
 
-        // Opened, it is drawn over the scrubber's start: above it.
+        // Z-order above the scrubber, which the open pill overlaps.
         Panel.SetZIndex(Volume, 1);
 
         Scrubber = new Slider { Minimum = 0, Maximum = 1, Focusable = false, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 10, 0) };
@@ -405,7 +398,7 @@ public sealed class FullscreenTransportBar : Border
         Scrubber.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler((_, _) => LetGoOfScrubber()), handledEventsToo: true);
         Scrubber.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(Scrubber_PreviewMouseLeftButtonDown), handledEventsToo: true);
 
-        // The time, its digits all one width (TimeReadout), the length muted.
+        // Time readout with fixed-width digits (TimeReadout); duration muted.
         Time = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
         _duration.Foreground = HudChrome.Muted;
         Time.Inlines.Add(_position);
@@ -448,10 +441,10 @@ public sealed class FullscreenTransportBar : Border
 
     public ExpandablePillSlider Volume { get; }
 
-    /// <summary>The playhead's scrubber, 0 to the Sequence's length in milliseconds.</summary>
+    /// <summary>Playhead scrubber, 0 to sequence length in ms.</summary>
     public Slider Scrubber { get; }
 
-    /// <summary>The position and the length, as the playback bar's readout shows them.</summary>
+    /// <summary>Position / duration text, formatted like the playback bar readout.</summary>
     public TextBlock Time { get; }
 
     public ToggleButton Exploded { get; }
@@ -460,19 +453,19 @@ public sealed class FullscreenTransportBar : Border
 
     public Button Exit { get; }
 
-    /// <summary>The scrubber's playhead dragged to a moment (ms).</summary>
+    /// <summary>Raised during a thumb drag with the time in ms.</summary>
     public event Action<double>? ScrubbedTo;
 
-    /// <summary>The drag of the scrubber's playhead let go, at a moment (ms).</summary>
+    /// <summary>Raised on thumb drag release with the final time in ms.</summary>
     public event Action<double>? ScrubEnded;
 
-    /// <summary>The scrubber set to a moment by a press beside its playhead or by UI Automation (ms).</summary>
+    /// <summary>Raised when the value is set outside a drag (track press or UI Automation), in ms.</summary>
     public event Action<double>? SoughtTo;
 
-    /// <summary>Whether something of it is held: its scrubber's playhead dragged, its Volume pill open, or anything of it with the pointer captured.</summary>
+    /// <summary>True while the thumb is dragged, the Volume pill is open, or any child holds mouse capture.</summary>
     public bool IsHeld => _dragging || Volume.IsExpanded || IsMouseCaptureWithin;
 
-    /// <summary>The playhead and the length as they are now (ms, and as the readout writes them). A drag of the scrubber keeps its own place.</summary>
+    /// <summary>Updates scrubber (ms) and readout text; the scrubber value is left alone during a thumb drag.</summary>
     public void ShowTime(double positionMs, double durationMs, string position, string duration)
     {
         _showing = true;
@@ -517,8 +510,7 @@ public sealed class FullscreenTransportBar : Border
     }
 
     /// <summary>
-    /// A press anywhere on the scrubber, not only on its playhead (as the Sequence Overview Scrubber's): the playhead goes to the pointer,
-    /// and the press is handed to it, so holding and dragging scrubs from there.
+    /// Track press (like the Overview Scrubber): jumps the thumb to the pointer and forwards the press to it, so drag continues from there.
     /// </summary>
     private void Scrubber_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {

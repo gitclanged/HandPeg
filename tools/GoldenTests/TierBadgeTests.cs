@@ -267,7 +267,7 @@ public static class TierBadgeTests
         var written = JsonSerializer.Serialize(new HardwareBenchmarkAdapter { CompositorMs = 0.551 }, json);
         var old = JsonSerializer.Deserialize<HardwareBenchmarkAdapter>("""{"index":0,"name":"x","hardwareDecodeFps":870}""", json)!;
         expect(written.Contains("\"compositorMs\":0.551", StringComparison.Ordinal) && old.CompositorMs == 0
-               && Regex.Matches(SourceProbe.Src("Services", "HardwareBenchmarkModels.cs"), "\"compositor\" \\(5\\.6\\.0\\)").Count == 1,
+               && Regex.Matches(SourceProbe.Src("Services", "HardwareBenchmarkModels.cs"), "\"transfer\", \"compositor\", \"cross-adapter\"").Count == 1,
             "compositorMs is appended to the result's JSON (a result from before reads 0); the progress stage is \"compositor\"");
 
         // 5.6A review (F19): a run without its test clip never saves over a kept full result of these cards that measured decoding.

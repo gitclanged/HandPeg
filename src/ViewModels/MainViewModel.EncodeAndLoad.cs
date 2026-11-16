@@ -15,14 +15,12 @@ namespace HandPegApp.ViewModels;
 // The hardware encoder probe, loading a source (files, links, media), settings saved, shutdown, and the encode runner.
 public partial class MainViewModel
 {
-    // Whether the hardware encoders were put in the list before the window's first frame (TakeEarlyHardwareEncoders).
+    // Whether hardware encoders were listed before Frame 1 (TakeEarlyHardwareEncoders).
     private bool _hardwareEncodersEarly;
 
     /// <summary>
-    /// The hardware encoders as an earlier probe found them for this FFmpeg and these drivers (read on another thread
-    /// while the window was being made), put in the list before the window's first frame: the Export tab then opens with
-    /// the encoder it keeps, where a hardware default used to show as Copy, with Copy's warning, until the probe
-    /// answered. Not there yet, or none saved: the probe after the first frame does it, as before.
+    /// Lists hardware encoders from a saved probe for this FFmpeg and drivers (loaded off-thread during window construction) before
+    /// Frame 1, so the Export tab opens on its saved encoder instead of briefly showing Copy. Otherwise the post-Frame-1 probe fills it.
     /// </summary>
     public void TakeEarlyHardwareEncoders()
     {
@@ -35,13 +33,13 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The encoders taken before the first frame were matched on FFmpeg alone (EncoderProber.LoadSavedResultEarly): the
-    /// cards and drivers are compared now, away from this thread, and a change since the probe that found them probes again.
+    /// Early encoders matched on FFmpeg only (EncoderProber.LoadSavedResultEarly); now verifies GPUs and drivers off-thread and
+    /// re-probes on any change.
     /// </summary>
     private async Task RecheckEarlyEncodersAsync()
     {
-        // The cards are listed there too (off this thread, after the first frame): a probe problem of a vendor whose card is not in this
-        // PC ("h264_nvenc: Cannot load nvcuda.dll" on an AMD machine, from an encoder-probe.json of before 5.4B) is then left unsaid.
+        // GPUs are enumerated there too (off-thread, after Frame 1), so problems for absent vendors (e.g. "h264_nvenc: Cannot load
+        // nvcuda.dll" on an AMD-only PC from an old encoder-probe.json) are suppressed.
         var same = await Task.Run(() =>
         {
             var still = EncoderProber.CardsStillMatch();
@@ -56,8 +54,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The hardware encoders renamed for the card they reach once the cards are listed (after the first frame): on a Qualcomm Adreno machine
-    /// a Media Foundation encoder reads "(Qualcomm Adreno)". The selection stays on the same encoder.
+    /// Relabels hardware encoders with their GPU once enumerated after Frame 1 (e.g. an MF encoder shows "(Qualcomm Adreno)");
+    /// the selection is preserved.
     /// </summary>
     private void NameEncodersForCards()
     {
@@ -87,7 +85,7 @@ public partial class MainViewModel
     /// <summary>Tests the GPU encoders in the background and offers the working ones in the Export tab.</summary>
     private async Task ProbeHardwareEncodersAsync()
     {
-        // A newer probe (after an install or a settings change) makes the result of an older one stale.
+        // A newer probe (install or settings change) supersedes older results.
         var run = ++_hardwareProbeRun;
 
         if (!File.Exists(DependencyUpdater.FfmpegPath))
@@ -101,7 +99,7 @@ public partial class MainViewModel
         List<string> problems;
         try
         {
-            // Found before for this FFmpeg and these drivers: not tested again (see EncoderProber.LoadSavedResult).
+            // Cached result for this FFmpeg and driver set: skip testing (EncoderProber.LoadSavedResult).
             (supported, problems) = await Task.Run(EncoderProber.LoadSavedResult) is { } saved
                 ? saved
                 : await WorkScheduler.Run(new WorkSpec("Testing hardware encoders", WorkLane.Idle), work => EncoderProber.ProbeAsync(work.Token), _shutdown.Token);
@@ -127,8 +125,8 @@ public partial class MainViewModel
     /// <summary>Puts the hardware encoders found into the list, keeping the selection where it still exists.</summary>
     private void ApplyHardwareEncoders(List<string> supported, List<string> problems)
     {
-        // Rebuild the hardware part of the list, keeping the selection where it still exists. The first time
-        // round, a hardware encoder set as the default is selected, unless another was chosen in the meantime.
+        // Rebuild the hardware entries, keeping the selection if still present; on first fill select the default hardware
+        // encoder unless the user picked another meanwhile.
         var untouched = VideoEncoder.Family is EncoderFamily.Copy || VideoEncoder == DefaultVideoEncoder;
         var selected = _pendingDefaultEncoder is { } pending && untouched ? pending : VideoEncoder.Name;
         _pendingDefaultEncoder = null;
@@ -142,8 +140,8 @@ public partial class MainViewModel
         {
             VideoEncoder = VideoEncoders.FirstOrDefault(e => e.Name == selected) ?? DefaultVideoEncoder;
 
-            // A built-in applied before this list was there fell back to software (5.4C): its codec's hardware encoder now, once, at its
-            // slowest step (UpdateEncoderPresets starts a hardware family there).
+            // A built-in applied before the probe fell back to software: switch once to its codec's hardware encoder at the slowest
+            // step (UpdateEncoderPresets' hardware default).
             if (_pendingPreferredCodec is { } wanted && !VideoEncoder.IsHardware
                 && ResolveEncoder(new EncodingPreset { PreferredCodec = wanted, VideoEncoder = VideoEncoder.Name }) is ({ IsHardware: true } hardware, _))
             {
@@ -157,8 +155,8 @@ public partial class MainViewModel
             _pendingPreferredCodec = null;
         }
 
-        // The default encoder preset is one of the hardware encoder's own steps, which exist now that it does. A speed-first preset
-        // (5.4D, Fast Proxy) applied before the probe keeps its fastest step on the encoder it resolves to now, after that default.
+        // Apply the hardware encoder's default step now that its steps exist; a speed-first preset (Fast Proxy) applied before the
+        // probe then re-applies its fastest step.
         _placingStep = true;
         try
         {
@@ -175,13 +173,12 @@ public partial class MainViewModel
         (_hardwareEncoderCount, _hardwareProblems) = (supported.Count, problems);
         ShowHardwareEncoderStatus();
 
-        // What the card can do is known now, for the encoder that is selected as for the others.
+        // GPU capabilities are now known for the selected encoder too.
         OnPropertyChanged(nameof(CanNvencTemporalAq));
         OnPropertyChanged(nameof(CanTenBit));
         GenerateCommand();
 
-        // Offering an older FFmpeg is not part of putting the list up: it waits for the window to be drawn (this may run
-        // before its first frame).
+        // Defer the older-FFmpeg offer until after Frame 1 (this may run before it).
         System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(() =>
         {
             if (EncoderProber.NvencNeedsOlderFfmpeg)
@@ -189,14 +186,13 @@ public partial class MainViewModel
         }, System.Windows.Threading.DispatcherPriority.Background);
     }
 
-    // What the last probe (or the result saved by one) found: how many hardware encoders work, and why the others did not start.
+    // Last probe result: working hardware encoder count and failure reasons for the rest.
     private int _hardwareEncoderCount;
     private List<string> _hardwareProblems = [];
 
     /// <summary>
-    /// The detected encoders' line on the Export tab: how many work, and an encoder FFmpeg has but could not start (usually a driver
-    /// that needs updating). A problem of a vendor whose card is not in this PC is left out once the cards are listed (5.4B,
-    /// EncoderProber.ProblemsForCardsHere: never listed for it before the first frame, Law 1; RecheckEarlyEncodersAsync says it again after).
+    /// Export tab encoder status: working count and encoders that failed to start (usually outdated drivers). Absent-vendor problems
+    /// are filtered once GPUs are enumerated (EncoderProber.ProblemsForCardsHere; not before Frame 1, rechecked by RecheckEarlyEncodersAsync).
     /// </summary>
     private void ShowHardwareEncoderStatus()
     {
@@ -211,9 +207,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// NVENC did not start because this FFmpeg asks for a newer NVIDIA driver than the one installed. A card that
-    /// still gets drivers needs a driver update; one that does not (the GTX 10 series and older) needs the older
-    /// FFmpeg build, which the next FFmpeg update then installs.
+    /// NVENC failed because this FFmpeg requires a newer NVIDIA driver. Supported GPUs need a driver update; legacy ones
+    /// (GTX 10 series and older) need the older FFmpeg build, which the next FFmpeg update installs.
     /// </summary>
     private void OfferFfmpegForOlderNvidiaDrivers()
     {
@@ -235,14 +230,14 @@ public partial class MainViewModel
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
     private async Task LoadSourceAsync()
     {
-        // A project file (a .hproj, or a HandPeg 1.x project recognised by its shape), typed in or dropped, opens the project.
+        // Project files (.hproj, or legacy projects detected by shape) open as projects.
         if (ProjectStore.IsProjectFile(SourcePath.Trim().Trim('"')))
         {
             await LoadProjectAsync(SourcePath.Trim().Trim('"'));
             return;
         }
 
-        // A web address is fetched by yt-dlp, which is downloaded the first time one is loaded.
+        // URLs are fetched with yt-dlp (downloaded on first use).
         if (IsWebAddress(SourcePath) && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
             return;
 
@@ -254,8 +249,7 @@ public partial class MainViewModel
         Uri.TryCreate(source.Trim().Trim('"'), UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 
     /// <summary>
-    /// Downloads a web address with yt-dlp (or finds the file downloaded for it before), for a link dropped where a
-    /// file is wanted: on the timeline, or on a Squisher target. Returns the file; null when nothing came of it.
+    /// Resolves a dropped URL to a local file via yt-dlp (or a previous download) for the timeline or a Squisher target; null on failure.
     /// </summary>
     public async Task<string?> DownloadLinkAsync(string url)
     {
@@ -286,7 +280,7 @@ public partial class MainViewModel
         EditingJob = null;
         var (opened, message) = await LoadMediaAsync(source, knownLocalPath: null, applyAutomation: true, cancellationToken);
 
-        // Settings: every video starts as a vertical one (5.4A: unless the New Project studio chose the frame on purpose).
+        // Default-vertical setting applies unless the New Project studio set an explicit frame.
         if (opened && AppSettings.Current.DefaultVerticalVideo && !UseVerticalResolution && !Document.ExplicitFrame)
             UseVerticalResolution = true;
         ForgetHistory();
@@ -308,12 +302,10 @@ public partial class MainViewModel
         return LoadSourceCommand.ExecuteAsync(null);
     }
 
-    /// <summary>
-    /// Loads a file and gives it a Game Preset: what dropping a video on a Game Preset in the launch window does.
-    /// </summary>
+    /// <summary>Loads a file and applies a Game Preset (drop onto a preset in the launch window).</summary>
     public async Task LoadFileWithStyleAsync(string path, string stylePath)
     {
-        // A link dropped on a Game Preset is downloaded first, with yt-dlp, which may itself have to be downloaded.
+        // URLs are downloaded first via yt-dlp (fetched itself if missing).
         if (IsWebAddress(path) && !await RequireAsync("Downloading a video", [DependencyUpdater.YtDlp, DependencyUpdater.Ffmpeg], []))
             return;
 
@@ -337,12 +329,10 @@ public partial class MainViewModel
     });
 
 
-    /// <summary>
-    /// Makes a source the current one: downloads it if it is a URL, inspects it and starts playback.
-    /// </summary>
-    /// <param name="knownLocalPath">A file already downloaded for this source, used instead of downloading again.</param>
-    /// <param name="applyAutomation">Whether the smart rules and the default preset from the settings apply.</param>
-    /// <param name="place">Whether a clip of it goes on the timeline (PlaceOpenedFile); not for a project, whose timeline is its own.</param>
+    /// <summary>Sets the current source: downloads URLs, probes and starts playback.</summary>
+    /// <param name="knownLocalPath">An existing download for this source, used instead of downloading again.</param>
+    /// <param name="applyAutomation">Whether smart rules and the default preset apply.</param>
+    /// <param name="place">Whether to place a clip (PlaceOpenedFile); false for projects, whose timeline is authoritative.</param>
     private async Task<(bool Loaded, string Message)> LoadMediaAsync(
         string source, string? knownLocalPath, bool applyAutomation, CancellationToken cancellationToken, bool place = true)
     {
@@ -363,8 +353,7 @@ public partial class MainViewModel
 
             IsProgressIndeterminate = true;
             StatusText = "Starting yt-dlp...";
-            // The progress object is made here, on the UI thread, so its reports come back to it;
-            // the download itself, and the handling of yt-dlp's output, run on the thread pool.
+            // Create Progress on the UI thread so reports marshal back; the download and yt-dlp output parsing run on the pool.
             var progress = new Progress<string>(ReportStatus);
             var (resolution, subtitles, (sponsorBlock, markSponsorBlock), folder) = (DownloadResolution, DownloadSubtitles, AppSettings.Current.SponsorBlockRequest, AppSettings.Current.DownloadFolder);
             localPath = await Task.Run(
@@ -376,9 +365,9 @@ public partial class MainViewModel
             return (false, $"Source not found: {source}");
         }
 
-        // A crash report never names the file, not even on its own (a failed probe's message may).
+        // Keep the file name out of crash reports (a probe error message may contain it).
         CrashReporter.KeepOut(localPath);
-        // What the user is waiting on: never queued behind the media browser's posters and strips (4.3E).
+        // User-blocking probe: never queued behind Media Browser posters and strips.
         var mediaInfo = await MediaProbe.ProbeAsync(localPath, cancellationToken, urgent: true);
         var previous = LocalMediaPath;
         ResetForNewSource();
@@ -386,19 +375,18 @@ public partial class MainViewModel
         SetMediaInfo(mediaInfo);
         NoteHevcDecoder(mediaInfo?.Video);
 
-        // A clip of the whole file on the timeline, as a dropped file is made (5.2-AuditB): on an empty Sequence at its start, or
-        // where the clips of the file opened before were (the other clips stay).
+        // Place a whole-file clip like a drop: at 0 on an empty Sequence, or replacing the previous file's clips (others stay).
         (_openedOver, _openedClip) = (null, null);
         if (place)
             PlaceOpenedFile(previous);
 
-        // For a crash report: what kind of file this is (container, codecs, size, rate, length), never which.
+        // Crash report context: container, codecs, size, rate, duration; never the file identity.
         var mediaSummary = CrashSummaries.Media(localPath, mediaInfo, Layers.Count);
         CrashReporter.SetContext("media", mediaSummary);
         CrashReporter.Note("media", "opened: " + mediaSummary);
         DevFlightRecorder.Record("media", $"opened {localPath}: {mediaSummary}");
 
-        // Every new source gets its own default name, so one encode never lands on top of the previous one.
+        // Fresh default output name per source so encodes never overwrite each other.
         DestinationPath = Path.Combine(
             GetDefaultOutputFolder(localPath), $"{Path.GetFileNameWithoutExtension(localPath)}_HandPeg.{Container}");
 
@@ -407,9 +395,8 @@ public partial class MainViewModel
         {
             if (Presets.FirstOrDefault(p => p.Name.Equals(presetName, StringComparison.OrdinalIgnoreCase)) is { } preset)
             {
-                // Applied whole (5.4B: the rule's preset keeps everything it holds, its layout too; the selector applies an Export
-                // Preset's export settings only), then shown as the one selected. It goes on the clip of the file just opened, not on
-                // what is selected on the Timeline.
+                // Apply the rule's full preset (including layout; the selector applies export settings only), then show it selected.
+                // Targets the just-opened file's clip, not the Timeline selection.
                 _templateTargetOnly = _openedClip;
                 try
                 {
@@ -430,16 +417,16 @@ public partial class MainViewModel
             }
         }
 
-        // A track named for a microphone or a voice is the Voice track (4.3E), unless the preset above marked one: only for a
-        // file loaded anew (a project or a queued job is restored without automation, and keeps its tracks as saved).
+        // Auto-mark a microphone/voice-named track as Voice unless the preset marked one; only for fresh loads (projects and queued
+        // jobs restore without automation).
         if (applyAutomation && MarkVoiceTrack() is { } voice)
             message = $"{message.TrimEnd('.')}. {voice}";
 
-        // Layers marked on a video of another shape will not sit on the same things in this one.
+        // Layers marked on a different-aspect video no longer align with this one.
         if (GetLayoutAspectWarning() is { } warning)
             message += $". {warning}";
 
-        // Playback, the I-frame index and hover previews are for the window; a background instance needs none of them.
+        // Playback, I-frame index and hover previews are window-only; background instances skip them.
         if (!_isBackgroundWorker)
         {
             MediaLoaded?.Invoke(localPath);
@@ -465,7 +452,7 @@ public partial class MainViewModel
         [
             Path.GetTempPath(),
 
-            // HandPeg's own working folders: a video downloaded into the cache is not saved back into it.
+            // Never default output into HandPeg's own cache/work folders.
             AppPaths.Temp,
             AppPaths.DataRoot,
             Environment.GetFolderPath(Environment.SpecialFolder.Windows),
@@ -507,8 +494,7 @@ public partial class MainViewModel
         IFrameStatusText = "Indexing I-frames...";
         try
         {
-            // On the thread pool: ffprobe prints a line per I-frame, and reading thousands of them
-            // should not happen on the UI thread.
+            // Pool thread: ffprobe emits one line per I-frame (thousands), too much for the UI thread.
             var iFrames = await Task.Run(() => FfmpegRunner.GetIFramesAsync(path, cancellation.Token), cancellation.Token);
             if (cancellation.IsCancellationRequested)
                 return;
@@ -528,7 +514,7 @@ public partial class MainViewModel
         }
         finally
         {
-            // Released here, once nothing uses its token any more, rather than by whoever cancels it.
+            // Dispose the CTS here, after its last token use, not at the cancel site.
             if (ReferenceEquals(_iFrameScanCancellation, cancellation))
                 _iFrameScanCancellation = null;
             cancellation.Dispose();
@@ -544,7 +530,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Still in use; it is in the temp folder and will be cleaned up another time.
+            // Still locked; temp-folder cleanup will retry later.
         }
     }
 
@@ -554,16 +540,14 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(EditLayersOnPlayer));
         OnPropertyChanged(nameof(SponsorBlockMode));
 
-        // The Timeline's switches the Settings window has as well (5.3): this view model's copies of them follow what was saved, so the
-        // Snap button, the Timeline Settings menu and the blocks show it (each raised only when it changed).
+        // Sync Timeline toggles shared with Settings so the Snap button, Timeline Settings menu and blocks update (raised on change only).
         var saved = AppSettings.Current;
         ShowClipKeyframes = saved.ShowClipKeyframes;
         SnapClips = saved.SnapClips;
         SnapToBeats = saved.SnapToBeats;
         ShowBeatGrid = saved.ShowBeatGrid;
 
-        // The I-frame lines as well, without what switching them by hand does (AutoToggleTimelineSnap turning the timeline thumb's snap
-        // to I-frames with them): what was saved already holds the snap the user left in the window.
+        // I-frame lines too, without the manual-toggle side effect (AutoToggleTimelineSnap): the saved settings already hold the snap.
         _resyncingShowIFrames = true;
         try
         {
@@ -574,7 +558,7 @@ public partial class MainViewModel
             _resyncingShowIFrames = false;
         }
 
-        // The proxy settings may name another height, format or place: proxies are looked for again under them.
+        // Proxy settings may change height, format or location: re-resolve proxies.
         _proxies.Clear();
         PreviewCache.Proxies.QueueTrim();
 
@@ -584,7 +568,7 @@ public partial class MainViewModel
         _ = ProbeHardwareEncodersAsync();
         _ = CheckDependencyUpdatesAsync();
 
-        // A cache made smaller, or switched off (which empties it), is brought to its new size.
+        // Trim the cache to a reduced (or zero, when disabled) size.
         PreviewCache.Timeline.QueueTrim();
         WorkScheduler.ApplySettings();
         PreviewCache.Browser.QueueTrim();
@@ -605,21 +589,21 @@ public partial class MainViewModel
         _spriteCancellation?.Cancel();
         _waveformCancellation?.Cancel();
 
-        // A background instance only owns its own working folder; the shared ones belong to the window.
+        // Background instances own only their work folder; shared folders belong to the window.
         if (_isBackgroundWorker)
         {
             DeleteFolder(_workFolder);
             return;
         }
 
-        // Cut lists, thumbnail sheets, previews, queue files: everything this session wrote, in one go.
+        // Delete all session temp output (cut lists, thumbnail sheets, previews, queue files).
         SessionPaths.DeleteSession();
     }
 
     [RelayCommand(CanExecute = nameof(CanStartOperation))]
     private async Task StartEncodeAsync()
     {
-        // FFmpeg, and for captions that are still to be heard whisper and its model: fetched now if they never were.
+        // Ensure FFmpeg (and whisper plus model when captions need transcription) are installed.
         if (await RequireForCommandAsync("Start Encode"))
             await RunEncodeAsync();
     }
@@ -629,15 +613,15 @@ public partial class MainViewModel
         if (string.IsNullOrWhiteSpace(CommandPreview))
             return "There is no command to run.";
 
-        // Nothing open and nothing on the timeline: the command names a stand-in for a source, which FFmpeg cannot open.
+        // Empty project: the command would reference a placeholder source FFmpeg cannot open.
         if (!HasSource && !(SequenceSeconds > 0) && !IsCommandManuallyEdited)
             return "There is nothing to export: open a video or a project first.";
 
-        // A Copy export that cannot cut is refused here, before anything is asked or started (5.2-Arm64AndNpu, the user's call).
+        // Refuse impossible Copy exports before any prompt or work starts.
         if (CopyRefusal() is { } refused)
             return refused;
 
-        // Copy keeps the picture as it is: said once more before the time is spent, when there is work it would skip.
+        // Warn again before a Copy export that would skip edits.
         if (CopyBypassWarning.Length > 0 && !IsCommandManuallyEdited && Confirm is not null
             && !Confirm("Stream Copy", $"{CopyBypassWarning}\n\nThe video is copied as it is: no clip's effects, crop or place, nothing set on the Color tab, and no resize reaches the output. To apply them, choose a video codec on the Export tab.", "Encode Anyway"))
         {
@@ -647,14 +631,14 @@ public partial class MainViewModel
         if (!ResolveOverwrite())
             return "Encode cancelled: the existing file was left untouched.";
 
-        // Read after the overwrite question: renaming the target changes the command.
+        // Read after the overwrite prompt, which may rename the target.
         var command = CommandPreview;
 
-        // A command or Extra options the opened project file brought (not this session's edits) runs only once the user has seen it.
+        // Commands or Extra options loaded from a project file (not edited this session) require confirmation.
         if (!ConfirmFileCommand(command))
             return "Not exported: the project's own command was not confirmed.";
 
-        // Auto-captions: listen, transcribe and write the subtitle file the command is about to draw.
+        // Auto-captions: transcribe and write the caption file for this export.
         if (await PrepareCaptionsForEncodeAsync(command, cancellationToken) is { } captionProblem)
             return captionProblem;
 
@@ -686,7 +670,7 @@ public partial class MainViewModel
 
         try
         {
-            // For a crash report: the encoders, the output's kind and length, never the files (the output's name included).
+            // Crash report context: encoders, output kind and duration; never file names.
             CrashReporter.KeepOut(DestinationPath);
             var exportSummary = CrashSummaries.Command(command, expected);
             CrashReporter.SetContext("export", "running: " + exportSummary);
@@ -701,7 +685,7 @@ public partial class MainViewModel
             && AppSettings.Current.AutoFallbackToSoftware
             && HardwareFallback.TryRewrite(command, out _, out _, out _))
         {
-            // The hardware encoder let us down: one more attempt on the software encoder for the same codec.
+            // Hardware encoder failed: retry once with the same codec's software encoder.
             HardwareFallback.TryRewrite(command, out var retry, out var hardware, out var software);
             AppLog.Write($"{hardware} failed and {software} is tried instead", ex);
             StatusText = $"Warning: {hardware} failed. Retrying with {software}...";
@@ -722,7 +706,7 @@ public partial class MainViewModel
             IsProgressIndeterminate = true;
             SetTaskbarProgress(TaskbarItemProgressState.Normal);
             CrashReporter.Note("export", $"{hardware} failed, retried with {software}");
-            // The retry is the GPU's too where the settings make it (the encoder switched on the Export tab); a patched command is FFmpeg's.
+            // Settings-driven retries stay on the GPU export path; patched hand-edited commands run via FFmpeg.
             await RunExportAsync(retry, ExportStateForGpu(), progress, cancellationToken);
             CrashReporter.Note("export", "finished");
             NotifyFinished("Encode complete", Path.GetFileName(DestinationPath.Trim().Trim('"')));
@@ -730,17 +714,16 @@ public partial class MainViewModel
         }
         finally
         {
-            // Finished, failed or cancelled: the taskbar button goes back to plain.
+            // Clear taskbar progress on completion, failure or cancel.
             SetTaskbarProgress(TaskbarItemProgressState.None);
             CrashReporter.SetContext("export", null);
         }
     });
 
     /// <summary>
-    /// A hardware failure's software retry on the Export tab (5.4D): <paramref name="replacement"/> put in place as HandPeg's own pick, not
-    /// one by hand (a speed-first state holds), at its fastest step when the export was speed-first or the failed command carried its
-    /// vendor's fastest step (HardwareFallback.HadFastestStep: a step picked by hand too), else at its own default, the slowest. The same
-    /// rule as HardwareFallback.TryRewrite (5.4D review): the same failure retries at the same step, the command hand-edited or not.
+    /// Applies a software fallback encoder on the Export tab as a programmatic pick (speed-first state preserved): fastest step when the
+    /// export was speed-first or the failed command used its vendor's fastest step (HardwareFallback.HadFastestStep), else the slowest
+    /// default. Mirrors HardwareFallback.TryRewrite so retries match whether or not the command was hand-edited.
     /// </summary>
     private void PlaceSoftwareRetry(EncoderOption replacement, string failedCommand)
     {
@@ -757,10 +740,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>
-    /// Asks what to do when the target file already exists. Returns false when the user cancelled;
-    /// after a rename, Save As and the command point at the new name.
-    /// </summary>
+    /// <summary>Prompts when the target exists; false on cancel. A rename retargets Save As and the command.</summary>
     private bool ResolveOverwrite()
     {
         var destination = DestinationPath.Trim().Trim('"');
@@ -776,7 +756,7 @@ public partial class MainViewModel
 
         if (decision.Choice == OverwriteChoice.Rename)
         {
-            // A generated command follows Save As by itself; a hand-edited one has to be patched.
+            // Generated commands follow Save As automatically; hand-edited ones are patched.
             var manualCommand = IsCommandManuallyEdited ? CommandPreview : null;
             DestinationPath = decision.NewPath;
             if (manualCommand is not null)
@@ -787,13 +767,12 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Runs one operation at a time, and turns its outcome (returned message, cancellation or failure) into status text.
-    /// It is a piece of work in its lane (see WorkScheduler): shown by the progress chip with the progress and the
-    /// status it reports here, and cancelled from the chip's flyout as by the Cancel button.
+    /// Runs a single exclusive operation and maps its outcome (message, cancel, fault) to status text. Registered as WorkScheduler
+    /// lane work: the progress chip shows its progress/status and its flyout cancels like the Cancel button.
     /// </summary>
-    /// <param name="title">What the progress chip calls it.</param>
-    /// <param name="loadsDocument">5.5.0: the operation opens, loads or rewrites the Sequence as a whole (an open, a load, Remove Dead Air), so
-    /// the tab in front's crash-recovery copy waits for it (<see cref="BusyWithDocument"/>); an export, the queue or captions do not.</param>
+    /// <param name="title">Progress chip label.</param>
+    /// <param name="loadsDocument">True when the operation replaces the Sequence wholesale (open, load, Remove Dead Air), deferring the
+    /// crash-recovery copy (<see cref="BusyWithDocument"/>); false for export, queue and captions.</param>
     private async Task RunOperationAsync(string title, WorkLane lane, Func<CancellationToken, Task<string?>> operation, bool loadsDocument = false)
     {
         if (IsBusy)
@@ -814,7 +793,7 @@ public partial class MainViewModel
         {
             run = WorkScheduler.Run(new WorkSpec(title, lane), async work =>
             {
-                // What the operation says of itself (the progress bar's value, the status line) is what its chip says.
+                // Mirror the operation's progress and status onto its chip.
                 void Mirror(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
                 {
                     if (e.PropertyName is nameof(ProgressValue) or nameof(IsProgressIndeterminate))
@@ -843,7 +822,7 @@ public partial class MainViewModel
         }
         catch (OperationCanceledException ex)
         {
-            // Not a cancel anyone asked for: an internal deadline (an HTTP request, a tool's timeout) ended the operation.
+            // Unrequested cancellation: an internal timeout (HTTP, tool) ended the operation.
             AppLog.Write($"{title} failed", ex);
             outcome = ex.InnerException is TimeoutException ? $"{title} timed out." : $"Error: {ex.Message}";
             ended = "failed: " + ex.GetType().Name;
@@ -857,7 +836,7 @@ public partial class MainViewModel
 
         CrashReporter.Note("op", title + ": " + ended);
 
-        // Progress callbacks are posted, so some can still arrive after the operation has ended.
+        // Progress callbacks are posted and may arrive after completion.
         _acceptProgressReports = false;
         _operationCancellation = null;
         ProgressValue = 0;
@@ -868,12 +847,12 @@ public partial class MainViewModel
             StatusText = outcome;
     }
 
-    // Whether the operation under way opens, loads or rewrites the Sequence as a whole (RunOperationAsync's loadsDocument).
+    // RunOperationAsync's loadsDocument flag for the current operation.
     private bool _operationLoadsDocument;
 
     /// <summary>
-    /// Busy with an operation that opens, loads or rewrites the Sequence as a whole (5.5.0): a crash-recovery copy taken now could catch it
-    /// half done. False during an export, the queue, captions or a download of a speech model, while the Sequence can still be edited.
+    /// True while an operation replaces the Sequence wholesale (a recovery copy now could be half-done); false for export, queue,
+    /// captions or model downloads, during which the Sequence stays editable.
     /// </summary>
     public bool BusyWithDocument => IsBusy && _operationLoadsDocument;
 
@@ -890,8 +869,8 @@ public partial class MainViewModel
         PositionMs = 0;
         DurationMs = 0;
 
-        // A file opened goes on the timeline where any does: at the beginning of the timeline, whole (PlaceOpenedFile, once it has
-        // been looked at). The other clips stay; the bin and the markers were the old file's.
+        // The opened file is placed whole at the timeline start once probed (PlaceOpenedFile); other clips stay, while bin and
+        // markers belonged to the old file.
         SetBin(null);
         SetMarkers(null);
         ClearDocumentMarkers();

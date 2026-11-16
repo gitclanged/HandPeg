@@ -17,23 +17,23 @@ public enum DependencyState
     Installed,
     UpdateAvailable,
 
-    /// <summary>The settings name a program of the user's own. It is used as it is and never replaced.</summary>
+    /// <summary>Custom executable path from settings; used as-is and never replaced.</summary>
     CustomPath,
 }
 
-/// <summary>How far an install has come: a fraction from 0 to 1 (negative while it cannot be told) and a line of text.</summary>
+/// <summary>Install progress: fraction 0-1 (negative = indeterminate) and a status line.</summary>
 public readonly record struct InstallProgress(double Fraction, string Text);
 
-/// <summary>A release of a tool as GitHub describes it.</summary>
-/// <param name="Stamp">What identifies this build: compared with the stamp kept beside the installed one.</param>
-/// <param name="Sha256">The digest the file is checked against: the pinned one, or the one GitHub publishes, when there is either.</param>
-/// <param name="SumsUrl">A checksum list attached to the same release, used when there is no digest.</param>
+/// <summary>Tool release asset as described by GitHub.</summary>
+/// <param name="Stamp">Build identity, compared with the stamp stored beside the installed copy.</param>
+/// <param name="Sha256">Expected digest: pinned, else GitHub-published, when available.</param>
+/// <param name="SumsUrl">Release checksum list used when no digest exists.</param>
 public sealed record RemoteAsset(string Name, string DownloadUrl, string Stamp, string Tag, long Size, string? Sha256, string? SumsUrl)
 {
-    /// <summary>Whether this is the build pinned for this version of HandPeg, a stand-in for it, or simply the newest.</summary>
+    /// <summary>Pinned, substitute, or newest-release build.</summary>
     public PinState Pin { get; init; }
 
-    /// <summary>Its place among the tool's pinned builds, best first (see <see cref="DependencyUpdater.PinnedBuilds"/>); past them all for a stand-in from outside the list.</summary>
+    /// <summary>Rank among the tool's <see cref="DependencyUpdater.PinnedBuilds"/> (best first); beyond the list for an off-list substitute.</summary>
     public int PinRank { get; init; } = DependencyUpdater.OutsideListRank;
 
     /// <summary>Which of the tool's pinned lists it was taken from (see <see cref="PinnedBuild.Variant"/>).</summary>
@@ -49,7 +49,7 @@ public sealed record RemoteAsset(string Name, string DownloadUrl, string Stamp, 
 /// <summary>Where a build stands against the builds pinned for this version of HandPeg.</summary>
 public enum PinState
 {
-    /// <summary>The newest upstream release: the tool is not pinned (yt-dlp), unpinned updates are allowed, or its release address is the user's own.</summary>
+    /// <summary>Newest upstream release: unpinned tool (yt-dlp), unpinned updates allowed, or a custom release URL.</summary>
     Unpinned,
 
     /// <summary>The build this version of HandPeg was tested with.</summary>
@@ -60,42 +60,37 @@ public enum PinState
 }
 
 /// <summary>
-/// A build of a tool that this version of HandPeg installs by default. The first one listed for a tool (or for a kind
-/// of it) is the one it was tested with; those after it stand in, in order, when upstream no longer publishes it.
+/// Pinned default build of a tool. The first entry per tool/variant is the tested build; later entries are ordered substitutes
+/// used when upstream stops publishing it.
 /// </summary>
 /// <param name="Variant">
-/// Which build of the tool: <see cref="DependencyUpdater.OlderNvidiaVariant"/> for the FFmpeg that older NVIDIA drivers take,
-/// <see cref="DependencyUpdater.Arm64Variant"/> for FFmpeg's ARM64 builds, the file's name for whisper.cpp (a
-/// build per kind of hardware); empty otherwise.
+/// <see cref="DependencyUpdater.OlderNvidiaVariant"/> (FFmpeg for older NVIDIA drivers), <see cref="DependencyUpdater.Arm64Variant"/>
+/// (FFmpeg ARM64), the asset name for whisper.cpp (per-hardware builds); empty otherwise.
 /// </param>
-/// <param name="Repository">The GitHub repository that publishes it, as owner/name.</param>
-/// <param name="Tag">The release that carries it. Only dated or numbered releases, whose files never change.</param>
-/// <param name="Asset">The file attached to that release.</param>
-/// <param name="Sha256">Its SHA-256, checked whatever the release says now.</param>
-/// <param name="Size">Its size in bytes, shown before it is downloaded.</param>
-/// <param name="Version">What the build reports itself as (ffmpeg -version; the tag for whisper.cpp): it recognises a copy put in before it was pinned.</param>
-/// <param name="Published">When the release was made: a stand-in from outside the list is looked for nearest this.</param>
-/// <param name="Label">How the list names it.</param>
-/// <param name="Mirror">Another address of the very same file, for when the release has gone from GitHub: checked against the same SHA-256.</param>
+/// <param name="Repository">GitHub owner/name.</param>
+/// <param name="Tag">Immutable dated or numbered release tag.</param>
+/// <param name="Asset">Release asset file name.</param>
+/// <param name="Sha256">Pinned SHA-256, enforced regardless of what the release reports.</param>
+/// <param name="Size">Size in bytes, shown before download.</param>
+/// <param name="Version">Self-reported version (ffmpeg -version; tag for whisper.cpp), used to recognise pre-pin installs.</param>
+/// <param name="Published">Release date; off-list substitutes are chosen nearest to it.</param>
+/// <param name="Label">Display label.</param>
+/// <param name="Mirror">Alternate URL for the identical file if the GitHub release disappears; verified against the same SHA-256.</param>
 public sealed record PinnedBuild(
     string Tool, string Variant, string Repository, string Tag, string Asset, string Sha256, long Size, string Version, DateTime Published, string Label,
     string? Mirror = null)
 {
-    /// <summary>Where GitHub serves the file. Asked with a HEAD, it says whether the file is still there without counting against the API's hourly limit.</summary>
+    /// <summary>GitHub download URL; a HEAD request checks availability without consuming API rate limit.</summary>
     public string DownloadUrl => $"https://github.com/{Repository}/releases/download/{Tag}/{Asset}";
 }
 
 /// <summary>
-/// Installs and updates FFmpeg (with ffprobe), yt-dlp and whisper.cpp, and the speech models, in the deps
-/// folder (see <see cref="AppPaths"/>): a folder per tool. Nothing is shipped with HandPeg itself.
-///
-/// FFmpeg and whisper.cpp are installed from the builds this version of HandPeg was tested with
-/// (<see cref="PinnedBuilds"/>), not from whatever upstream published last night; yt-dlp follows its newest release.
-/// Settings can allow the newest builds instead (<see cref="AppSettings.AllowUnpinnedDependencyUpdates"/>).
-///
-/// An install never works on the copy in use. The download goes into a staging folder, is checked against
-/// the pinned SHA-256 (or the published one, where there is one), unpacked and run once; only then is the tool's folder
-/// swapped for the new one. A download that fails, is cancelled or does not check out leaves what was there untouched.
+/// Installs and updates FFmpeg/ffprobe, yt-dlp, whisper.cpp and speech models into per-tool folders under deps
+/// (<see cref="AppPaths"/>); nothing is bundled.
+/// FFmpeg and whisper.cpp use tested pinned builds (<see cref="PinnedBuilds"/>) unless
+/// <see cref="AppSettings.AllowUnpinnedDependencyUpdates"/>; yt-dlp tracks its newest release.
+/// Installs never touch the live copy: download to staging, verify SHA-256 (pinned or published), unpack, run once, then swap
+/// folders. Any failure or cancellation leaves the existing install untouched.
 /// </summary>
 public static partial class DependencyUpdater
 {
@@ -103,18 +98,17 @@ public static partial class DependencyUpdater
     public const string YtDlp = "yt-dlp";
     public const string Whisper = "whisper";
 
-    /// <summary>The tools, in the order they are listed and installed. (The libmpv player went in 5.0-Verify: see <see cref="DeleteRetiredPlayer"/>.)</summary>
+    /// <summary>Managed tools in list/install order (retired libmpv cleanup: <see cref="DeleteRetiredPlayer"/>).</summary>
     public static IReadOnlyList<string> Tools { get; } = [Ffmpeg, YtDlp, Whisper];
 
-    // ----- ARM64 (4.3D): a win-arm64 HandPeg takes the ARM64 build of every tool -----
-    // FFmpeg, yt-dlp and whisper.cpp run beside HandPeg and would run emulated (Prism) as x64, but each publishes an ARM64
-    // build, which is what is installed. The tools of an ARM64 HandPeg have folders of their own (ToolFolder), so neither
-    // build ever lands in the other's.
+    // ----- ARM64: a win-arm64 process installs native ARM64 tool builds -----
+    // x64 tools would run under Prism emulation; each tool publishes ARM64 builds, installed into separate folders (ToolFolder)
+    // so x64 and ARM64 builds never mix.
 
     /// <summary>The variant of FFmpeg built for ARM64 Windows (<see cref="PinnedBuild.Variant"/>).</summary>
     public const string Arm64Variant = "arm64";
 
-    /// <summary>HandPeg runs as an ARM64 process (the win-arm64 build, on Windows on ARM): its tools are the ARM64 builds.</summary>
+    /// <summary>True for a win-arm64 process; tools use ARM64 builds.</summary>
     public static bool IsArm64 => RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
 
     private static string YtDlpAssetName => IsArm64 ? "yt-dlp_arm64.exe" : "yt-dlp.exe";
@@ -134,7 +128,7 @@ public static partial class DependencyUpdater
     // The last FFmpeg whose NVENC runs on NVIDIA drivers before 610 (NVENC API 13.0), and so on the GTX 10 series.
     private static readonly Version LastFfmpegForOlderNvidiaDrivers = new(8, 1);
 
-    /// <summary>The version in the name of a numbered FFmpeg build that older NVIDIA drivers can still use, or null.</summary>
+    /// <summary>Version from a numbered FFmpeg build name usable with older NVIDIA drivers, or null.</summary>
     private static Version? OlderNvidiaFfmpegVersion(string? name) =>
         name is not null && FfmpegReleaseAssetRegex().Match(name) is { Success: true } match
         && Version.Parse(match.Groups["version"].Value) is var version && version <= LastFfmpegForOlderNvidiaDrivers
@@ -144,20 +138,15 @@ public static partial class DependencyUpdater
     // Checksum lists some projects attach to a release: yt-dlp's, and the FFmpeg builds'.
     private static readonly string[] SumsAssetNames = ["SHA2-256SUMS", "checksums.sha256"];
 
-    // ----- The builds this version of HandPeg was tested with -----
-    // FFmpeg and whisper.cpp publish new builds every day, and a new FFmpeg can rename a filter's option. So these two
-    // are installed from the builds HandPeg was tested with, each checked against its SHA-256, and yt-dlp alone follows
-    // its newest release (sites change under it, and an old yt-dlp simply stops downloading). How long each upstream
-    // keeps a build (as of 2026-11-06):
-    //   BtbN/FFmpeg-Builds: the last 14 daily builds, and the last build of each month for two years.
-    //   ggml-org/whisper.cpp: every release so far, with its files (back to 2022).
-    // So the tested FFmpeg is a month's last build (since 5.2.0's re-cut: the daily build 5.2.0 first pinned was gone
-    // from GitHub two weeks later), with the month before it listed as a stand-in; past those the dated build nearest the
-    // tested one is taken, checked against the SHA-256 GitHub publishes for it. A stand-in is logged and named in the
-    // dependency list, never taken silently, and the newest nightly is only ever installed when the user has allowed it.
-    // A build that checks out but will not start on this computer is passed over for the next one (InstallToolAsync).
+    // ----- Pinned (tested) builds -----
+    // FFmpeg and whisper.cpp publish daily and can change CLI options, so both install tested builds verified by SHA-256; yt-dlp
+    // tracks upstream (sites change and old versions stop working). Upstream retention (2026-11-06): BtbN/FFmpeg-Builds keeps 14
+    // daily builds plus each month's last build for two years; ggml-org/whisper.cpp keeps all releases.
+    // Hence FFmpeg pins a month-end build with the previous month as substitute; beyond that, the dated build nearest the tested one
+    // is used, verified against GitHub's digest. Substitutes are logged and labelled, never silent; nightly builds require opt-in.
+    // A verified build that fails to start is skipped for the next candidate (InstallToolAsync).
 
-    /// <summary>The FFmpeg build for NVIDIA drivers before 610 (see <see cref="AppSettings.UseFfmpegForOlderNvidiaDrivers"/>): the 8.1 line.</summary>
+    /// <summary>FFmpeg 8.1 line for NVIDIA drivers older than 610 (<see cref="AppSettings.UseFfmpegForOlderNvidiaDrivers"/>).</summary>
     public const string OlderNvidiaVariant = "8.1";
 
     /// <summary>The place of a stand-in from outside <see cref="PinnedBuilds"/>: after every listed build.</summary>
@@ -170,12 +159,11 @@ public static partial class DependencyUpdater
     private static readonly DateTime MonthEndFfmpegDate = new(2026, 9, 30, 13, 9, 24, DateTimeKind.Utc);
     private static readonly DateTime TestedWhisperDate = new(2026, 10, 6, 16, 51, 27, DateTimeKind.Utc);
 
-    // The ARM64 builds of the same releases (4.3D), their SHA-256 as GitHub reports it for each file (the x64 pins agree).
+    // ARM64 assets of the same releases, with GitHub-reported SHA-256 per file (matching the x64 pin source).
     private static readonly DateTime TestedFfmpegArm64Date = new(2026, 10, 31, 12, 59, 47, DateTimeKind.Utc);
 
     /// <summary>
-    /// The builds HandPeg installs, a list per tool and variant, the tested build first and its stand-ins after it in
-    /// the order they are taken. Raised with each version of HandPeg, once the new builds have been tested with it.
+    /// Pinned builds per tool and variant: tested build first, then substitutes in preference order. Updated per release after testing.
     /// </summary>
     public static IReadOnlyList<PinnedBuild> PinnedBuilds { get; } =
     [
@@ -203,8 +191,8 @@ public static partial class DependencyUpdater
         new(Whisper, WhisperX64AssetName, "ggml-org/whisper.cpp", "b5454", WhisperX64AssetName,
             "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb", 8928640, "b5454", TestedWhisperDate, "b5454"),
 
-        // ARM64 (4.3D): FFmpeg's master build of October's last day. September's (N-127021) is not listed: it ends at once
-        // with 0xC0000005 on a Snapdragon X (BrokenAssets), which is what 5.2.0's ARM64 first run fell back to.
+        // ARM64: FFmpeg master build from the last day of October. September's (N-127021) is excluded: it crashes immediately with
+        // 0xC0000005 on Snapdragon X (BrokenAssets).
         new(Ffmpeg, Arm64Variant, "BtbN/FFmpeg-Builds", "autobuild-2026-10-31-12-59", "ffmpeg-N-128227-g4811625b5f-winarm64-gpl.zip",
             "7d2bc069f7eda052fac7d4d9ff40eabda5d9fd8b6105d479129547ad3b822919", 142303693, "N-128227-g4811625b5f-20261031", TestedFfmpegArm64Date,
             "N-128227 (2026-10-31, ARM64)"),
@@ -235,7 +223,7 @@ public static partial class DependencyUpdater
         "ffmpeg-N-127021-ge0c94b2d1c-winarm64-gpl.zip",
     };
 
-    // Builds downloaded and checked out this session that would not start here (InstallToolAsync): passed over like BrokenAssets.
+    // Verified builds that failed to start this session (InstallToolAsync); skipped like BrokenAssets.
     private static readonly HashSet<string> WontStartHere = new(StringComparer.Ordinal);
 
     // How many builds an install tries, one after another, when each in turn will not start.
@@ -248,7 +236,7 @@ public static partial class DependencyUpdater
             return BrokenAssets.Contains(assetName) || WontStartHere.Contains(assetName);
     }
 
-    /// <summary>The speech models offered for download: English-only ones first (smaller and better for English), then multilingual.</summary>
+    /// <summary>Downloadable speech models: English-only first (smaller, better for English), then multilingual.</summary>
     public static IReadOnlyList<string> WhisperModels { get; } =
     [
         "ggml-tiny.en.bin", "ggml-base.en.bin", "ggml-small.en.bin", "ggml-medium.en.bin",
@@ -257,13 +245,9 @@ public static partial class DependencyUpdater
     ];
 
     /// <summary>
-    /// The whisper.cpp builds that can be installed, the best for this computer first. whisper.cpp publishes
-    /// three kinds for 64-bit Windows: one that runs on an NVIDIA card (CUDA), one that uses OpenBLAS to go
-    /// faster on the processor, and a plain one. There is no published build for AMD or Intel graphics
-    /// (Vulkan), so on those the OpenBLAS build is the fastest there is to download; a Vulkan build made
-    /// elsewhere can still be set by hand in Settings (Tools), and is used on the graphics card as it is.
-    /// For ARM64 (4.3D) it publishes CUDA, OpenCL for Qualcomm's Adreno graphics (which needs the graphics driver's
-    /// OpenCL, in the system folder) and a plain build: the first that this computer can run.
+    /// Installable whisper.cpp builds, best first for this machine. x64: CUDA (NVIDIA), OpenBLAS (CPU), plain. No published Vulkan
+    /// build for AMD/Intel, so OpenBLAS is used there (a custom Vulkan build can be set in Settings). ARM64: CUDA, OpenCL for Adreno
+    /// (requires the driver's OpenCL loader), plain; the first runnable one is chosen.
     /// </summary>
     public static IReadOnlyList<string> WhisperAssetNames { get; } = IsArm64
         ? [.. (HasNvidiaCuda ? [WhisperArm64CudaAssetName] : Array.Empty<string>()), .. (HasSystemOpenCl ? [WhisperArm64AdrenoAssetName] : Array.Empty<string>()), WhisperArm64AssetName]
@@ -271,7 +255,7 @@ public static partial class DependencyUpdater
             ? ["whisper-cublas-12.4.0-bin-x64.zip", "whisper-bin-win-cuda-12.4.0-x64.zip", "whisper-blas-bin-x64.zip", WhisperX64AssetName]
             : ["whisper-blas-bin-x64.zip", WhisperX64AssetName];
 
-    /// <summary>The graphics driver's OpenCL is installed: its loader is in the system folder (what the Adreno build of whisper.cpp needs).</summary>
+    /// <summary>True when the driver's OpenCL loader is in System32 (required by the Adreno whisper.cpp build).</summary>
     private static bool HasSystemOpenCl
     {
         get
@@ -311,15 +295,13 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// The voice activity detection model whisper.cpp uses to skip silence (Silero VAD, under 1 MB). Kept with
-    /// the speech models; without it auto-captions still work, but may put words into quiet stretches.
+    /// Silero VAD model (under 1 MB) used by whisper.cpp to skip silence. Optional; without it captions may hallucinate in quiet parts.
     /// </summary>
     public const string VadModel = "ggml-silero-v5.1.2.bin";
 
     /// <summary>
-    /// The SHA-256 of every model HandPeg offers, pinned in the program (the files' LFS digests as Hugging Face published them,
-    /// 2026-11-15): a download is checked against these, not against what the download's own server says. A model missing here falls
-    /// back to the server's linked hash, and to nothing installed when there is none (the <c>model-checksums-pinned</c> golden).
+    /// Pinned SHA-256 per offered model (Hugging Face LFS digests, 2026-11-15), enforced instead of the server's claim. Unlisted models
+    /// fall back to the server's linked hash and are refused without one (<c>model-checksums-pinned</c> golden).
     /// </summary>
     internal static IReadOnlyDictionary<string, string> ModelSha256 { get; } = new Dictionary<string, string>(StringComparer.Ordinal)
     {
@@ -338,8 +320,7 @@ public static partial class DependencyUpdater
 
     private const string VadModelUrl = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/" + VadModel;
 
-    // Made when first used, not with the class (which the window's view model touches before the first frame): making
-    // an HttpClient and its handler is a few milliseconds that nothing at start-up needs (Pass 4.1C).
+    // Lazy: the class is touched before Frame 1, and constructing HttpClient costs a few ms nothing at startup needs.
     private static readonly Lazy<HttpClient> LazyHttp = new(() => CreateClient(followRedirects: true));
     private static readonly Lazy<HttpClient> LazyHttpNoRedirect = new(() => CreateClient(followRedirects: false));
 
@@ -361,7 +342,7 @@ public static partial class DependencyUpdater
     private static string LocalFfmpegPath => Path.Combine(ToolFolder(Ffmpeg), "ffmpeg.exe");
     private static string LocalFfprobePath => Path.Combine(ToolFolder(Ffmpeg), "ffprobe.exe");
 
-    /// <summary>whisper.cpp's command line program as this class installs it: under this name, whatever the release calls it.</summary>
+    /// <summary>Installed whisper.cpp CLI name, normalized regardless of the release's naming.</summary>
     private static string LocalWhisperPath => Path.Combine(ToolFolder(Whisper), "whisper.exe");
 
     // The tools the application actually runs: a path from the settings when one is set, otherwise the local copy.
@@ -388,21 +369,19 @@ public static partial class DependencyUpdater
         }
     }
 
-    /// <summary>The whisper program auto-captions run: the one named in the settings when there is one, otherwise the local copy.</summary>
+    /// <summary>whisper executable for auto-captions: custom path from settings, else the managed copy.</summary>
     public static string WhisperPath => OrDefault(AppSettings.Current.WhisperPath, LocalWhisperPath);
 
     /// <summary>True when the settings name a specific whisper.exe instead of the local copy.</summary>
     public static bool IsWhisperOverridden => !string.IsNullOrWhiteSpace(AppSettings.Current.WhisperPath);
 
-    // The ggml libraries of whisper.cpp's graphics back ends (b5454 and later load them from beside whisper.exe), and what each is.
+    // ggml GPU backend libraries loaded from beside whisper.exe (b5454+), mapped to backend names.
     private static readonly (string Library, string Backend)[] WhisperGpuLibraries =
         [("ggml-cuda.dll", "CUDA"), ("ggml-opencl.dll", "OpenCL"), ("ggml-vulkan.dll", "Vulkan"), ("ggml-sycl.dll", "SYCL")];
 
     /// <summary>
-    /// The graphics back end of the whisper.cpp in use (5.2-Arm64AndNpu), by the ggml library beside it: "CUDA" (the NVIDIA
-    /// builds), "OpenCL" (the Adreno build HandPeg installs on a Snapdragon PC with the graphics driver's OpenCL), "Vulkan"
-    /// (one set by hand); empty for a build on the processor alone, or one that keeps its back ends inside (it then decides
-    /// for itself, as before). A few file checks: not for the UI thread before the first frame.
+    /// GPU backend of the active whisper.cpp from the adjacent ggml library: "CUDA", "OpenCL" (Adreno), "Vulkan" (custom); empty for
+    /// CPU-only or statically linked builds. Performs file I/O; not for the UI thread before Frame 1.
     /// </summary>
     public static string WhisperGpuBackend
     {
@@ -429,9 +408,8 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// Whether a speech build that runs on an NPU is installed (a QNN or ONNX Runtime one). None is today: the pinned
-    /// whisper.cpp b5454 builds are for the processor, CUDA and Adreno OpenCL only (5.2-Arm64AndNpu; an NPU speech model is
-    /// planned with the AI worker in 6.0).
+    /// True when an NPU speech build (QNN or ONNX Runtime) is installed. Currently always false: pinned whisper.cpp builds target CPU,
+    /// CUDA and Adreno OpenCL only.
     /// </summary>
     public static bool NpuSpeechBuildInstalled => false;
 
@@ -448,7 +426,7 @@ public static partial class DependencyUpdater
     private static string OrDefault(string value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value;
 
     /// <summary>
-    /// Which folder a file of the old, single "bin" folder belongs in now, or null when it is not one of ours.
+    /// Target tool folder for a file from the legacy single "bin" folder, or null if unrecognized.
     /// </summary>
     public static string? FolderForLegacyFile(string fileName)
     {
@@ -473,7 +451,7 @@ public static partial class DependencyUpdater
         _ => "whisper.cpp",
     };
 
-    /// <summary>The program of the user's own that stands in for a tool, or an empty string.</summary>
+    /// <summary>Custom executable configured for a tool, or empty.</summary>
     public static string CustomPath(string tool) => (tool switch
     {
         Ffmpeg => AppSettings.Current.FfmpegPath,
@@ -495,10 +473,8 @@ public static partial class DependencyUpdater
         : DependencyState.Missing;
 
     /// <summary>
-    /// True when the installed copy should be replaced by <paramref name="latest"/>. For the newest release, when it is
-    /// not that build. For a pinned build, when the installed copy is none of the tool's pinned builds, or a better one
-    /// of them (the tested one, say, over a stand-in) is what is published now: a pinned build already installed is
-    /// never replaced by a stand-in because upstream has since let it go.
+    /// True when the install should be replaced by <paramref name="latest"/>: for newest-release mode when it differs; for pinned
+    /// mode when the install is not a pinned build or a better-ranked one is now available. Never downgrades an installed pin to a substitute.
     /// </summary>
     public static bool IsOutdated(string tool, RemoteAsset latest)
     {
@@ -512,9 +488,8 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// Where the installed copy stands among the tool's pinned builds of a variant: its place in the list, <see cref="OutsideListRank"/>
-    /// for a stand-in from outside it, or null when it is none of them (the newest release, another variant, or nothing).
-    /// A copy put in before builds were pinned is recognised by the version it reports.
+    /// Rank of the install among a variant's pinned builds, <see cref="OutsideListRank"/> for an off-list substitute, or null (newest
+    /// release, other variant, none). Pre-pin installs are matched by reported version.
     /// </summary>
     public static int? InstalledPinRank(string tool, string variant)
     {
@@ -527,8 +502,7 @@ public static partial class DependencyUpdater
         if (index >= 0)
             return index;
 
-        // Installed from the newest release before there were pins: the same build, if it reports the same version. A
-        // whisper.cpp stamp named its kind of build (all but the plain one), and that has to be the kind wanted.
+        // Pre-pin install: same build if the reported version matches; whisper.cpp stamps also encode the build kind, which must match.
         var version = ReadText(VersionPath(folder)) ?? "";
         var parts = stamp.Split('|');
         index = builds.FindIndex(b => b.Version == version
@@ -545,7 +519,7 @@ public static partial class DependencyUpdater
     /// <summary>The pinned builds of a tool's variant, the tested one first.</summary>
     private static List<PinnedBuild> PinnedFor(string tool, string variant) => PinnedBuilds.Where(b => b.Tool == tool && b.Variant == variant).ToList();
 
-    /// <summary>Whether a file of a release is the same kind of build as a variant's pinned ones: what a stand-in from outside the list may be.</summary>
+    /// <summary>True when a release asset matches a variant's build kind (eligible as an off-list substitute).</summary>
     internal static bool IsVariantAsset(string tool, string variant, string name) => tool switch
     {
         Ffmpeg => variant switch
@@ -566,8 +540,7 @@ public static partial class DependencyUpdater
     private static string VersionPath(string folder) => Path.Combine(folder, "version.txt");
 
     /// <summary>
-    /// The version of the installed copy, for display. It is read from a small file written when the tool was
-    /// installed; only a copy that has none (one brought over from an older build) is asked, by running it once.
+    /// Installed version for display, from the stamp file written at install; legacy installs without one are queried by running once.
     /// </summary>
     public static async Task<string> GetInstalledVersionAsync(string tool, CancellationToken cancellationToken)
     {
@@ -589,9 +562,8 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// Runs the copy in <paramref name="folder"/> briefly and returns what it says its version is. Also the
-    /// proof that a freshly downloaded tool starts at all. whisper.cpp does not report a version, so its
-    /// release tag stands in.
+    /// Runs the tool in <paramref name="folder"/> to read its version, also proving a fresh download starts. whisper.cpp reports
+    /// none, so its release tag is used.
     /// </summary>
     private static async Task<string> ProbeVersionAsync(string tool, string folder, CancellationToken cancellationToken)
     {
@@ -618,11 +590,10 @@ public static partial class DependencyUpdater
         };
     }
 
-    /// <summary>Runs one of a tool's programs once and returns what it wrote; throws <see cref="WontStartException"/> when it cannot start here.</summary>
+    /// <summary>Runs a tool executable once and returns its output; throws <see cref="WontStartException"/> if it cannot start.</summary>
     private static async Task<BufferedCommandResult> RunOnceAsync(string folder, string program, string argument, CancellationToken cancellationToken)
     {
-        // Looked at before it is run: Windows answers an attempt to start a file that is not a program for
-        // this machine with a dialog of its own, which nobody asked for.
+        // Check the PE machine type first: starting a wrong-architecture binary makes Windows show an unsolicited dialog.
         if (!IsBinaryForThisMachine(Path.Combine(folder, program)))
             throw new WontStartException($"{program} is not a {ExpectedMachine} Windows program.");
 
@@ -642,8 +613,8 @@ public static partial class DependencyUpdater
             throw new WontStartException($"{program} did not answer.");
         }
 
-        // A program that could not load (a missing library, the wrong architecture) ends with a Windows error code: the
-        // install is refused with what it means (IsInstallFailure), and since Program.Main's error mode no Windows box asks first.
+        // Loader failures (missing DLL, wrong architecture) exit with an NTSTATUS; the install is refused with its meaning
+        // (IsInstallFailure). Program.Main's error mode suppresses the Windows error box.
         if (result.ExitCode is < 0 or > 255)
         {
             var why = unchecked((uint)result.ExitCode) switch
@@ -665,9 +636,8 @@ public static partial class DependencyUpdater
     public const ushort MachineAmd64 = 0x8664, MachineArm64 = 0xAA64;
 
     /// <summary>
-    /// True when a program whose PE header names <paramref name="machine"/> can be run by a HandPeg running on
-    /// <paramref name="architecture"/>: every tool is a program run beside HandPeg, never a library loaded into it. An x64
-    /// HandPeg takes x64 only; an ARM64 HandPeg runs ARM64 programs or, emulated, x64 ones.
+    /// True when an executable of PE <paramref name="machine"/> can run as a child of a process on <paramref name="architecture"/>:
+    /// x64 runs x64 only; ARM64 runs ARM64 natively or x64 emulated.
     /// </summary>
     public static bool IsMachineAccepted(ushort machine, Architecture architecture) => architecture switch
     {
@@ -677,8 +647,7 @@ public static partial class DependencyUpdater
     };
 
     /// <summary>
-    /// The machine type a PE file's header names (read from the start of <paramref name="stream"/>), or null when it is
-    /// not a Windows program or library at all.
+    /// PE header machine type read from <paramref name="stream"/>, or null for non-PE files.
     /// </summary>
     public static ushort? PeMachineOf(Stream stream)
     {
@@ -716,8 +685,7 @@ public static partial class DependencyUpdater
 
     // ----- What is available -----
 
-    // GitHub allows a machine sixty of these questions an hour, so an answer is kept for a few minutes:
-    // the check at startup and the list in the settings then share one.
+    // GitHub's unauthenticated limit is 60 requests/hour: cache responses briefly so startup and Settings share them.
     private static readonly Dictionary<string, (DateTime At, RemoteAsset Asset)> Answers = [];
     private static readonly TimeSpan AnswerLifetime = TimeSpan.FromMinutes(10);
 
@@ -729,8 +697,8 @@ public static partial class DependencyUpdater
     };
 
     /// <summary>
-    /// A release address of the user's own when it is an absolute https address, else the default. Settings refuses anything else; this
-    /// covers a hand-edited or imported appsettings.json (not a security boundary: whoever writes that file can set the tool paths).
+    /// Custom release URL if absolute https, else the default. Guards hand-edited or imported settings (not a security boundary:
+    /// whoever writes that file controls tool paths anyway).
     /// </summary>
     internal static string HttpsOrDefault(string? value, string fallback) =>
         Uri.TryCreate(value?.Trim(), UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps ? uri.OriginalString : fallback;
@@ -744,12 +712,11 @@ public static partial class DependencyUpdater
     };
 
     /// <summary>
-    /// Whether the tool is installed from its pinned builds: FFmpeg and whisper.cpp, unless the settings allow the
-    /// newest releases or name a release address of the user's own. yt-dlp never is.
+    /// True for pinned installs: FFmpeg and whisper.cpp unless unpinned updates or a custom release URL is set; never yt-dlp.
     /// </summary>
     public static bool IsPinned(string tool) => tool != YtDlp && !AppSettings.Current.AllowUnpinnedDependencyUpdates && !HasOwnReleaseUrl(tool);
 
-    /// <summary>Whether the settings point a tool at a release address other than the default: the user's own source, used as it is.</summary>
+    /// <summary>True when settings override the tool's release URL.</summary>
     private static bool HasOwnReleaseUrl(string tool) => tool switch
     {
         Ffmpeg => AppSettings.Current.FfmpegReleaseUrl.Trim() is { Length: > 0 } url && url != AppSettings.DefaultFfmpegReleaseUrl,
@@ -757,7 +724,7 @@ public static partial class DependencyUpdater
         _ => false,
     };
 
-    /// <summary>The variants of a tool wanted on this computer, the best first: whisper.cpp's kinds of build, FFmpeg's for the driver, ARM64's.</summary>
+    /// <summary>Wanted variants for this machine, best first (whisper build kinds, FFmpeg driver variant, ARM64).</summary>
     private static IReadOnlyList<string> WantedVariants(string tool) => tool switch
     {
         Ffmpeg => [IsArm64 ? Arm64Variant : AppSettings.Current.UseFfmpegForOlderNvidiaDrivers ? OlderNvidiaVariant : ""],
@@ -765,7 +732,7 @@ public static partial class DependencyUpdater
         _ => [""],
     };
 
-    /// <summary>The build a pinned tool is tested with on this computer, for the dependency list; null for a tool that is not pinned.</summary>
+    /// <summary>Tested build for this machine (dependency list); null for unpinned tools.</summary>
     public static PinnedBuild? TestedBuild(string tool) =>
         IsPinned(tool) ? WantedVariants(tool).Select(v => PinnedFor(tool, v).FirstOrDefault()).FirstOrDefault(b => b is not null) : null;
 
@@ -777,18 +744,14 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// The build Install / Update puts in: for a pinned tool (see <see cref="IsPinned"/>) the build HandPeg was tested
-    /// with, or a stand-in for it when upstream no longer publishes it; otherwise the newest release. Throws when it
-    /// cannot be reached or there is none.
+    /// Target build for Install/Update: pinned build or substitute (<see cref="IsPinned"/>), else newest release. Throws when unreachable or absent.
     /// </summary>
     public static Task<RemoteAsset> GetLatestAsync(string tool, CancellationToken cancellationToken) =>
         IsPinned(tool) ? GetPinnedAsync(tool, cancellationToken) : GetNewestAsync(tool, cancellationToken);
 
     /// <summary>
-    /// The pinned build to install: the first of the wanted variant's list that is still published (on GitHub, or at its
-    /// mirror), else the dated build nearest the tested one. Asking whether a file is there is a HEAD on its download
-    /// address, which GitHub does not count against the API's hourly limit; only the search for a stand-in from outside
-    /// the list asks the API.
+    /// Pinned build to install: first still-published entry (GitHub or mirror) of the wanted variant, else the nearest dated release.
+    /// Availability uses HEAD on download URLs (not rate-limited); only the off-list search calls the API.
     /// </summary>
     private static async Task<RemoteAsset> GetPinnedAsync(string tool, CancellationToken cancellationToken)
     {
@@ -809,7 +772,7 @@ public static partial class DependencyUpdater
         return found;
     }
 
-    /// <summary>The first published build of the variants' lists in <paramref name="table"/>, else the dated build nearest the tested one; throws when there is neither.</summary>
+    /// <summary>First published build across the variants in <paramref name="table"/>, else nearest dated release; throws when neither exists.</summary>
     private static async Task<RemoteAsset> ResolvePinnedAsync(string tool, IReadOnlyList<PinnedBuild> table, IReadOnlyList<string> variants, CancellationToken cancellationToken)
     {
         RemoteAsset? found = null;
@@ -863,9 +826,8 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// Whether a file is still published: asked with a HEAD that does not follow the redirect to the file itself. Gone (404 or
-    /// 410) is false; any other refusal is not taken for an answer and throws, so that a server's bad moment never makes a
-    /// stand-in of a build that is still there.
+    /// Checks availability with a non-redirecting HEAD: 404/410 returns false; other failures throw so a transient error never
+    /// triggers a substitute.
     /// </summary>
     private static async Task<bool> IsPublishedAsync(string url, CancellationToken cancellationToken)
     {
@@ -882,8 +844,7 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// The dated release of the pinned build's repository nearest the tested one that has the same kind of build, as a
-    /// stand-in from outside the list; null when there is none. Checked against the SHA-256 GitHub publishes for it.
+    /// Off-list substitute: dated release nearest the tested one with a matching build kind, verified by GitHub's SHA-256; null if none.
     /// </summary>
     private static async Task<RemoteAsset?> FindNearestAsync(string tool, string variant, PinnedBuild tested, CancellationToken cancellationToken)
     {
@@ -918,8 +879,7 @@ public static partial class DependencyUpdater
                 if (!IsVariantAsset(tool, variant, name) || IsPassedOver(name))
                     continue;
 
-                // Releases from before GitHub published digests are checked against their checksum list; one with neither is
-                // never a stand-in, since nothing could say the download is the file the release holds.
+                // Pre-digest releases use their checksum list; releases with neither are never eligible (unverifiable).
                 var digest = asset.TryGetProperty("digest", out var digestValue) && digestValue.ValueKind == JsonValueKind.String ? digestValue.GetString() : null;
                 var sha256 = digest is not null && digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase) && IsSha256(digest[7..]) ? digest[7..] : null;
                 var sumsUrl = sums.ValueKind == JsonValueKind.Object ? sums.GetProperty("browser_download_url").GetString() : null;
@@ -973,8 +933,7 @@ public static partial class DependencyUpdater
             var tag = release.GetProperty("tag_name").GetString() ?? "";
             var assets = release.GetProperty("assets").EnumerateArray().ToList();
 
-            // For older NVIDIA drivers, the newest numbered build they can use; when the release no longer
-            // carries one, the usual build, which still does everything but NVENC.
+            // Older NVIDIA drivers: newest compatible numbered build, else the standard build (everything but NVENC works).
             var older = olderFfmpeg
                 ? assets.Where(a => OlderNvidiaFfmpegVersion(a.GetProperty("name").GetString()) is not null)
                     .OrderByDescending(a => OlderNvidiaFfmpegVersion(a.GetProperty("name").GetString()))
@@ -988,11 +947,10 @@ public static partial class DependencyUpdater
 
             var assetName = asset.GetProperty("name").GetString()!;
 
-            // Rolling releases keep the same tag, so the asset timestamp is part of the version stamp; and two
-            // builds share this release, so the older one's stamp also says which it is.
+            // Rolling tag: include the asset timestamp in the stamp; two builds share the release, so the stamp also names the variant.
             var url = asset.GetProperty("browser_download_url").GetString()!;
             var updatedAt = asset.GetProperty("updated_at").GetString();
-            // A whisper build other than the plain one says which it is too, so that a plain one already installed is offered the better one.
+            // Non-plain whisper builds encode their kind so a plain install is offered the upgrade.
             var stamp = isOlder || (tool == Whisper && assetName != WhisperAssetName) ? $"{tag}|{updatedAt}|{assetName}" : $"{tag}|{updatedAt}";
             var size = asset.TryGetProperty("size", out var sizeValue) && sizeValue.TryGetInt64(out var bytes) ? bytes : 0;
 
@@ -1014,10 +972,8 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// Quietly checks whether Install/Update would have anything to do for the tools everything depends on:
-    /// yt-dlp or FFmpeg is missing, or is not the build Install/Update puts in (the pinned build, or the newest
-    /// release where builds are not pinned). Tools replaced by a path from the settings are not checked. A failed check
-    /// (offline, rate limited) reports false rather than raising an alarm.
+    /// Silent check whether yt-dlp or FFmpeg is missing or not the target build. Custom-path tools are skipped; failures
+    /// (offline, rate-limited) return false.
     /// </summary>
     public static async Task<bool> CheckForUpdatesAsync(CancellationToken cancellationToken)
     {
@@ -1048,8 +1004,7 @@ public static partial class DependencyUpdater
     // ----- Installing a tool -----
 
     /// <summary>
-    /// Downloads <paramref name="asset"/>, checks it, and puts it in place of the installed copy of the tool.
-    /// Throws, having changed nothing, when any step fails or the operation is cancelled.
+    /// Downloads, verifies and swaps in <paramref name="asset"/>. Throws with no change on any failure or cancellation.
     /// </summary>
     public static async Task InstallToolAsync(string tool, RemoteAsset asset, IProgress<InstallProgress> progress, CancellationToken cancellationToken)
     {
@@ -1064,8 +1019,7 @@ public static partial class DependencyUpdater
             if (GetLocalState(tool) != DependencyState.Missing && !IsOutdated(tool, asset))
                 return;
 
-            // A pinned build (or its stand-in) that checks out but will not start here is passed over for the next one, so
-            // that one bad upstream build never ends a first run (5.2.0's ARM64 FFmpeg stand-in, 0xC0000005 on -version).
+            // A verified build that fails to start is skipped for the next candidate so one bad upstream build cannot block first run.
             for (var tried = 1; ; tried++)
             {
                 try
@@ -1141,9 +1095,8 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// Raised when a tool has been installed or replaced (from any of the places that install one: the first-run window,
-    /// Settings, a feature's download prompt, the player's own fetch, the background update), with the tool's name. On the
-    /// thread the install ran on: a window marshals it to its own. A handler that throws is logged and never fails the install.
+    /// Raised with the tool name after any install or replacement (first run, Settings, feature prompts, background update), on the
+    /// installing thread (subscribers marshal). Handler exceptions are logged and never fail the install.
     /// </summary>
     public static event Action<string>? Installed;
 
@@ -1163,24 +1116,19 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// True when the engine everything else waits for is there: FFmpeg (the player decodes with Media Foundation, but
-    /// inspecting files, waveforms, filmstrips and exports are FFmpeg's).
+    /// True when FFmpeg is installed (preview decodes via Media Foundation; probing, waveforms, filmstrips and export need FFmpeg).
     /// </summary>
     public static bool EnginesInstalled => File.Exists(FfmpegPath);
 
-    // ----- The libmpv player's folders (gone in 5.0-Verify) -----
+    // ----- Retired libmpv player cleanup -----
 
-    // Where versions before 5.0-Verify installed libmpv (ToolFolder of its old name, "mpv", on x64 and on ARM64), and the
-    // cache's folder of the stand-in clocks it was fed in a timeline's gaps (short black clips, one per rate and sound).
+    // Legacy libmpv install folders ("mpv" ToolFolder, x64 and ARM64) and the cache folder of its gap-filler clips.
     private static readonly string[] RetiredPlayerFolders = ["mpv", $"mpv-{Arm64Variant}"];
     private const string RetiredClockFolder = "clock";
 
     /// <summary>
-    /// Deletes what earlier versions made for the libmpv player, which HandPeg no longer has (the GPU preview engine is the
-    /// only player): its folders in the deps folder, x64's and ARM64's, and its stand-in clocks' folder in the cache, when
-    /// they are there. Only those three folders, only directly inside <see cref="AppPaths.Deps"/> and
-    /// <see cref="AppPaths.Cache"/>, never through a link, each one logged. Idle work after Frame 1 (MainWindow), done
-    /// once: a later start finds them gone; a folder that cannot go now (a file in use) goes at a later start.
+    /// Deletes the three legacy libmpv folders directly under <see cref="AppPaths.Deps"/> and <see cref="AppPaths.Cache"/>, never
+    /// through a reparse point, logging each. Idle work after Frame 1; folders in use are retried on a later start.
     /// </summary>
     public static void DeleteRetiredPlayer()
     {
@@ -1215,8 +1163,7 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// Puts the new folder where the old one is. The old one is set aside first and put back if the new one
-    /// cannot take its place; when the old one is in use it cannot be set aside, and nothing changes at all.
+    /// Swaps the new folder into place: renames the old one aside first and restores it on failure; an in-use old folder aborts with no change.
     /// </summary>
     private static void Swap(string fresh, string live, string parked, string name)
     {
@@ -1268,11 +1215,9 @@ public static partial class DependencyUpdater
             return;
         }
 
-        // whisper.cpp: the command line program, as whisper.exe, with the libraries it loads: whisper.dll, the ggml ones, and
-        // the OpenMP runtime the ARM64 builds ship beside them (libomp140.aarch64.dll, which ggml-base.dll and ggml-cpu.dll
-        // import and Windows does not have: without it whisper.exe cannot start, 0xC0000135, 5.2 on the user's Windows on ARM laptop).
-        // The archive's other programs (server, benchmarks, tests) are left behind.
-        // Called whisper-cli.exe now; older builds called it main.exe, which newer ones keep only as a stub.
+        // whisper.cpp: install the CLI as whisper.exe plus whisper.dll, ggml DLLs and, on ARM64, libomp140.aarch64.dll (imported by
+        // ggml-base/ggml-cpu and absent from Windows; without it startup fails with 0xC0000135). Other archive binaries are skipped.
+        // The CLI is whisper-cli.exe in current builds; main.exe in older ones (now only a stub).
         var program = archive.Entries.FirstOrDefault(e => e.Name.Equals("whisper-cli.exe", StringComparison.OrdinalIgnoreCase))
                       ?? archive.Entries.FirstOrDefault(e => e.Name.Equals("main.exe", StringComparison.OrdinalIgnoreCase))
                       ?? throw new InvalidDataException("The whisper.cpp archive did not contain whisper-cli.exe.");
@@ -1326,8 +1271,7 @@ public static partial class DependencyUpdater
         {
             Directory.CreateDirectory(staging);
 
-            // The SHA-256 HandPeg knows for the model (pinned: not from the server it downloads from), else the one Hugging Face links;
-            // none at all and nothing is installed.
+            // Pinned model SHA-256 (not from the download server), else Hugging Face's linked hash; with neither, nothing is installed.
             var expected = (ModelSha256.TryGetValue(model, out var pinned) ? pinned : await FindLinkedHashAsync(url, cancellationToken))
                            ?? throw new InvalidDataException($"No checksum is known for the model {model}, so it was not installed.");
             var hash = await DownloadAsync(url, download, model, progress, cancellationToken);
@@ -1362,7 +1306,7 @@ public static partial class DependencyUpdater
         return $"Model {model} downloaded ({new FileInfo(GetWhisperModelPath(model)).Length / 1048576.0:0} MB).";
     }
 
-    /// <summary>What an install can fail with, other than being cancelled: the network, the disk, or a file that is not what it should be.</summary>
+    /// <summary>True for non-cancellation install failures: network, disk, or verification.</summary>
     public static bool IsInstallFailure(Exception ex) =>
         ex is HttpRequestException or InvalidOperationException or JsonException or KeyNotFoundException
             or IOException or InvalidDataException or UnauthorizedAccessException or System.ComponentModel.Win32Exception;
@@ -1414,7 +1358,7 @@ public static partial class DependencyUpdater
         return Convert.ToHexString(sha.GetHashAndReset());
     }
 
-    /// <summary>Throws unless <paramref name="actual"/> is the expected SHA-256: a missing checksum fails too (installs fail closed).</summary>
+    /// <summary>Throws unless <paramref name="actual"/> matches the expected SHA-256; a missing checksum also fails (fail closed).</summary>
     internal static void Verify(string label, string actual, string? expected)
     {
         if (expected is null)
@@ -1446,8 +1390,8 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// The SHA-256 of a large file on Hugging Face, which it names in the answer that redirects to the file itself.
-    /// Null when it does not, or cannot be asked: the download then goes ahead unchecked.
+    /// SHA-256 of a Hugging Face LFS file, read from the redirect response headers. Null when absent or unreachable (the caller
+    /// then refuses to install).
     /// </summary>
     private static async Task<string?> FindLinkedHashAsync(string url, CancellationToken cancellationToken)
     {
@@ -1500,8 +1444,7 @@ public static partial class DependencyUpdater
         }
     }
 
-    // How long a server may take to answer a request (its headers) before the request fails; a download's body then streams for as
-    // long as it takes. The client's own timeout is only a backstop for a body that stalls in a buffered request.
+    // Response-header timeout; bodies then stream without limit. HttpClient's own timeout is only a backstop for stalled buffered bodies.
     private static readonly TimeSpan AnswerWithin = TimeSpan.FromSeconds(60);
 
     private static HttpClient CreateClient(bool followRedirects)
@@ -1519,9 +1462,8 @@ public static partial class DependencyUpdater
     }
 
     /// <summary>
-    /// Fails a request whose server does not answer within the limit with <see cref="HttpRequestException"/> (inner
-    /// <see cref="TimeoutException"/>), which every caller treats as an install failure (<see cref="IsInstallFailure"/>).
-    /// HttpClient's own timeout throws <see cref="TaskCanceledException"/>, which callers read as the user cancelling.
+    /// Header timeout raises <see cref="HttpRequestException"/> (inner <see cref="TimeoutException"/>), treated as an install failure
+    /// (<see cref="IsInstallFailure"/>), unlike HttpClient's timeout whose <see cref="TaskCanceledException"/> reads as user cancellation.
     /// </summary>
     internal sealed class AnswerDeadline(TimeSpan limit) : DelegatingHandler
     {

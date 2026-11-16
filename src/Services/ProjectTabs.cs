@@ -7,12 +7,9 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// One project tab of the title bar (Pass 5.4A), as small as it is kept in memory and beside its file (<c>&lt;Id&gt;.tab.json</c>, a
-/// few kilobytes at most: under 4 KB with its window layout, which is most of it, 5.4D): its name and file, whether it has unsaved
-/// changes, where it was looked at (the playhead, the Timeline's zoom and scroll), and the window it was looked at in (5.4D: the 3D
-/// Exploded View and its camera, the main window's layout). Its Sequence is not here: a tab behind the one in front is its <c>.hptab</c>
-/// file alone (<see cref="ProjectTabs"/>). The window's part is never in the project file (ProjectState): orbiting the camera or
-/// dragging a splitter is no change to the project.
+/// Header of one title-bar project tab, persisted as <c>&lt;Id&gt;.tab.json</c> (under 4 KB including the window layout): name, file,
+/// dirty flag, view state (playhead, Timeline zoom/scroll, 3D camera, dock layout). The Sequence lives in the tab's <c>.hptab</c> file;
+/// view state is never written into the project file, so orbiting or resizing panes does not dirty the project.
 /// </summary>
 public sealed record ProjectTabHeader
 {
@@ -25,7 +22,7 @@ public sealed record ProjectTabHeader
     /// <summary>The project file it was opened from or saved to; empty for work never saved.</summary>
     public string ProjectPath { get; set; } = "";
 
-    /// <summary>Whether it had unsaved changes as it was put behind (the tab in front is asked as it is).</summary>
+    /// <summary>Dirty flag captured on deactivation (the active tab is queried live).</summary>
     public bool Dirty { get; set; }
 
     /// <summary>Whether it holds nothing worth keeping (a fresh tab: MainViewModel.HoldsNothingForTab): an empty tab keeps no file.</summary>
@@ -43,7 +40,7 @@ public sealed record ProjectTabHeader
     /// <summary>How far the Timeline's rows were scrolled down, in DIPs.</summary>
     public double VerticalOffset { get; set; }
 
-    /// <summary>When it was last in front, as a count that only grows (the least recently used tabs lose their stills first).</summary>
+    /// <summary>Monotonic last-active counter; least recently used tabs drop their stills first.</summary>
     public long LastActive { get; set; }
 
     /// <summary>The name the New Project studio gave it, for its first save ("" for none): each tab's own, never the next tab's.</summary>
@@ -53,23 +50,21 @@ public sealed record ProjectTabHeader
     public string? NewProjectFolder { get; set; }
 
     /// <summary>
-    /// The project's frame as it was put behind (Pass 5.4B: the hover card of a tab behind), as Project Settings draws it (a vertical
-    /// project tall); 0 while unknown (a tab never put behind, or one left by an older session).
+    /// Project frame size captured on deactivation for the tab hover card (vertical projects reported tall); 0 while unknown.
     /// </summary>
     public int FrameWidth { get; set; }
 
     public int FrameHeight { get; set; }
 
-    /// <summary>The project's frame rate as it was put behind, frames a second; 0 while unknown.</summary>
+    /// <summary>Project frame rate (fps) captured on deactivation; 0 while unknown.</summary>
     public double FrameRate { get; set; }
 
     /// <summary>
-    /// Whether the player was in the 3D Exploded View as the tab was put behind (5.4D): it comes back in it, at once and where its camera
-    /// was. False for a header from before 5.4D (the flat picture).
+    /// True when the player was in 3D Exploded View on deactivation; reactivation restores the view and camera. False for older headers.
     /// </summary>
     public bool ExplodedOpen { get; set; }
 
-    /// <summary>The 3D view's camera as the tab was put behind (5.4D, GpuPreviewEngine.CameraPose: degrees, times the fitted distance, the planes' spacing); the view's start until then.</summary>
+    /// <summary>3D camera on deactivation (GpuPreviewEngine.CameraPose: degrees, fitted-distance multiple, plane spacing).</summary>
     public double ExplodedYaw { get; set; } = GpuPreviewEngine.DefaultYaw;
 
     public double ExplodedPitch { get; set; } = GpuPreviewEngine.DefaultPitch;
@@ -79,33 +74,26 @@ public sealed record ProjectTabHeader
     public double ExplodedSpacing { get; set; } = GpuPreviewEngine.DefaultSpacing;
 
     /// <summary>
-    /// The main window's layout as the tab was put behind (5.4D, AppSettings.PerTabWindowLayouts: DockManager.Save's JSON, the side windows
-    /// never part of it), laid out again as it comes back to the front; null for none (the setting off, a tab never put behind, or a
-    /// header from before 5.4D): the tab takes the window as it is.
+    /// Main-window dock layout on deactivation (AppSettings.PerTabWindowLayouts, DockManager.Save JSON, floating windows excluded),
+    /// re-applied on activation. Null keeps the current layout.
     /// </summary>
     public string? LayoutJson { get; set; }
 
     /// <summary>
-    /// The Media Browser's view with that layout (5.4D review: its MediaBrowserView's name, the Filmstrip a Vertical layout chose), set
-    /// again before the layout is laid out; null for none (as <see cref="LayoutJson"/>): the view stays as it is.
+    /// MediaBrowserView name paired with <see cref="LayoutJson"/>, applied before the layout; null keeps the current view.
     /// </summary>
     public string? MediaView { get; set; }
 
     /// <summary>
-    /// How many actions back its file holds the project (Pass 5.5A review): the tab in front's crash-recovery copy written lagged
-    /// (MainViewModel.RecoveryLagSteps: N-2, with N-1 and N on its Redo); 0 for a file written exactly as the project was, which every exact
-    /// write of the tab makes it again. A tab brought back with it says so once (Ctrl+Y brings the last edits back), and the exit dialog's row too.
-    /// Left out of the file while 0 (as are the stamp's two), so a header stays as small as before (under 4 KB with its layout).
+    /// Undo steps the cached file lags the live project (MainViewModel.RecoveryLagSteps; the newest steps sit on Redo); 0 for an exact
+    /// write. A restored lagging tab reports it once. Omitted from JSON while 0.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public int StepsBack { get; set; }
 
     /// <summary>
-    /// Its project file's last write (UTC ticks) and length as a tab without unsaved changes was kept (Pass 5.5A review, <see cref="ProjectTabs.Stamped"/>);
-    /// 0 for none (a tab with unsaved changes, one never saved, a header from before). A tab brought back whose file differs since (saved on another
-    /// PC, put back from a backup) opens from its file, not from the cache (<see cref="ProjectTabs.ReadForResume"/>). Pass 5.5A final review: the
-    /// stamp of the file as it was when the project and that file were known to be the same (opened into the tab, read back from it, saved), carried
-    /// in memory with the header (MainWindow.TabCache.cs, StampProjectFileAsync), never looked up again as the header is written.
+    /// Project file stamp (last-write UTC ticks, length) of a clean tab, taken when project and file were known identical (open, reload,
+    /// save; <see cref="ProjectTabs.Stamped"/>); 0 for none. A changed file on resume wins over the cache (<see cref="ProjectTabs.ReadForResume"/>).
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public long ProjectFileTicks { get; set; }
@@ -114,13 +102,12 @@ public sealed record ProjectTabHeader
     public long ProjectFileLength { get; set; }
 
     /// <summary>
-    /// How many stamps of its project file were asked for (Pass 5.5A fix round 3, S-R1; kept in memory only, never written): taken off the
-    /// tab's queue, two can land out of order, so one lands only while it is still the last asked (MainWindow.TabCache.cs, StampProjectFileAsync).
+    /// In-memory stamp request counter: async stamps can complete out of order, so only the latest request may land (StampProjectFileAsync).
     /// </summary>
     [JsonIgnore]
     internal int StampsAsked { get; set; }
 
-    /// <summary>The window's part of another tab's header (5.4D: a duplicate): its 3D view, camera and layout (with its Media Browser view).</summary>
+    /// <summary>Copies the view state (3D view, camera, layout, Media Browser view) from another header, for duplicates.</summary>
     public void TakeWindowStateOf(ProjectTabHeader other)
     {
         (ExplodedOpen, ExplodedYaw, ExplodedPitch, ExplodedZoom, ExplodedSpacing) =
@@ -129,23 +116,20 @@ public sealed record ProjectTabHeader
     }
 
     /// <summary>
-    /// A Game Preset chosen before any clip, still waiting for the tab's first file (the view model's own, opaque here): kept with the
-    /// header in memory only, never written (it is small, and a tab left by a session that ended without closing starts without it).
+    /// Game Preset picked before the first clip, pending the tab's first file (opaque view-model object). In memory only, never serialized.
     /// </summary>
     [JsonIgnore]
     public object? WaitingTemplate { get; set; }
 }
 
 /// <summary>
-/// The order of the tabs and the one in front, as tabs.json keeps them (for tabs left behind by a session that did not close cleanly). Pass 5.5A
-/// final review: <paramref name="Kept"/> when the close that kept them on purpose wrote it (Keep open project tabs, Keep Suspended for Next
-/// Launch: <see cref="ProjectTabs.WriteKeptManifest"/>); only then does the next start bring the one in front forward (AD-1). Left out of
-/// the file while false.
+/// tabs.json: tab order and active tab, read when a session ended without a clean close. <paramref name="Kept"/> is set only by a close
+/// that suspended the tabs deliberately (<see cref="ProjectTabs.WriteKeptManifest"/>); only then is the active tab restored. Omitted while false.
 /// </summary>
 public sealed record ProjectTabManifest(IReadOnlyList<string> Order, string? Active,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool Kept = false);
 
-/// <summary>Where a kept tab's project was read back from to bring it to the front (Pass 5.5A final review, <see cref="ProjectTabs.ReadForResume"/>).</summary>
+/// <summary>Source a suspended tab's project was resumed from (<see cref="ProjectTabs.ReadForResume"/>).</summary>
 public enum TabResumeSource
 {
     /// <summary>Its cache file: unsaved work, its project file unchanged since it was kept, or no project file there.</summary>
@@ -154,7 +138,7 @@ public enum TabResumeSource
     /// <summary>Its project file, which changed on the disk since the tab was kept (said on the status line).</summary>
     ChangedFile,
 
-    /// <summary>Its project file, the tab carrying no stamp to tell whether it changed (as before Pass 5.5A: nothing is said).</summary>
+    /// <summary>Its project file; the tab had no stamp to detect a change (nothing reported).</summary>
     File,
 
     /// <summary>Its cache file, its project file having changed on the disk and not being readable (a newer format, locked, damaged).</summary>
@@ -162,40 +146,32 @@ public enum TabResumeSource
 }
 
 /// <summary>
-/// A kept tab's project read back (Pass 5.5A final review, <see cref="ProjectTabs.ReadForResume"/>): its state, its saved state's fingerprint (none
-/// from a project file, nor with a cache whose changed file could not be read: it comes back unsaved), where it came from, the project file's stamp as it was read from it (0 for a read of the cache), and why a changed
-/// project file could not be read (null for any other).
+/// Result of <see cref="ProjectTabs.ReadForResume"/>: state, saved-state fingerprint (null resumes as unsaved), source, the project file
+/// stamp when read from it (0 for the cache), and the read error of a changed but unreadable project file.
 /// </summary>
 public readonly record struct TabResume(ProjectState State, string? Saved, TabResumeSource From, long FileTicks, long FileLength, string? Why);
 
 /// <summary>
-/// The title bar's project tabs (Pass 5.4A): their order, the one in front, and their files in <c>%Cache%\project-tabs\&lt;session&gt;</c>.
-/// Headless and pure but for the disk and a frozen picture per tab: the window drives it (MainWindow.ProjectTabs.cs). One view model holds
-/// the tab in front; every other tab is <c>&lt;Id&gt;.hptab</c> (a project file of its own, written by ProjectStore with its undo history),
-/// its header <c>&lt;Id&gt;.tab.json</c>, and for one with unsaved changes <c>&lt;Id&gt;.saved</c> (what its saved state looked like). Two
-/// tiers: the <see cref="MaxHotTabs"/> most recently in front keep a frozen still of their paused picture in memory (shown at once as one
-/// comes back); the rest keep only their header. Nothing here touches the disk until asked (the window's first frame makes one tab in memory).
-/// Every HandPeg running has a folder of its own under the root, held by <c>session.lock</c> (open, shared with nobody, for as long as the
-/// session lives): another HandPeg's tabs are never offered here nor deleted, and a folder whose lock can be taken is one a session left
-/// behind as it ended without closing (or closed keeping unsaved tabs), whose tabs the next session takes in (<see cref="TakeLeftBehind"/>).
-/// Pass 5.4D-TabPerf: the window keeps the tabs brought to the front this session live in memory as well (MainWindow's tab contexts), and
-/// their files are then the crash recovery, written after a switch; each tab's work on its files runs in order on the thread pool
-/// (<see cref="Enqueue(string, Action)"/>), so a write, a delete and a read of one tab never pass each other.
+/// Title-bar project tabs: order, active tab, and per-tab files in <c>%Cache%\project-tabs\&lt;session&gt;</c> (<c>.hptab</c> project with
+/// undo history, <c>.tab.json</c> header, <c>.saved</c> fingerprint when dirty). Headless; driven by MainWindow.ProjectTabs.cs. The
+/// <see cref="MaxHotTabs"/> most recent tabs keep a frozen still in memory. No disk access before Frame 1.
+/// Each process owns its session folder through an exclusive <c>session.lock</c>; an unlockable folder belongs to a live process, a lockable
+/// one was abandoned and is adopted by <see cref="TakeLeftBehind"/>. Per-tab file I/O is serialized on the thread pool
+/// (<see cref="Enqueue(string, Action)"/>) so writes, deletes and reads of one tab never reorder.
 /// </summary>
 public sealed class ProjectTabs
 {
     /// <summary>
-    /// How many tabs, the most recently in front, keep their paused picture in memory here. Pass 5.4D-TabPerf: a tab kept in memory whole
-    /// (MainWindow's live tab contexts) keeps its still with it, whatever this says; these are the stills of tabs only in their files.
+    /// Number of most recently active file-only tabs that keep their paused still in memory (live tab contexts keep theirs regardless).
     /// </summary>
     public const int MaxHotTabs = 3;
 
     public const string StateExtension = ".hptab", HeaderExtension = ".tab.json", SavedExtension = ".saved", ManifestName = "tabs.json", LockName = "session.lock";
 
-    /// <summary>What a tab left behind as a project file without a header that can be read is called as it is taken in (<see cref="LeftBehind"/>).</summary>
+    /// <summary>Title given to an orphaned project file with no readable header (<see cref="LeftBehind"/>).</summary>
     public const string RecoveredTitle = "Recovered Project";
 
-    // The end of a file being written whole (ProjectStore.WriteWhole): half of one at most, never the only copy of a tab.
+    // Temp-file suffix of ProjectStore.WriteWhole: a partial write, never the only copy of a tab.
     private const string PartialExtension = ".tmp";
 
     private static readonly string[] TabFileEndings = [StateExtension, HeaderExtension, SavedExtension];
@@ -206,17 +182,14 @@ public sealed class ProjectTabs
     private readonly Dictionary<string, BitmapSource> _stills = new(StringComparer.Ordinal);
     private long _clock;
 
-    // Each tab's work on the disk, one after another (Pass 5.4D-TabPerf): its cache file written after a switch, deleted as it comes back
-    // or closes, its header written again, its file read or copied. The last of each tab's chain, under _gate.
+    // Tail task of each tab's serialized disk-work chain (cache write, delete, header rewrite, read, copy). Guarded by _gate.
     private readonly Dictionary<string, Task> _io = new(StringComparer.Ordinal);
 
-    // The session's lock on its folder, taken as the first file is written (never before the window's first frame), and the gate of it:
-    // tabs are written from the thread pool and the window's thread alike.
+    // Session folder lock, acquired on the first write (never before Frame 1), and its gate: writers run on the pool and the UI thread.
     private readonly Lock _gate = new();
     private FileStream? _lock;
 
-    // The session's files let go as HandPeg closed (ForgetSession), under _gate (5.4D-TabPerf review): nothing is written into its folder
-    // after that, so a write still running on the thread pool can never make the folder, its lock or a tab's file again.
+    // Set by ForgetSession under _gate: late pool writes are refused so they cannot recreate the folder, its lock or a tab file.
     private bool _forgotten;
 
     /// <param name="root">The cache's project-tabs folder: this session's files go in a folder of its own under it, made when the first is written.</param>
@@ -236,7 +209,7 @@ public sealed class ProjectTabs
     /// <summary>The folder every session's folder is in.</summary>
     public string RootPath { get; }
 
-    /// <summary>This session's own folder: the only one it writes in or deletes from (but for the folders it takes tabs in from).</summary>
+    /// <summary>This session's folder; the only one written to (adopted folders excepted).</summary>
     public string FolderPath { get; }
 
     /// <summary>The tabs in their order along the title bar.</summary>
@@ -244,12 +217,11 @@ public sealed class ProjectTabs
 
     public int Count => _tabs.Count;
 
-    // How many tabs the strip holds, for the player's frame pump (5.4.4): written on the window's thread as a tab is added or closed.
+    // Tab count for the frame pump; written on the UI thread when a tab is added or closed.
     private static int _openCount;
 
     /// <summary>
-    /// How many project tabs are open (5.4.4): Dynamic Preview Scaling starts smaller on a card that shares the PC's memory while more than one
-    /// is open (GpuPreviewEngine.StartStep). Written wherever the strip gains or loses a tab; read on any thread.
+    /// Open tab count, read on any thread: with several tabs on unified memory, Dynamic Preview Scaling starts smaller (GpuPreviewEngine.StartStep).
     /// </summary>
     public static int OpenCount
     {
@@ -257,7 +229,7 @@ public sealed class ProjectTabs
         private set => Volatile.Write(ref _openCount, value);
     }
 
-    /// <summary>The tab in front: the one the view model holds. The scheduler is told (5.4.1-M3): the work of the tabs behind waits behind its.</summary>
+    /// <summary>Active tab (held by the view model); setting it reprioritizes WorkScheduler so background tabs queue behind it.</summary>
     public ProjectTabHeader Active
     {
         get;
@@ -268,7 +240,7 @@ public sealed class ProjectTabs
         }
     }
 
-    /// <summary>A new tab at the end of the strip, not in front yet.</summary>
+    /// <summary>Appends a new inactive tab.</summary>
     public ProjectTabHeader Add(string title, string? id = null)
     {
         var tab = new ProjectTabHeader { Id = id ?? NewId(), Title = title };
@@ -277,7 +249,7 @@ public sealed class ProjectTabs
         return tab;
     }
 
-    /// <summary>A new tab at <paramref name="index"/> along the strip (Pass 5.4B: a duplicate, right after its original), not in front yet.</summary>
+    /// <summary>Inserts a new inactive tab at <paramref name="index"/> (duplicates go right after the original).</summary>
     public ProjectTabHeader Insert(int index, string title, string? id = null)
     {
         var tab = new ProjectTabHeader { Id = id ?? NewId(), Title = title };
@@ -287,9 +259,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// A tab dragged along the strip (Pass 5.4B): taken out and put back at <paramref name="index"/> (clamped to the strip). The tab in
-    /// front, the most recently used and the stills are as they were; Ctrl+Tab, the neighbour a close brings forward and tabs.json all
-    /// follow the new order.
+    /// Moves a tab to <paramref name="index"/> (clamped). Active tab, MRU order and stills are unchanged; Ctrl+Tab, close-neighbour and
+    /// tabs.json follow the new order.
     /// </summary>
     public void Move(ProjectTabHeader tab, int index)
     {
@@ -304,9 +275,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// A tab from a session that did not close cleanly, put at the end (cold: no still), unless one of that id is here already. It ranks
-    /// below every tab of this session in the most recently used (its last session's count means nothing here), so it never takes the
-    /// still of a tab that was in front in this one.
+    /// Appends an adopted tab from an abandoned session (cold, no still) unless the id exists. It ranks below every tab of this session
+    /// in MRU order, so it never evicts a current tab's still.
     /// </summary>
     public bool Adopt(ProjectTabHeader tab)
     {
@@ -319,8 +289,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// New work that came in front of a tab that could not be brought back (MainWindow.SplitFromUnresumed): a new tab for it, put in
-    /// front as it is (the view model holds it already); the tab that was in front stays on the strip, behind, its files untouched.
+    /// Creates an active tab for new work that replaced a tab that failed to resume (MainWindow.SplitFromUnresumed); the failed tab stays
+    /// on the strip, inactive, its files untouched.
     /// </summary>
     public ProjectTabHeader TakeWorkOff(string title)
     {
@@ -329,7 +299,7 @@ public sealed class ProjectTabs
         return fresh;
     }
 
-    /// <summary>Puts a tab in front (the window has put the last one behind and brings this one back).</summary>
+    /// <summary>Makes a tab active (the window has already deactivated the previous one).</summary>
     public void Activate(ProjectTabHeader tab)
     {
         if (!_tabs.Contains(tab))
@@ -339,8 +309,7 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// Marks a tab as the most recently used, and lets go of the stills of the tabs beyond the <see cref="MaxHotTabs"/> most recently
-    /// used: a tab that has not been in front for a while is its header alone in memory.
+    /// Marks a tab most recently used and releases the stills of tabs outside the <see cref="MaxHotTabs"/> most recent.
     /// </summary>
     public void Touch(ProjectTabHeader tab)
     {
@@ -352,7 +321,7 @@ public sealed class ProjectTabs
     /// <summary>Whether a tab is among the <see cref="MaxHotTabs"/> most recently used.</summary>
     public bool IsHot(ProjectTabHeader tab) => _tabs.OrderByDescending(t => t.LastActive).Take(MaxHotTabs).Contains(tab);
 
-    /// <summary>Keeps a tab's paused picture (frozen here if it was not), while the tab is hot; null lets it go.</summary>
+    /// <summary>Stores a hot tab's paused still (frozen if needed); null releases it.</summary>
     public void SetStill(ProjectTabHeader tab, BitmapSource? still)
     {
         if (still is null || !IsHot(tab))
@@ -387,7 +356,7 @@ public sealed class ProjectTabs
         return _tabs[next];
     }
 
-    /// <summary>The tab that comes to the front when <paramref name="tab"/> is closed: the one after it, or the one before at the end.</summary>
+    /// <summary>Tab activated when <paramref name="tab"/> closes: the next one, or the previous at the end.</summary>
     public ProjectTabHeader? NeighbourOf(ProjectTabHeader tab)
     {
         var at = _tabs.IndexOf(tab);
@@ -397,8 +366,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// Takes a tab off the strip and deletes its files. The tab in front is never left without one: close it only after another is in
-    /// front (<see cref="NeighbourOf"/>); with a single tab the window empties it instead.
+    /// Removes a tab and deletes its files. Close the active tab only after activating another (<see cref="NeighbourOf"/>); a sole tab
+    /// is emptied by the window instead.
     /// </summary>
     public void Close(ProjectTabHeader tab)
     {
@@ -411,12 +380,11 @@ public sealed class ProjectTabs
         DeleteFilesAfterIo(tab.Id);
     }
 
-    // ----- Each tab's disk work, in order (Pass 5.4D-TabPerf) -----
+    // ----- Per-tab serialized disk work -----
 
     /// <summary>
-    /// Work on a tab's files, on the thread pool after everything asked before for the same tab (any thread): a cache file written after
-    /// a switch is never deleted before it is written, nor written again after a delete asked later. What <paramref name="io"/> throws is
-    /// the task's; the chain goes on after it.
+    /// Queues file work for a tab on the thread pool after all earlier work for that tab (callable from any thread). Exceptions from
+    /// <paramref name="io"/> fault the returned task; the chain continues.
     /// </summary>
     public Task Enqueue(string id, Action io) => Enqueue<bool>(id, () =>
     {
@@ -424,7 +392,7 @@ public sealed class ProjectTabs
         return true;
     });
 
-    /// <summary><see cref="Enqueue(string, Action)"/>, with what the work gives back (a file read after the writes asked before it).</summary>
+    /// <summary><see cref="Enqueue(string, Action)"/> with a result (e.g. a read ordered after earlier writes).</summary>
     public Task<T> Enqueue<T>(string id, Func<T> io)
     {
         Task<T> next;
@@ -435,7 +403,7 @@ public sealed class ProjectTabs
             _io[id] = next;
         }
 
-        // The chain forgotten once its last work is done (outside the gate: done already, this runs here at once).
+        // Drop the chain entry once its tail completes (runs inline when already complete, so outside the gate).
         _ = next.ContinueWith(done =>
         {
             lock (_gate)
@@ -447,7 +415,7 @@ public sealed class ProjectTabs
         return next;
     }
 
-    /// <summary>The last work asked for a tab's files (done at once when there is none): awaited before its files are relied on.</summary>
+    /// <summary>Tail of a tab's work chain (completed when empty); await before relying on its files.</summary>
     public Task IoOf(string id)
     {
         lock (_gate)
@@ -462,8 +430,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// Waits (blocking: as HandPeg closes, and for a save from memory) until the work asked for a tab's files, or every tab's, is done, or
-    /// <paramref name="timeoutMs"/> has gone. Whether it is all done (a failed write counts as done: its tab keeps what it holds in memory).
+    /// Blocks (shutdown, save from memory) until one tab's or all tabs' queued work completes or <paramref name="timeoutMs"/> elapses.
+    /// Returns true when drained; a failed write counts as completed.
     /// </summary>
     public bool WaitFor(string? id, int timeoutMs)
     {
@@ -483,8 +451,7 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// A tab's three files deleted after the work asked before for it (any thread): at once when there is none, so a tab with nothing
-    /// waiting goes as it always did; a failure is left for the clean close (<see cref="DeleteFiles"/>).
+    /// Deletes a tab's three files after its queued work (inline when idle); failures are retried by the clean close (<see cref="DeleteFiles"/>).
     /// </summary>
     public void DeleteFilesAfterIo(string id)
     {
@@ -504,10 +471,10 @@ public sealed class ProjectTabs
 
     public string ManifestFile => Path.Combine(FolderPath, ManifestName);
 
-    /// <summary>A header as its file holds it (made on the window's thread, written on any).</summary>
+    /// <summary>Header JSON (serialized on the UI thread, written on any).</summary>
     public static string HeaderJson(ProjectTabHeader tab) => JsonSerializer.Serialize(tab, HeaderOptions);
 
-    /// <summary>A header read back; null when the text is not one (damaged, or of something else).</summary>
+    /// <summary>Parses a header; null for damaged or foreign text.</summary>
     public static ProjectTabHeader? ReadHeader(string json)
     {
         try
@@ -521,18 +488,17 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// Writes a tab put behind (any thread: everything it reads is given): its project file (ProjectStore, atomic, with the undo
-    /// history the state carries), its saved state's fingerprint when it has unsaved changes (none deletes an old one), and its header.
+    /// Writes a deactivated tab from supplied data (any thread): project file (ProjectStore, atomic, with undo history), saved-state
+    /// fingerprint when dirty (null deletes a stale one), then the header.
     /// </summary>
     public void WriteTab(string id, ProjectState state, string? savedFingerprint, string headerJson)
     {
-        // The project file first, the header last (5.4A review): a session that ends between them leaves a project file without a
-        // header, which the next start takes in under a made-up one (LeftBehind: "Recovered Project", with unsaved changes), never
-        // deletes. The other way round a header would name a project file not there yet, and the work would be in neither.
+        // Project file first, header last: a crash in between leaves an orphaned project file that the next start adopts as
+        // "Recovered Project" (dirty). The reverse order could leave a header naming a missing file, losing the work.
         ClaimSession();
         ProjectStore.SaveTo(state, StateFile(id), durable: false);
 
-        // The session released while it was being written (a write that outlived the close's wait): taken out again, never offered back.
+        // Session was forgotten mid-write (the write outlived the shutdown wait): remove the file so it is never offered back.
         if (IsForgotten)
         {
             TryDelete(StateFile(id));
@@ -547,11 +513,9 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// A header's text with its project file's stamp (Pass 5.5A review; any thread): for a tab without unsaved changes that has a project file,
-    /// the stamp its header carries (<see cref="ProjectTabHeader.ProjectFileTicks"/>); for any other, none. A tab kept clean between sessions then
-    /// knows whether its file changed since (<see cref="ReadForResume"/>). Text that is not a header is left as it is. Pass 5.5A final review: no
-    /// look at the disk (C-4a, C-4c): a stamp taken as the header is written would be of the file as it is then, newer than the project kept if
-    /// the file changed meanwhile (taking a stale cache for current), and a file on a share gone away would stall the close's waited write.
+    /// Header text with the project file stamp applied (any thread): the carried <see cref="ProjectTabHeader.ProjectFileTicks"/> for a clean
+    /// tab with a project file, none otherwise; non-header text is returned unchanged. Never stats the disk: a fresh stat could postdate an
+    /// external change (making a stale cache look current) and an unreachable share would stall the shutdown write.
     /// </summary>
     public static string Stamped(string headerJson)
     {
@@ -563,7 +527,7 @@ public sealed class ProjectTabs
         return HeaderJson(header);
     }
 
-    /// <summary>A header's text saying how many actions back its file holds the project (Pass 5.5A review, <see cref="ProjectTabHeader.StepsBack"/>; any thread).</summary>
+    /// <summary>Header text with <see cref="ProjectTabHeader.StepsBack"/> applied (any thread).</summary>
     public static string WithStepsBack(string headerJson, int steps)
     {
         if (ReadHeader(headerJson) is not { } header || header.StepsBack == steps)
@@ -588,22 +552,18 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// Whether a tab kept without unsaved changes finds its project file changed (pure, Pass 5.5A review): a stamp was kept, the file is there
-    /// now, and its last write or length differs. No file there keeps the cache; no stamp kept is <see cref="ReadForResume"/>'s to decide
-    /// (Pass 5.5A final review: the file is read, as before 5.5A).
+    /// True when a clean tab's project file changed since suspension (pure): a stamp exists, the file exists, and last write or length
+    /// differs. A missing file keeps the cache; a missing stamp is decided by <see cref="ReadForResume"/>.
     /// </summary>
     public static bool FileChangedSince(long keptTicks, long keptLength, long ticks, long length) =>
         keptTicks != 0 && ticks != 0 && (ticks != keptTicks || length != keptLength);
 
     /// <summary>
-    /// A kept tab's project read back to bring it to the front (Pass 5.5A review; any thread: on its queue, after its writes): its cache file and
-    /// its saved state's fingerprint; or, for a tab kept without unsaved changes (<paramref name="cleanProjectPath"/>, null for any other) whose
-    /// project file changed on the disk since it was kept (<see cref="FileChangedSince"/>: saved on another PC, put back from a backup, written by
-    /// another HandPeg), that file as an open reads it, taken as saved. A cache that cannot be read throws, as <see cref="ReadState"/> does.
-    /// Pass 5.5A final review: a clean tab carrying no stamp (C-4a: none taken yet, a header from before) cannot tell, so it reads its file as
-    /// before 5.5A (<see cref="TabResumeSource.File"/>, said nothing of); a file not there keeps the cache. A changed file that cannot be read
-    /// (C-4b: a newer format, locked, damaged) comes back as the cache with why (<see cref="TabResumeSource.CacheFileUnreadable"/>): the window
-    /// then never ties it to that file, which Save would write over.
+    /// Reads a suspended tab for activation (on its queue, after its writes): the cache file plus fingerprint, or, for a clean tab
+    /// (<paramref name="cleanProjectPath"/>) whose project file changed externally (<see cref="FileChangedSince"/>), that file as saved.
+    /// A clean tab without a stamp reads its project file (<see cref="TabResumeSource.File"/>); a missing file keeps the cache. A changed
+    /// but unreadable file falls back to the cache (<see cref="TabResumeSource.CacheFileUnreadable"/>) so Save never overwrites it.
+    /// An unreadable cache throws, as <see cref="ReadState"/> does.
     /// </summary>
     public TabResume ReadForResume(string id, string? cleanProjectPath)
     {
@@ -622,7 +582,7 @@ public sealed class ProjectTabs
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException or NotSupportedException or ArgumentException)
             {
                 AppLog.Write("Project tabs: a tab's project file changed on the disk since it was kept, but could not be read; it opens from its cache, tied to no file", ex);
-                // No saved state's fingerprint: what comes back is in no file now, so it is unsaved whatever an old fingerprint beside it says.
+                // No fingerprint: the resumed state matches no file on disk, so it is dirty regardless of any stale fingerprint.
                 var why = ex is NewerProjectFormatException newer ? $"saved in a newer project format by {newer.WrittenBy ?? "a newer version of HandPeg"}" : ex.Message;
                 return new TabResume(ReadState(id), null, TabResumeSource.CacheFileUnreadable, 0L, 0L, why);
             }
@@ -631,12 +591,12 @@ public sealed class ProjectTabs
         return new TabResume(ReadState(id), ReadSaved(id), TabResumeSource.Cache, 0L, 0L, null);
     }
 
-    /// <summary>A kept stamp of none (pure, Pass 5.5A final review): the tab cannot tell whether its project file changed since.</summary>
+    /// <summary>True for an empty stamp (pure): a change to the project file cannot be detected.</summary>
     private static bool IsUnstamped(long ticks, long length) => ticks == 0 && length == 0;
 
     /// <summary>
-    /// The project file's stamp a tab's header file kept for <paramref name="path"/> (any thread); (0, 0) when it kept none. Pass 5.5A final review:
-    /// null for a header file that is not there, cannot be read, has unsaved changes or names another file: the cache is read (unsaved work wins).
+    /// Stamp a tab header recorded for <paramref name="path"/> (any thread); (0, 0) for none. Null when the header is missing, unreadable,
+    /// dirty or names another file, so the cache is read (unsaved work wins).
     /// </summary>
     private (long Ticks, long Length)? KeptStampOf(string id, string path)
     {
@@ -654,9 +614,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// A duplicate of a tab kept in its file (Pass 5.4B, any thread): <paramref name="fromId"/>'s project file copied whole (copied beside,
-    /// then moved in, as a file written whole is) to <paramref name="toId"/>'s, no saved fingerprint (a duplicate was never saved), and
-    /// its header last, as <see cref="WriteTab"/> writes them.
+    /// Duplicates a file-backed tab (any thread): copies <paramref name="fromId"/>'s project file atomically to <paramref name="toId"/>,
+    /// writes no fingerprint (never saved), then the header, in <see cref="WriteTab"/> order.
     /// </summary>
     public void CopyState(string fromId, string toId, string headerJson)
     {
@@ -669,8 +628,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// A tab behind's header written again after it changed in memory (Pass 5.4B: renamed), when it has a project file (any thread: the
-    /// text is made on the window's). A tab with none keeps nothing on the disk to bring up to date.
+    /// Rewrites an inactive tab's header after an in-memory change such as a rename (any thread; text built on the UI thread). No-op
+    /// for tabs without a project file.
     /// </summary>
     public void WriteHeader(string id, string headerJson)
     {
@@ -684,7 +643,7 @@ public sealed class ProjectTabs
     public static (int Width, int Height) FrameOf(int naturalWidth, int naturalHeight, bool vertical) =>
         vertical ? (naturalHeight, naturalWidth) : (naturalWidth, naturalHeight);
 
-    /// <summary>A tab's frame in a line for its hover card (pure): "1920 x 1080 · 60 fps"; "" while it is not known.</summary>
+    /// <summary>Hover-card frame line (pure): size and fps joined by a middle dot; "" while unknown.</summary>
     public static string DescribeFrame(int width, int height, double frameRate)
     {
         var size = width > 0 && height > 0 ? $"{width} x {height}" : "";
@@ -692,10 +651,10 @@ public sealed class ProjectTabs
         return size.Length > 0 && fps.Length > 0 ? $"{size} · {fps}" : size + fps;
     }
 
-    /// <summary>A tab's project as it was put behind (any thread).</summary>
+    /// <summary>Reads a deactivated tab's project (any thread).</summary>
     public ProjectState ReadState(string id) => ProjectStore.Load(StateFile(id));
 
-    /// <summary>A tab's saved state's fingerprint; null when it has none (it had no unsaved changes) or it cannot be read.</summary>
+    /// <summary>Reads a tab's saved-state fingerprint; null when absent (clean tab) or unreadable.</summary>
     public string? ReadSaved(string id)
     {
         try
@@ -711,7 +670,7 @@ public sealed class ProjectTabs
     /// <summary>Whether a tab's project file is there.</summary>
     public bool HasState(string id) => File.Exists(StateFile(id));
 
-    /// <summary>Deletes a tab's three files (any thread); one that cannot be deleted is left for the clean close.</summary>
+    /// <summary>Deletes a tab's three files (any thread); undeletable files are left for the clean close.</summary>
     public void DeleteFiles(string id)
     {
         TryDelete(StateFile(id));
@@ -719,17 +678,15 @@ public sealed class ProjectTabs
         TryDelete(SavedFile(id));
     }
 
-    /// <summary>The order and the tab in front, as tabs.json keeps them (<paramref name="kept"/>: written by the close that keeps them, <see cref="WriteKeptManifest"/>).</summary>
+    /// <summary>tabs.json text: order and active tab (<paramref name="kept"/>: written by a suspending close, <see cref="WriteKeptManifest"/>).</summary>
     public string ManifestJson(bool kept = false) => JsonSerializer.Serialize(new ProjectTabManifest(_tabs.Select(t => t.Id).ToList(), Active.Id, kept), HeaderOptions);
 
-    /// <summary>tabs.json written (any thread: the text is made on the window's, <see cref="ManifestJson"/>), in this session's folder.</summary>
+    /// <summary>Writes tabs.json to this session's folder (any thread; text from <see cref="ManifestJson"/> on the UI thread).</summary>
     public void WriteManifest(string json) => WriteManifest(json, kept: false);
 
     /// <summary>
-    /// tabs.json written by the close that keeps the tabs on purpose (Pass 5.5A final review, AD-1: Keep open project tabs, Keep Suspended for
-    /// Next Launch; the window's thread, as the session ends): marked kept, so the next start brings the tab in front forward. A session that
-    /// ended any other way (a crash, a power cut, the tabs behind kept with the prompt off) leaves its tabs behind the start-up tab, as before.
-    /// It is the session's last word: an earlier write still on its way never lands over it.
+    /// Writes tabs.json marked kept on a deliberate suspend (Keep Suspended for Next Launch; UI thread, at shutdown) so the next start
+    /// restores the active tab; any other ending leaves tabs behind the start-up tab. Final write: later-landing earlier writes are dropped.
     /// </summary>
     public void WriteKeptManifest() => WriteManifest(ManifestJson(kept: true), kept: true);
 
@@ -745,7 +702,7 @@ public sealed class ProjectTabs
         }
     }
 
-    // Whether tabs.json was written by the close that keeps the tabs (WriteKeptManifest), under its own lock: a write is never beside another.
+    // Set once WriteKeptManifest wrote tabs.json; guarded by its own lock so manifest writes never interleave.
     private readonly Lock _manifestGate = new();
     private bool _manifestKept;
 
@@ -761,7 +718,7 @@ public sealed class ProjectTabs
         }
     }
 
-    /// <summary>Whether this session's files were let go as HandPeg closed (<see cref="ForgetSession"/>): nothing is written after that.</summary>
+    /// <summary>True after <see cref="ForgetSession"/>; all later writes are refused.</summary>
     public bool IsForgotten
     {
         get
@@ -774,9 +731,8 @@ public sealed class ProjectTabs
     private const string ForgottenMessage = "This session's project tab files were let go as HandPeg closed: nothing more is written to them.";
 
     /// <summary>
-    /// This session's folder made and its lock taken, if they were not (any thread): open and shared with nobody for as long as the
-    /// session lives, which is what tells another HandPeg the folder is in use. An IOException when it cannot be, and once the session
-    /// was let go (<see cref="ForgetSession"/>, 5.4D-TabPerf review: a late write never makes the folder or its lock again).
+    /// Creates the session folder and takes its exclusive lock if needed (any thread); the open lock marks the folder in use to other
+    /// processes. Throws IOException on failure or after <see cref="ForgetSession"/>.
     /// </summary>
     public void ClaimSession()
     {
@@ -791,7 +747,7 @@ public sealed class ProjectTabs
         }
     }
 
-    /// <summary>The lock let go, the files left as they are: the folder is then one the next session takes the tabs in from.</summary>
+    /// <summary>Releases the lock and leaves the files, so the next session adopts the folder's tabs.</summary>
     public void ReleaseSession()
     {
         lock (_gate)
@@ -802,12 +758,9 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// As HandPeg closes: the files of this session's tabs deleted, but for those of the tabs <paramref name="keep"/> picks (with the
-    /// prompt to save on exit off, the tabs behind with unsaved changes), and its lock let go. Only the files of the tabs it knows go (with
-    /// tabs.json and half-written files): a project file of no tab of its own (one moved in from a dead session that never reached the
-    /// strip) is never deleted (5.4A review). With nothing kept and no such file the folder goes too; otherwise it stays, with its lock
-    /// file (and tabs.json when a tab was kept), so the next start offers what is left again. Never touches another session's folder.
-    /// From then on nothing is written into the folder (<see cref="IsForgotten"/>: a write still running is refused, 5.4D-TabPerf review).
+    /// Shutdown: deletes this session's tab files except those <paramref name="keep"/> selects, plus tabs.json and partial writes, then
+    /// releases the lock. Unknown project files (adopted but never shown) are never deleted. The folder is removed only when nothing
+    /// remains; otherwise the next start offers it again. Later writes are refused (<see cref="IsForgotten"/>).
     /// </summary>
     public void ForgetSession(Func<ProjectTabHeader, bool>? keep = null)
     {
@@ -828,8 +781,7 @@ public sealed class ProjectTabs
                     if (string.Equals(name, LockName, StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    // A header or saved fingerprint of no tab of this session's is kept while a project file of no tab of its own is
-                    // there (it may be that one's), and goes with the folder otherwise (without its project file it is nothing).
+                    // Unknown headers/fingerprints may belong to an unknown project file: keep them while one exists.
                     var id = IdOf(name);
                     var go = name.EndsWith(PartialExtension, StringComparison.OrdinalIgnoreCase)
                         || (string.Equals(name, ManifestName, StringComparison.OrdinalIgnoreCase) ? kept.Count == 0
@@ -842,7 +794,7 @@ public sealed class ProjectTabs
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Not looked through: nothing says the folder holds no other work, so it stays, its lock let go.
+            // Folder not enumerated: it may hold other work, so keep it and only release the lock.
             others = true;
         }
 
@@ -854,23 +806,16 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// The tabs other sessions left behind (any thread; after the window's first frame), taken into this session's folder: every folder
-    /// under the root but this one whose lock can be taken (its session is gone; a live one holds its own, and a folder with no lock file
-    /// is one being made this moment) has its tabs' files moved here, in tabs.json's order, leaving out ids that are <paramref name="known"/>
-    /// or already taken; a project file without a header that can be read comes across under a made-up one (<see cref="LeftBehind"/>). A
-    /// folder whose every project file came across is deleted; one that kept any (never deleted: 5.4A review) stays, with its lock file,
-    /// for the next start. The headers come back for the window to <see cref="Adopt"/>.
+    /// Adopts tabs from abandoned sessions (any thread, after Frame 1): each other folder whose lock can be taken (no lock file means one
+    /// being created) has its tab files moved here in tabs.json order, skipping <paramref name="known"/> ids; headerless project files get
+    /// a synthetic header (<see cref="LeftBehind"/>). Fully drained folders are deleted. Returns headers for <see cref="Adopt"/>.
     /// </summary>
     public List<ProjectTabHeader> TakeLeftBehind(IReadOnlyCollection<string> known) => TakeLeftBehind(known, out _);
 
     /// <summary>
-    /// <see cref="TakeLeftBehind(IReadOnlyCollection{string})"/>, and the id of the tab that was in front as the session that left them ended
-    /// (Pass 5.5A addenda, <paramref name="front"/>; null when none was taken): of the session whose taken files were written last, the tab
-    /// its tabs.json named in front (<see cref="FrontOf"/>; Pass 5.5A fix round 3, S-R2: none when that tab was not taken, a blank one never
-    /// kept). Pass 5.5A final review (AD-1): only of a session whose close kept its tabs on purpose (its tabs.json marked kept:
-    /// <see cref="WriteKeptManifest"/>); the tabs of one that crashed are taken all the same, with no front, so they stay behind the start-up
-    /// tab and none is opened before the user picks it (a project that brought HandPeg down is never opened again unasked, nor its
-    /// crash-recovery copy let go as it opens).
+    /// <see cref="TakeLeftBehind(IReadOnlyCollection{string})"/> plus <paramref name="front"/>: the active tab named by the newest kept
+    /// manifest (<see cref="FrontOf"/>, <see cref="WriteKeptManifest"/>), or null. Crashed sessions are adopted without a front, so a
+    /// project that crashed HandPeg is never reopened automatically.
     /// </summary>
     public List<ProjectTabHeader> TakeLeftBehind(IReadOnlyCollection<string> known, out string? front)
     {
@@ -910,8 +855,7 @@ public sealed class ProjectTabs
             bool whole;
             using (held)
             {
-                // The tab its tabs.json named in front, read before the sweep lets go of the file (Pass 5.5A addenda), and whether its close
-                // kept the tabs on purpose (Pass 5.5A final review).
+                // Read the manifest's active tab and kept flag before the sweep deletes tabs.json.
                 var manifest = ReadManifest(folder);
                 var named = manifest?.Active;
                 var here = new HashSet<string>(StringComparer.Ordinal);
@@ -927,9 +871,8 @@ public sealed class ProjectTabs
                     }
                 }
 
-                // Several sessions left tabs (a crash, then another): the front of the one that wrote last (a move keeps a file's last write), of
-                // those that kept their tabs on purpose only. Pass 5.5A fix round 3 (S-R2): that session's word stands when it names no tab taken
-                // (a blank tab was in front, never kept): none is brought forward, never an older session's nor another of its own.
+                // Multiple abandoned sessions: the newest kept session (moves preserve last-write times) decides the front; if it names
+                // no adopted tab (a blank tab was active), no tab is brought forward.
                 if (manifest is { Kept: true } && takenHere.Count > 0 && LastWrittenOf(takenHere) is var written && (!keptSeen || written > newest))
                     (front, newest, keptSeen) = (FrontOf(takenHere, named), written, true);
                 whole = SweepTaken(folder, here);
@@ -945,15 +888,13 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// The tab that was in front as a session ended, of those taken from its folder (pure, Pass 5.5A addenda: project-tabs-restored-front):
-    /// the one its tabs.json named in front (<paramref name="named"/>) when that one was taken. Pass 5.5A fix round 3 (S-R2): else none (a blank
-    /// tab was in front, and a blank tab is never kept): the start-up tab stays in front, never another tab in its place (the one last in front
-    /// by its header's count was taken before, which opened a crash's leftover adopted the session before, unasked).
+    /// Active tab of an adopted session (pure): <paramref name="named"/> when it was among the taken tabs, else null so the start-up tab
+    /// stays active (never a substitute picked by MRU count).
     /// </summary>
     internal static string? FrontOf(IReadOnlyList<ProjectTabHeader> taken, string? named) =>
         named is not null && taken.Any(t => string.Equals(t.Id, named, StringComparison.Ordinal)) ? named : null;
 
-    /// <summary>When the newest of these tabs' project files (moved into this session's folder) was last written; MinValue when none can be read.</summary>
+    /// <summary>Newest last-write time among the adopted project files; MinValue when none is readable.</summary>
     private DateTime LastWrittenOf(IReadOnlyList<ProjectTabHeader> taken)
     {
         var newest = DateTime.MinValue;
@@ -974,10 +915,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// A left-behind tab's files moved into this session's folder: its project file (without which it is not taken), its saved
-    /// fingerprint, its header written anew. The project file first and the header last, as <see cref="WriteTab"/>: a session that ends
-    /// between them has the project file here without a header, which the next start takes in under a made-up one, and the old header
-    /// left in the dead folder, which names no project file there and goes with it. Never a moment with the project file in neither.
+    /// Moves an abandoned tab into this session: project file (required), fingerprint, then a rewritten header, in <see cref="WriteTab"/>
+    /// order, so a crash midway leaves an adoptable orphan and the project file always exists in one folder.
     /// </summary>
     private bool TryMoveIn(string folder, ProjectTabHeader tab)
     {
@@ -991,7 +930,7 @@ public sealed class ProjectTabs
             return false;
         }
 
-        // Without its saved fingerprint a tab with unsaved changes still comes back unsaved (RestoreUnsavedState): never lost.
+        // A dirty tab without its fingerprint still resumes as dirty (RestoreUnsavedState).
         try
         {
             var saved = Path.Combine(folder, tab.Id + SavedExtension);
@@ -1007,8 +946,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// The tab id a file of a session's folder belongs to: its name less a tab file's ending (and a half-written file's .tmp after it),
-    /// else its name up to the first dot (a half-written file's own name, <c>&lt;id&gt;.hptab.&lt;32 hex digits&gt;.tmp</c>, among them).
+    /// Tab id owning a session-folder file: the name minus a known tab extension (and .tmp), else the name up to the first dot (covers
+    /// partial writes named <c>&lt;id&gt;.hptab.&lt;32 hex digits&gt;.tmp</c>).
     /// </summary>
     private static string IdOf(string fileName)
     {
@@ -1023,15 +962,13 @@ public sealed class ProjectTabs
         return dot > 0 ? name[..dot] : name;
     }
 
-    /// <summary>Whether a file of a session's folder is a tab's project file (<c>&lt;Id&gt;.hptab</c>, not a half-written one).</summary>
+    /// <summary>True for a complete tab project file (<c>&lt;Id&gt;.hptab</c>, not a partial write).</summary>
     private static bool IsStateFile(string fileName) =>
         fileName.Length > StateExtension.Length && fileName.EndsWith(StateExtension, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// What is left of a dead session's folder once its tabs were taken (<paramref name="taken"/>, their files moved here): the rest of
-    /// their files (their old headers), tabs.json and half-written files deleted. A project file still there (a tab that could not come
-    /// across) is never deleted (5.4A review): false then, and the folder stays with everything else in it. With none left, the headers
-    /// and saved fingerprints of no project file go too (nothing without one), and true: the folder may go.
+    /// Cleans an abandoned folder after adopting <paramref name="taken"/>: deletes their old headers, tabs.json and partial writes. Returns
+    /// false (folder kept intact) while any project file remains; otherwise deletes stray headers/fingerprints and returns true.
     /// </summary>
     private static bool SweepTaken(string folder, HashSet<string> taken)
     {
@@ -1060,7 +997,7 @@ public sealed class ProjectTabs
         }
     }
 
-    /// <summary>tabs.json read back; null when it is not there or cannot be read (a session that never had a second tab, a damaged file).</summary>
+    /// <summary>Parses tabs.json; null when missing (single-tab session) or damaged.</summary>
     public static ProjectTabManifest? ReadManifest(string folder)
     {
         try
@@ -1077,10 +1014,8 @@ public sealed class ProjectTabs
     }
 
     /// <summary>
-    /// The tabs a session left in its folder (any thread; <see cref="TakeLeftBehind"/> reads each dead session's with it): every header
-    /// whose project file is there, and for a project file without a header that can be read (its session ended between writing the two,
-    /// or the header is damaged) a made-up one: <see cref="RecoveredTitle"/>, with unsaved changes, so closing it asks first (5.4A review).
-    /// In tabs.json's order where it names them (the rest after, oldest first), leaving out <paramref name="known"/> ids.
+    /// Tabs in a session folder (any thread): every header with a project file, plus a dirty <see cref="RecoveredTitle"/> header for
+    /// each headerless project file (so closing it prompts). Ordered by tabs.json, then oldest first; <paramref name="known"/> ids skipped.
     /// </summary>
     public static List<ProjectTabHeader> LeftBehind(string folder, IReadOnlyCollection<string> known)
     {
@@ -1140,7 +1075,7 @@ public sealed class ProjectTabs
         return [.. found.OrderBy(Rank).ThenBy(t => t.LastActive)];
     }
 
-    /// <summary>An empty folder deleted; one still holding a file that could not be deleted is left.</summary>
+    /// <summary>Deletes a folder if empty; leaves it when an undeletable file remains.</summary>
     private static void TryDeleteFolder(string folder)
     {
         try

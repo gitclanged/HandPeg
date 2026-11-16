@@ -3,15 +3,14 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// Downloads used by projects (see YtDlpDownloader): the download cache keeps only its most recent files, so a
-// project that uses one of them could open one day with its media gone. Downloads a project uses are kept when the
-// cache is trimmed, and saving such a project offers to copy them somewhere permanent, or copies them without asking
-// once that has been chosen (Settings > Preview & Cache > Downloads, "Downloaded videos in saved projects", 4.4).
+// Project-referenced downloads (YtDlpDownloader): the download cache keeps only recent files, so project-used downloads are pinned
+// during trims, and saving such a project offers (or, once chosen, performs) a copy to permanent storage (Settings > Preview &
+// Cache > Downloads, "Downloaded videos in saved projects").
 public partial class MainViewModel
 {
     /// <summary>
-    /// Every media file the open project uses: the main video, the layers' files, the voiceover, the captions' own sound, and the files
-    /// Project Media holds (5.4C: a download kept only in the bin is pinned and copied as one a clip plays is).
+    /// All media files the open project references: source video, layer files, voiceover, caption audio and Project Media entries
+    /// (bin-only downloads are pinned and copied like clip-used ones).
     /// </summary>
     public List<string> MediaFilesInUse()
     {
@@ -34,17 +33,15 @@ public partial class MainViewModel
         return files;
     }
 
-    /// <summary>The download folders that must not be trimmed now: used by a project in the projects folder, or by the open one.</summary>
+    /// <summary>Download folders exempt from trimming: used by a project in the projects folder or the open one.</summary>
     public HashSet<string> PinnedDownloads() => AppSettings.Current.KeepDownloadsUsedByProjects
         ? YtDlpDownloader.FoldersUsedByProjects([ProjectStore.Folder, .. CurrentProjectPath.Length > 0 && Path.GetDirectoryName(CurrentProjectPath) is { } folder ? [folder] : Array.Empty<string>()], MediaFilesInUse())
         : [];
 
     /// <summary>
-    /// After a project is saved: when it uses files from the download cache, offers to copy them into the download
-    /// folder (Settings; the Videos folder's "HandPeg Downloads" when none is set) and to have the project use the
-    /// copies, which nothing ever deletes; or copies them without asking, once "Remember my choice" (or Settings) has
-    /// said to. The copying is interactive work (see WorkScheduler); the project file is then written again with the
-    /// copies in it.
+    /// Post-save: if the project uses cached downloads, offers (or, per "Remember my choice"/Settings, performs) a copy to the download
+    /// folder (Settings; default Videos\"HandPeg Downloads"), never auto-deleted, and repoints the project. Copying runs as interactive
+    /// work (WorkScheduler); the project file is then rewritten.
     /// </summary>
     private async Task OfferToKeepDownloadsAsync()
     {
@@ -98,21 +95,19 @@ public partial class MainViewModel
                 return;
         }
 
-        // The saved project uses the copies from now on. (This session goes on with the files it has open, which are
-        // kept while it is: see PinnedDownloads.)
+        // The saved project now references the copies; this session keeps using the open files (pinned via PinnedDownloads).
         if (CurrentProjectPath.Length == 0)
             return;
 
         try
         {
-            // With the undo history, its steps' files moved the same way (4.4-BugHunt): a step undone after the project is
-            // opened again puts back the copies, not the downloads the cache may have let go of since.
+            // Repoint undo history steps too, so undoing after reopen restores the copies rather than possibly-evicted cache files.
             string Moved(string path) => copies.TryGetValue(path.Trim().Trim('"'), out var copy) ? copy : path;
             var state = CaptureStateForSave(Path.GetFileNameWithoutExtension(CurrentProjectPath), Moved);
             state.LocalMediaPath = Moved(state.LocalMediaPath);
             state.CaptionAudioPath = Moved(state.CaptionAudioPath);
 
-            // Every clip's file, on the state's own copy of the timeline (its looks are its own: CaptureState).
+            // Repoint every clip file in the state's own timeline copy (CaptureState).
             foreach (var clip in state.Timeline.Tracks.SelectMany(t => t.Clips))
             {
                 if (clip.SourcePath is { } path)
@@ -120,7 +115,7 @@ public partial class MainViewModel
                 clip.State.ImagePath = Moved(clip.State.ImagePath);
             }
 
-            // And Project Media's (5.4C): a bin entry left pointing at the cache would lose its file with the next trim.
+            // And Project Media entries, which would otherwise lose their file on the next cache trim.
             state.Timeline.MediaPool = [.. state.Timeline.MediaPool.Select(Moved)];
 
             ProjectStore.SaveTo(state, CurrentProjectPath);
@@ -133,8 +128,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Asks whether to copy the downloads a saved project uses, naming where the question can be changed; with "Remember
-    /// my choice" ticked, the answer is kept (asked no more: always copied, or always left) and saved with the settings.
+    /// Prompts to copy a saved project's downloads (naming the Settings location); "Remember my choice" persists the answer (always
+    /// copy or never) to settings.
     /// </summary>
     private bool AskToKeepDownloads(int count, string folder)
     {

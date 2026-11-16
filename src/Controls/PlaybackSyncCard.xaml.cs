@@ -9,10 +9,10 @@ using static HandPegApp.Native.User32;
 namespace HandPegApp;
 
 /// <summary>
-/// The Playback &amp; A/V Sync Test's card (Pass 5.5.2-Release): pressed, the small picture appears and the test plays in it
-/// (PlaybackSyncTest.RunAsync on its native window) with its progress; pressed again, it stops. A result that finished is raised by
-/// <see cref="Completed"/> for the window to keep (the first-run window with its other choices, Settings at once). The card stops its test
-/// when it is hidden or unloaded (a screen changed, the window closed).
+/// Playback &amp; A/V Sync Test card: pressing shows a small preview and runs the test in it (PlaybackSyncTest.RunAsync on its native
+/// window) with progress; pressing again stops it. Completed results are raised via <see cref="Completed"/> for the host to persist (the
+/// first-run window with its other choices, Settings immediately). The test is cancelled when the card is hidden or unloaded (screen
+/// change, window closed).
 /// </summary>
 public partial class PlaybackSyncCard : UserControl
 {
@@ -30,10 +30,10 @@ public partial class PlaybackSyncCard : UserControl
         };
     }
 
-    /// <summary>The test itself; the goldens put a stand-in here (no engine, no worker).</summary>
+    /// <summary>Test runner; goldens substitute a stub (no engine, no worker).</summary>
     internal Func<nint, IProgress<PlaybackSyncProgress>, CancellationToken, Task<PlaybackSyncResult>> Runner { get; set; } = PlaybackSyncTest.RunAsync;
 
-    /// <summary>The last result shown (this card's run, or the one kept), null none.</summary>
+    /// <summary>Last displayed result (from this card's run or a persisted one); null when none.</summary>
     public PlaybackSyncResult? Result { get; private set; }
 
     /// <summary>Raised on the UI thread when a run finished with a result (not cancelled, not failed to start).</summary>
@@ -44,7 +44,7 @@ public partial class PlaybackSyncCard : UserControl
     /// <summary>Raised on the UI thread when a test starts or ends (Settings holds its hardware test meanwhile).</summary>
     public event Action? RunningChanged;
 
-    /// <summary>Why the test cannot start now (a hardware check running beside it: its tooltip), null when it can.</summary>
+    /// <summary>Reason the test cannot start (e.g. a concurrent hardware check; used as tooltip); null when allowed.</summary>
     public string? BlockedBy
     {
         get => _blockedBy;
@@ -55,7 +55,7 @@ public partial class PlaybackSyncCard : UserControl
         }
     }
 
-    /// <summary>A result kept from before (AppSettings.LastPlaybackSyncTest), shown as the last test's.</summary>
+    /// <summary>Shows a persisted result (AppSettings.LastPlaybackSyncTest) as the last test.</summary>
     public void ShowKept(PlaybackSyncResult? kept)
     {
         if (_run is not null || kept is null)
@@ -64,7 +64,7 @@ public partial class PlaybackSyncCard : UserControl
         ShowResult(kept, "Last test: ");
     }
 
-    /// <summary>Stops a test running (nothing when none is).</summary>
+    /// <summary>Cancels a running test (no-op when idle).</summary>
     public void Cancel() => _run?.Cancel();
 
     private void Test_Click(object sender, RoutedEventArgs e) => Faults.Forget(Test_ClickAsync(sender, e), nameof(Test_Click));
@@ -117,7 +117,7 @@ public partial class PlaybackSyncCard : UserControl
         }
     }
 
-    // The picture shown and laid out, its native window made and shown at its size: the engine's swap chain is made at the window's size.
+    // Waits until the preview is laid out and its native window exists at final size (the engine sizes its swap chain from it).
     private async Task<nint> SurfaceReadyAsync(CancellationToken token)
     {
         UpdateLayout();

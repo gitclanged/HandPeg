@@ -4,18 +4,17 @@ using System.IO;
 namespace HandPegApp.Services.Gpu;
 
 /// <summary>
-/// The colour tables the GPU engine's effects read, made as FFmpeg makes them from the same card: a .cube file as a 3D LUT
-/// (<see cref="GpuResourceKind.Lut3D"/>, RGBA32F N^3, red fastest, as lut3d reads it) and the Curves card as one 256-entry
-/// table (<see cref="GpuResourceKind.Curve1D"/>: FFmpeg's curves, a natural cubic spline through each channel's points, its
-/// preset's where the card gives none, and the master curve applied after each channel's, as curves composes them).
-/// Thread-safe, nothing shared.
+/// Colour tables for GPU effects, built as FFmpeg builds them from the same card: .cube files as 3D LUTs
+/// (<see cref="GpuResourceKind.Lut3D"/>, RGBA32F N^3, red fastest, as lut3d reads them) and the Curves card as one 256-entry table
+/// (<see cref="GpuResourceKind.Curve1D"/>: FFmpeg curves' natural cubic spline per channel, preset points where the card has none, master
+/// applied after each channel). Thread-safe; no shared state.
 /// </summary>
 public static class GpuColorTables
 {
-    /// <summary>The largest cube read (as CompositorClient.ResourceBytes allows).</summary>
+    /// <summary>Largest cube size read (matches CompositorClient.ResourceBytes).</summary>
     public const int LargestCube = 256;
 
-    /// <summary>A .cube file's 3D table as RGBA32F bytes and its size; null when it is not one (a 1D table, no size, too few entries).</summary>
+    /// <summary>A .cube file's 3D table as RGBA32F bytes plus its size; null when not a valid 3D cube (1D table, no size, too few entries).</summary>
     public static (byte[] Pixels, int Size)? ReadCube(string path)
     {
         try
@@ -45,7 +44,7 @@ public static class GpuColorTables
 
                 if (char.IsLetter(line[0]))
                 {
-                    // TITLE, DOMAIN_MIN / DOMAIN_MAX: the domain is taken as 0..1, as nearly every cube has it.
+                    // TITLE, DOMAIN_MIN/DOMAIN_MAX: the domain is assumed 0..1, as almost every cube uses.
                     if (line.StartsWith("DOMAIN_", StringComparison.OrdinalIgnoreCase) && !IsUnitDomain(line))
                         AppLog.Write($"A .cube LUT's domain other than 0..1 is read as 0..1 by the GPU engine ({Path.GetFileName(path)}).");
                     continue;
@@ -63,7 +62,7 @@ public static class GpuColorTables
                     continue;
                 }
 
-                // Red changes fastest, as the file lists it and the 3D texture's rows lie.
+                // Red varies fastest, matching file order and the 3D texture layout.
                 (table[count * 4], table[count * 4 + 1], table[count * 4 + 2], table[count * 4 + 3]) = (r, g, b, 1);
                 count++;
             }
@@ -97,7 +96,7 @@ public static class GpuColorTables
 
     // ----- Curves -----
 
-    // FFmpeg's curves presets (vf_curves.c): red, green, blue, master; null where a preset leaves a channel alone.
+    // FFmpeg curves presets (vf_curves.c): red, green, blue, master; null where a preset leaves a channel unchanged.
     private static readonly Dictionary<string, (string? R, string? G, string? B, string? Master)> Presets = new(StringComparer.Ordinal)
     {
         ["color_negative"] = ("0.129/1 0.466/0.498 0.725/0", "0.109/1 0.301/0.498 0.517/0", "0.098/1 0.235/0.498 0.423/0", null),
@@ -113,8 +112,8 @@ public static class GpuColorTables
     };
 
     /// <summary>
-    /// The Curves card (its preset, its master points) as a 256 x 1 RGBA32F table: R, G and B each channel's curve with the
-    /// master applied after it (what PSToneCurve looks up), A the master alone. Null when it changes nothing.
+    /// The Curves card (preset, master points) as a 256x1 RGBA32F table: R, G, B = channel curve then master (sampled by PSToneCurve),
+    /// A = master alone. Null when it is the identity.
     /// </summary>
     public static byte[]? ToneCurve(string? preset, string? master)
     {
@@ -127,7 +126,7 @@ public static class GpuColorTables
         var table = new float[256 * 4];
         for (var x = 0; x < 256; x++)
         {
-            // The master is a second pass over each channel's result (curves: graph[i][j] = graph[master][graph[i][j]]).
+            // Master applies after each channel (curves: graph[i][j] = graph[master][graph[i][j]]).
             table[x * 4] = m[r[x]] / 255f;
             table[x * 4 + 1] = m[g[x]] / 255f;
             table[x * 4 + 2] = m[b[x]] / 255f;
@@ -140,8 +139,8 @@ public static class GpuColorTables
     }
 
     /// <summary>
-    /// One channel's curve over 8-bit values, as FFmpeg's curves interpolates it (interpolate(), natural): a natural cubic
-    /// spline through the points, flat before the first and after the last; the identity without points, one value with one.
+    /// One channel's 8-bit curve as FFmpeg's curves interpolates it (natural cubic spline through the points, flat outside them);
+    /// identity without points, constant with one.
     /// </summary>
     private static int[] Curve(string? text)
     {
@@ -171,7 +170,7 @@ public static class GpuColorTables
         for (var i = 1; i < n - 1; i++)
             r[i] = 6 * ((points[i + 1].Y - points[i].Y) / h[i] - (points[i].Y - points[i - 1].Y) / h[i - 1]);
 
-        // The tridiagonal system: natural ends (the second derivative 0 there), solved as vf_curves.c solves it.
+        // Tridiagonal system with natural ends (zero second derivative), solved as vf_curves.c does.
         var (below, main, above) = (new double[n], new double[n], new double[n]);
         (main[0], main[n - 1]) = (1, 1);
         for (var i = 1; i < n - 1; i++)
@@ -208,14 +207,13 @@ public static class GpuColorTables
         return y;
     }
 
-    // ----- The Color Grade's curves -----
+    // ----- Color Grade curves -----
 
     /// <summary>
-    /// The Color Grade card's four curves (Master, Red, Green, Blue: "x/y x/y..." from 0 to 1) as one 256 x 1 RGBA32F table, in the
-    /// Curves card's layout: R, G and B each a channel's curve with the master applied after it (what PSColorStudio looks up), A the
-    /// master alone. Each curve is a monotone cubic Hermite through its points (Fritsch-Carlson: never overshoots a point, so a curve
-    /// drawn through points that rise only rises), the same one the Color Studio draws (<see cref="CurveAt"/>). Null when every curve
-    /// is the identity (empty, or every point on the diagonal). A few microseconds: baked as the plan is made.
+    /// The Color Grade card's four curves (Master, Red, Green, Blue as "x/y x/y..." in 0..1) as one 256x1 RGBA32F table in the Curves card's
+    /// layout: R, G, B = channel curve then master (sampled by PSColorStudio), A = master alone. Each curve is a monotone cubic Hermite
+    /// (Fritsch-Carlson: no overshoot, so rising points give a rising curve), the same one Color Studio draws (<see cref="CurveAt"/>). Null
+    /// when every curve is the identity. Takes microseconds; baked when the plan is built.
     /// </summary>
     public static byte[]? ColorCurves(string? master, string? red, string? green, string? blue)
     {
@@ -238,12 +236,12 @@ public static class GpuColorTables
         return bytes;
     }
 
-    /// <summary>Whether a curve's points change nothing: none, or every one on the diagonal (as ColorGradeMath.CurveIsIdentity says).</summary>
+    /// <summary>True when a curve is the identity: no points, or all on the diagonal (ColorGradeMath.CurveIsIdentity).</summary>
     public static bool CurveIsIdentity(string? points) => Models.Effects.ColorGradeMath.CurveIsIdentity(points);
 
     /// <summary>
-    /// A Color Grade curve's points, ascending, with its ends: (0, 0) put first and (1, 1) last where the text gives no point at 0 or 1,
-    /// so a lone point bends the diagonal through it. Empty for none (the identity).
+    /// Curve points in ascending order with endpoints: (0, 0) prepended and (1, 1) appended when absent, so a single point bends the
+    /// diagonal. Empty for the identity.
     /// </summary>
     public static List<(double X, double Y)> CurvePoints(string? text)
     {
@@ -257,10 +255,10 @@ public static class GpuColorTables
         return points;
     }
 
-    /// <summary>A Color Grade curve's value at <paramref name="x"/> (0..1): its monotone Hermite through <see cref="CurvePoints"/>.</summary>
+    /// <summary>Curve value at <paramref name="x"/> (0..1): the monotone Hermite through <see cref="CurvePoints"/>.</summary>
     public static double CurveAt(string? text, double x) => Hermite.Of(text).At(x);
 
-    /// <summary>A Color Grade curve sampled at <paramref name="count"/> even steps from 0 to 1 (what the Color Studio draws: the baked table's curve).</summary>
+    /// <summary>Curve sampled at <paramref name="count"/> even steps over 0..1 (what Color Studio draws: the baked table's curve).</summary>
     public static double[] CurveSamples(string? text, int count)
     {
         var curve = Hermite.Of(text);
@@ -270,11 +268,11 @@ public static class GpuColorTables
         return samples;
     }
 
-    /// <summary>Points as a Color Grade curve's text ("x/y x/y...", three decimals, ascending as given).</summary>
+    /// <summary>Formats points as curve text ("x/y x/y...", three decimals, in the given order).</summary>
     public static string FormatCurve(IEnumerable<(double X, double Y)> points) =>
         string.Join(' ', points.Select(p => string.Create(CultureInfo.InvariantCulture, $"{Math.Round(p.X, 3):0.###}/{Math.Round(p.Y, 3):0.###}")));
 
-    /// <summary>A monotone cubic Hermite through a curve's points (Fritsch and Carlson's tangents), flat outside them; the identity without points.</summary>
+    /// <summary>Monotone cubic Hermite through a curve's points (Fritsch-Carlson tangents), flat outside them; identity without points.</summary>
     private sealed class Hermite
     {
         private static readonly Hermite Identity = new([0, 1], [0, 1], [1, 1]);
@@ -294,7 +292,7 @@ public static class GpuColorTables
             for (var i = 0; i < n; i++)
                 (x[i], y[i]) = points[i];
 
-            // The secants, then each inner point's tangent their mean (0 where the curve turns back), the ends their own secant's.
+            // Secants, then interior tangents = mean of adjacent secants (0 at local extrema); end tangents = their own secant.
             var d = new double[n - 1];
             for (var i = 0; i < n - 1; i++)
                 d[i] = (y[i + 1] - y[i]) / (x[i + 1] - x[i]);
@@ -302,8 +300,8 @@ public static class GpuColorTables
             for (var i = 1; i < n - 1; i++)
                 m[i] = d[i - 1] * d[i] > 0 ? (d[i - 1] + d[i]) / 2 : 0;
 
-            // Fritsch-Carlson: a flat secant flattens both its tangents; tangents too steep for their secant are drawn in onto the circle of
-            // radius 3, which keeps every piece monotone (no overshoot).
+            // Fritsch-Carlson: a flat secant zeroes both tangents; tangents too steep for their secant are scaled onto the radius-3 circle,
+            // keeping every segment monotone.
             for (var i = 0; i < n - 1; i++)
             {
                 if (d[i] == 0)
@@ -342,16 +340,16 @@ public static class GpuColorTables
         }
     }
 
-    // ----- The Color Grade's last lane -----
+    // ----- Color Grade last lane -----
 
     /// <summary>
-    /// The Color Grade card's last lane as the plan sends it: its LUT's mix (0..1), plus 2 when the layer's curve table is this card's,
-    /// plus 4 when the layer's LUT is (one LUT and one curve a layer: another card may hold them). Never below 0 (no PulseMarker).
+    /// Encodes the Color Grade card's last lane: LUT mix (0..1), +2 when the layer's curve table belongs to this card, +4 when the layer's LUT
+    /// does (one LUT and one curve per layer; another card may own them). Never negative (no PulseMarker).
     /// </summary>
     public static float StudioTablesLane(double mix, bool curves, bool lut) =>
         (float)((double.IsFinite(mix) ? Math.Max(0, Math.Min(mix, 1)) : 0) + (curves ? 2 : 0) + (lut ? 4 : 0));
 
-    /// <summary>The Color Grade card's last lane read back (<see cref="StudioTablesLane"/>): whether its LUT and its curves are bound, and the LUT's mix.</summary>
+    /// <summary>Decodes <see cref="StudioTablesLane"/>: LUT bound, curves bound, and LUT mix.</summary>
     public static (bool Lut, bool Curves, float Mix) StudioTablesOf(float lane)
     {
         var lut = lane >= 3.5f;
@@ -363,7 +361,7 @@ public static class GpuColorTables
         return (lut, curves, float.IsFinite(lane) ? Math.Max(0, Math.Min(lane, 1)) : 0);
     }
 
-    /// <summary>"x/y x/y ..." from 0 to 1, in the order given (curves wants them ascending; one out of order is left out).</summary>
+    /// <summary>Parses "x/y x/y ..." in 0..1 in the given order (must ascend; out-of-order points are skipped).</summary>
     private static List<(double X, double Y)> Points(string? text)
     {
         var points = new List<(double X, double Y)>();

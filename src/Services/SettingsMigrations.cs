@@ -1,20 +1,18 @@
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Brings an <see cref="AppSettings"/> read from appsettings.json up to the current schema: the numbered one-time steps keyed by
-/// <see cref="AppSettings.ViewDefaultsVersion"/>, followed by the normalizations every load applies. Pure: no file access, so the
-/// whole chain is testable in memory (the <c>settings-migrations</c> golden runs it from every start version).
+/// Upgrades loaded <see cref="AppSettings"/> to the current schema: numbered one-time steps keyed by
+/// <see cref="AppSettings.ViewDefaultsVersion"/>, then per-load normalizations. Pure (no I/O), so the chain is testable in memory
+/// (golden <c>settings-migrations</c> runs every start version).
 /// </summary>
 /// <remarks>
-/// <para>Each step runs once, when the file's version is below the step's number, and raises the version to that number. Steps
-/// are never edited after they ship: a new default or rename is a new step with the next number.</para>
-/// <para>Version 0 means a file from before the steps existed. A fresh install is stamped with <see cref="Latest"/> when its
-/// settings are created (<see cref="AppSettings.Load"/>), so its own first-session choices are never treated as an old file's.
-/// Steps that must not touch a first start's choices still test <c>fileVersion &gt;= 1</c>, for files written before that
-/// stamp existed.</para>
-/// <para>A file whose version is above <see cref="Latest"/> was written by a newer HandPeg (a rollback, or two versions sharing
-/// one profile): no step runs, and the keys this version does not know are carried through <see cref="AppSettings.Extra"/>, so
-/// saving it does not drop them.</para>
+/// <para>A step runs once when the file version is below its number and raises the version to it. Shipped steps are immutable; new
+/// defaults or renames get a new step.</para>
+/// <para>Version 0 predates steps. Fresh installs are stamped <see cref="Latest"/> at creation (<see cref="AppSettings.Load"/>) so
+/// first-session choices are never migrated; steps that must spare first starts also test <c>fileVersion &gt;= 1</c> for files
+/// predating the stamp.</para>
+/// <para>Versions above <see cref="Latest"/> (newer writer: rollback or shared profile) run no steps; unknown keys are preserved via
+/// <see cref="AppSettings.Extra"/>.</para>
 /// </remarks>
 internal static class SettingsMigrations
 {
@@ -22,15 +20,15 @@ internal static class SettingsMigrations
     public const int Latest = 13;
 
     /// <summary>
-    /// Panes renamed since a layout or a hidden-tab list could have saved them: old id to new id. One table for the dock's saved
-    /// arrangements (<c>MainWindow.ReplacedPanes</c>) and for the <see cref="AppSettings.HiddenTabs"/> step below.
+    /// Pane id renames (old to new), shared by saved dock layouts (<c>MainWindow.ReplacedPanes</c>) and the
+    /// <see cref="AppSettings.HiddenTabs"/> step below.
     /// </summary>
     public static IReadOnlyDictionary<string, string> PaneRenames { get; } = new Dictionary<string, string> { ["Tab:Filters"] = "Tab:Color" };
 
-    /// <summary>What a step is for: a data-shape change, a one-time product default chosen by the user, or a hardware safety reset.</summary>
+    /// <summary>Step category: data-shape change, one-time product default, or hardware safety reset.</summary>
     internal enum StepKind { Schema, ProductDefault, Safety }
 
-    /// <param name="Apply">Changes the settings; the second argument is the version the file was written with (before any step ran).</param>
+    /// <param name="Apply">Mutates the settings; the second argument is the original file version.</param>
     internal sealed record Step(int Version, StepKind Kind, string Summary, Action<AppSettings, int> Apply);
 
     /// <summary>The steps in order, numbered 1 to <see cref="Latest"/>.</summary>
@@ -45,11 +43,10 @@ internal static class SettingsMigrations
         // Colour grading started out on the Filters tab once; it can be hidden again under Interface.
         new(2, StepKind.ProductDefault, "advanced filters tab shown once", (s, _) => s.ShowAdvancedFiltersTab = true),
 
-        // Version 3 opened the Source pane, which Editor Mode no longer has (Add Media in its header replaced it): nothing to do.
+        // Version 3 opened the since-removed Source pane: no-op.
         new(3, StepKind.Schema, "retired: the Source pane", (_, _) => { }),
 
-        // The Squisher shipped with one preset and gained the others later. A list that is still exactly that one untouched preset
-        // gets the full set; an edited list is kept.
+        // Expand the Squisher's original single untouched preset to the full set; edited lists are kept.
         new(4, StepKind.ProductDefault, "squisher gets the full preset set", (s, _) =>
         {
             if (s.SquisherPresets is not { Count: > 0 }
@@ -59,22 +56,21 @@ internal static class SettingsMigrations
             }
         }),
 
-        // The overview scrubber's height scale moved two steps lower (so a drag reaches 16 px): a saved height keeps its pixels.
+        // Overview scrubber height scale shifted two steps down (drag reaches 16 px); convert to keep the saved pixel height.
         new(5, StepKind.Schema, "overview scrubber height rescaled", (s, _) =>
         {
             if (s.MasterTimelineHeight > 0)
                 s.MasterTimelineHeight += 2;
         }),
 
-        // Times read in frames (HH:MM:SS:FF) by default since 5.3.2. Milliseconds can be chosen again afterwards.
+        // Default timecode display becomes frames (HH:MM:SS:FF); milliseconds remain selectable.
         new(6, StepKind.ProductDefault, "times shown as frames once", (s, file) =>
         {
             if (file >= 1)
                 s.ShowTimesAsFrames = true;
         }),
 
-        // The Squisher's first preset is the chat service's own 10 MB limit: an untouched "Discord (Non-Nitro)" (20 MB, or the
-        // 25 MB of older builds) takes its name and size once. A preset the user changed stays theirs.
+        // Update an untouched "Discord (Non-Nitro)" preset (20 MB, or legacy 25 MB) to the service's 10 MB limit; edited presets are kept.
         new(7, StepKind.ProductDefault, "squisher Discord preset renamed to 10 MB", (s, _) =>
         {
             foreach (var preset in s.SquisherPresets ?? [])
@@ -84,30 +80,26 @@ internal static class SettingsMigrations
             }
         }),
 
-        // The Export GPU is the card exports are composited on since 5.4.1. A card saved before then meant something else (the card an
-        // export decoded on), often the second card a hardware test chose: it goes back to Auto once.
+        // Export GPU changed meaning (decode adapter to composite adapter): reset older saved adapters (often a secondary GPU) to Auto.
         new(8, StepKind.Safety, "export GPU back to Auto", (s, file) =>
         {
             if (file >= 1)
                 s.HardwareDecodeAdapter = -1;
         }),
 
-        // HandPeg opens in the Default layout (DefaultStartupLayout, Standard Editing to start with). A file from before that kept its
-        // own arrangement has no Default: none is set, so the arrangement the user left is kept (MainWindow.StartupLayoutJson then makes
-        // the built-in layout of that shape the Default).
+        // Startup uses DefaultStartupLayout (initially Standard Editing). Older files have none, so none is set and the saved
+        // arrangement is kept (MainWindow.StartupLayoutJson then adopts the matching built-in layout as Default).
         new(9, StepKind.Schema, "startup layout follows the kept arrangement", (s, file) =>
         {
             if (file >= 1 && s.DockLayout is not null && s.DefaultStartupLayout == "Standard Editing")
                 s.DefaultStartupLayout = null;
         }),
 
-        // The status bar is hidden once for everyone (product decision: the title bar's progress wash and rail carry the work).
-        // Tabs and Panes, or a right-click on the title bar status, brings it back.
+        // Hide the status bar once (title-bar progress wash and rail replace it); restorable via Tabs and Panes or title-bar right-click.
         new(10, StepKind.ProductDefault, "status bar hidden once", (s, _) => s.ShowStatusBar = false),
 
-        // 0x116 VIDEO_TDR_FAILURE in the Intel Arc A310 driver beside an RX 7900 XTX (docs/DECISIONS.md): Auto is the compositor GPU
-        // for the background and decode roles, never a second card. A card saved for either role (usually a hardware test's pick of
-        // the second card) goes back to Auto once. Processor Only (-2) is the user's explicit choice and stays.
+        // VIDEO_TDR_FAILURE 0x116 on a secondary Intel Arc beside an AMD primary (docs/DECISIONS.md): Auto means the compositor GPU for
+        // Background and Decode. Reset saved adapters for either role to Auto once; Processor Only (-2) is an explicit choice and stays.
         new(11, StepKind.Safety, "background and decode GPU back to Auto (0x116)", (s, _) =>
         {
             if (s.BackgroundGpu >= 0)
@@ -116,16 +108,14 @@ internal static class SettingsMigrations
                 s.DecodeGpuAdapter = -1;
         }),
 
-        // Keeping open project tabs between sessions is off by default (closing asks whether to save, keep or close the tabs); 5.5.0
-        // previews saved it on, so it goes off once.
+        // Restoring open tabs is off by default (close asks save/keep/close); reset once where preview builds saved it on.
         new(12, StepKind.ProductDefault, "keep open tabs off once", (s, file) =>
         {
             if (file >= 1)
                 s.KeepOpenTabsOnClose = false;
         }),
 
-        // The Filters tab became the Color tab ("Tab:Filters" is "Tab:Color"; saved dock arrangements follow through PaneRenames):
-        // a hidden Filters tab stays hidden as the Color tab.
+        // "Tab:Filters" renamed "Tab:Color" (dock layouts via PaneRenames); a hidden Filters tab stays hidden as Color.
         new(13, StepKind.Schema, "hidden Filters tab renamed to Color", (s, _) =>
         {
             if (s.HiddenTabs is { } hidden && hidden.Any(PaneRenames.ContainsKey))
@@ -134,9 +124,8 @@ internal static class SettingsMigrations
     ];
 
     /// <summary>
-    /// Settings keys earlier versions wrote and this one retired (every AppSettings property name in the repository's history that is
-    /// gone now). They are dropped as a file is read, so <see cref="AppSettings.Extra"/> carries only keys of a newer version, and a
-    /// retired setting is not written back forever.
+    /// Retired settings keys (every removed AppSettings property in history), dropped on read so <see cref="AppSettings.Extra"/> holds
+    /// only newer-version keys and retired values are not rewritten forever.
     /// </summary>
     internal static IReadOnlySet<string> RetiredKeys { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -153,8 +142,7 @@ internal static class SettingsMigrations
     private static int _newerFileLogged;
 
     /// <summary>
-    /// Runs the steps the settings have not had and the normalizations every load applies, in place, and returns the same object.
-    /// Running it twice changes nothing the second time.
+    /// Applies pending steps and per-load normalizations in place and returns the same object. Idempotent.
     /// </summary>
     public static AppSettings Migrate(AppSettings settings)
     {
@@ -197,7 +185,7 @@ internal static class SettingsMigrations
             }
         }
 
-        // 4.1.1 brought Editor Mode's saved views to its own once; every file written since says so. Kept so a file reads as written.
+        // Legacy one-time Editor Mode view migration flag; retained so files read as written.
         settings.Migrated411Defaults = true;
 
         // Shortcuts that can never work are dropped (AppSettings.Input.cs).

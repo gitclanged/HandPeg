@@ -4,26 +4,25 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- The timeline pane's own edits (4.4) -----
-// What the unified timeline offers beyond the verbs the old time bars had: closing a gap from its pill, a clip's sound
-// linked to its picture or not (the U key), its sound slipped or cut J/L, a track locked from its row's header, and where
-// the seams of folded dead air are. Each edit is one step of Undo, made through Edit like every other.
+// ----- Timeline pane edits -----
+// Close-gap pills, A/V link toggle (U), audio slip and J/L cuts, track lock from the header, and folded dead-air seams. Each is one
+// undo step via Edit.
 public partial class MainViewModel
 {
-    /// <summary>Whether a clip's sound follows its picture: true for one with no sound of its own (there is nothing to unlink).</summary>
+    /// <summary>Whether a clip's audio is linked to its picture (true when it has no audio to unlink).</summary>
     public bool IsClipAudioLinked(Layer clip) => IsClipAudioLinked(ClipOf(clip));
 
-    /// <summary>The same for a clip already resolved (a row rebuild resolves each clip once).</summary>
+    /// <summary>Overload for an already-resolved clip (row rebuilds resolve each once).</summary>
     internal static bool IsClipAudioLinked(TimelineClip? model) => model is not { HasSound: true } || model.AudioLinked;
 
-    /// <summary>How far a clip's unlinked sound was slipped from its picture, in seconds; 0 while it is linked or has none.</summary>
+    /// <summary>Unlinked audio slip from the picture (s); 0 when linked or silent.</summary>
     public double ClipAudioSlip(Layer clip) => ClipAudioSlip(ClipOf(clip));
 
     internal static double ClipAudioSlip(TimelineClip? model) => model is { HasSound: true, AudioLinked: false } ? model.AudioSlipSeconds : 0;
 
     /// <summary>
-    /// A clip's J/L cut, while its sound is linked: how much sooner its sound starts than its picture, and how much longer it
-    /// lasts (seconds; negative for later and shorter). Null for a clip with no sound, or an unlinked one.
+    /// Linked-audio J/L cut: audio lead-in before and tail-out after the picture (s; negative = later/shorter). Null when silent or
+    /// unlinked.
     /// </summary>
     public (double LeadIn, double TailOut)? ClipAudioSplit(Layer clip) => ClipAudioSplit(ClipOf(clip));
 
@@ -31,8 +30,7 @@ public partial class MainViewModel
         model is { HasSound: true, AudioLinked: true } ? (model.AudioLeadInSeconds, model.AudioTailOutSeconds) : null;
 
     /// <summary>
-    /// Links a clip's sound to its picture, or unlinks it (the U key, and Toggle A/V Link on a clip's menu). Unlinked, its
-    /// sound can be dragged by itself; linked again, it goes back to its picture. One step of Undo.
+    /// Toggles A/V link (U, Toggle A/V Link). Unlinked audio drags independently; relinking snaps it back to the picture. One undo step.
     /// </summary>
     public bool ToggleClipAudioLink(Layer clip)
     {
@@ -55,11 +53,11 @@ public partial class MainViewModel
         return true;
     }
 
-    // What links a clip's sound again, in words: the key bound to Link / Unlink Clip, else its menu item.
+    // Relink hint text: the key bound to Link / Unlink Clip, else the menu item name.
     private static string LinkKeyWords() =>
         KeybindManager.GestureText("clip.toggleLink") is { Length: > 0 } keys ? keys : "Toggle A/V Link on its menu";
 
-    /// <summary>Moves a clip's unlinked sound to start <paramref name="slipSeconds"/> after its picture (before it, negative). One step of Undo.</summary>
+    /// <summary>Slips unlinked audio to start <paramref name="slipSeconds"/> after the picture (negative = before). One undo step.</summary>
     public bool SlipClipSound(Layer clip, double slipSeconds)
     {
         if (ClipOf(clip) is not { HasSound: true, AudioLinked: false } model)
@@ -76,9 +74,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A J/L cut, made or changed by Alt on the lower half of a clip's edge: its sound starts <paramref name="leadIn"/> seconds
-    /// before its picture and lasts <paramref name="tailOut"/> seconds after it (kept within its file and the timeline's
-    /// start). One step of Undo.
+    /// Sets a J/L cut (Alt-drag on the lower half of a clip edge): audio starts <paramref name="leadIn"/> s before and ends
+    /// <paramref name="tailOut"/> s after the picture, clamped to the file and timeline start. One undo step.
     /// </summary>
     public bool SetClipAudioSplit(Layer clip, double leadIn, double tailOut)
     {
@@ -96,25 +93,28 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Closes a gap on a row from its pill: what comes after it on the row's track moves back by its length (and, with
-    /// Settings' Ripple All Tracks, on every unlocked track, so the tracks stay in step). One step of Undo.
+    /// Close-gap pill: shifts later content on the track back by the gap (all unlocked tracks with Ripple All Tracks, keeping sync).
+    /// A leading gap (from 0 s) brings the track's first clip to the start. One undo step.
     /// </summary>
     public bool CloseGapOn(Layer row, double from, double to)
     {
+        from = Math.Max(from, 0);
         if (TrackOfRow(row) is not { } track || !(to - from > TimelineDocument.MinimumClipSeconds))
             return false;
 
         if (!Edit($"close a gap of {to - from:0.##} s", edit => edit.CloseGap(track, from, to, AppSettings.Current.RippleAllTracks)))
             return false;
 
-        StatusText = $"Closed the gap of {TimeDisplay.Format(to - from)} on {track.DisplayName}.";
+        StatusText = from <= 0
+            ? $"{track.DisplayName} now starts at 0 s (closed {TimeDisplay.Format(to)})."
+            : $"Closed the gap of {TimeDisplay.Format(to - from)} on {track.DisplayName}.";
         return true;
     }
 
-    /// <summary>Whether a row's track is locked (never moved, trimmed or cut by an edit); false for the stand-ins.</summary>
+    /// <summary>Whether a row's track is locked (immune to move/trim/cut); false for placeholders.</summary>
     public bool IsRowLocked(Layer row) => TrackOfRow(row)?.IsLocked == true;
 
-    /// <summary>Locks a row's track, or unlocks it (the lock on its header). One step of Undo.</summary>
+    /// <summary>Toggles a row's track lock (header lock). One undo step.</summary>
     public void SetRowLocked(Layer row, bool locked)
     {
         if (TrackOfRow(row) is not { } track || track.IsLocked == locked)
@@ -129,8 +129,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The seams of folded dead air, for the rows that show them: the track each lies on (its seam clip's), where it is
-    /// (seconds) and the fold, which putting back takes (<see cref="UnfoldSegment"/>). Folds whose seam clip is gone are left out.
+    /// Folded dead-air seams for row display: track (from the seam clip), time (s) and fold (for <see cref="UnfoldSegment"/>). Folds
+    /// whose seam clip is gone are skipped.
     /// </summary>
     public IEnumerable<(Guid TrackId, double Seconds, FoldedSegment Fold)> FoldSeams()
     {

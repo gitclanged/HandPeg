@@ -13,7 +13,7 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-/// <summary>One tab of the title bar's strip, as it is drawn (its header lives in Services/ProjectTabs.cs).</summary>
+/// <summary>View model of one title-bar tab (its persisted header lives in Services/ProjectTabs.cs).</summary>
 public sealed partial class ProjectTabItem : ObservableObject
 {
     public required string Id { get; init; }
@@ -34,10 +34,10 @@ public sealed partial class ProjectTabItem : ObservableObject
     [NotifyPropertyChangedFor(nameof(FrontToolTip))]
     private bool _isActive;
 
-    /// <summary>Whether it is being dragged along the strip now (Pass 5.4B): drawn faded.</summary>
+    /// <summary>True while being dragged along the strip (drawn faded).</summary>
     [ObservableProperty] private bool _isDragged;
 
-    /// <summary>What its hover card shows of it (Pass 5.4B): its paused still or saved thumbnail, given by the window as the card opens and let go as it closes.</summary>
+    /// <summary>Hover card image (paused still or saved thumbnail), set by the window on open and cleared on close.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CardWidth))]
     [NotifyPropertyChangedFor(nameof(PictureHeight))]
@@ -45,31 +45,30 @@ public sealed partial class ProjectTabItem : ObservableObject
     private ImageSource? _preview;
 
     /// <summary>
-    /// Where along its Sequence the pointer scrubs its hover card (5.4.2A: 0 to 1 across the tab, its overview sheet's picture there shown;
-    /// 5.4.4: across the card too); NaN while it does not.
+    /// Hover-card scrub position along the Sequence (0..1, from the pointer over the tab or card; overview sheet frame shown); NaN when idle.
     /// </summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ScrubWidth))]
     [NotifyPropertyChangedFor(nameof(IsScrubbing))]
     private double _scrubFraction = double.NaN;
 
-    /// <summary>Whether the hover card is being scrubbed (its bar shown).</summary>
+    /// <summary>True while scrubbing (scrub bar visible).</summary>
     public bool IsScrubbing => !double.IsNaN(ScrubFraction);
 
-    /// <summary>How long the hover card's scrub bar is, DIPs: the card's width as far as the scrub has come.</summary>
+    /// <summary>Scrub bar width in DIPs (card width * scrub fraction).</summary>
     public double ScrubWidth => IsScrubbing ? Math.Clamp(ScrubFraction, 0, 1) * CardWidth : 0;
 
-    /// <summary>The widest and the tallest a hover card's picture is drawn, in DIPs (5.4C): 16:9 comes out 318 x 179, 9:16 191 x 340.</summary>
+    /// <summary>Max hover-card image size in DIPs (16:9 = 318 x 179, 9:16 = 191 x 340).</summary>
     public const double CardMaxWidth = 318, CardMaxHeight = 340;
 
-    /// <summary>How wide its hover card is: its picture's own shape fitted in <see cref="CardMaxWidth"/> x <see cref="CardMaxHeight"/>
-    /// (5.4C, the user's: a vertical project's card is tall, never its picture cropped to 16:9); <see cref="CardMaxWidth"/> with none.</summary>
+    /// <summary>Card width: image aspect fitted in <see cref="CardMaxWidth"/> x <see cref="CardMaxHeight"/> (vertical projects get tall
+    /// cards, never cropped); <see cref="CardMaxWidth"/> without an image.</summary>
     public double CardWidth => CardFit(Preview?.Width ?? 0, Preview?.Height ?? 0).Width;
 
-    /// <summary>How tall its hover card's picture is (0 with none).</summary>
+    /// <summary>Card image height (0 without an image).</summary>
     public double PictureHeight => CardFit(Preview?.Width ?? 0, Preview?.Height ?? 0).Height;
 
-    /// <summary>A picture of <paramref name="width"/> x <paramref name="height"/> fitted whole in the card's largest box, its shape kept (pure).</summary>
+    /// <summary>Pure: aspect-preserving fit of <paramref name="width"/> x <paramref name="height"/> into the max card box.</summary>
     public static Size CardFit(double width, double height)
     {
         if (width <= 0 || height <= 0)
@@ -78,13 +77,13 @@ public sealed partial class ProjectTabItem : ObservableObject
         return new Size(Math.Round(width * scale), Math.Round(height * scale));
     }
 
-    /// <summary>Its frame and frame rate in a line for its hover card ("1920 x 1080 · 60 fps"; "" while not known).</summary>
+    /// <summary>Frame size and rate line for the card ("1920 x 1080 · 60 fps"; "" when unknown).</summary>
     [ObservableProperty] private string _details = "";
 
-    /// <summary>Whether the strip has room to show it (<see cref="ProjectTabStrip.Fit"/>); one it has not is in the overflow list.</summary>
+    /// <summary>True when shown on the strip (<see cref="ProjectTabStrip.Fit"/>); otherwise it is in the overflow list.</summary>
     [ObservableProperty] private bool _isShown = true;
 
-    /// <summary>What a tab narrowed below its name shows: the name's first letter or digit (a dot for a name with none).</summary>
+    /// <summary>Compact label: the name's first letter or digit (a dot if none).</summary>
     public string Initial
     {
         get
@@ -99,26 +98,26 @@ public sealed partial class ProjectTabItem : ObservableObject
         }
     }
 
-    /// <summary>What UI Automation calls the tab: "Project Tab: My Project".</summary>
+    /// <summary>Automation name ("Project Tab: My Project").</summary>
     public string AutomationName => $"Project Tab: {Title}";
 
-    /// <summary>The tab's tooltip: its name, its file, whether it has unsaved changes, and what a middle click does.</summary>
+    /// <summary>Tooltip text: name, file, unsaved state, middle-click hint.</summary>
     public string ToolTipText =>
         (ProjectPath.Length > 0 ? $"{Title}\n{ProjectPath}" : $"{Title}\nNot saved as a project yet")
         + (IsDirty ? "\nUnsaved changes" : "")
         + "\nMiddle-click to close";
 
-    /// <summary>The tooltip the tab carries: the tab in front its text (Pass 5.4B); a tab behind none, its hover card shows it instead.</summary>
+    /// <summary>Effective tooltip: text for the active tab; null for inactive tabs (their hover card shows it).</summary>
     public string? FrontToolTip => IsActive ? ToolTipText : null;
 
-    /// <summary>Its hover card's last line: saved or not, and its file.</summary>
+    /// <summary>Card footer: saved state and file.</summary>
     public string SavedText => ProjectPath.Length == 0 ? "Not saved as a project yet" : (IsDirty ? "Unsaved changes\n" : "Saved\n") + ProjectPath;
 
-    /// <summary>Whether it has a project file (Open Containing Folder).</summary>
+    /// <summary>Has a project file (enables Open Containing Folder).</summary>
     public bool HasFile => ProjectPath.Length > 0;
 }
 
-/// <summary>What a tab's right-click menu asks the window for (Pass 5.4B).</summary>
+/// <summary>Tab context-menu commands handled by the window.</summary>
 public enum ProjectTabCommand
 {
     Save,
@@ -130,30 +129,27 @@ public enum ProjectTabCommand
     CloseOthers,
 }
 
-/// <summary>One line of a tab's right-click menu (<see cref="ProjectTabStrip.MenuFor"/>): its label (with its key), what it asks for, whether it may be chosen; a null command is a separator.</summary>
+/// <summary>Tab context-menu line (<see cref="ProjectTabStrip.MenuFor"/>): label with shortcut, command, enabled; null command = separator.</summary>
 internal readonly record struct ProjectTabMenuLine(string Header, ProjectTabCommand? Command, bool Enabled);
 
 /// <summary>
-/// How the strip lays its tabs out in the room it is given (<see cref="ProjectTabStrip.LayoutFor"/>): how wide each is drawn at most,
-/// whether they are narrowed to their dot and initial, and the run of tabs shown (from <c>First</c>, <c>Shown</c> of them).
+/// Strip layout result (<see cref="ProjectTabStrip.LayoutFor"/>): max tab width, compact flag, and the visible run (<c>First</c>,
+/// <c>Shown</c>).
 /// </summary>
 internal readonly record struct ProjectTabLayout(double TabWidth, bool Compact, int First, int Shown);
 
 /// <summary>
-/// The title bar's browser-style project tabs (Pass 5.4A): a button per open project and a + after them. It only draws and says what
-/// was clicked; the window switches, opens and closes tabs (MainWindow.ProjectTabs.cs). It starts collapsed and empty (Pass 5.4B: the main
-/// window shows it once a project is started or opened). It never grows past the room it is given (the caption to drag the window by stays
-/// free right of +): tabs share it down to <see cref="MinTabWidth"/> with their names, then narrow to their dot and initial down to
-/// <see cref="CompactTabWidth"/>, and past that the strip shows a run of tabs round the one in front and a count of the rest, which opens
-/// a list of them (Ctrl+Tab goes round them all). A tab can be dragged along the strip, has a right-click menu (save, rename, duplicate,
-/// its folder, close), and a tab behind shows a hover card with its picture, frame and saved state.
+/// Browser-style title-bar project tabs plus "+". Pure view: raises events; the window switches, opens and closes tabs
+/// (MainWindow.ProjectTabs.cs). Starts collapsed and empty. Never exceeds its given width (caption stays free right of +): tabs shrink to
+/// <see cref="MinTabWidth"/>, then compact (dot + initial) to <see cref="CompactTabWidth"/>, then a run around the active tab plus an
+/// overflow count/list. Supports drag reorder, a context menu, and hover cards for inactive tabs.
 /// </summary>
 public partial class ProjectTabStrip : UserControl
 {
-    /// <summary>The narrowest a tab is drawn with its name and close button, the widest, and the narrowest with its dot and initial alone, in DIPs.</summary>
+    /// <summary>Tab widths in DIPs: min with name and close, max, and min compact (dot + initial).</summary>
     public const double MinTabWidth = 72, MaxTabWidth = 200, CompactTabWidth = 28;
 
-    /// <summary>The gap after each tab (its right margin), the + button's width and the overflow count's, in DIPs (as ProjectTabStrip.xaml draws them).</summary>
+    /// <summary>Tab right margin, + width and overflow count width in DIPs (matching ProjectTabStrip.xaml).</summary>
     public const double TabGap = 2, NewTabWidth = 24, OverflowWidth = 28;
 
     public static readonly DependencyProperty TabMaxWidthProperty =
@@ -162,7 +158,7 @@ public partial class ProjectTabStrip : UserControl
     public static readonly DependencyProperty CompactProperty =
         DependencyProperty.Register(nameof(Compact), typeof(bool), typeof(ProjectTabStrip), new FrameworkPropertyMetadata(false));
 
-    // The room last given (NaN before the title bar's first layout): the strip is laid out again in it as tabs come, go or come to the front.
+    // Last available width (NaN before the title bar's first layout); reused on tab add/remove/activate.
     private double _available = double.NaN;
 
     public ProjectTabStrip()
@@ -170,12 +166,12 @@ public partial class ProjectTabStrip : UserControl
         InitializeComponent();
         Items.ItemsSource = Tabs;
 
-        // A tab dragged along the strip: the strip holds the mouse while it is (Pass 5.4B).
+        // Drag reorder: the strip holds mouse capture.
         PreviewMouseMove += Strip_PreviewMouseMove;
         PreviewMouseLeftButtonUp += Strip_PreviewMouseLeftButtonUp;
         LostMouseCapture += (_, e) =>
         {
-            // The strip's own capture lost (a tab's, bubbled up as the strip takes it from the tab's button, is not the end of a drag).
+            // Only the strip's own capture loss ends a drag (a tab button's, bubbled when the strip takes capture, does not).
             if (ReferenceEquals(e.OriginalSource, this))
                 EndReorder();
         };
@@ -189,57 +185,57 @@ public partial class ProjectTabStrip : UserControl
         };
     }
 
-    /// <summary>The tabs as they are drawn, in their order.</summary>
+    /// <summary>Tabs in display order.</summary>
     public ObservableCollection<ProjectTabItem> Tabs { get; } = [];
 
-    /// <summary>How wide each tab may be drawn now (<see cref="Fit"/>).</summary>
+    /// <summary>Current max tab width (<see cref="Fit"/>).</summary>
     public double TabMaxWidth
     {
         get => (double)GetValue(TabMaxWidthProperty);
         set => SetValue(TabMaxWidthProperty, value);
     }
 
-    /// <summary>Whether the tabs are narrowed to their dot and initial now (<see cref="Fit"/>): their names are in their tooltips, and a middle click still closes one.</summary>
+    /// <summary>True when tabs are compact (<see cref="Fit"/>): names in tooltips; middle-click still closes.</summary>
     public bool Compact
     {
         get => (bool)GetValue(CompactProperty);
         set => SetValue(CompactProperty, value);
     }
 
-    /// <summary>A tab was clicked (to bring it to the front).</summary>
+    /// <summary>Tab clicked (activate).</summary>
     public event Action<ProjectTabItem>? TabChosen;
 
-    /// <summary>A tab's × was clicked, or the tab was middle-clicked (to close it).</summary>
+    /// <summary>Tab × or middle click (close).</summary>
     public event Action<ProjectTabItem>? TabClosing;
 
-    /// <summary>+ was clicked (a new project tab).</summary>
+    /// <summary>+ clicked (new project tab).</summary>
     public event Action? NewTabAsked;
 
-    /// <summary>A tab dragged into another place along the strip (Pass 5.4B): the tab, and its index in <see cref="Tabs"/> now (already moved there).</summary>
+    /// <summary>Tab moved during a drag: the tab and its new index in <see cref="Tabs"/> (already applied).</summary>
     public event Action<ProjectTabItem, int>? TabMoved;
 
-    /// <summary>A drag along the strip let go (the window writes the order down once, here).</summary>
+    /// <summary>Drag ended (the window persists the order once, here).</summary>
     public event Action? ReorderEnded;
 
-    /// <summary>A line of a tab's right-click menu chosen (but Rename Project..., which is <see cref="TabRenamed"/>).</summary>
+    /// <summary>Context-menu command chosen (except Rename Project..., see <see cref="TabRenamed"/>).</summary>
     public event Action<ProjectTabItem, ProjectTabCommand>? TabCommand;
 
-    /// <summary>A tab's new name typed in its right-click menu and taken with Enter (never as each key is typed).</summary>
+    /// <summary>New name committed with Enter in the context-menu rename box (not per keystroke).</summary>
     public event Action<ProjectTabItem, string>? TabRenamed;
 
-    /// <summary>A tab behind's hover card about to open: the window gives it its picture and frame (<see cref="ProjectTabItem.Preview"/>, <see cref="ProjectTabItem.Details"/>).</summary>
+    /// <summary>Inactive tab card opening: the window supplies <see cref="ProjectTabItem.Preview"/> and <see cref="ProjectTabItem.Details"/>.</summary>
     public event Action<ProjectTabItem>? PreviewAsked;
 
-    /// <summary>Whether a tab is being dragged along the strip now: the window leaves the strip's order and layout alone until it is let go.</summary>
+    /// <summary>True during a drag; the window must not touch order or layout until it ends.</summary>
     public bool IsReordering { get; private set; }
 
     /// <summary>
-    /// The tab whose hover card is open now (null for none): a picture that comes late is given only to it. 5.4.4: kept while the pointer
-    /// is over the tab or its card (and the moment the gap between them takes), so "the pointer rests on a tab" counts the card too.
+    /// Tab whose card is open (null for none); late images apply only to it. Held while the pointer is over the tab, its card, or crossing
+    /// the gap, so hovering the card counts as hovering the tab.
     /// </summary>
     public ProjectTabItem? HoverItem { get; private set; }
 
-    /// <summary>The tabs share <paramref name="available"/> DIPs (what the title bar leaves between its name and its buttons, less a caption to drag by), never more.</summary>
+    /// <summary>Lays out tabs within <paramref name="available"/> DIPs (title-bar room minus the drag caption), never exceeding it.</summary>
     public void Fit(double available)
     {
         _available = available;
@@ -267,7 +263,7 @@ public partial class ProjectTabStrip : UserControl
             OverflowPopup.IsOpen = false;
     }
 
-    /// <summary>Laid out again in the room last given, as tabs come, go or come to the front (no room given yet: nothing to do).</summary>
+    /// <summary>Re-fits in the last width after tab changes (no-op before the first width).</summary>
     public void Refit()
     {
         if (double.IsFinite(_available))
@@ -275,11 +271,10 @@ public partial class ProjectTabStrip : UserControl
     }
 
     /// <summary>
-    /// How <paramref name="count"/> tabs, the one at <paramref name="active"/> in front, are laid out in <paramref name="available"/> DIPs
-    /// (pure: titlebar-tab-overflow): an equal share each with their names, from <see cref="MinTabWidth"/> to <see cref="MaxTabWidth"/>;
-    /// below that, narrowed to their dot and initial down to <see cref="CompactTabWidth"/>; below that, as many as fit after the overflow
-    /// count, a run round the one in front. The tabs shown with their gaps, the count and + never take more than <paramref name="available"/>
-    /// (once it holds + and the count at all).
+    /// Pure (golden titlebar-tab-overflow): layout for <paramref name="count"/> tabs with <paramref name="active"/> in
+    /// <paramref name="available"/> DIPs: equal named widths in [<see cref="MinTabWidth"/>, <see cref="MaxTabWidth"/>]; then compact down to
+    /// <see cref="CompactTabWidth"/>; then a run around the active tab plus overflow count. Tabs, gaps, count and + never exceed
+    /// <paramref name="available"/> (once it fits + and the count).
     /// </summary>
     internal static ProjectTabLayout LayoutFor(double available, int count, int active)
     {
@@ -293,7 +288,7 @@ public partial class ProjectTabStrip : UserControl
         if (share >= CompactTabWidth)
             return new ProjectTabLayout(share, true, 0, count);
 
-        // A run of tabs round the one in front, the rest behind the overflow count.
+        // Visible run around the active tab; the rest go into the overflow list.
         var forTabs = Math.Max(0, room - OverflowWidth);
         var shown = (int)Math.Min(count - 1, Math.Floor(forTabs / (CompactTabWidth + TabGap)));
         if (shown <= 0)
@@ -303,7 +298,7 @@ public partial class ProjectTabStrip : UserControl
         return new ProjectTabLayout(width, true, first, shown);
     }
 
-    /// <summary>The tooltip of +, with its key (given after the first frame: the key map is not read before it).</summary>
+    /// <summary>Sets the + tooltip with its shortcut (after Frame 1; the key map is not read earlier).</summary>
     public void SetGestures(string newTab) => NewTabButton.ToolTip = newTab;
 
     private static ProjectTabItem? ItemOf(object sender) => (sender as FrameworkElement)?.DataContext as ProjectTabItem;
@@ -323,19 +318,18 @@ public partial class ProjectTabStrip : UserControl
         TabClosing?.Invoke(item);
     }
 
-    /// <summary>The hover card and the overflow list closed (the strip collapsed, a drag begun, a menu opened).</summary>
+    /// <summary>Closes the hover card and overflow list (strip collapsed, drag started, menu opened).</summary>
     public void CloseFlyouts()
     {
         CloseHoverCard();
         OverflowPopup.IsOpen = false;
     }
 
-    // ----- Dragging a tab along the strip (Pass 5.4B) -----
-    // A press on a tab is its button's (a click brings it to the front). Moved further than the system's drag distance with the button
-    // held, the strip takes the mouse from the tab's button (so no click follows) and the tab follows the pointer from place to place among
-    // the tabs shown: each change of place is made at once in Tabs and told to the window (TabMoved), which writes the order down once the
-    // tab is let go (ReorderEnded). The strip holds the mouse, never the tab: a tab moved in the ItemsControl is taken out of the tree and
-    // put back, and would lose it. Nothing gets a background: the gaps between the tabs stay the window's caption.
+    // ----- Drag reorder -----
+    // A press belongs to the tab button (click = activate). Past the system drag distance the strip captures the mouse (cancelling the
+    // click) and the tab follows the pointer among visible tabs; each move updates Tabs and raises TabMoved; release raises ReorderEnded
+    // (order persisted once). Capture is on the strip, not the tab (moving an ItemsControl item re-parents it and would drop capture).
+    // No background is added, so gaps between tabs remain window caption.
 
     private ProjectTabItem? _pressed;
     private Point _pressedAt;
@@ -353,7 +347,7 @@ public partial class ProjectTabStrip : UserControl
             return;
         if (e.LeftButton != MouseButtonState.Pressed)
         {
-            // Let go where the strip did not hear it (another window took the mouse): the drag ends there.
+            // Release missed (another window took the mouse): end the drag.
             _pressed = null;
             EndReorder();
             return;
@@ -380,13 +374,13 @@ public partial class ProjectTabStrip : UserControl
         ReorderTo(item, at.X);
     }
 
-    /// <summary>A drag of <paramref name="item"/> begun (titlebar-tab-drag drives it from here): drawn faded, the flyouts closed. False for a tab not on the strip.</summary>
+    /// <summary>Starts dragging <paramref name="item"/> (golden titlebar-tab-drag entry): fades it and closes flyouts; false if not on the strip.</summary>
     internal bool BeginReorder(ProjectTabItem item)
     {
         if (IsReordering || !Tabs.Contains(item))
             return false;
 
-        // A slide still under way ends first (Pass 5.5A): the drag reads where the tabs are drawn.
+        // Finish any slide-out first: the drag reads drawn tab positions.
         FinishSlide();
         IsReordering = true;
         item.IsDragged = true;
@@ -406,7 +400,7 @@ public partial class ProjectTabStrip : UserControl
         EndReorder();
     }
 
-    /// <summary>The dragged tab put where the pointer is (<paramref name="x"/>, along the tabs) among the tabs shown (the middles of the others, as they are drawn now).</summary>
+    /// <summary>Moves the dragged tab to the slot for pointer <paramref name="x"/>, using the current drawn midpoints of the other visible tabs.</summary>
     internal void ReorderTo(ProjectTabItem item, double x)
     {
         if (!IsReordering)
@@ -433,9 +427,9 @@ public partial class ProjectTabStrip : UserControl
     }
 
     /// <summary>
-    /// Where a tab dragged from <paramref name="from"/> goes with the pointer at <paramref name="x"/> (pure: project-tabs-reorder): before
-    /// the first of the other tabs shown whose middle is right of the pointer, else after the last of them. <paramref name="shown"/> is the
-    /// tabs shown, in order, each its index in the strip and its middle along it; the tabs in the overflow list are never passed over.
+    /// Pure (golden project-tabs-reorder): target index for a tab dragged from <paramref name="from"/> with the pointer at
+    /// <paramref name="x"/>: before the first other visible tab whose midpoint is right of x, else after the last. <paramref name="shown"/>
+    /// lists visible tabs (strip index, midpoint); overflow tabs are never crossed.
     /// </summary>
     internal static int ReorderIndex(int from, IReadOnlyList<(int Index, double Middle)> shown, double x)
     {
@@ -454,7 +448,7 @@ public partial class ProjectTabStrip : UserControl
         return from < last ? last : last + 1;
     }
 
-    /// <summary>The drag let go (or the strip's hold on the mouse lost): the tab drawn as the others, the strip laid out again, the order written down.</summary>
+    /// <summary>Ends a drag (release or capture loss): restores the tab's look, re-fits, and raises ReorderEnded.</summary>
     internal void EndReorder()
     {
         _pressed = null;
@@ -470,7 +464,7 @@ public partial class ProjectTabStrip : UserControl
         ReorderEnded?.Invoke();
     }
 
-    // ----- A tab's right-click menu (Pass 5.4B) -----
+    // ----- Tab context menu -----
 
     private void Tab_MouseRightButtonUp(object sender, MouseButtonEventArgs e)
     {
@@ -482,9 +476,8 @@ public partial class ProjectTabStrip : UserControl
     }
 
     /// <summary>
-    /// The lines of a tab's right-click menu (pure: project-tabs-menu), in order; a null command is a separator. The keys are shown
-    /// beside the lines they do for the tab in front only (Ctrl+S and Ctrl+W act on the tab in front), and read as the menu opens, so a
-    /// key rebound since shows as it is now.
+    /// Pure (golden project-tabs-menu): ordered menu lines (null command = separator). Shortcuts are shown only for the active tab (Ctrl+S,
+    /// Ctrl+W act on it) and read at open time, so rebinds are reflected.
     /// </summary>
     internal static IReadOnlyList<ProjectTabMenuLine> MenuFor(ProjectTabItem item, int count)
     {
@@ -502,7 +495,7 @@ public partial class ProjectTabStrip : UserControl
         ];
     }
 
-    /// <summary>A tab's right-click menu, at the mouse as every right-click menu of HandPeg's is, made as it opens (none is kept).</summary>
+    /// <summary>Builds and opens the context menu at the mouse (created per open, not cached).</summary>
     private void OpenTabMenu(FrameworkElement tab, ProjectTabItem item)
     {
         var menu = new ContextMenu { PlacementTarget = tab, Placement = PlacementMode.MousePoint };
@@ -531,7 +524,7 @@ public partial class ProjectTabStrip : UserControl
         menu.IsOpen = true;
     }
 
-    /// <summary>Rename Project... chosen: the line becomes a name box; Enter renames (once, never as each key is typed), Escape leaves it.</summary>
+    /// <summary>Rename Project...: turns the line into a text box; Enter commits once, Escape cancels.</summary>
     private void BeginRename(ContextMenu menu, MenuItem entry, ProjectTabItem item)
     {
         if (entry.Header is not string)
@@ -567,41 +560,35 @@ public partial class ProjectTabStrip : UserControl
         entry.ToolTip = "Enter renames the project (its file too, once it is saved); Escape leaves it as it is.";
     }
 
-    // ----- A tab behind's hover card (Pass 5.4B) -----
-    // The pointer on a tab behind the one in front opens a card under it at once (5.4.2A; 500 ms before): its paused still or the thumbnail
-    // its file carries, its frame and frame rate, and whether it is saved. Gliding along the strip moves the one card from tab to tab, and
-    // across a tab scrubs its overview sheet (HoverScrubbed: pictures already in memory, nothing decoded). The window gives the picture
-    // (PreviewAsked); the card lets it go as it closes, so at most the shown one is held. The tab in front keeps its text tooltip instead.
-    // 5.4.4 (the user's): the card takes the pointer. The tab under the pointer always owns it; across the card the pointer scrubs that
-    // tab's whole Sequence, edge to edge (a narrowed tab is too small to scrub across: along it the pointer moves about its playhead, a span
-    // as wide as the card centred on it); a click on the card brings the tab to the front at its own playhead (no seek: its still, frames
-    // and pre-roll are all kept for that moment). The card stays open while the pointer is over the tab or the card, and HoverCardGraceMs
-    // after it left both (the gap under the tab); every other close (a press, a drag, a menu, the window let go) is at once.
+    // ----- Inactive tab hover card -----
+    // Hovering an inactive tab opens a card immediately: paused still or file thumbnail, frame size/rate, saved state. One card moves
+    // between tabs; moving across a tab scrubs its overview sheet (HoverScrubbed: cached images, no decode). The window supplies the image
+    // (PreviewAsked), released on close so at most one is held. The active tab keeps a text tooltip. The card is hit-testable: the tab under
+    // the pointer owns it; across the card the pointer scrubs the whole Sequence (compact tabs scrub a card-width span about the playhead);
+    // clicking the card activates the tab at its own playhead (no seek). Open while over tab or card, plus HoverCardGraceMs after leaving
+    // both; any press, drag, menu or deactivation closes it at once.
 
-    /// <summary>How long the hover card waits after the pointer left its tab and the card (5.4.4): as long as the header's hover flyouts.</summary>
+    /// <summary>Close grace after leaving both tab and card (same as header hover flyouts).</summary>
     public const int HoverCardGraceMs = HoverFlyout.CloseDelayMs;
 
     private bool _hoverOwnerHooked;
 
-    // The tab the card was opened from (to ask whether the pointer is still on it), the pointer's place over the tab and the card, the
-    // timer that closes the card after the grace (made the first time a card opens), and a press on the card that a release there completes.
+    // Card source tab, pointer-over flags for tab and card, grace timer (created on first open), and a pending card press awaiting release.
     private FrameworkElement? _hoverTab;
     private readonly HoverCardHold _hoverHold = new(HoverCardGraceMs);
     private DispatcherTimer? _hoverClose;
     private bool _cardPressed;
 
     /// <summary>
-    /// The pointer across a tab behind whose card is open (5.4.2A): where along it, 0 to 1, and the window shows that picture of its
-    /// Sequence. 5.4.4: with the second value true, the first is an offset from the tab's playhead instead, as a fraction of the Sequence
-    /// (a narrowed tab: <see cref="TabScrub"/>).
+    /// Hover scrub: position 0..1 along the Sequence; when the second value is true, the first is instead a Sequence-fraction offset from
+    /// the playhead (compact tabs, <see cref="TabScrub"/>).
     /// </summary>
     public event Action<ProjectTabItem, double, bool>? HoverScrubbed;
 
     /// <summary>
-    /// What the pointer at <paramref name="x"/> along a tab <paramref name="tabWidth"/> wide scrubs (pure, 5.4.4: the golden tab-hover-scrub):
-    /// across a tab with its name, the whole Sequence (0 to 1); across a narrowed tab (<paramref name="compact"/>), an offset from its
-    /// playhead, the tab's middle at the playhead, as if the tab were <paramref name="span"/> wide (its card's width), so the pointer moves
-    /// the picture as fast as it does across the card.
+    /// Pure (golden tab-hover-scrub): scrub value for pointer <paramref name="x"/> on a <paramref name="tabWidth"/> tab. Named tab: whole
+    /// Sequence 0..1. <paramref name="compact"/> tab: playhead-relative offset with the tab centre at the playhead, scaled as if
+    /// <paramref name="span"/> (card width) wide, matching card scrub speed.
     /// </summary>
     internal static (double Value, bool AboutPlayhead) TabScrub(double x, double tabWidth, bool compact, double span)
     {
@@ -613,7 +600,7 @@ public partial class ProjectTabStrip : UserControl
         return (Math.Max(-0.5, Math.Min(offset, 0.5)), true);
     }
 
-    /// <summary>What the pointer at <paramref name="x"/> across a card <paramref name="width"/> wide scrubs (pure, 5.4.4): the whole Sequence, edge to edge.</summary>
+    /// <summary>Pure: card scrub value for <paramref name="x"/> over <paramref name="width"/>, whole Sequence edge to edge.</summary>
     internal static double CardScrub(double x, double width) => width > 0 && double.IsFinite(x) ? Math.Max(0, Math.Min(x / width, 1)) : 0;
 
     private static double NowMs() => Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency;
@@ -634,7 +621,7 @@ public partial class ProjectTabStrip : UserControl
 
     private void Tab_MouseLeave(object sender, MouseEventArgs e)
     {
-        // Onto the next tab (its enter comes after this leave), the card moves there; onto the card, it stays (HoverCardHold).
+        // Moving to the next tab (its Enter follows this Leave) moves the card; moving onto the card keeps it (HoverCardHold).
         if (ItemOf(sender) is { } item && ReferenceEquals(item, HoverItem))
             HoldOff(card: false);
     }
@@ -664,7 +651,7 @@ public partial class ProjectTabStrip : UserControl
             HoldOff(card: true);
     }
 
-    // Across the card (5.4.4): the tab's whole Sequence, measured on the card as it is drawn now (its first scrubbed picture can change its shape).
+    // Card scrub over the whole Sequence, measured on the current card width (the first scrubbed image can change its aspect).
     private void HoverCard_MouseMove(object sender, MouseEventArgs e)
     {
         if (HoverItem is not { } item || e.LeftButton == MouseButtonState.Pressed || HoverBody.ActualWidth <= 1)
@@ -675,12 +662,12 @@ public partial class ProjectTabStrip : UserControl
 
     private void HoverCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        // The card's own (its routed events also pass the strip, through the popup's place in the tree).
+        // Only the card's own events (its routed events also bubble through the strip via the popup's logical parent).
         e.Handled = true;
         _cardPressed = HoverItem is not null;
     }
 
-    // A click on the card brings its tab to the front, as a click on the tab does (5.4.4), at the tab's own playhead.
+    // Card click activates its tab at the tab's own playhead, like a tab click.
     private void HoverCard_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
@@ -691,7 +678,7 @@ public partial class ProjectTabStrip : UserControl
         TabChosen?.Invoke(item);
     }
 
-    // The pointer left the tab or the card: the card closes once it has been off both for the grace (the timer made the first time).
+    // Left tab or card: close after the grace once off both (timer created lazily).
     private void HoldOff(bool card)
     {
         var now = NowMs();
@@ -720,7 +707,7 @@ public partial class ProjectTabStrip : UserControl
         if (HoverItem is null)
             return;
 
-        // An enter missed (the pointer came back while a popup or capture had it): the card stays, and the next leave starts the grace again.
+        // Missed Enter (pointer returned under a popup or capture): keep the card; the next Leave restarts the grace.
         if (_hoverTab?.IsMouseOver == true || HoverSurface.IsMouseOver)
             return;
         if (!_hoverHold.Due(now))
@@ -739,7 +726,7 @@ public partial class ProjectTabStrip : UserControl
 
     private void OpenHoverCard(ProjectTabItem item, FrameworkElement tab)
     {
-        // The window let go (Alt+Tab with the pointer still on the tab): the card goes with it, never left over another program.
+        // Window deactivated (Alt+Tab while hovering): close so it never floats over another app.
         if (!_hoverOwnerHooked && Window.GetWindow(this) is { } owner)
         {
             owner.Deactivated += (_, _) => CloseFlyouts();
@@ -750,7 +737,7 @@ public partial class ProjectTabStrip : UserControl
         if (ReferenceEquals(item, HoverItem) && HoverCard.IsOpen)
             return;
 
-        // Another tab's card open: its picture let go, and the card moved.
+        // Card open for another tab: release its image and move the card.
         if (HoverItem is { } shown)
             (shown.Preview, shown.ScrubFraction) = (null, double.NaN);
         HoverItem = item;
@@ -761,7 +748,7 @@ public partial class ProjectTabStrip : UserControl
         HoverCard.IsOpen = true;
     }
 
-    /// <summary>The hover card closed (or kept from opening), its picture let go.</summary>
+    /// <summary>Closes (or cancels) the hover card and releases its image.</summary>
     public void CloseHoverCard()
     {
         if (HoverItem is { } shown)
@@ -777,7 +764,7 @@ public partial class ProjectTabStrip : UserControl
 
     private void Close_Click(object sender, RoutedEventArgs e)
     {
-        // The × lies inside its tab: its click is not also the tab's.
+        // × is inside the tab: mark handled so the tab does not also receive the click.
         e.Handled = true;
         if (ItemOf(sender) is { } item)
             TabClosing?.Invoke(item);
@@ -785,7 +772,7 @@ public partial class ProjectTabStrip : UserControl
 
     private void NewTab_Click(object sender, RoutedEventArgs e) => NewTabAsked?.Invoke();
 
-    /// <summary>The overflow count: the tabs the strip has no room for, listed under it (placed by UiScale.PlaceAgainst, never mirrored).</summary>
+    /// <summary>Overflow count click: lists hidden tabs below it (UiScale.PlaceAgainst, never mirrored).</summary>
     private void Overflow_Click(object sender, RoutedEventArgs e)
     {
         if (OverflowPopup.IsOpen)
@@ -806,39 +793,37 @@ public partial class ProjectTabStrip : UserControl
             TabChosen?.Invoke(item);
     }
 
-    // ----- Restored tabs slide out from behind the tab in front (Pass 5.5A) -----
-    // The tabs a session left (kept for this start, or left by a crash) come onto the strip at idle after the first frame
-    // (MainWindow.RecoverProjectTabs), out from behind the tab in front: each starts at its x, under it (the tab in front drawn on top, its
-    // face opaque) and faded out, and slides to its own place as it fades in, together with + and the overflow count (from behind it as
-    // well), 180 ms, a cubic ease out. Only a RenderTransform and the opacity move (no layout); the animations are frozen and
-    // made on first use (nothing at type load), and at their end (FillBehavior.Stop) every value is its own again: each base value is the
-    // end one already. Never with the extra animations off (Settings) or Windows' client-area animations off. A drag along the strip, or the
-    // strip hidden, ends a slide at once (ReorderTo reads where the tabs are drawn).
+    // ----- Restored-tab slide-out -----
+    // Restored tabs (kept or crash leftovers) are added at idle after Frame 1 (MainWindow.RecoverProjectTabs) and slide out from under the
+    // active tab (raised, opaque) to their slots while fading in, along with + and the overflow count: 180 ms cubic ease-out. Only
+    // RenderTransform and Opacity animate (no layout); animations are frozen, created on first use, and FillBehavior.Stop restores base
+    // values (which already equal the end values). Disabled when Extra Animations or Windows client-area animations are off. A drag or
+    // hiding the strip ends the slide immediately (ReorderTo reads drawn positions).
 
-    /// <summary>How long restored tabs take to slide out from behind the tab in front, ms.</summary>
+    /// <summary>Slide-out duration in ms.</summary>
     public const double SlideMs = 180;
 
-    // The easing and the fade, made on first use and frozen (UI thread only).
+    // Easing and fade, created on first use and frozen (UI thread only).
     private static IEasingFunction? _slideEase;
     private static DoubleAnimation? _slideFade;
 
-    // What a slide under way moves (its transform and opacity animated) and raises (the tab in front, the tabs over + and the count).
+    // Elements animated by the active slide, and elements raised in z-order (active tab; tabs above + and the count).
     private readonly List<UIElement> _sliding = [];
     private readonly List<UIElement> _raised = [];
 
-    // The clock whose end ends the slide (the first one made: every one runs the same 180 ms).
+    // Clock whose Completed ends the slide (the first created; all share the 180 ms duration).
     private AnimationClock? _slideClock;
 
-    /// <summary>Whether a slide is under way (tests).</summary>
+    /// <summary>True while a slide is running (tests).</summary>
     internal bool IsSliding => _sliding.Count > 0;
 
-    /// <summary>Whether restored tabs slide out (pure: project-tabs-slide-out): some were restored, the strip is shown, and both kinds of animation are on.</summary>
+    /// <summary>Pure (golden project-tabs-slide-out): tabs were restored, the strip is visible, and both animation settings are on.</summary>
     internal static bool SlideWanted(int restored, bool shown, bool extraAnimations, bool clientAreaAnimation) =>
         restored > 0 && shown && extraAnimations && clientAreaAnimation;
 
     /// <summary>
-    /// The tabs restored at start (<paramref name="ids"/>) slide out from behind the tab in front (Pass 5.5A; called only from
-    /// MainWindow.RecoverProjectTabs, right after the strip shows them): nothing when <see cref="SlideWanted"/> says not, or while a tab is dragged.
+    /// Slides out restored tabs <paramref name="ids"/> from under the active tab (called only by MainWindow.RecoverProjectTabs right after
+    /// they are shown). No-op when <see cref="SlideWanted"/> is false or a drag is active.
     /// </summary>
     public void SlideOutFromActive(IReadOnlyCollection<string> ids)
     {
@@ -848,9 +833,9 @@ public partial class ProjectTabStrip : UserControl
     }
 
     /// <summary>
-    /// The slide begun (no gate: <see cref="SlideOutFromActive"/> has it): the strip laid out now (at idle, after the first frame) so the
-    /// restored tabs' places are known before they are first drawn, each shown restored tab (and + and the count) started at the tab in front,
-    /// the tab in front raised over them. The start offsets by tab id, in DIPs along the strip (empty: nothing slides).
+    /// Ungated slide start (<see cref="SlideOutFromActive"/> gates): forces layout so restored slots are known before first draw, offsets
+    /// each visible restored tab (and +, count) to the active tab's x, and raises the active tab. Returns start offsets by tab id in DIPs
+    /// (empty = nothing slides).
     /// </summary>
     internal IReadOnlyDictionary<string, double> BeginSlide(IReadOnlyCollection<string> ids)
     {
@@ -885,7 +870,7 @@ public partial class ProjectTabStrip : UserControl
         if (offsets.Count == 0)
             return offsets;
 
-        // The tab in front drawn over the tabs coming out from behind it, and the tabs over + and the count, which come out from behind it too.
+        // Z-order: active tab above sliding tabs, and tabs above + and the count (which also slide from under it).
         Raise(front);
         Raise(Items);
         foreach (var button in new FrameworkElement[] { OverflowButton, NewTabButton })
@@ -897,12 +882,11 @@ public partial class ProjectTabStrip : UserControl
         return offsets;
     }
 
-    /// <summary>Where a tab starts its slide (pure): the tab in front's x less its own place's, in DIPs.</summary>
+    /// <summary>Pure: slide start offset = active tab x minus the tab's slot x (DIPs).</summary>
     internal static double SlideOffset(double activeX, double slotX) => activeX - slotX;
 
     /// <summary>
-    /// The slide along the strip from <paramref name="from"/> DIPs to its own place (0), 180 ms, a cubic ease out, frozen, and gone at its
-    /// end (FillBehavior.Stop: the base value, 0, is the end one).
+    /// Frozen 180 ms cubic ease-out translation from <paramref name="from"/> DIPs to 0, FillBehavior.Stop (base value 0 equals the end).
     /// </summary>
     internal static DoubleAnimation SlideAnimation(double from)
     {
@@ -911,7 +895,7 @@ public partial class ProjectTabStrip : UserControl
         return slide;
     }
 
-    /// <summary>The cubic ease out the slide and its fade follow (made on first use, frozen).</summary>
+    /// <summary>Shared frozen cubic ease-out (created on first use).</summary>
     internal static IEasingFunction SlideEase
     {
         get
@@ -927,7 +911,7 @@ public partial class ProjectTabStrip : UserControl
         }
     }
 
-    /// <summary>The fade in from nothing over the slide (made on first use, frozen; the base opacity, 1, is the end one).</summary>
+    /// <summary>Frozen fade-in 0 to 1 over the slide (created on first use; base opacity 1 equals the end).</summary>
     internal static DoubleAnimation SlideFade
     {
         get
@@ -943,7 +927,7 @@ public partial class ProjectTabStrip : UserControl
         }
     }
 
-    /// <summary>One element's slide and fade started, with a transform of its own (animated, so never frozen).</summary>
+    /// <summary>Starts slide and fade on one element with its own (animated, unfrozen) TranslateTransform.</summary>
     private void Slide(UIElement element, double offset)
     {
         var shift = new TranslateTransform();
@@ -967,7 +951,7 @@ public partial class ProjectTabStrip : UserControl
 
     private void SlideClock_Completed(object? sender, EventArgs e) => FinishSlide();
 
-    /// <summary>The slide ended (at its end, as a drag begins, or as the strip hides): every clock let go, every transform and z-order its own again.</summary>
+    /// <summary>Ends the slide (completion, drag start, or strip hide): removes clocks and restores transforms and z-order.</summary>
     internal void FinishSlide()
     {
         if (_slideClock is { } clock)

@@ -11,7 +11,7 @@
         <TextBlock Text="Drop a video to get started, pick up where you left off, or open a video with one of your Game Presets."
                    Foreground="{DynamicResource MutedTextBrush}" Margin="0,2,0,14" TextWrapping="Wrap" />
 
-        <!-- The drop zone: a video dropped (or chosen with a click) here opens as it would in the main window -->
+        <!-- Drop zone: a dropped or clicked-to-browse video opens as in the main window -->
         <Border x:Name="DropZone" Height="190" CornerRadius="10" Background="{DynamicResource InsetBrush}" Cursor="Hand"
                 AllowDrop="True" DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="DropZone_Drop"
                 MouseLeftButtonUp="DropZone_MouseLeftButtonUp" AutomationProperties.Name="Drop Video Here">
@@ -46,7 +46,7 @@
                                 <ColumnDefinition Width="Auto" />
                                 <ColumnDefinition Width="*" />
                             </Grid.ColumnDefinitions>
-                            <!-- The project's baked thumbnail (Pass 5.2D), small; its place kept empty while another row has one -->
+                            <!-- Small baked project thumbnail; space reserved when another row has one -->
                             <Border Width="72" Height="40" Margin="0,0,8,0" Background="#FF0E0E0E" CornerRadius="2" ClipToBounds="True"
                                     Visibility="{Binding ThumbnailVisibility, Mode=OneWay}">
                                 <Image Source="{Binding Thumbnail, Mode=OneWay}" Stretch="Uniform" />
@@ -60,7 +60,7 @@
             </ComboBox>
         </Grid>
 
-        <!-- Game Presets, as targets: a video dropped on one opens with that look and layout -->
+        <!-- Game Preset drop targets: a dropped video opens with that preset's look and layout -->
         <StackPanel x:Name="StylePanel" Margin="0,18,0,0">
             <TextBlock Text="Open with a Game Preset" FontWeight="SemiBold" FontSize="14" />
             <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,2,0,8"
@@ -89,13 +89,13 @@
         <TextBlock x:Name="NoStylesText" Visibility="Collapsed" Foreground="{DynamicResource MutedTextBrush}" Margin="0,16,0,0" TextWrapping="Wrap"
                    Text="There are no Game Presets yet. Set up Cutouts, colors or captions, then use Export Game Preset under the ... button beside the Timeline's Game Presets box: Game Presets saved in the Styles folder appear here." />
 
-        <!-- The Social Sharing Squisher: a video dropped on a preset is squeezed under its size, here, without being opened -->
+        <!-- Social Sharing Squisher: a video dropped on a preset is encoded under its size limit without opening -->
         <StackPanel x:Name="SquisherPanel" Margin="0,18,0,0">
             <TextBlock Text="Social Sharing Squisher" FontWeight="SemiBold" FontSize="14" />
             <TextBlock Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,2,0,8"
                        Text="Drop a video on a preset, or click one to choose a video: it is squeezed under that size as an .mp4, which you then drag straight out of this window. The presets are set under Settings, Startup Dialog." />
             <ItemsControl x:Name="SquishList" Focusable="False">
-                <!-- One row, however many are shown: each preset gets an equal share of it, and its name is cut short when that is narrow. -->
+                <!-- Single row: presets share width equally; names truncate when narrow. -->
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
                         <UniformGrid Rows="1" />
@@ -107,7 +107,7 @@
                                 DragEnter="DropTarget_DragEnter" DragLeave="DropTarget_DragLeave" DragOver="DropTarget_DragOver" Drop="Squish_Drop"
                                 AutomationProperties.Name="{Binding Name}">
                             <StackPanel Orientation="Horizontal">
-                                <!-- The preset's icon: a few strokes of geometry, chosen with the preset -->
+                                <!-- Preset icon: per-preset vector geometry -->
                                 <Path Width="26" Height="26" Stretch="None" VerticalAlignment="Center" StrokeThickness="1.6" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
                                       Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" Data="{Binding IconData}" />
                                 <StackPanel Margin="8,0,0,0" VerticalAlignment="Center">
@@ -125,7 +125,7 @@
                    Text="This window opens as HandPeg starts. It can be switched off, and its Game Presets chosen, under Settings, Interface." />
     </StackPanel>
 
-    <!-- What the window shrinks to while a video is squeezed: its picture, how far along it is, and afterwards the file to drag out -->
+    <!-- Squish view: still frame, progress, then the draggable output file -->
     <DockPanel x:Name="SquishPanel" Margin="16" Visibility="Collapsed">
         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
             <Button x:Name="SquishFinishButton" Content="Finish" Padding="16,5" Margin="0,0,6,0" Visibility="Collapsed" Click="SquishFinish_Click"

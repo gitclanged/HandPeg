@@ -8,13 +8,12 @@ namespace HandPegApp;
 public sealed partial class MaskDrawWindow
 {
     /// <summary>
-    /// The pieces on a tall frame, as the Game Preset will lay them: the video across the middle at its zoom, each piece cut to its own
-    /// outlines from the still. A piece is dragged to place it, and the wheel over it sizes it; one moved by hand stays where it was put.
-    /// The move pointer shows only over a piece (5.3.1): the frame round them takes no drag.
+    /// Vertical-frame preview of the Game Preset layout: video centred at zoom, each piece cut from the still by its outlines. Drag to
+    /// place, wheel to size; manual placements persist. The move cursor shows only over pieces; the surrounding frame ignores drags.
     /// </summary>
     private sealed class CutoutStage : FrameworkElement
     {
-        /// <summary>One piece as this stage shows it. Everything is a fraction of the source or of the frame.</summary>
+        /// <summary>Stage piece; all values are source or frame fractions.</summary>
         public sealed class Placed
         {
             public required int Id { get; init; }
@@ -34,7 +33,7 @@ public sealed partial class MaskDrawWindow
         private double _zoom = 1;
         private (Placed Piece, Point Grab)? _moving;
 
-        /// <summary>A piece was moved or sized by hand.</summary>
+        /// <summary>Raised when a piece is manually moved or sized.</summary>
         public event Action<int>? Moved;
 
         public CutoutStage(double sourceWidth, double sourceHeight)
@@ -43,7 +42,7 @@ public sealed partial class MaskDrawWindow
             ToolTip = "The Game Preset's tall frame. Drag a Cutout to place it, the wheel over a Cutout sizes it. Double-click a Cutout to lay it out again by itself.";
         }
 
-        /// <summary>The piece selected in the list: outlined.</summary>
+        /// <summary>List-selected piece (drawn outlined).</summary>
         public int Selected { get; set; }
 
         public void Show(List<Placed> pieces, BitmapSource? still, double zoom)
@@ -58,7 +57,7 @@ public sealed partial class MaskDrawWindow
 
         private double HeightOf(Placed piece) => piece.Width * (piece.Source.Height * _sourceHeight) / Math.Max(piece.Source.Width * _sourceWidth, 1e-6) * (9.0 / 16);
 
-        // The box a piece takes on the stage.
+        // Piece rect on the stage.
         private Rect BoxOf(Placed piece, Rect frame) => new(frame.X + piece.X * frame.Width, frame.Y + piece.Y * frame.Height, piece.Width * frame.Width, HeightOf(piece) * frame.Height);
 
         private Placed? PieceAt(Point at)
@@ -92,7 +91,7 @@ public sealed partial class MaskDrawWindow
             e.Handled = true;
         }
 
-        /// <summary>The pointer the stage shows at a point: the move pointer over a piece (or while one is moved), the ordinary one elsewhere.</summary>
+        /// <summary>Cursor at a point: move cursor over a piece or during a move, arrow elsewhere.</summary>
         public Cursor? CursorAt(Point at) => _moving is not null || PieceAt(at) is not null ? Cursors.SizeAll : null;
 
         protected override void OnMouseMove(MouseEventArgs e)
@@ -119,7 +118,7 @@ public sealed partial class MaskDrawWindow
             if (PieceAt(e.GetPosition(this)) is not { } piece)
                 return;
 
-            // About its middle.
+            // Scale about the centre.
             var (middleX, middleY) = (piece.X + piece.Width / 2, piece.Y + HeightOf(piece) / 2);
             piece.Width = Math.Clamp(piece.Width * Math.Pow(1.001, e.Delta), SmallestWidth, LargestWidth);
             (piece.X, piece.Y) = (middleX - piece.Width / 2, middleY - HeightOf(piece) / 2);
@@ -137,7 +136,7 @@ public sealed partial class MaskDrawWindow
             dc.PushClip(new RectangleGeometry(frame));
             dc.DrawRectangle(Frame, null, frame);
 
-            // The video: as wide as the frame at 100 %, across its middle.
+            // Video band: frame width at 100 %, vertically centred.
             var (wide, tall) = (frame.Width * _zoom, frame.Width * _zoom * _sourceHeight / _sourceWidth);
             var video = new Rect(frame.X + (frame.Width - wide) / 2, frame.Y + (frame.Height - tall) / 2, wide, tall);
             if (_still is not null)
@@ -151,7 +150,7 @@ public sealed partial class MaskDrawWindow
                 if (box.Width <= 0 || box.Height <= 0 || double.IsNaN(box.X))
                     continue;
 
-                // The whole still as it would lie for this piece's box to land where it does.
+                // Full still positioned so this piece's box lands at its stage rect.
                 var perSource = box.Width / Math.Max(piece.Source.Width, 1e-6);
                 var perDown = box.Height / Math.Max(piece.Source.Height, 1e-6);
                 var picture = new Rect(box.X - piece.Source.X * perSource, box.Y - piece.Source.Y * perDown, perSource, perDown);

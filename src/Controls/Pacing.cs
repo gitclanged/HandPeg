@@ -7,33 +7,33 @@ using System.Windows.Threading;
 namespace HandPegApp.Controls;
 
 /// <summary>
-/// Shared pacing primitives for the interface thread, so a component never hand-rolls a DispatcherTimer plus a "queued" or "owed" flag:
+/// Shared UI-thread pacing primitives, replacing hand-rolled DispatcherTimer + "queued"/"owed" flag pairs:
 /// <list type="bullet">
-/// <item><see cref="TimerScope"/>: a component's timers, made on first use (nothing before Frame 1) and stopped together.</item>
-/// <item><see cref="Debounce"/>: one run after a quiet period (trailing edge).</item>
-/// <item><see cref="RunGate"/>: one queued run at a dispatcher priority however often it is requested before it runs.</item>
-/// <item><see cref="WriteThrottle{TKey}"/>: writes at most once a period, the first at once, the newest per key kept.</item>
-/// <item><see cref="CaptureThrottle"/>: a pointer drag on a slider or number box as an editing gesture of a <see cref="GestureWriter{TKey}"/>.</item>
+/// <item><see cref="TimerScope"/>: a component's timers, created lazily (nothing before Frame 1) and stopped together.</item>
+/// <item><see cref="Debounce"/>: one trailing-edge run after a quiet period.</item>
+/// <item><see cref="RunGate"/>: at most one queued run at a dispatcher priority, however often requested.</item>
+/// <item><see cref="WriteThrottle{TKey}"/>: at most one batch per period, leading edge immediate, latest write per key kept.</item>
+/// <item><see cref="CaptureThrottle"/>: maps a pointer drag on a value control to a <see cref="GestureWriter{TKey}"/> gesture.</item>
 /// </list>
 /// </summary>
 internal static class Pacing
 {
     /// <summary>
-    /// The most writes a second while an editing gesture is under way: each write is a new scene plan for the preview and a new command,
-    /// and a pointer reports far more often than that.
+    /// Maximum writes per second during an editing gesture: each write builds a new preview scene plan and command, while pointer
+    /// input arrives far more often.
     /// </summary>
     public const double GestureWritesPerSecond = 30;
 
-    /// <summary>The period between two paced gesture writes.</summary>
+    /// <summary>Minimum interval between paced gesture writes.</summary>
     public static readonly TimeSpan GesturePeriod = TimeSpan.FromSeconds(1 / GestureWritesPerSecond);
 }
 
-/// <summary>A component's DispatcherTimers: each made on first use (Law 1), all stopped together when the component detaches.</summary>
+/// <summary>Owns a component's DispatcherTimers: created lazily (Law 1), stopped together when the component detaches.</summary>
 internal sealed class TimerScope : IDisposable
 {
     private readonly List<DispatcherTimer> _timers = [];
 
-    /// <summary>A stopped timer owned by this scope.</summary>
+    /// <summary>Creates a stopped timer owned by this scope.</summary>
     public DispatcherTimer Make(TimeSpan interval, DispatcherPriority priority, EventHandler tick)
     {
         var timer = new DispatcherTimer(priority) { Interval = interval };
@@ -42,7 +42,7 @@ internal sealed class TimerScope : IDisposable
         return timer;
     }
 
-    /// <summary>Stops every timer of the scope (each can start again).</summary>
+    /// <summary>Stops all scope timers (they remain restartable).</summary>
     public void StopAll()
     {
         foreach (var timer in _timers)
@@ -52,12 +52,12 @@ internal sealed class TimerScope : IDisposable
     public void Dispose() => StopAll();
 }
 
-/// <summary>Runs an action once, <c>delay</c> after the last <see cref="Poke"/> (a burst of pokes is one run at its end).</summary>
+/// <summary>Runs an action once, <c>delay</c> after the last <see cref="Poke"/> (a burst collapses to one trailing run).</summary>
 internal sealed class Debounce(TimeSpan delay, Action action, DispatcherPriority priority = DispatcherPriority.Background, TimerScope? scope = null)
 {
     private DispatcherTimer? _timer;
 
-    /// <summary>Whether a run is waiting for the quiet period to end.</summary>
+    /// <summary>True while a run is pending the end of the quiet period.</summary>
     public bool IsPending => _timer?.IsEnabled == true;
 
     /// <summary>Starts (or restarts) the quiet period.</summary>
@@ -68,7 +68,7 @@ internal sealed class Debounce(TimeSpan delay, Action action, DispatcherPriority
         timer.Start();
     }
 
-    /// <summary>Runs a waiting run now.</summary>
+    /// <summary>Runs the pending action immediately, if any.</summary>
     public void Flush()
     {
         if (!IsPending)
@@ -77,7 +77,7 @@ internal sealed class Debounce(TimeSpan delay, Action action, DispatcherPriority
         action();
     }
 
-    /// <summary>Drops a waiting run.</summary>
+    /// <summary>Cancels the pending run.</summary>
     public void Cancel() => _timer?.Stop();
 
     private DispatcherTimer Make()
@@ -99,10 +99,10 @@ internal sealed class Debounce(TimeSpan delay, Action action, DispatcherPriority
     }
 }
 
-/// <summary>One queued run of an action on a dispatcher, however many times it is requested before it runs (a redraw or rebuild owed).</summary>
+/// <summary>Coalesces requests into at most one queued dispatcher run (e.g. a pending redraw or rebuild).</summary>
 internal sealed class RunGate(Dispatcher dispatcher, Action action, DispatcherPriority priority)
 {
-    /// <summary>Whether a run is queued and has not started yet.</summary>
+    /// <summary>True while a run is queued and not yet started.</summary>
     public bool IsQueued { get; private set; }
 
     /// <summary>Queues the run unless one is queued already.</summary>
@@ -120,9 +120,9 @@ internal sealed class RunGate(Dispatcher dispatcher, Action action, DispatcherPr
 }
 
 /// <summary>
-/// Paces writes: a write queued when none was made within the period runs at once; later ones wait for the next tick, the newest per
-/// key replacing an older one of that key (written in the order the keys were first queued). Every batch runs through
-/// <c>around</c>, which wraps it (an undo step, a look batch) and calls the batch.
+/// Write throttle: a write queued after an idle period flushes immediately; later ones wait for the next tick, the latest per key
+/// replacing older ones (flushed in first-queued key order). Each batch runs inside <c>around</c>, which wraps it (an undo step, a
+/// look batch) and invokes it.
 /// </summary>
 internal sealed class WriteThrottle<TKey>(Action<Action> around, TimeSpan period, DispatcherPriority priority = DispatcherPriority.Input, TimerScope? scope = null)
     where TKey : notnull
@@ -131,13 +131,13 @@ internal sealed class WriteThrottle<TKey>(Action<Action> around, TimeSpan period
     private DispatcherTimer? _timer;
     private long _lastBatch = long.MinValue / 2;
 
-    /// <summary>Whether a write of <paramref name="key"/> is waiting.</summary>
+    /// <summary>True when a write for <paramref name="key"/> is pending.</summary>
     public bool IsOwed(TKey key) => _owed.ContainsKey(key);
 
-    /// <summary>Whether any write is waiting.</summary>
+    /// <summary>True when any write is pending.</summary>
     public bool AnyOwed => _owed.Count > 0;
 
-    /// <summary>Queues a write: now when nothing was written within the period, else at the next tick (the newest of a key wins).</summary>
+    /// <summary>Queues a write: flushed now if the last batch is older than the period, else on the next tick (latest per key wins).</summary>
     public void Queue(TKey key, Action write)
     {
         _owed[key] = write;
@@ -148,7 +148,7 @@ internal sealed class WriteThrottle<TKey>(Action<Action> around, TimeSpan period
         (_timer ??= MakeTimer()).Start();
     }
 
-    /// <summary>Runs every waiting write now, as one batch.</summary>
+    /// <summary>Flushes all pending writes now as one batch.</summary>
     public void Flush()
     {
         if (_owed.Count == 0)
@@ -163,7 +163,7 @@ internal sealed class WriteThrottle<TKey>(Action<Action> around, TimeSpan period
         });
     }
 
-    /// <summary>Drops every waiting write and stops the timer.</summary>
+    /// <summary>Discards all pending writes and stops the timer.</summary>
     public void Cancel()
     {
         _owed.Clear();
@@ -189,15 +189,15 @@ internal sealed class WriteThrottle<TKey>(Action<Action> around, TimeSpan period
 }
 
 /// <summary>
-/// A pointer drag on a slider, its thumb, a repeat button or a number box, as an editing gesture of a <see cref="GestureWriter{TKey}"/>:
-/// <see cref="Follow"/> (called as a value arrives) opens the writer's gesture while the left button holds such an element's mouse
-/// capture, and the element losing the capture ends it (its last value written as part of the gesture).
+/// Maps a pointer drag on a slider, thumb, repeat button or number box to a <see cref="GestureWriter{TKey}"/> gesture:
+/// <see cref="Follow"/> (called per incoming value) opens the gesture while the left button holds such an element's mouse capture;
+/// losing capture ends it, with the final value written inside the gesture.
 /// </summary>
 internal sealed class CaptureThrottle(IGestureWriter writer)
 {
     private UIElement? _captured;
 
-    /// <summary>Opens a gesture when the pointer is dragging a value control and none is open for it.</summary>
+    /// <summary>Opens a gesture when the pointer is dragging a value control and none is open yet.</summary>
     public void Follow()
     {
         if (_captured is not null || Mouse.LeftButton != MouseButtonState.Pressed || Mouse.Captured is not UIElement captured

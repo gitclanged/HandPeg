@@ -5,10 +5,10 @@
              xmlns:docking="clr-namespace:HandPegApp.Docking"
              AutomationProperties.Name="Effects Pane">
     <!--
-        The Effects pane: the effect stack of the selected clip, or of the Sequence Output. The title row
-        holds the target, Add Effect (rest on it: the effects by category, with a search box), Bypass All and the stack
-        menu. The cards are built in code (EffectsPane.xaml.cs): one per effect, dragged by their grip to reorder
-        within their zone (ReorderBehavior), each value a slider and a number box (double-click resets).
+        Effects pane: effect stack of the selected clip or the Sequence Output. Title row: target, Add Effect (hover
+        for a categorized list with search), Bypass All and the stack menu. Cards are built in code
+        (EffectsPane.xaml.cs): one per effect, grip-dragged to reorder within their zone (ReorderBehavior), with a
+        slider and number box per value (double-click resets).
     -->
     <DockPanel>
         <docking:PaneTitleRow DockPanel.Dock="Top" Margin="0,0,0,6">

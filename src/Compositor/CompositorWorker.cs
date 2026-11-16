@@ -10,26 +10,26 @@ using static HandPegApp.Native.Kernel32;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// HandPeg.exe --compositor-worker &lt;base name&gt; &lt;adapter&gt; [--standby &lt;n&gt;] [--ffmpeg &lt;path&gt; --ffprobe &lt;path&gt;] (Pass 5.0-Core, 5.0A; the FFmpeg the decoders fall back on, 5.2-Arm64AndNpu): the GPU
-/// compositor in a process of its own. A driver that falls over, a TDR or a decoder fault takes only it down; HandPeg
-/// (CompositorClient) starts another and nothing is lost but a frame.
-/// <para>It opens the client's control plane, makes its device, its shaders and three shared output textures, and then
-/// renders whenever the client publishes a scene (or asks for a redraw): the newest scene only, never a queue. It ends
-/// when the client ends, when told to, or when the device is lost (<see cref="CompositorProtocol.DeviceLostExitCode"/>).</para>
-/// <para>A standby (--standby n) waits, holding nothing but a started runtime, until the client signals its take-over
-/// event, then becomes the worker: the respawn after a crash costs a device and a frame, not a process start.</para>
-/// <para>It gives memory back (5.4D-TabPerf) when the client asks (a tab put behind: a counted trim, which on unified memory or a small
-/// card empties the frame cache too) and by itself after standing idle for 30 s: <see cref="TrimMemory"/>, then <see cref="GiveBack"/>
-/// (for an asked-for trim once nothing has been asked of it for a moment, so a run of quick tab switches pays for it once).</para>
+/// HandPeg.exe --compositor-worker &lt;base name&gt; &lt;adapter&gt; [--standby &lt;n&gt;] [--ffmpeg &lt;path&gt; --ffprobe &lt;path&gt;]: the
+/// out-of-process GPU compositor (the FFmpeg paths are for decoder fallback). A driver crash, TDR or decoder fault takes down only this
+/// process; HandPeg (CompositorClient) starts another and loses at most a frame.
+/// <para>Opens the client's control plane, creates its device, shaders and three shared output textures, then renders whenever the
+/// client publishes a scene (or requests a redraw): newest scene only, never queued. Exits when the client exits, on request, or on
+/// device loss (<see cref="CompositorProtocol.DeviceLostExitCode"/>).</para>
+/// <para>A standby (--standby n) waits holding only a started runtime until the client signals its take-over event, then becomes the
+/// worker: respawn after a crash costs a device and a frame, not a process start.</para>
+/// <para>Releases memory on client request (tab deactivated: a counted trim that also empties the frame cache on unified memory or
+/// low-VRAM GPUs) and on its own after 30 s idle: <see cref="TrimMemory"/>, then <see cref="GiveBack"/> (for requested trims only after a
+/// quiet period, so a burst of tab switches pays once).</para>
 /// </summary>
 public static unsafe partial class CompositorWorker
 {
     public const string Argument = "--compositor-worker";
 
-    /// <summary>The options that name the FFmpeg and ffprobe the worker decodes with when Media Foundation cannot (each followed by a path).</summary>
+    /// <summary>Options naming the FFmpeg and ffprobe used when Media Foundation cannot decode (each followed by a path).</summary>
     public const string FfmpegOption = "--ffmpeg", FfprobeOption = "--ffprobe";
 
-    /// <summary>The word after <paramref name="option"/> on the command line; empty when it is not there.</summary>
+    /// <summary>Command-line value following <paramref name="option"/>; empty when absent.</summary>
     internal static string OptionValue(string[] args, string option)
     {
         var at = Array.IndexOf(args, option);
@@ -38,8 +38,8 @@ public static unsafe partial class CompositorWorker
 
     public static int Run(string[] args)
     {
-        // A fault in a driver or a decoder ends this process quietly (no "stopped working" box), and a file on an empty
-        // drive fails instead of asking for a disk: HandPeg sees the exit and takes over (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX).
+        // Driver or decoder faults end the process silently (no "stopped working" dialog) and empty-drive access fails instead of
+        // prompting; HandPeg detects the exit and takes over (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX).
         _ = SetErrorMode(0x0001 | 0x0002);
         if (args.Length < 3)
             return CompositorProtocol.BadControlPlaneExitCode;
@@ -48,8 +48,8 @@ public static unsafe partial class CompositorWorker
         var standbyAt = Array.IndexOf(args, "--standby");
         var standby = standbyAt > 0 && standbyAt + 1 < args.Length && int.TryParse(args[standbyAt + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) ? n : -1;
 
-        // The FFmpeg HandPeg uses (DependencyUpdater, AppSettings.FfmpegPath), for the streams Media Foundation cannot decode
-        // (FfmpegVideoDecoder, 5.2-Arm64AndNpu): looked for only when one of those is opened.
+        // HandPeg's FFmpeg (DependencyUpdater, AppSettings.FfmpegPath) for streams MF cannot decode (FfmpegVideoDecoder); only
+        // probed when such a stream is opened.
         FfmpegVideoDecoder.FfmpegPath = OptionValue(args, FfmpegOption);
         FfmpegVideoDecoder.FfprobePath = OptionValue(args, FfprobeOption);
 
@@ -57,9 +57,9 @@ public static unsafe partial class CompositorWorker
         if (shared is null)
             return CompositorProtocol.BadControlPlaneExitCode;
 
-        // An exception nothing caught (a decode lane's, which has no catch-all on purpose) ends this process. It is logged with its
-        // stack first, and the client's one-line note names it and the frame that threw, not the adapter text written at start-up.
-        // CreateNoWindow and SetErrorMode above hide the CLR's own report, so this is the only record.
+        // Unhandled exceptions (e.g. from a decode lane, which deliberately has no catch-all) end the process. Log the stack first and
+        // write the one-line client note naming the exception and throwing frame (replacing the start-up adapter text). CreateNoWindow
+        // and SetErrorMode hide the CLR's own report, so this is the only record.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             if (e.ExceptionObject is not Exception unhandled)
@@ -80,7 +80,7 @@ public static unsafe partial class CompositorWorker
                 return 0;
         }
 
-        // Media Foundation and Direct3D want a multithreaded apartment; Main's thread is an STA.
+        // MF and D3D need an MTA; Main's thread is STA.
         var exitCode = 0;
         var thread = new Thread(() => exitCode = Work(shared, adapter, clientExit)) { Name = "Compositor", IsBackground = false };
         thread.SetApartmentState(ApartmentState.MTA);
@@ -127,26 +127,26 @@ public static unsafe partial class CompositorWorker
             var budget = long.MinValue;
             WaitHandle[] waits = [wake, clientExit, decoders.FramesArrived];
 
-            // The counted requests (5.4D-TabPerf): what was asked before this worker started is served already (it holds nothing).
+            // Counted requests issued before this worker started are already satisfied (it holds nothing).
             var clearsSeen = Volatile.Read(ref control.ClearRequests);
             Volatile.Write(ref control.ClearsDone, clearsSeen);
             var trimsSeen = Volatile.Read(ref control.TrimRequests);
             Volatile.Write(ref control.TrimsDone, trimsSeen);
 
-            // Standing idle: the last time anything was asked of it (a scene, hints, playing, a lane decoding), and whether it has
-            // given its memory back since. Its memory is published every 2 s (Settings' readout, the goldens).
+            // Idle tracking: last activity (scene, hints, playback, lane decoding) and whether memory was trimmed since. Memory stats
+            // are published every 2 s (Settings readout, goldens).
             var hintsSeen = Volatile.Read(ref control.HintsVersion);
             var askedLast = Stopwatch.GetTimestamp();
             var idleTrimmed = false;
             var nextPublish = 0L;
 
-            // An asked-for trim served but for its last part (GiveBack), which waits for the worker to be left alone a moment; and whether a
-            // new scene came after it (5.4.4: another tab brought to the front, whose working set that last part would throw away).
+            // A requested trim awaiting its final GiveBack phase (deferred until quiet), and whether a new scene arrived after it (another
+            // tab activated, whose working set GiveBack would discard).
             var giveBackWaiting = false;
             var sceneAfterTrim = false;
             while (true)
             {
-                // A decode lane stuck inside a driver for 8 s: the beat stops, and the client takes over (10 s).
+                // A decode lane stuck in a driver for 8 s stops the heartbeat; the client takes over at 10 s.
                 if (!decoders.LaneStuckFor(8))
                     Interlocked.Increment(ref control.Heartbeat);
                 if (decoders.LaneFault is { } fault)
@@ -156,7 +156,7 @@ public static unsafe partial class CompositorWorker
                     case CompositorCommand.SimulateDeviceLost:
                         throw new GpuException(Com.DeviceRemoved, "A simulated device removal");
                     case CompositorCommand.SimulateCrash:
-                        Environment.Exit(unchecked((int)0xC0000005)); // as a crash ends it, without a report to Windows
+                        Environment.Exit(unchecked((int)0xC0000005)); // crash-like exit code without a Windows error report
                         break;
                     case CompositorCommand.Shutdown:
                         Volatile.Write(ref control.WorkerState, (int)CompositorWorkerState.Exiting);
@@ -170,9 +170,8 @@ public static unsafe partial class CompositorWorker
                         break;
                 }
 
-                // A clear, then a trim, as counted (5.4D-TabPerf): between frames, before the next scene is taken. The trim's echo is
-                // written once its last part is done and its memory published (GiveBack, below), so a reader that sees it served reads
-                // what it gave back.
+                // Counted clear, then trim, between frames before taking the next scene. The trim is acknowledged only after its final
+                // phase and memory publish (GiveBack, below), so a reader seeing it done reads the released memory.
                 var clears = Volatile.Read(ref control.ClearRequests);
                 if (clears != clearsSeen)
                 {
@@ -190,7 +189,7 @@ public static unsafe partial class CompositorWorker
                     (giveBackWaiting, sceneAfterTrim, idleTrimmed, nextPublish) = (true, false, true, Stopwatch.GetTimestamp() + PublishMemoryTicks);
                 }
 
-                // The client's frame cache budget and seek hints (Instant Seek): read when they change, no frame drawn for them.
+                // Client cache budget and seek hints (Instant Seek): applied on change without drawing a frame.
                 var requested = Volatile.Read(ref control.CacheBudgetRequest);
                 if (requested != budget)
                     decoders.Cache.SetBudget(budget = requested);
@@ -219,21 +218,20 @@ public static unsafe partial class CompositorWorker
                     presented.Set();
                 }
 
-                // The decoders' counters on every turn, drawn or not (a pre-roll decodes between frames; a reader of them
-                // must not see them only when the next frame comes).
+                // Publish decoder counters every turn, drawn or not (pre-roll decodes between frames; readers must not wait for the next
+                // frame to see them).
                 control.DecoderOpens = decoders.Opens;
                 control.DecoderSeeks = decoders.Seeks;
                 control.DecodedFrames = decoders.FramesDecoded;
                 (control.Stretches, control.LateLandings, control.MissingFrames) = (decoders.Stretches, decoders.LateLandings, decoders.MissingFrames);
 
-                // What a press of play waits for after the frame on screen (GpuPreviewEngine.PlayStartReady): looked at closely while it is short of them.
+                // Frames after the displayed one that play start waits for (GpuPreviewEngine.PlayStartReady); polled tightly while missing.
                 var ahead = decoders.NextFramesReady();
                 control.PresentedAhead = ahead ? 1 : 0;
 
-                // Idle (5.4D-TabPerf, the user's U2): paused, with no scene, hint or decode for IdleTrimSeconds, the worker gives back
-                // what the frames do not need (they stay: a seek on coming back is still instant), once, and draws the scene again so
-                // its working textures are made now, while paused, not on the first frame played. Not while the Export Quality
-                // Preview is on (its redraw is an encode).
+                // Idle trim: paused with no scene, hint or decode for IdleTrimSeconds, release everything but cached frames (seeks stay
+                // instant) once, then redraw so working textures are recreated while paused rather than on the first played frame. Skipped
+                // while the Live Encoded Preview is on (its redraw is an encode).
                 var now = Stopwatch.GetTimestamp();
                 var hints = Volatile.Read(ref control.HintsVersion);
                 if (isNew || hints != hintsSeen || decoders.Playing)
@@ -248,14 +246,11 @@ public static unsafe partial class CompositorWorker
                     (idleTrimmed, redraw, nextPublish) = (true, true, now + PublishMemoryTicks);
                 }
 
-                // An asked-for trim's last part (the TabPerf follow-up, the user's X1: never at the cost of quick switches between tabs):
-                // the driver's kept memory and the heap given back once nothing has been asked of the worker for GiveBackQuietMs and
-                // nothing plays. IDXGIDevice3::Trim takes tens of milliseconds (75 ms on the Adreno X1-85 after a 1080p tab), which every
-                // switch of a quick run would pay, and the new tab's first frames behind it; a run of switches gives back once, when it
-                // ends. Then the trim is echoed (every one asked for meanwhile).
-                // 5.4.4: when a new scene came after the trim (another tab brought to the front, a play likely to follow at once), its working
-                // set (the free frames, the pool's textures, the renderer's kept ones) and the driver's allocations are that tab's: kept, and
-                // given back by the idle trim once the player has rested IdleTrimSeconds. Nothing in front (the trim alone): all of it now.
+                // Final phase of a requested trim (must not penalize rapid tab switching): release driver memory and compact the heap once
+                // the worker has been quiet for GiveBackQuietMs and nothing plays. IDXGIDevice3::Trim costs tens of ms (75 ms on Adreno X1-85
+                // after a 1080p tab), which each switch and the new tab's first frames would pay; a burst of switches releases once at its end.
+                // Then acknowledge all trims requested meanwhile. If a new scene arrived after the trim (another tab activated, playback
+                // likely), its working set and driver allocations belong to that tab: keep them for the idle trim; otherwise release all now.
                 if (giveBackWaiting && GiveBackDue(now, askedLast, decoders.Playing))
                 {
                     if (!sceneAfterTrim)
@@ -275,17 +270,17 @@ public static unsafe partial class CompositorWorker
                 }
 
                 gpu.CheckAlive();
-                // (A paused Export Quality Preview frame still in the encoder: looked for again in 2 ms, and drawn when it is back.)
+                // A paused Live Encoded Preview frame still in the encoder: re-check in 2 ms and draw when it returns.
                 var pending = loopback?.Pending == true && ExportLoopbackPreview.Wants(header);
                 var woke = WaitHandle.WaitAny(waits, pending ? 2 : _held ? 16 : ahead || !decoders.Playing ? 100 : 4);
                 if (woke == 1)
                     return 0;
-                // Drawn again only once the paused frame came back from the encoder and was decoded, or was given up (5.4.1A: no longer
-                // a full redraw every 2 ms, each with its wait for the encoder, while a wipe or a loupe was dragged).
+                // Redraw only once the paused frame has returned and decoded, or was given up (not a full redraw with an encoder wait every
+                // 2 ms while a wipe or loupe is dragged).
                 if (pending && loopback!.Poll())
                     redraw = true;
 
-                // A frame the last picture lacked was decoded (Instant Seek): the same scene again, with it.
+                // A frame missing from the last picture was decoded (Instant Seek): redraw the same scene with it.
                 if ((woke == 2 && !decoders.LastFrameExact) || _held)
                     redraw = true;
             }
@@ -337,34 +332,34 @@ public static unsafe partial class CompositorWorker
         control.Evictions = decoders.Cache.Evictions;
     }
 
-    // ----- Giving memory back (5.4D-TabPerf, the user's U2: the computer's memory matters most) -----
+    // ----- Memory release -----
 
-    /// <summary>How long the worker stands idle (paused, nothing asked of it) before it gives back what the frames do not need, seconds.</summary>
+    /// <summary>Idle time (paused, no activity) before the worker releases everything but cached frames, seconds.</summary>
     internal const int IdleTrimSeconds = 30;
 
     /// <summary>
-    /// Whether the worker gives its memory back now for standing idle: nothing asked of it (no scene, hint, playing or decode) for more
-    /// than <see cref="IdleTrimSeconds"/> since <paramref name="askedLast"/> (Stopwatch ticks), not trimmed since, and the Export Quality
-    /// Preview off (<paramref name="loopbackOn"/>: the redraw after the trim would be an encode).
+    /// True when the idle trim is due: no activity (scene, hint, playback or decode) for more than <see cref="IdleTrimSeconds"/> since
+    /// <paramref name="askedLast"/> (Stopwatch ticks), not already trimmed, and the Live Encoded Preview off (<paramref name="loopbackOn"/>:
+    /// the post-trim redraw would be an encode).
     /// </summary>
     internal static bool IdleTrimDue(long now, long askedLast, bool idleTrimmed, bool loopbackOn) =>
         !idleTrimmed && !loopbackOn && now - askedLast > IdleTrimSeconds * Stopwatch.Frequency;
 
-    /// <summary>How long nothing is asked of the worker before an asked-for trim's last part (<see cref="GiveBack"/>) runs, ms.</summary>
+    /// <summary>Quiet time required before a requested trim's final phase (<see cref="GiveBack"/>), ms.</summary>
     internal const int GiveBackQuietMs = 250;
 
     /// <summary>
-    /// Whether an asked-for trim's last part runs now: nothing asked of the worker (no scene, hint or decode) for <see cref="GiveBackQuietMs"/>
-    /// since <paramref name="askedLast"/> (Stopwatch ticks), and nothing <paramref name="playing"/> (a blocking pass at play would make a
+    /// True when a requested trim's final phase may run: no activity (scene, hint or decode) for <see cref="GiveBackQuietMs"/> since
+    /// <paramref name="askedLast"/> (Stopwatch ticks) and not <paramref name="playing"/> (a blocking pass during playback would make a
     /// frame late).
     /// </summary>
     internal static bool GiveBackDue(long now, long askedLast, bool playing) =>
         !playing && now - askedLast >= GiveBackQuietMs * Stopwatch.Frequency / 1000;
 
-    // How often the worker's memory is published while nothing else publishes it (Stopwatch ticks: 2 s).
+    // Periodic memory publish interval when nothing else publishes (Stopwatch ticks: 2 s).
     private static readonly long PublishMemoryTicks = 2 * Stopwatch.Frequency;
 
-    /// <summary>What the frame cache holds and may hold (bytes, frames, the adaptive budget's maximum, ceiling and steps).</summary>
+    /// <summary>Publishes frame cache usage and limits (bytes, frames, adaptive budget maximum, ceiling and steps).</summary>
     private static void PublishCache(ref ControlBlock control, FrameCache cache)
     {
         control.CacheBytes = cache.Bytes;
@@ -376,7 +371,7 @@ public static unsafe partial class CompositorWorker
         control.CacheGrowSteps = cache.GrowSteps;
     }
 
-    /// <summary>The worker's private bytes and the cache's sizes, for a reader between frames (every 2 s, and after a clear or a trim).</summary>
+    /// <summary>Publishes private bytes and cache sizes for readers between frames (every 2 s and after a clear or trim).</summary>
     private static void PublishMemory(ref ControlBlock control, FrameCache cache)
     {
         PublishCache(ref control, cache);
@@ -384,25 +379,23 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
-    /// Whether a trim empties the frame cache. 5.4.2A, all tabs warm (the user's rule): a tab put behind (a trim the client <paramref name="asked"/>
-    /// for) keeps its frames, so the tab brought back finds its playhead's frames at once, unless the computer's free memory (AvailPhys) is
-    /// under the tabs' floor (<paramref name="memoryShort"/>) and the frames are the computer's memory (unified memory or a small card; a big
-    /// card, FrameCache.BigCard, keeps them: video memory nothing else wants, held to Windows' budget for it anyway). The idle trim never does.
+    /// True when a trim empties the frame cache. Background tabs stay warm: a requested trim (<paramref name="asked"/>, tab deactivated)
+    /// keeps frames so the reactivated tab finds its playhead frames immediately, unless free RAM (AvailPhys) is below the floor
+    /// (<paramref name="memoryShort"/>) and the frames live in system RAM (unified memory or low VRAM; a large VRAM cache,
+    /// FrameCache.BigCard, keeps them within the DXGI budget). The idle trim never empties it.
     /// </summary>
     internal static bool TrimEmptiesCache(bool asked, bool bigCard, bool memoryShort) => asked && !bigCard && memoryShort;
 
-    /// <summary>The free memory (AvailPhys) under which a tab put behind empties the cache: the tabs' own floor (MainWindow.AvailableFloorBytes).</summary>
+    /// <summary>Free RAM (AvailPhys) floor below which a deactivated tab empties the cache (matches MainWindow.AvailableFloorBytes).</summary>
     internal const long AvailableFloorBytes = 2560L << 20;
 
     /// <summary>
-    /// Gives back what the worker holds beyond the frames in its cache, between frames on its own thread (a tab put behind: the client's
-    /// <see cref="ControlBlock.TrimRequests"/>, <paramref name="asked"/>; or standing idle): the sources the client let go of retired now
-    /// (their decoders disposed; their frames parked on a big card, else forgotten), the frames themselves when the trim empties the cache
-    /// (<see cref="TrimEmptiesCache"/>: asked for, not a big card, and free memory short), the cache's free list and the frames retired while drawn, the pool's
-    /// free working textures, the renderer's textures kept between frames (SceneRenderer.ReleaseIdleTextures: with what carries one frame
-    /// into the next only when asked, so the idle trim's redraw is the picture shown), and the readback's staging and planes and an HDR
-    /// export's picture (each made again by the next frame that wants one): a few milliseconds. Then its memory is published. The rest,
-    /// handing it back to Windows, is <see cref="GiveBack"/>'s.
+    /// Releases everything beyond cached frames, between frames on the worker thread (requested via <see cref="ControlBlock.TrimRequests"/>
+    /// when <paramref name="asked"/>, or idle): retires released sources (decoders disposed; frames parked with a large cache, else
+    /// forgotten), empties the cache when <see cref="TrimEmptiesCache"/> says, drops the cache free list and frames retired while drawn, pool
+    /// free textures, renderer textures kept between frames (SceneRenderer.ReleaseIdleTextures; frame-to-frame history only when asked, so
+    /// the idle redraw matches what is shown), and readback staging/planes and the HDR export picture (recreated on demand): a few ms.
+    /// Then publishes memory. Returning memory to Windows is <see cref="GiveBack"/>'s job.
     /// </summary>
     private static void TrimMemory(ref ControlBlock control, GpuDevice gpu, DecoderPool decoders, SceneRenderer renderer, bool asked)
     {
@@ -412,9 +405,9 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
-    /// A trim's first part, at once (5.4.4: all an asked-for trim does on the worker's next turn): the sources the client let go of retired,
-    /// the frames emptied when <see cref="TrimEmptiesCache"/> says, and the readback's staging and an HDR export's picture let go of (never
-    /// on the player's path). Then its memory is published.
+    /// Immediate first phase of a trim (all a requested trim does on the worker's next turn): retires released sources, empties the cache
+    /// when <see cref="TrimEmptiesCache"/> says, and releases readback staging and the HDR export picture (never on the player path). Then
+    /// publishes memory.
     /// </summary>
     private static void TrimSources(ref ControlBlock control, DecoderPool decoders, bool asked)
     {
@@ -428,9 +421,8 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
-    /// What the player's next frames draw with: the cache's free list, the pool's free working textures and the renderer's kept ones. Let
-    /// go of by the idle trim, and by an asked-for one only when no scene came after it (5.4.4: the tab brought to the front would make them
-    /// all again on its first frames, and its first play would pay for it).
+    /// Releases the player's working set: cache free list, pool free textures and renderer-kept textures. Done by the idle trim, and by a
+    /// requested trim only when no scene followed it (the newly activated tab would recreate them on its first frames and first play).
     /// </summary>
     private static void ReleaseWorkingSet(GpuDevice gpu, DecoderPool decoders, SceneRenderer renderer, bool asked)
     {
@@ -440,10 +432,9 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
-    /// A trim's last part, handing what was let go of back to Windows: the driver's kept allocations (GpuDevice.Trim: tens of milliseconds)
-    /// and a compacting collection of this process's own heap (FFmpeg decoders' pictures: the worker has no UI, and nothing plays here
-    /// while it runs). At once for the idle trim; for an asked-for one once the worker is left alone (<see cref="GiveBackDue"/>), and only
-    /// when no scene came after it (5.4.4). Then its memory is published.
+    /// Final trim phase returning released memory to Windows: driver-retained allocations (GpuDevice.Trim, tens of ms) and a compacting
+    /// collection of this process's heap (FFmpeg decoder pictures; the worker has no UI and nothing plays meanwhile). Immediate for the idle
+    /// trim; for a requested trim once quiet (<see cref="GiveBackDue"/>) and only when no scene followed. Then publishes memory.
     /// </summary>
     private static void GiveBack(ref ControlBlock control, GpuDevice gpu, FrameCache cache)
     {
@@ -453,7 +444,7 @@ public static unsafe partial class CompositorWorker
         PublishMemory(ref control, cache);
     }
 
-    /// <summary>The readback's view of the client's section, its staging textures and NV12 / P010 planes let go of (ReadBack makes them again by generation and size).</summary>
+    /// <summary>Releases the readback section view, staging textures and NV12/P010 planes (ReadBack recreates them by generation and size).</summary>
     private static void ReleaseReadback()
     {
         _readbackView?.Dispose();
@@ -478,7 +469,7 @@ public static unsafe partial class CompositorWorker
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool GetProcessMemoryInfo(nint process, ref ProcessMemoryCounters counters, uint size);
 
-    /// <summary>This process's private bytes (PROCESS_MEMORY_COUNTERS_EX.PrivateUsage: its commit), 0 when Windows does not say. No allocation.</summary>
+    /// <summary>This process's private bytes (PROCESS_MEMORY_COUNTERS_EX.PrivateUsage, i.e. commit); 0 when unavailable. No allocation.</summary>
     internal static long PrivateBytes()
     {
         var counters = new ProcessMemoryCounters { Size = (uint)sizeof(ProcessMemoryCounters) };
@@ -491,9 +482,9 @@ public static unsafe partial class CompositorWorker
         ref var control = ref shared.Control;
         ref var header = ref shared.SceneHeader(slot);
 
-        // The Export Quality Preview (5.4B): made on the first scene that asks for it, let go on the first player scene that does not (a
-        // readback between two of its frames, Export Frame or a project's thumbnail, leaves it be). One whose textures or render failed
-        // at this canvas's size is kept for its state (Failed) while the plain picture is drawn.
+        // Live Encoded Preview: created on the first scene requesting it, released on the first player scene that does not (readbacks in
+        // between, e.g. Export Frame or a project thumbnail, leave it alone). One that failed at this canvas size is kept for its Failed
+        // state while the plain picture is drawn.
         var wanted = ExportLoopbackPreview.Wants(header);
         var looped = wanted && loopback?.Broken(header) != true;
         if (wanted)
@@ -512,36 +503,36 @@ public static unsafe partial class CompositorWorker
                 control.LoopbackState = (int)((header.Flags & FrameSceneHeader.FlagLoopback) != 0 ? ExportLoopbackState.Unavailable : ExportLoopbackState.Off);
         }
 
-        // Exports, filmstrips and tests draw only exact frames: every media layer's frame is asked for and waited on (up
-        // to 20 s, beating) before the output is touched.
+        // Exports, filmstrips and tests draw only exact frames: request and wait for every media layer's frame (up to 20 s, with
+        // heartbeat) before touching the output.
         if ((header.Flags & FrameSceneHeader.FlagExactFrames) != 0)
             WaitForExactFrames(shared, slot, decoders);
         var width = Math.Clamp(header.OutputWidth > 0 ? header.OutputWidth : header.CanvasWidth, 16, 8192);
         var height = Math.Clamp(header.OutputHeight > 0 ? header.OutputHeight : header.CanvasHeight, 16, 8192);
 
-        // The frame is drawn at (width, height) into the top-left of the ring, which is made anew only when it no longer fits or is far
-        // too large (5.4.1A: a dock splitter's drag of the player resized it on every pixel, three shared textures and their handles each
-        // time); a frame read back stays in a ring of exactly its size.
+        // Draw at (width, height) into the ring's top-left; recreate the ring only when the frame no longer fits or it is far too large
+        // (dragging a dock splitter would otherwise recreate three shared textures and handles per pixel). Readback frames use an exact-size
+        // ring.
         var capacity = OutputCapacity(outputs?.Width ?? 0, outputs?.Height ?? 0, width, height, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
         if (outputs is null || (outputs.Width, outputs.Height) != capacity)
         {
-            // A new ring is announced (its generation and size) only once a frame is drawn in it: a reader that opened it
-            // before would copy a texture nothing was drawn into (a black flash on every resize).
+            // Announce a new ring (generation and size) only after a frame is drawn in it; earlier readers would copy an empty texture
+            // (black flash on every resize).
             outputs?.Dispose();
             var generation = Math.Max(Volatile.Read(ref control.OutputGeneration), _lastGeneration) + 1;
             _lastGeneration = generation;
             outputs = new OutputRing(gpu, shared.BaseName, generation, capacity.Width, capacity.Height);
         }
 
-        // A preview frame has the device to itself from taking its output texture to the flush after it: the decode lanes hold back
-        // (DecoderPool.Drawing; the keyed mutex's acquire waits for the device as a draw does).
+        // A preview frame owns the device from output acquire to flush: decode lanes hold back (DecoderPool.Drawing; the keyed mutex
+        // acquire waits for the device like a draw).
         var index = (Volatile.Read(ref control.PresentedIndex) + 1) % CompositorProtocol.OutputRing;
         var output = outputs[index];
         if (looped)
         {
             if (!DrawLoopback(shared, slot, gpu, renderer, decoders, loopback!, outputs, ref index, ref output, width, height, out var broke))
                 return;
-            // Its textures or render failed on this very frame: the plain picture, never a black one, while Failed stays published.
+            // Textures or render failed on this frame: draw the plain picture (never black) while Failed stays published.
             if (broke)
                 looped = false;
         }
@@ -553,13 +544,13 @@ public static unsafe partial class CompositorWorker
                 return;
         }
 
-        // The frame commit barrier (the user's directive): this picture has videos at two moments. It goes no further: what is on
-        // screen stays, and it is drawn again as the frames it lacks arrive, or once the barrier's time is up.
+        // Frame commit barrier: this picture mixes videos from two times, so it is not presented; the screen keeps the previous frame and
+        // this one is redrawn as missing frames arrive or when the barrier times out.
         _held = decoders.HoldsForOthers();
         if (_held)
             return;
 
-        // Whether this frame showed every exact frame, set before its readback so a reader can check the very frame it got.
+        // Set exactness before readback so readers can check the exact frame they received.
         control.PresentedExact = decoders.LastFrameExact ? 1 : 0;
         if ((header.Flags & FrameSceneHeader.FlagReadback) != 0)
             ReadBack(shared, gpu, renderer, output, width, height, header.FrameSequenceNumber, (header.Flags & FrameSceneHeader.FlagReadbackNv12) != 0,
@@ -589,12 +580,11 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
-    /// The size of the output ring for a frame of <paramref name="width"/> x <paramref name="height"/> (5.4.1A): the ring as it is
-    /// (<paramref name="ringWidth"/> x <paramref name="ringHeight"/>, 0 for none) while the frame fits in it and fills at least half its
-    /// area; else a new one. The first ring, and every ring a frame is read back from (<paramref name="exact"/>: the readback copies the
-    /// whole texture), is the frame's size exactly; a ring grown or re-fitted is rounded up to 128 pixels a side (at most 8192), and a grown
-    /// one keeps the old ring's larger side, so a drag of the player makes a few rings, not one a pixel. Pure: the golden test
-    /// player-resize-no-stretch checks it.
+    /// Output ring size for a <paramref name="width"/> x <paramref name="height"/> frame: keep the current ring (<paramref name="ringWidth"/>
+    /// x <paramref name="ringHeight"/>, 0 = none) while the frame fits and fills at least half its area; else a new one. The first ring and
+    /// readback rings (<paramref name="exact"/>: readback copies the whole texture) are exactly frame-sized; grown or refitted rings round up
+    /// to 128 px per side (max 8192), and growth keeps the old larger side, so a player drag creates a few rings, not one per pixel. Pure;
+    /// covered by the player-resize-no-stretch golden.
     /// </summary>
     internal static (int Width, int Height) OutputCapacity(int ringWidth, int ringHeight, int width, int height, bool exact)
     {
@@ -610,9 +600,9 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
-    /// The scene drawn into the output texture (every frame but the Export Quality Preview's). <paramref name="refused"/>: neither of two
-    /// output textures could be taken (a reader holding them), and nothing was drawn. The slot's content size is written while it is
-    /// held (5.4.1A: a reader that holds it reads the size of the frame in it).
+    /// Draws the scene into an output texture (all frames except the Live Encoded Preview's). <paramref name="refused"/>: neither of two
+    /// output textures could be acquired (held by a reader) and nothing was drawn. The slot's content size is written while held, so a
+    /// reader holding it sees the size of the frame it contains.
     /// </summary>
     private static void RenderInto(CompositorSharedMemory shared, int slot, GpuDevice gpu, SceneRenderer renderer, DecoderPool decoders, OutputRing outputs,
         ref int index, ref (GpuTexture Texture, nint KeyedMutex) output, int width, int height, out bool refused)
@@ -625,7 +615,7 @@ public static unsafe partial class CompositorWorker
         var decodedBefore = decoders.FramesDecoded;
         try
         {
-            // The texture after the one shown last; a reader holding it (rarely, and briefly) makes it the next.
+            // Use the texture after the last shown; if a reader holds it (rare, brief), fall back to the next.
             var started = Stopwatch.GetTimestamp();
             if (Dxgi.AcquireSync(output.KeyedMutex, 0, 50) != 0)
             {
@@ -638,9 +628,9 @@ public static unsafe partial class CompositorWorker
                 }
             }
 
-            // The render target is chosen only now, from the output texture actually held: the fallback above may have moved to the
-            // next slot, and drawing into the first one (whose mutex was never acquired) published a stale or black frame. An HDR
-            // export's frame read back as P010 is drawn into a 16-bit float picture of the worker's own, for its ten bits.
+            // Choose the render target only now, from the texture actually held: the fallback may have moved slots, and drawing into the
+            // unacquired one published stale or black frames. HDR exports read back as P010 render into a private RGBA16F picture to keep
+            // 10 bits.
             var target = (header.Flags & (FrameSceneHeader.FlagReadback | FrameSceneHeader.FlagReadbackP010)) == (FrameSceneHeader.FlagReadback | FrameSceneHeader.FlagReadbackP010)
                 ? P010Picture(gpu, width, height).Rtv
                 : output.Texture.Rtv;
@@ -672,12 +662,11 @@ public static unsafe partial class CompositorWorker
     }
 
     /// <summary>
-    /// The Export Quality Preview's frame (5.4B): the scene rendered at the canvas's size and handed to the encoder while the decode lanes
-    /// hold back, the bounded wait for its decoded picture with them free and no output texture held, then the compare drawn into the
-    /// output under its keyed mutex. While an edge is tuned (5.4C), or with the Magnifier on under the pointer (5.4D), the loupe comes
-    /// over it: its point found beside the render, its view
-    /// (the compare picture round that point) drawn before the output is taken, one quad laid on after the compare, under the mutex.
-    /// False when no output texture could be taken; broke when the render failed on this frame (nothing drawn: the caller draws the plain picture).
+    /// Live Encoded Preview frame: render at canvas size and submit to the encoder while decode lanes hold back; bounded wait for the decoded
+    /// picture with lanes free and no output held; then draw the compare into the output under its keyed mutex. While an edge is tuned, or
+    /// the Magnifier is on under the pointer, the loupe is overlaid: its point found alongside the render, its view (compare picture around
+    /// that point) drawn before acquiring the output, and one quad composited after the compare under the mutex. False when no output could
+    /// be acquired; <paramref name="broke"/> when the render failed this frame (nothing drawn; the caller draws the plain picture).
     /// </summary>
     private static bool DrawLoopback(CompositorSharedMemory shared, int slot, GpuDevice gpu, SceneRenderer renderer, DecoderPool decoders, ExportLoopbackPreview loopback,
         OutputRing outputs, ref int index, ref (GpuTexture Texture, nint KeyedMutex) output, int width, int height, out bool broke)
@@ -695,9 +684,9 @@ public static unsafe partial class CompositorWorker
             var layers = MemoryMarshal.CreateReadOnlySpan(ref shared.Layer(slot, 0), count);
             loopback.Render(ref control, header, layers, decoders);
 
-            // The loupe's point (its edge scan, a layer pass) here, never under the output's mutex; the encoded frame was rendered
-            // without it (Render's flat copy has no loupe key). An edge being tuned comes first; else the Magnifier (5.4D) round the
-            // point under the pointer, its fractions of the output made this output's pixels.
+            // Loupe point (edge scan, a layer pass) computed here, never under the output mutex; the encoded frame was rendered without
+            // it (Render's flat copy has no loupe key). Edge tuning takes priority; else the Magnifier at the pointer, converting output
+            // fractions to pixels.
             loupe = !loopback.Broken(header)
                 && ((header.LoupeClipKey != 0 && renderer.PrepareLoupe(header, layers, width, height, drawLayer: false))
                     || ((header.Flags & FrameSceneHeader.FlagLoopbackLoupe) != 0
@@ -716,7 +705,7 @@ public static unsafe partial class CompositorWorker
 
         loopback.Collect(ref control);
 
-        // The loupe's view: the compare picture itself (encoded, or the difference) round the same point, point sampled.
+        // Loupe view: the compare picture (encoded or difference) around the same point, point-sampled.
         if (loupe && renderer.LoupeFocus is { } focus)
             loupe = loopback.DrawLoupeView(header, focus.Rtv, focus.Side, focus.X, focus.Y, focus.Scale);
         var collected = Stopwatch.GetTimestamp();
@@ -751,7 +740,7 @@ public static unsafe partial class CompositorWorker
         return true;
     }
 
-    // An HDR export's picture before its P010 conversion (5.4B): RGBA16F at the output's size, made on the first such frame.
+    // HDR export picture before P010 conversion: RGBA16F at output size, created on first use.
     private static GpuTexture? _p010Picture;
 
     private static GpuTexture P010Picture(GpuDevice gpu, int width, int height)
@@ -765,10 +754,10 @@ public static unsafe partial class CompositorWorker
         return _p010Picture;
     }
 
-    // The last picture was held back by the frame commit barrier: it is drawn again on the worker's next turn, whatever wakes it.
+    // Last picture was held by the frame commit barrier: redraw on the next turn, whatever wakes the worker.
     private static bool _held;
 
-    // The output generation made last (announced or not): names are never reused within a worker.
+    // Last output generation created (announced or not): names are never reused within a worker.
     private static int _lastGeneration;
 
     // ----- Readback (FlagReadback: exports, filmstrips) -----
@@ -779,16 +768,16 @@ public static unsafe partial class CompositorWorker
     private static nint _readbackStaging;
     private static (int Width, int Height) _readbackSize;
 
-    // NV12's two planes, drawn on the card, and the second's staging texture (the first's is _readbackStaging, in R8 while its size says so).
-    // P010's (5.4B) are the same two, in R16 and R16G16 while _readbackIsP010 says so.
+    // NV12 planes rendered on the GPU, plus the chroma staging texture (luma uses _readbackStaging as R8 when sized for it). For P010 the
+    // same two are R16 and R16G16 while _readbackIsP010 is set.
     private static GpuTexture? _nv12Luma, _nv12Chroma;
     private static nint _nv12ChromaStaging;
     private static bool _readbackIsNv12, _readbackIsP010;
 
     /// <summary>
-    /// The frame just drawn into the client's readback section: copied to a staging texture, mapped (waiting for the card),
-    /// written row by row, and its sequence number set last. A section too small, or not there, is skipped (logged once).
-    /// <paramref name="p010Picture"/> (5.4B, FlagReadbackP010): the 16-bit float frame, read back as P010 instead (NV12's layout, two bytes a sample).
+    /// Copies the just-drawn frame into the client's readback section: staging copy, map (waits on the GPU), row-by-row write, and the
+    /// sequence number set last. A missing or too-small section is skipped (logged once). <paramref name="p010Picture"/>
+    /// (FlagReadbackP010): the RGBA16F frame, read back as P010 instead (NV12 layout, two bytes per sample).
     /// </summary>
     private static void ReadBack(CompositorSharedMemory shared, GpuDevice gpu, SceneRenderer renderer, (GpuTexture Texture, nint KeyedMutex) output, int width, int height, long sequence, bool nv12,
         GpuTexture? p010Picture)
@@ -815,8 +804,8 @@ public static unsafe partial class CompositorWorker
                 _readbackGeneration = generation;
             }
 
-            // The frame is written through a raw pointer: never past the view actually mapped, whatever capacity the client's control
-            // block claims now (a capacity raised without a new section would otherwise write beyond it).
+            // Raw-pointer write: never exceed the actually mapped view, whatever capacity the control block now claims (a capacity raised
+            // without a new section would otherwise overrun it).
             if (needed > _readbackView.Capacity)
                 return;
 
@@ -852,14 +841,14 @@ public static unsafe partial class CompositorWorker
 
             if (p010)
             {
-                // The worker's own picture, not the shared output: no keyed mutex.
+                // Private picture, not the shared output: no keyed mutex needed.
                 renderer.ToP010(p010Picture!, _nv12Luma!, _nv12Chroma!);
                 gpu.Context.CopyResource(_readbackStaging, _nv12Luma!.Texture);
                 gpu.Context.CopyResource(_nv12ChromaStaging, _nv12Chroma!.Texture);
             }
             else
             {
-                // The output texture is shared: copied out under its keyed mutex, as every other use of it.
+                // Shared output texture: copy under its keyed mutex like every other access.
                 if (Dxgi.AcquireSync(output.KeyedMutex, 0, 100) != 0)
                     return;
                 try
@@ -892,7 +881,7 @@ public static unsafe partial class CompositorWorker
                     Buffer.MemoryCopy(mapped.Data + (long)y * mapped.RowPitch, into + (long)y * row, row, row);
                 if (nv12 || p010)
                 {
-                    // The UV plane, after the Y plane, rows packed.
+                    // UV plane after the Y plane, rows packed.
                     Com.Check(gpu.Context.Map(_nv12ChromaStaging, 0, D3D11.MapRead, 0, out var chroma), "Map readback (UV)");
                     try
                     {
@@ -956,8 +945,8 @@ public static unsafe partial class CompositorWorker
         CompositorSharedMemory.WriteString(shared.Control.Message, message);
 
     /// <summary>
-    /// A fault in one line for the shared note the client logs when the worker ends (511 characters at most): the exception's type,
-    /// its message and the frame that threw. The full stack is in HandPeg.log, written by this process.
+    /// One-line fault summary for the shared note the client logs when the worker exits (max 511 chars): exception type, message and
+    /// throwing frame. The full stack is in HandPeg.log, written by this process.
     /// </summary>
     internal static string FaultLine(Exception ex)
     {
@@ -965,7 +954,7 @@ public static unsafe partial class CompositorWorker
         return top is { Length: > 0 } ? $"{ex.GetType().Name}: {ex.Message} {top}" : $"{ex.GetType().Name}: {ex.Message}";
     }
 
-    /// <summary>The three shared output textures of one worker generation, each with its keyed mutex and its named handle.</summary>
+    /// <summary>The three shared output textures of one worker generation, each with a keyed mutex and named handle.</summary>
     private sealed class OutputRing : IDisposable
     {
         private readonly (GpuTexture Texture, nint KeyedMutex, nint Handle)[] _ring = new (GpuTexture, nint, nint)[CompositorProtocol.OutputRing];
@@ -974,7 +963,7 @@ public static unsafe partial class CompositorWorker
         public int Height { get; }
         public int Generation { get; }
 
-        /// <summary>Its generation and size are in the control block (after its first frame).</summary>
+        /// <summary>True once its generation and size are published in the control block (after its first frame).</summary>
         public bool Announced { get; set; }
 
         public OutputRing(GpuDevice gpu, string baseName, int generation, int width, int height)

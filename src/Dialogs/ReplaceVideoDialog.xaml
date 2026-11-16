@@ -8,7 +8,7 @@
         <TextBlock Text="A video is already open." FontWeight="SemiBold" FontSize="14" />
         <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,12" />
 
-        <!-- The name the current video, cuts and settings are saved under, when they are kept -->
+        <!-- Project name for saving the current video, cuts and settings -->
         <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />

@@ -3,10 +3,9 @@ using HandPegApp.Models.Timeline;
 namespace HandPegApp.Models;
 
 /// <summary>
-/// What the New Project studio (5.4A, ProjectManagerWindow) asks the main window to make: a project of this name (and folder, null for
-/// the Projects folder) with this output frame (0 x 0 leaves the size to the first clip), rate (null: the first clip's own) and colour
-/// space, a Game Preset to start from (null for none) and the files to lay on its Sequence, in order. The dialog never opens anything
-/// itself: the window installs a fresh project and hands this to <c>MainWindow.CreateProjectAsync</c>.
+/// New Project dialog request (ProjectManagerWindow): name, folder (null = Projects), output frame (0 x 0 = first clip), rate (null = first
+/// clip), colour space, optional Game Preset and ordered files for the Sequence. The window installs a fresh project and passes this to
+/// <c>MainWindow.CreateProjectAsync</c>.
 /// </summary>
 public sealed record NewProjectRequest(string Name, string? Folder, int FrameWidth, int FrameHeight, FrameRate? FrameRate,
     ProjectColorSpace ColorSpace, string? StylePath, IReadOnlyList<string> Files)
@@ -21,9 +20,8 @@ public sealed record NewProjectRequest(string Name, string? Folder, int FrameWid
     public const int LargestSide = 8192;
 
     /// <summary>
-    /// The output frame of an aspect ("16:9", "9:16" or "1:1"; anything else is 16:9) whose short side is <paramref name="shortSide"/>
-    /// pixels: 1080 gives 1920 x 1080, 1080 x 1920 or 1080 x 1080. A custom size (both sides at least 16) is taken as it is instead.
-    /// Every side is even (most encoders refuse odd ones) and within 16 to 8192.
+    /// Frame size for an aspect ("16:9", "9:16", "1:1"; default 16:9) with short side <paramref name="shortSide"/>, or a custom size (both
+    /// sides &gt;= 16). Sides are even and clamped to 16-8192.
     /// </summary>
     public static (int Width, int Height) FrameFor(string aspect, int shortSide, int customW = 0, int customH = 0)
     {

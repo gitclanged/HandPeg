@@ -4,20 +4,19 @@ using System.Windows.Controls;
 
 namespace HandPegApp.Docking;
 
-// ----- DockManager: an arrangement taken up in place (Rebind and ShowShares, their own file since 5.4.4) -----
+// ----- DockManager: in-place layout rebind (Rebind, ShowShares) -----
 public sealed partial class DockManager
 {
-    /// <summary>How far apart two shares of a split may be, each as a part of its split's whole, and still be the same (5.4.4): 0.01 %.</summary>
+    /// <summary>Tolerance for equal normalized split shares: 0.01 %.</summary>
     internal const double ShareTolerance = 1e-4;
 
-    // The splits' shares in a signature (Signature, compact JSON): taken out to see whether two arrangements differ in nothing else.
+    // Matches split shares in a Signature (compact JSON); stripped to compare layouts ignoring shares.
     private static readonly Regex SizesAttribute = new("\"Sizes\":\\[[^\\]]*\\],?", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     /// <summary>
-    /// The arrangement just taken up (Load, Apply, Reset) laid out. The one laid out already is taken up in place (Rebind), and so is one
-    /// that differs from it only in its splits' shares and its groups' front tabs (5.4.4, the user's: a project tab brought back with the
-    /// same layout, its borders elsewhere, took the whole layout again): the windows stay, the shares are set and a front tab shown where
-    /// they differ. Anything else, and anything while a pane is being dragged, is laid out again (Rebuild).
+    /// Lays out a newly loaded layout (Load, Apply, Reset). Identical layouts, or ones differing only in split shares and active tabs
+    /// (e.g. a project tab restored with moved borders), rebind in place: windows stay, shares and active tabs update where different.
+    /// Anything else, or any change during a pane drag, rebuilds.
     /// </summary>
     private void RebindOrRebuild()
     {
@@ -38,16 +37,15 @@ public sealed partial class DockManager
         Rebuild();
     }
 
-    /// <summary>Whether two signatures (or two arrangements as saved) are the same but for their splits' shares (pure, 5.4.4).</summary>
+    /// <summary>Whether two signatures (or saved layouts) are equal ignoring split shares (pure).</summary>
     internal static bool SameButShares(string a, string b) =>
         string.Equals(SizesAttribute.Replace(a, ""), SizesAttribute.Replace(b, ""), StringComparison.Ordinal);
 
     /// <summary>
-    /// The arrangement taken up again is the one laid out (a copy of it, read back from the settings), or one that differs from it only in
-    /// its shares and front tabs (5.4.4): the windows stay as they are. The hosts and the splits are always told which nodes of the new
-    /// tree they show (never skipped: a border dragged next writes its sizes into the tree that is saved, a tab clicked finds its group's
-    /// host, the joined header's bar its part). A group shows another pane only when the one shown now (Render's rule) is not the one the
-    /// new tree wants; a split takes the new shares only where they differ. Nothing different, nothing is written: no layout follows.
+    /// In-place rebind for a structurally identical layout (shares and active tabs may differ); windows stay. Hosts and splits always
+    /// rebind to the new tree's nodes (so later border drags write into the saved tree, tab clicks find their host, the joined header
+    /// finds its part). A group switches pane only when its shown pane (Render's rule) differs; splits update only differing shares. No
+    /// differences means no writes and no layout pass.
     /// </summary>
     private void Rebind()
     {
@@ -57,7 +55,7 @@ public sealed partial class DockManager
             if (old.Panes.FirstOrDefault() is not { } first || (side is null ? _state.Main : side.State.Tree)?.GroupOf(first) is not { } fresh)
                 continue;
 
-            // 5.4.4: compared with the pane shown, not with the old tree's Active, which can name a hidden pane Render passed over.
+            // Compare with the shown pane, not the old tree's Active, which may name a hidden pane Render skipped.
             var wanted = fresh.Active;
             var front = FrontOf(old, IsPaneShown);
             _groupHosts[i] = (host, fresh, side);
@@ -76,9 +74,8 @@ public sealed partial class DockManager
             }
         }
 
-        // 5.4D: the splits laid out are the new tree's too (the same places in it: the tree is the same), so a border dragged next writes
-        // its sizes into the arrangement that is saved, not into the one laid out before; and their least sizes are taken again. Each
-        // shows the new tree's shares too, so a tree taken up in place always shows its own, whatever was dragged on screen before.
+        // Rebind splits to the new tree's nodes (same positions) so later border drags write into the saved layout, re-read minimum
+        // sizes, and apply the new tree's shares regardless of prior on-screen drags.
         foreach (var view in _splitViews)
         {
             if ((view.Side is null ? _state.Main : view.Side.State.Tree) is { } root && NodeAt(root, view.Path) is { IsGroup: false } fresh)
@@ -93,7 +90,7 @@ public sealed partial class DockManager
 
     private bool IsPaneShown(string pane) => _panes.TryGetValue(pane, out var known) && known.IsShown();
 
-    /// <summary>The pane a group shows (pure, 5.4.4): its Active when that is shown, else its first pane shown (Render's rule); null with none shown.</summary>
+    /// <summary>Shown pane of a group (pure; Render's rule): Active if visible, else first visible; null when none.</summary>
     internal static string? FrontOf(DockNode group, Func<string, bool> shown)
     {
         string? first = null;
@@ -110,10 +107,9 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A split's shares as its tree has them, given to its grid's columns or rows in place (5.4D, Rebind): those as wide or as tall as their
-    /// content keep their Auto size. 5.4.4: only when they differ from the grid's (<see cref="SharesMatch"/>), so a split taken up as it is
-    /// invalidates nothing; and as RenderSplit lays them out, a share under 1 kept (SetDips, for a drag, keeps each at least 1: a split of
-    /// 0.5, 0.5 and 1.3 came out 1, 1 and 1.3).
+    /// Applies tree shares to the grid's columns/rows in place (Rebind); content-sized parts keep Auto. Only when different
+    /// (<see cref="SharesMatch"/>), so an unchanged split invalidates nothing. Shares below 1 are kept as RenderSplit does (SetDips
+    /// clamps drags to >= 1, which turned 0.5/0.5/1.3 into 1/1/1.3).
     /// </summary>
     private static void ShowShares(SplitView view)
     {
@@ -138,13 +134,12 @@ public sealed partial class DockManager
         }
     }
 
-    /// <summary>A part's share of its split as RenderSplit lays it out: the tree's, 1 for none.</summary>
+    /// <summary>Part share as RenderSplit uses it: tree value, or 1 when absent.</summary>
     private static double ShareOf(DockNode split, int index) => index < split.Sizes.Count && split.Sizes[index] > 0 ? split.Sizes[index] : 1;
 
     /// <summary>
-    /// Whether a split's shares shown and wanted are the same (pure, 5.4.4): each as a part of its own list's whole, within
-    /// <see cref="ShareTolerance"/> (shares are relative: 70/30, 1/1.3, 0.5/0.5 and a drag's DIPs all mean their ratio). A share that is not
-    /// a positive number (a part not laid out as a share) never matches.
+    /// Whether shown and desired shares match after normalizing each list (pure), within <see cref="ShareTolerance"/> (shares are
+    /// ratios: 70/30, 1/1.3, 0.5/0.5 or drag DIPs). Non-positive shares (non-star parts) never match.
     /// </summary>
     internal static bool SharesMatch(IReadOnlyList<double> shown, IReadOnlyList<double> wanted)
     {
@@ -168,7 +163,7 @@ public sealed partial class DockManager
         return true;
     }
 
-    /// <summary>A part's share as the tree has it, a star of its grid (5.4.4, Rebind only: the drags keep theirs at least 1, SetDips).</summary>
+    /// <summary>Tree share as a grid star length (Rebind only; drags clamp to >= 1 via SetDips).</summary>
     private static void SetShare(Grid grid, FrameworkElement element, bool vertical, double share)
     {
         var length = new GridLength(share > 0 ? share : 1, GridUnitType.Star);

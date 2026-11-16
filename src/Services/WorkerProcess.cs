@@ -10,15 +10,13 @@ using static HandPegApp.Native.Kernel32;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// HandPeg.exe started again as one of its own workers (the GPU compositor, the hardware benchmark: Pass 5.0-Core), the
-/// way the crash sentinel is started (CrashReporter.Watch.StartSentinel) but inside HandPeg's job:
+/// Launches HandPeg.exe as a worker (GPU compositor, hardware benchmark), like the crash sentinel but inside HandPeg's job:
 /// <list type="bullet">
-/// <item>STARTF_FORCEOFFFEEDBACK: HandPeg.exe is a windowed program that never opens a window as a worker, so without it
-/// Windows would show the busy pointer for five seconds (Section 2 of CLAUDE.md).</item>
-/// <item>Started suspended, put into the kill-on-close foreground job (JobObjects) before its first instruction, then let go:
-/// it dies with HandPeg whatever way HandPeg ends, and never runs a moment outside the job.</item>
-/// <item>It inherits exactly one handle, its standard output pipe when it is read (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), and
-/// no other: a tool being started at the same moment never has its pipes held open by it.</item>
+/// <item>STARTF_FORCEOFFFEEDBACK: avoids ~5 s of busy cursor for a windowless GUI child.</item>
+/// <item>Created suspended and assigned to the kill-on-close foreground job (JobObjects) before resuming, so it never runs outside the
+/// job and dies with HandPeg.</item>
+/// <item>Inherits exactly one handle, its stdout pipe when read (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), so concurrent tool pipes are
+/// never held open.</item>
 /// </list>
 /// </summary>
 internal sealed partial class WorkerProcess : IDisposable
@@ -35,7 +33,7 @@ internal sealed partial class WorkerProcess : IDisposable
 
     public int ProcessId { get; }
 
-    /// <summary>The program started: HandPeg.exe itself (or whatever program hosts the worker entry points, such as the golden tests).</summary>
+    /// <summary>Executable to launch: HandPeg.exe, or another worker host (e.g. golden tests).</summary>
     public static string ProgramPath { get; set; } = Environment.ProcessPath ?? "";
 
     /// <summary>A handle that is signalled when the process ends (for WaitHandle.WaitAny beside other events).</summary>
@@ -46,8 +44,7 @@ internal sealed partial class WorkerProcess : IDisposable
     public int ExitCode => GetExitCodeProcess(_process, out var code) ? (int)code : -1;
 
     /// <summary>
-    /// Starts the program with these arguments (already quoted where needed). With <paramref name="readOutput"/>, its
-    /// standard output (and error) is a pipe read by <see cref="ReadLinesAsync"/>.
+    /// Starts with pre-quoted arguments; with <paramref name="readOutput"/>, stdout/stderr go to a pipe read by <see cref="ReadLinesAsync"/>.
     /// </summary>
     public static unsafe WorkerProcess Start(string arguments, bool readOutput, ProcessClass jobClass = ProcessClass.Foreground)
     {
@@ -96,9 +93,9 @@ internal sealed partial class WorkerProcess : IDisposable
                     throw new Win32Exception(Marshal.GetLastPInvokeError());
             }
 
-            // Into the job before it runs a single instruction, then on its way. A compositor worker (the foreground class) outside the
-            // kill-on-close job would outlive a HandPeg crash holding a GPU device: one that cannot be put in is ended before it runs,
-            // and the start fails. A background-class worker (the hardware test) also waits on HandPeg, so it is only logged.
+            // Assign to the job before resuming. A foreground worker (compositor) outside the job could outlive a crash holding a GPU
+            // device, so assignment failure terminates it and fails the start; background workers (hardware test) also watch HandPeg,
+            // so failure is only logged.
             if (!JobObjects.Assign(started.ProcessId, jobClass, efficiencyMode: false))
             {
                 AppLog.Write($"Worker process: {started.ProcessId} could not be put in its job ({jobClass})");
@@ -164,8 +161,8 @@ internal sealed partial class WorkerProcess : IDisposable
     }
 
     /// <summary>
-    /// Starts it, reads every line it writes, and returns its exit code; cancelling kills it. In the foreground job unless
-    /// <paramref name="jobClass"/> says otherwise (5.5A: the first-run window's quick hardware check runs in the background one).
+    /// Runs to completion, streaming every output line, and returns the exit code; cancel kills it. Foreground job unless
+    /// <paramref name="jobClass"/> overrides (e.g. the first-run quick hardware check uses background).
     /// </summary>
     public static async Task<int> RunLinesAsync(string arguments, Action<string> onLine, CancellationToken cancellationToken, ProcessClass jobClass = ProcessClass.Foreground)
     {

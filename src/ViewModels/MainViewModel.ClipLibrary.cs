@@ -6,19 +6,18 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Ping-to-Mark highlights and the Personal Clip Library (Pass 5.2C, Services/ClipLibrary.cs) -----
-// Ctrl+J (or Alt + a click on the player's picture) drops a highlight marker at the playhead, the click's place on the picture kept on it
-// as its focal point (TimelineMarker.FocalX / FocalY: what Pass 5.3B's Zoom-Hold macro aims at). A clip's "Save Clip to Personal Clip
-// Library..." puts its span in the library with a title, tags and the focal point of a highlight inside it; a clip dropped from the
-// media browser's Clip Library starts and ends where it was saved.
+// ----- Ping-to-Mark highlights and Personal Clip Library (Services/ClipLibrary.cs) -----
+// Ctrl+J (or Alt+click on the player) drops a highlight marker at the playhead, storing the click as its focal point
+// (TimelineMarker.FocalX/FocalY, the Zoom-Hold macro target). "Save Clip to Personal Clip Library..." stores a clip's span with
+// title, tags and an inner highlight's focal point; clips dropped from the Clip Library restore their saved in/out.
 public partial class MainViewModel
 {
-    /// <summary>The library's clips changed (one saved or taken out): the media browser's Clip Library lists them again.</summary>
+    /// <summary>Raised when library clips change (save/remove) so the Clip Library view refreshes.</summary>
     public event Action? ClipLibraryChanged;
 
     /// <summary>
-    /// Ping-to-Mark: a highlight marker at the playhead (one step of Undo), with where on the picture it was pinged (fractions of the frame,
-    /// 0 to 1 across and down) when it was clicked there. A marker already at the playhead becomes the highlight (and takes the focal point).
+    /// Ping-to-Mark: adds a highlight marker at the playhead (one undo step) with an optional focal point (frame fractions 0..1). An
+    /// existing marker at the playhead is promoted to a highlight and takes the focal point.
     /// </summary>
     public TimelineMarker? PingToMark(double? focalX = null, double? focalY = null)
     {
@@ -57,19 +56,19 @@ public partial class MainViewModel
         return marker;
     }
 
-    /// <summary>Whether a clip can go into the Clip Library: one of a file (a video, a sound, a picture).</summary>
+    /// <summary>Whether a clip can be saved to the Clip Library (file-backed video, audio or image).</summary>
     public bool CanSaveToClipLibrary(Layer view) =>
         ClipOf(view) is { SourcePath.Length: > 0, ContentKind: LayerKind.VideoFile or LayerKind.Audio or LayerKind.Image };
 
-    /// <summary>The focal point of the first highlight with one inside a clip's span, or null.</summary>
+    /// <summary>Focal point of the first highlight with one within a clip's span, or null.</summary>
     public (double X, double Y)? FocalIn(Layer view) =>
         ClipOf(view) is { } clip && Markers.FirstOrDefault(m => m is { FocalX: not null, FocalY: not null } && m.Seconds >= clip.Start - 1e-6 && m.Seconds <= clip.End + 1e-6) is { } marker
             ? (marker.FocalX!.Value, marker.FocalY!.Value)
             : null;
 
     /// <summary>
-    /// Puts a clip's span into the Personal Clip Library (ClipLibrary.Save: a lossless copy, away from the interface's thread), with a title,
-    /// tags and the focal point of a highlight inside it. Null when it could not be saved (the status line says why).
+    /// Saves a clip's span to the Personal Clip Library (ClipLibrary.Save: lossless copy off the UI thread) with title, tags and inner
+    /// highlight focal point. Null on failure (reason in status line).
     /// </summary>
     public async Task<ClipLibrary.Entry?> SaveToClipLibraryAsync(Layer view, string title, IReadOnlyList<string> tags)
     {
@@ -114,8 +113,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A clip just placed from a file of the Clip Library: it starts and ends where the clip was saved (ClipLibrary.Entry.In / Out), its copy
-    /// having begun on the key frame before. No undo step of its own: the drop's.
+    /// Trims a clip placed from a Clip Library file to its saved In/Out (ClipLibrary.Entry; the copy starts at the preceding keyframe).
+    /// Part of the drop's undo step.
     /// </summary>
     private void FitToLibraryEntry(Layer view)
     {
@@ -137,9 +136,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A clip just placed from a sub-clip of its file (5.4C, the Media Browser's cutter): it plays from <paramref name="inSeconds"/> to
-    /// <paramref name="outSeconds"/> of the file (its MediaOffset clock), from where it starts. Cut to the length first, then slipped, so
-    /// the slip always has the file's room. No undo step of its own: the add's (Undo takes the clip off whole).
+    /// Applies a Media Browser sub-clip range to a just-placed clip: plays <paramref name="inSeconds"/>..<paramref name="outSeconds"/>
+    /// of the file (MediaOffset clock) from its start. Trims to length first, then slips, so the slip always has room. Part of the
+    /// add's undo step.
     /// </summary>
     internal void FitToSourceRange(Layer view, double inSeconds, double outSeconds)
     {

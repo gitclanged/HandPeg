@@ -14,13 +14,11 @@ public static class BackupExporter
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     /// <summary>
-    /// Writes one JSON object holding appsettings.json and presets.json. A file that does not exist yet
-    /// (nothing has been saved) is represented by what the application is running with.
+    /// Exports appsettings.json and presets.json as one JSON object; missing files are represented by current in-memory values.
     /// </summary>
     public static void ExportSettingsAndPresets(string path)
     {
-        // This PC's tool paths, folders, devices and download sources stay out of the backup (BackupImporter.ProtectedKeys): an import
-        // never takes them, and a backup shared with someone names none of this PC's folders.
+        // Exclude machine-specific keys (BackupImporter.ProtectedKeys) so shared backups reveal no local paths and imports never apply them.
         var settings = ReadFile(AppSettings.FilePath) ?? JsonSerializer.SerializeToNode(AppSettings.Current);
         if (settings is JsonObject fields)
         {
@@ -42,8 +40,7 @@ public static class BackupExporter
     }
 
     /// <summary>
-    /// Writes one JSON object with an entry per project file, named after the file. Files that are not
-    /// valid JSON are left out and counted.
+    /// Exports all projects as one JSON object keyed by file name; invalid JSON files are skipped and counted.
     /// </summary>
     public static (int Exported, int Skipped) ExportProjects(string path)
     {

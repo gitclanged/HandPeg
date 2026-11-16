@@ -8,12 +8,12 @@ using System.Windows.Threading;
 
 namespace HandPegApp;
 
-// ----- The unified timeline's mouse: what is under the pointer, moving, the tracks' height, the wheel and the middle button (split from UnifiedTimelineControl.Input.cs, 5.4.1-M5) -----
+// ----- Unified timeline mouse: hit-testing, move handling, track height, wheel and middle button -----
 public sealed partial class UnifiedTimelineControl
 {
-    // ----- What is under the pointer -----
+    // ----- Hit-testing -----
 
-    /// <summary>The block under a point of the laid-out rows in a lane, the topmost (the last drawn) first; its J/L sound's reach counts.</summary>
+    /// <summary>Block at a layout point in a lane, topmost (last drawn) first; includes J/L audio extensions.</summary>
     private TimelineBlock? BlockAt(int index, Point laid)
     {
         var lane = _lanes[index];
@@ -31,7 +31,7 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    // Where a J/L cut's sound lies: the lower part of the block, reaching out past its edges.
+    // J/L audio band rect: the block's lower part extended past its edges.
     private Rect? SoundReach(TimelineBlock block, Rect rect)
     {
         var scale = PixelsPerSecond;
@@ -42,7 +42,7 @@ public sealed partial class UnifiedTimelineControl
             Math.Max(rect.Width + (split.LeadIn + split.TailOut) * scale, 1), rect.Height * (1 - SoundBandTop));
     }
 
-    /// <summary>Which edge of a block's sound a point is on, in its lower part: true where it starts, false where it ends; null neither.</summary>
+    /// <summary>J/L audio edge hit in the lower band: true = start, false = end, null = none.</summary>
     private bool? SplitEdgeAt(TimelineBlock block, Rect rect, Point laid)
     {
         var scale = PixelsPerSecond;
@@ -57,7 +57,7 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    /// <summary>Which of a block's fade handles a point is on: true the fade in's, false the fade out's; null neither.</summary>
+    /// <summary>Fade handle hit: true = fade in, false = fade out, null = none.</summary>
     private bool? FadeHandleAt(in Lane lane, TimelineBlock block, Point laid)
     {
         if (block.Fades is not { } fades || block.FadeEdit is null)
@@ -74,7 +74,7 @@ public sealed partial class UnifiedTimelineControl
         return toIn <= toOut;
     }
 
-    /// <summary>Whether a point is on a block's gain line (away from its ends, which trim).</summary>
+    /// <summary>Gain line hit (excluding the ends, which trim).</summary>
     private static bool OnGainLine(in Lane lane, TimelineBlock block, Point laid)
     {
         if (block.Gain is not { } gain || block.GainEdit is null)
@@ -85,11 +85,11 @@ public sealed partial class UnifiedTimelineControl
             && laid.X > rect.Left + TimelineMetrics.EdgePixels && laid.X < rect.Right - TimelineMetrics.EdgePixels;
     }
 
-    /// <summary>Whether a point is on a fade handle of the block under it: a seam's tab there gives way to the handle.</summary>
+    /// <summary>True on a fade handle of the block beneath; takes precedence over a seam tab.</summary>
     private bool OnFadeHandle(int index, Point laid) =>
         _lanes[index].Detailed && BlockAt(index, laid) is { } block && FadeHandleAt(_lanes[index], block, laid) is not null;
 
-    /// <summary>The seam whose tab a point is on (an index into the row's seams); -1 for none.</summary>
+    /// <summary>Index of the seam tab hit in the row's seams; -1 for none.</summary>
     private int SeamAt(in Lane lane, Point laid)
     {
         var scale = PixelsPerSecond;
@@ -106,7 +106,7 @@ public sealed partial class UnifiedTimelineControl
         return -1;
     }
 
-    /// <summary>The gap whose pill a point is on (an index into the row's gaps): only the pill of the gap the pointer is in shows, so only it counts; -1 for none.</summary>
+    /// <summary>Index of the gap pill hit (only the hovered gap's pill is shown and hit-testable); -1 for none.</summary>
     private int GapAt(in Lane lane, Point laid)
     {
         if (!lane.Detailed || IsDragging || _hoveredGap is not { } hovered || !ReferenceEquals(hovered.Row, lane.Row) || hovered.Index >= lane.Row.Gaps.Count)
@@ -116,7 +116,7 @@ public sealed partial class UnifiedTimelineControl
         return right - left >= GapLeast && Rect.Inflate(GapPill(lane, left, right), 2, 2).Contains(laid) ? hovered.Index : -1;
     }
 
-    /// <summary>The gap a point of a lane drawn in full lies in (an index into the row's gaps), whose pill then shows; -1 for none.</summary>
+    /// <summary>Index of the gap containing a point on a full-size lane (its pill shows); -1 for none.</summary>
     private int GapUnder(in Lane lane, Point laid)
     {
         if (!lane.Detailed || IsDragging)
@@ -132,7 +132,7 @@ public sealed partial class UnifiedTimelineControl
         return -1;
     }
 
-    /// <summary>The chevron a point is on (x on the control, y on the rows): the stack it opens and closes; null for none.</summary>
+    /// <summary>Chevron hit (x in control space, y in row space): the stack it toggles; null for none.</summary>
     private static ChildStack? ChevronAt(in Lane lane, Point at)
     {
         if (lane.Stacks == 0 || lane.Height < 12)
@@ -150,8 +150,8 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    // What a chevron does, in words: with one stack, its lanes; with two, which of them. A stack of effect lanes alone (5.3: a
-    // Cutout with an effect of its own) shows them or hides them, having no thin bars; a stack with some among others says so.
+    // Chevron tooltip: names the stack (or which of two). An effect-lanes-only stack (e.g. a Cutout with its own effect) shows/hides them
+    // (no thin bars); a mixed stack mentions them.
     private static string ChevronTip(in Lane lane, ChildStack stack, bool open)
     {
         var (inStack, hiding) = (0, 0);
@@ -173,7 +173,7 @@ public sealed partial class UnifiedTimelineControl
         return open ? $"Fold {lanes} to {bars}" : $"Open {lanes} to their full height";
     }
 
-    /// <summary>The stretch put back whose Hide pill a point is on (an index into the row's reveals); -1 for none.</summary>
+    /// <summary>Index of the unfolded range whose Hide pill is hit; -1 for none.</summary>
     private int RevealAt(in Lane lane, Point laid)
     {
         var scale = PixelsPerSecond;
@@ -194,7 +194,7 @@ public sealed partial class UnifiedTimelineControl
         return -1;
     }
 
-    /// <summary>The header switch a point is on (x on the control, y on the rows); null for none.</summary>
+    /// <summary>Header switch hit (x in control space, y in row space); null for none.</summary>
     private RowSwitches? SwitchAt(in Lane lane, Point at)
     {
         if (!lane.Detailed)
@@ -212,12 +212,12 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    /// <summary>Whether a point (x on the control, y on the rows) is on a header's preset badge (5.2A).</summary>
+    /// <summary>True on a header preset badge (x in control space, y in row space).</summary>
     private bool BadgeAt(in Lane lane, Point at) =>
         (lane.Row.Badge is { Length: > 0 } || lane.Row.OffersBadge) && BadgeRect(lane, VisualTreeHelper.GetDpi(this).PixelsPerDip) is { IsEmpty: false } badge
         && badge.Contains(at);
 
-    // ----- Moving -----
+    // ----- Pointer move -----
 
     protected override void OnMouseMove(MouseEventArgs e)
     {
@@ -270,7 +270,7 @@ public sealed partial class UnifiedTimelineControl
             return;
         }
 
-        // A track's header held or dragged (5.5A). Only with the button held: CaptureMouse raises a move of its own at the pointer.
+        // Header press/drag; require the button held (CaptureMouse raises a synthetic move at the pointer).
         if (_rowDrag is not null)
         {
             if (e.LeftButton == MouseButtonState.Pressed)
@@ -284,8 +284,8 @@ public sealed partial class UnifiedTimelineControl
             return;
         }
 
-        // (Outside, over a place that takes the block, it is parked where it began and the view stays still: 5.4.4.) 5.5A: the keys
-        // as they are now (Alt pressed during a move tethers at once, Shift keeps its time), and the dwell's look again once it rests.
+        // Over an external drop target the block parks at its origin and the view stays still. Refresh modifiers (Alt mid-move tethers,
+        // Shift keeps time) and restart the dwell re-check.
         _lastPointer = laid;
         drag.Keys = Keyboard.Modifiers;
         if (!FollowPointer(drag, point, laid, Now()))
@@ -293,7 +293,7 @@ public sealed partial class UnifiedTimelineControl
         if (drag is { Kind: BlockEdit.Move, Group: not { Count: > 0 } })
             RestSoon();
 
-        // Near an end of the time area, the view moves along by itself while the pointer stays there.
+        // Edge auto-scroll while the pointer stays near either end of the time area.
         var seen = point.X - _headerWidth;
         var nearEdge = seen < AutoScrollZone || seen > TimeAreaWidth - AutoScrollZone;
         if (nearEdge && !_autoScroll.IsEnabled)
@@ -303,23 +303,21 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// Lays a dragged block (and a rolled neighbour) out for where the pointer is (laid out). <paramref name="pointerMoved"/>: the pointer
-    /// moved (or rested past the dwell: SettleTick), so a move looks again for what it is over; else (the view moved under a still drag)
-    /// what it is over is asked again. <paramref name="nowMs"/>: the drags' clock, for the zones held back while the pointer sweeps (5.5A).
+    /// Positions the dragged block (and roll partner) for the layout-space pointer. <paramref name="pointerMoved"/>: pointer moved or the
+    /// dwell elapsed (SettleTick), so drop targets are re-evaluated; otherwise the view moved under a still pointer and targets are re-queried.
+    /// <paramref name="nowMs"/>: drag clock for velocity-gated drop zones (DragSettle).
     /// </summary>
     private void Follow(BlockDrag drag, Point point, bool pointerMoved, double nowMs)
     {
-        // A clip may be dragged, or stretched, past the end of the sequence: the sequence is as long as its clips reach,
-        // and the rows are laid out to the new length when it is let go.
+        // Clips may move or extend past the sequence end (duration = furthest clip end); rows re-lay to the new length on release.
         var moved = point.X - drag.PointerX;
         if (pointerMoved)
             drag.Travel = Math.Max(drag.Travel, Math.Abs(moved));
 
         switch (drag.Kind)
         {
-            // An edge at a seam: outward shows the fold again, inward folds more of the clip into it, within what the fold
-            // and the clip have (seconds; Shift: whole frames). The clip grows or shrinks at that edge, its start staying at
-            // the cut (what follows slides by as much: drawn shifted, see CurrentShift).
+            // Seam edge: outward unfolds, inward folds more, within fold and media limits (seconds; Shift = whole frames). The clip
+            // resizes at that edge with its start pinned to the cut; later content is drawn shifted by the same amount (CurrentShift).
             case BlockEdit.TrimEnd or BlockEdit.TrimStart when drag.Seam is { } grip && PixelsPerSecond > 0:
             {
                 var scale = PixelsPerSecond;
@@ -358,9 +356,9 @@ public sealed partial class UnifiedTimelineControl
 
             default:
             {
-                // Shift on a move that has left its own lane (5.5A review): its time kept exactly (no snap) while Shift stays held, from the
-                // moment it is over another row, a "+ New Track" seam or a tether; a slide along its own lane keeps Precision Unsnapped (frame
-                // steps), however far the hand drifts up or down within the lane's deadzone. Never for a group, which goes onto no other row.
+                // Shift on a move that left its lane (over another row, a "+ New Track" seam or a tether): keep the exact original time
+                // while held. Within its own lane (inside the deadzone) Shift stays Precision Unsnapped (frame steps). Never for groups,
+                // which cannot change rows.
                 var shift = drag.Keys.HasFlag(ModifierKeys.Shift) && drag.Group is not { Count: > 0 };
                 drag.TimeLocked &= shift;
                 PlaceMoved(drag, moved);
@@ -373,7 +371,7 @@ public sealed partial class UnifiedTimelineControl
                     LookUnder(drag, point, nowMs);
                     if (shift && !drag.TimeLocked && (drag.Target is not null || drag.NewTrack is not null || drag.Attach is not null))
                     {
-                        // Off its lane with Shift: back at its own time, and what it is over asked again at that time.
+                        // Off-lane with Shift: snap back to its own time and re-evaluate targets there.
                         drag.TimeLocked = true;
                         PlaceMoved(drag, moved);
                         LookUnder(drag, point, nowMs);
@@ -381,7 +379,7 @@ public sealed partial class UnifiedTimelineControl
                 }
                 else if (drag.Attach is { } held)
                 {
-                    // The view moved under a tether: still the parent's child where the block is now?
+                    // View moved under a tether: re-check that the tether still holds at the new position.
                     var (name, at) = ((string?)null, drag.Block.Left);
                     if (drag.Block.CanAttachTo is not { } canAttach || !Raise(() => name = canAttach(held.Block, at)) || name is null)
                         drag.Attach = null;
@@ -405,15 +403,14 @@ public sealed partial class UnifiedTimelineControl
             }
         }
 
-        // What it carries along (its children, its unlinked sound, its file's sound on its Audio Sub-Lanes) goes with it, every move.
+        // Update carried blocks (children, unlinked audio, audio Sub-Lanes) on every move.
         FollowFamily(drag);
         _overlayDirty = true;
         InvalidateVisual();
     }
 
-    // Where a moved block is drawn: at its own time while Shift keeps it (5.5A), else after the pointer, either edge snapped, whichever is
-    // the nearer to something (5.5A review: with the drag's keys, the ones its time lock and tether read; Shift steps by frames). A selected
-    // group (5.0) moves as one along its rows, stopping where the first of it would pass the timeline's start.
+    // Moved block x: its original time while Shift time-lock applies, else pointer-relative with whichever edge snaps nearer (using the
+    // drag's own modifiers; Shift = frame steps). Groups move together along their rows, clamped so no member crosses time 0.
     private void PlaceMoved(BlockDrag drag, double moved)
     {
         if (drag.TimeLocked)
@@ -428,10 +425,10 @@ public sealed partial class UnifiedTimelineControl
         drag.Block.Left = drag.Group is { Count: > 0 } ? Math.Max(left, drag.GroupFloor) : drag.Block.MayStartBeforeZero ? left : Math.Max(left, 0);
     }
 
-    // What a moved block (not a group) is over where the pointer is (laid out), asked at the time it is drawn at (5.5A): first a clip's tether
-    // (the bottom edge of a clip it overlaps on another lane, settled; Alt pressed meanwhile: anywhere on it at once), then a seam above, below
-    // or between the picture tracks (5.4A: onto a new track there, where the host takes it; awake only once the pointer settled on it, or
-    // still awake from before and not swept past), else the row under the pointer as before (past the deadzone).
+    // Drop target for a moved single block at its drawn time, in priority order: tether (bottom edge of an overlapped clip on another
+    // lane once settled; anywhere on it immediately with Alt), then a new-track seam (if the host allows; active only after the pointer
+    // settles, or still active and not swept past), else the row under the pointer (beyond the deadzone).
+    // DragSettle gates the first two by pointer velocity.
     private void LookUnder(BlockDrag drag, Point point, double nowMs)
     {
         BuildSeamGroups();
@@ -453,14 +450,12 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The seam a moved block is over (5.4A, the user's directive: a clip dragged above the top picture track, below the bottom one, or
-    /// into the band along the seam between two of them goes onto a new track there): the top-level picture row the new track goes
-    /// beside, above it or below it, and where the insertion bar is drawn (laid out). A seam between two rows is said as the lower row's,
-    /// above it. The band on each side of a seam is the outer min(14, a quarter) DIPs of the top-level row's own lane, so a row at the
-    /// least height keeps a middle to land on. Only for a block that can go onto a new track, never for a group, and only once the
-    /// pointer has gone twice the system's drag distance up or down from where it was pressed (a move along its own row near its edge
-    /// is never taken for one); at the edges of the block's own track only the one it is heading for. Null for none. 5.5A: the picture
-    /// groups are the caller's (<see cref="BuildSeamGroups"/>, once a move).
+    /// New-track seam under a moved block (above the top video track, below the bottom, or in the band between two): the top-level video
+    /// row to insert beside, above/below, and the insertion bar y (layout). A between-rows seam is expressed as "above the lower row". Each
+    /// side's band is the outer min(14 DIPs, quarter lane) of the top-level row's own lane, so minimum-height rows keep a landing middle.
+    /// Only for single blocks that can move to a new track, after 2x the system drag distance vertically from the press (so edge-adjacent
+    /// horizontal moves never trigger); at the block's own track edges only the seam in its direction counts. Null for none. Groups come
+    /// from the caller (<see cref="BuildSeamGroups"/>, once per move).
     /// </summary>
     private (TimelineRow Beside, bool Above, double Y)? NewTrackSeamAt(Point point, BlockDrag drag)
     {
@@ -478,7 +473,7 @@ public sealed partial class UnifiedTimelineControl
                 own = g;
         }
 
-        // Which group is above the seam and which below it (-1: the end of the stack), the row the new track goes beside, where the bar is.
+        // Groups above and below the seam (-1 = stack end), the adjacent row for insertion, and the bar position.
         (int Upper, int Lower, TimelineRow Beside, bool Above, double Y)? found = null;
         var (first, last) = (_seamGroups[0], _seamGroups[^1]);
         if (y < first.Top + first.Band)
@@ -505,30 +500,30 @@ public sealed partial class UnifiedTimelineControl
         if (found is not { } seam)
             return null;
 
-        // At its own track's edges, only the one the pointer is heading for: up for the seam over it, down for the one under it.
+        // At its own track's edges, accept only the seam in the movement direction (up = above, down = below).
         if (own >= 0 && ((seam.Lower == own && y >= drag.PointerY) || (seam.Upper == own && y <= drag.PointerY)))
             return null;
         return (seam.Beside, seam.Above, seam.Y);
     }
 
-    /// <summary>Whether a height under the picture rows is still below them for a new track: empty space under every row, or the Background row.</summary>
+    /// <summary>True when a y below the video rows counts as "below" for a new track (empty space or the Background row).</summary>
     private bool BelowPictures(double y)
     {
         var under = LaneAt(y);
         return under < 0 || _lanes[under] is { Depth: 0, Row.Kind: TimelineRowKind.Background };
     }
 
-    // How deep a seam's band is on each side at most (DIPs of the row's own lane): a quarter of the lane where that is less.
+    // Max seam band depth per side (DIPs of the row's lane), capped at a quarter of the lane.
     private const double SeamBand = 14;
 
-    // A run of lanes that one top-level picture row and its stacks make (NewTrackSeamAt): its root lane, first and last lane, extent and band.
+    // Lane run of one top-level video row plus its stacks (NewTrackSeamAt): root, first and last lane, extent and band.
     private readonly record struct SeamGroup(int Root, int First, int Last, double Top, double Bottom, double Band);
 
     private readonly List<SeamGroup> _seamGroups = [];
 
     /// <summary>
-    /// The picture groups, top to bottom (5.4A; its own method since 5.5A, made once a move for the seams, a tether's band and a header's
-    /// seams): each top-level Video (or empty) row's run of lanes (its lanes in front above it, its stacks under it), with its band.
+    /// Video groups top to bottom, built once per move for seams, tether bands and header seams: each top-level Video (or empty) row's lane
+    /// run (InFront lanes above, stacks below) with its band.
     /// </summary>
     private void BuildSeamGroups()
     {
@@ -551,7 +546,7 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    /// <summary>Asks the host whether the block may go onto a new track at this seam; when it may, the drag is over it (true). Refused, nothing changes.</summary>
+    /// <summary>Queries the host (CanMoveToNewTrack) for this seam; on success targets it and returns true, else leaves state unchanged.</summary>
     private bool OffersNewTrack(BlockDrag drag, (TimelineRow Beside, bool Above, double Y) seam)
     {
         if (drag.Block.CanMoveToNewTrack is not { } canNew)
@@ -566,8 +561,8 @@ public sealed partial class UnifiedTimelineControl
         return true;
     }
 
-    // The other row a moved block is over (one it may be let go on, its CanMoveTo says whether), or none. 5.5A: the row it is on (its
-    // own, or the one it is over) holds it until the pointer is more than the deadzone past that row's edges.
+    // Target row for a moved block (CanMoveTo decides validity), or none. Hysteresis: the current row holds until the pointer passes its
+    // edges by more than the deadzone.
     private void TargetUnder(BlockDrag drag, Point point)
     {
         var index = StickyLaneAt(drag, point.Y);
@@ -584,7 +579,7 @@ public sealed partial class UnifiedTimelineControl
         drag.Fits = fits;
     }
 
-    /// <summary>A gain line dragged up or down: the gain.</summary>
+    /// <summary>Gain line drag: updates the gain.</summary>
     private void FollowGain((TimelineRow Row, TimelineBlock Block, Point From, (double GainDb, double FadeIn, double FadeOut) Start) drag, Point point)
     {
         var index = LaneOf(drag.Row);
@@ -598,8 +593,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A fade handle dragged along: its fade's length, from the block's edge to where the handle is, snapped (to the other
-    /// clips' edges and the playhead) and no longer than the block leaves beside its other fade. The gain line's slope follows.
+    /// Fade handle drag: fade length from the block edge to the handle, snapped (other clip edges, playhead) and capped by the space left
+    /// by the other fade. The gain line slope follows.
     /// </summary>
     private void FollowFade((TimelineRow Row, TimelineBlock Block, bool In, (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle) Start) drag, Point point)
     {
@@ -622,8 +617,7 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A J/L cut dragged: the sound's start (or end) follows the pointer, snapped as an edge is, the picture staying where
-    /// it is. The sound keeps at least a frame.
+    /// J/L drag: the audio start (or end) follows the pointer with edge snapping while the video stays fixed; audio keeps at least one frame.
     /// </summary>
     private void FollowSplit(SplitDrag split, Point point)
     {
@@ -651,13 +645,12 @@ public sealed partial class UnifiedTimelineControl
         InvalidateVisual();
     }
 
-    // The pointer moved with nothing held: what it is over shows its cursor, its tooltip and its fade handles, and the skim
-    // line follows it over the time area.
+    // Hover (no button): update cursor, tooltip and fade handles for the target, and move the skim line over the time area.
     private void HoverAt(Point point, Point laid)
     {
         var index = LaneAt(laid.Y);
 
-        // The pill that closes a gap shows while the pointer is in that gap.
+        // Show the close-gap pill for the hovered gap.
         var inTime = point.X >= _headerWidth && index >= 0;
         HoverGap(inTime ? _lanes[index].Row : null, inTime ? GapUnder(_lanes[index], laid) : -1);
         if (point.X < _headerWidth)
@@ -774,7 +767,11 @@ public sealed partial class UnifiedTimelineControl
             Cursor = Cursors.Hand;
             var (left, right) = row.Gaps[gap];
             if (TipFor(row, 100_000 + gap))
-                ToolTip = string.Create(CultureInfo.InvariantCulture, $"A gap of {(right - left) / scale:0.00} s. Click to close it: what follows on this track moves up to meet what is before it.");
+            {
+                ToolTip = left <= 0
+                    ? string.Create(CultureInfo.InvariantCulture, $"Close the {right / scale:0.00} s gap before the first clip")
+                    : string.Create(CultureInfo.InvariantCulture, $"Close the {(right - left) / scale:0.00} s gap");
+            }
             return;
         }
 
@@ -787,15 +784,14 @@ public sealed partial class UnifiedTimelineControl
             return;
         }
 
-        // The edges are the handles for the length and the start; the cut between two clips rolls; Alt slips (and, on the
-        // lower part of an edge of a clip with linked sound, makes a J/L cut); the top corners (or as far in as a fade) are
-        // the fades' handles.
+        // Cursor zones: edges trim; a shared cut rolls; Alt slips (or, on the lower part of an edge with linked audio, J/L cuts); top
+        // corners (or fade ends) are fade handles.
         var rect = BlockRect(lane, block, 0);
         var alt = Keyboard.Modifiers.HasFlag(ModifierKeys.Alt);
         var fadeHandle = FadeHandleAt(lane, block, laid);
         var edge = TimelineMetrics.EdgePixels;
 
-        // An edge at a seam of folded dead air: dragged, it shows the fold again or folds more into it (never a roll there).
+        // Seam edge: drag unfolds or folds more (never a roll).
         var atSeam = fadeHandle is null && !alt && block.SeamTrim is not null
             && (laid.X < block.Left + edge ? SeamNear(row, block.Left) : laid.X > block.Left + block.Width - edge ? SeamNear(row, block.Left + block.Width) : null) is not null;
         if (atSeam)
@@ -817,7 +813,7 @@ public sealed partial class UnifiedTimelineControl
             : Cursors.Hand;
     }
 
-    /// <summary>The pointer is over another block (or none): the one it left hides its corner handles, the one it is over shows them.</summary>
+    /// <summary>Hover target changed: hide the previous block's corner handles, show the new one's.</summary>
     private void Hover(TimelineRow? row, TimelineBlock? block)
     {
         if (ReferenceEquals(block, _hovered?.Block))
@@ -832,7 +828,7 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    /// <summary>The pointer is in another gap (or none, -1): the pill of the one it left goes, the one it is in shows its own.</summary>
+    /// <summary>Hovered gap changed (-1 = none): swap which pill is shown.</summary>
     private void HoverGap(TimelineRow? row, int gap)
     {
         if (gap < 0)
@@ -845,7 +841,7 @@ public sealed partial class UnifiedTimelineControl
         InvalidateVisual();
     }
 
-    // Whether the tooltip is now for something else (and is to be set): it is set once per thing the pointer is over.
+    // True when the tooltip target changed (tooltip set once per target).
     private bool TipFor(object? target, int part)
     {
         if (ReferenceEquals(target, _tipTarget) && part == _tipPart)
@@ -867,7 +863,7 @@ public sealed partial class UnifiedTimelineControl
         _tipPart = -1;
     }
 
-    /// <summary>Over a fade handle, a tooltip saying what it is and what it does; elsewhere on the block, none.</summary>
+    /// <summary>Fade handle tooltip; none elsewhere on the block.</summary>
     private void FadeTip(TimelineBlock block, bool? fadeIn)
     {
         if (fadeIn is not { } isIn || block.Fades is not { } fades)
@@ -897,19 +893,18 @@ public sealed partial class UnifiedTimelineControl
     };
 
     /// <summary>
-    /// The moment under a point of the control told to Instant Seek (5.0, <see cref="PointerSecondsChanged"/>): in the time
-    /// area, the sequence's seconds there (never before 0); over the headers or outside, none.
+    /// Raises <see cref="PointerSecondsChanged"/> for Instant Seek: sequence seconds (>= 0) in the time area; none over headers or outside.
     /// </summary>
     private void NotePointer(Point point) =>
         PointerSeconds(point.X >= _headerWidth && point.X <= ActualWidth && point.Y >= 0 && point.Y <= ActualHeight ? Math.Max(TimeAt(point.X), 0) : double.NaN);
 
     /// <summary>
-    /// The pointer is over the ruler beside the rows at a moment (seconds), or has left it (null): the host relays the ruler's
-    /// own pointer (TimelineRuler.PointerSecondsChanged) so that <see cref="PointerSecondsChanged"/> tells of both (5.0).
+    /// Host relay of the ruler's pointer time (TimelineRuler.PointerSecondsChanged; null on leave) so <see cref="PointerSecondsChanged"/>
+    /// covers both ruler and rows.
     /// </summary>
     public void NotePointerOverRuler(double? seconds) => PointerSeconds(seconds is { } at ? Math.Max(at, 0) : double.NaN);
 
-    // Tells of the moment under the pointer when it is another (NaN: none, told once).
+    // Raises the pointer time only on change (NaN = none, raised once).
     private void PointerSeconds(double seconds)
     {
         if (seconds.Equals(_pointerSeconds))
@@ -929,15 +924,14 @@ public sealed partial class UnifiedTimelineControl
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            // A hint is never worth a fault: told once in the log, the pointer goes on.
+            // Hint failures are non-fatal: log once and continue.
             Services.AppLog.Write("Timeline: telling of the moment under the pointer failed", ex);
         }
     }
 
     /// <summary>
-    /// The blocks between two (found by what they stand for), for Shift + click (5.0): those of every lane from the one's to
-    /// the other's (the lanes shown in full between them, and the two lanes themselves) that overlap the time from the earlier
-    /// one's start to the later one's end, top to bottom. Empty when either is not on the timeline.
+    /// Shift+click range: blocks on the two endpoint lanes and full-size lanes between them that overlap [earlier start, later end], top
+    /// to bottom (endpoints resolved by model object). Empty if either endpoint is missing.
     /// </summary>
     public List<TimelineBlock> BlocksInRange(object from, object to)
     {
@@ -963,7 +957,7 @@ public sealed partial class UnifiedTimelineControl
         return found;
     }
 
-    // The lane and the block that stand for something (the first found, top to bottom); null when none does.
+    // First lane/block (top to bottom) representing a model object; null if none.
     private (int Lane, TimelineBlock Block)? LaneAndBlockOf(object clip)
     {
         for (var i = 0; i < _lanes.Count; i++)
@@ -978,7 +972,7 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    /// <summary>Moves the skim line to a moment (NaN: none) and says so.</summary>
+    /// <summary>Moves the skim line (NaN hides it) and raises the skim event.</summary>
     private void Skim(double seconds)
     {
         if (seconds.Equals(_skimSeconds))
@@ -997,8 +991,8 @@ public sealed partial class UnifiedTimelineControl
     {
         base.OnMouseLeave(e);
 
-        // A right-click under way is not captured: let go elsewhere, its release never comes here, so it opens no menu and
-        // stops listening to the window's keys now.
+        // Pending right-clicks are uncaptured: if released elsewhere, no release arrives here, so cancel the menu and stop monitoring
+        // window keys now.
         DisarmMenu();
         if (IsDragging)
             return;
@@ -1019,15 +1013,15 @@ public sealed partial class UnifiedTimelineControl
             return;
         }
 
-        // Faster the further into the end the pointer is: up to about 3% of the time area every tick.
+        // Speed scales with depth into the edge zone, up to ~3% of the time area per tick.
         var seen = _lastPointer.X - ViewOffsetX;
         var depth = seen < AutoScrollZone ? seen - AutoScrollZone : seen > width - AutoScrollZone ? seen - (width - AutoScrollZone) : 0;
         var pixels = Math.Clamp(depth / AutoScrollZone, -1.5, 1.5) * width * 0.03;
         if (Math.Abs(pixels) < 0.5)
             return;
 
-        // The host moves the view (SetView), and the pointer is where it was on screen: further along the rows. Pass 5.5A final review: placed
-        // with the keys as they are now (Shift pressed or let go while the view runs on under a still pointer, a group's move too).
+        // The host pans (SetView) while the pointer stays put on screen, so it advances in layout space; re-place with current modifiers
+        // (Shift may change during auto-scroll, group moves included).
         var before = ViewOffsetX;
         PanRequested?.Invoke(pixels);
         _lastPointer.X += ViewOffsetX - before;
@@ -1035,21 +1029,20 @@ public sealed partial class UnifiedTimelineControl
         Follow(drag, _lastPointer, pointerMoved: false, Now());
     }
 
-    /// <summary>The frame rate to step by while Shift is held (Precision Unsnapped mode); 0 when Shift is not held or no rate is known.</summary>
+    /// <summary>Frame-step rate while Shift is held (Precision Unsnapped); 0 without Shift or a known rate.</summary>
     private double PrecisionRate() => PrecisionRate(Keyboard.Modifiers);
 
-    // As PrecisionRate, for these keys (5.5A review: a move's, BlockDrag.Keys).
+    // PrecisionRate for explicit modifiers (a move's BlockDrag.Keys).
     private double PrecisionRate(ModifierKeys keys) =>
         keys.HasFlag(ModifierKeys.Shift) && FrameRate?.Invoke() is > 0 and var rate ? rate : 0;
 
     /// <summary>
-    /// A point along the rows moved onto the nearest moment to snap to, when one is close enough; as it was otherwise.
-    /// Shift held (Precision Unsnapped mode): no snapping, and the point is put on the nearest frame of the sequence, so an
-    /// edge dragged with Shift trims frame by frame. Alt held: no snapping either (Alt-drag inside a clip slips).
+    /// Snaps a layout x to the nearest snap point within range, else returns it unchanged. Shift (Precision Unsnapped): no snapping, round
+    /// to the nearest sequence frame (frame-accurate trims). Alt: no snapping (Alt-drag slips).
     /// </summary>
     private double Snap(double x) => Snap(x, Keyboard.Modifiers);
 
-    // As Snap(x), for these keys (5.5A review: a move's, BlockDrag.Keys, refreshed at every move and while it rests).
+    // Snap(x) for explicit modifiers (a move's BlockDrag.Keys, refreshed on every move and dwell tick).
     private double Snap(double x, ModifierKeys keys)
     {
         var scale = PixelsPerSecond;
@@ -1074,9 +1067,9 @@ public sealed partial class UnifiedTimelineControl
         return best;
     }
 
-    // ----- The tracks' height (5.1-Polish, the user's directive) -----
+    // ----- Track height -----
 
-    /// <summary>The lane whose lower edge is at <paramref name="laidY"/> (within <see cref="HeightEdgeReach"/>): a picture's or a sound's row shown in full; -1 for none.</summary>
+    /// <summary>Full-size video/audio lane whose lower edge is within <see cref="HeightEdgeReach"/> of <paramref name="laidY"/>; -1 for none.</summary>
     private int HeightEdgeAt(double laidY)
     {
         foreach (var candidate in (ReadOnlySpan<int>)[LaneAt(laidY), LaneAt(laidY - HeightEdgeReach - LaneGap)])
@@ -1091,7 +1084,7 @@ public sealed partial class UnifiedTimelineControl
         return -1;
     }
 
-    /// <summary>How many rows that grow with the tracks' height lie from the top down to lane <paramref name="index"/>, itself included.</summary>
+    /// <summary>Count of Track-Height-scaled rows from the top through lane <paramref name="index"/> (inclusive).</summary>
     private int RowsGrowingDownTo(int index)
     {
         var rows = 0;
@@ -1104,36 +1097,34 @@ public sealed partial class UnifiedTimelineControl
         return Math.Max(rows, 1);
     }
 
-    // ----- The wheel and the middle button -----
+    // ----- Wheel and middle button -----
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
-        // Always answered here (5.1-DogfoodPolish, the user's bug: the wheel with the left button held), and it works under a drag.
+        // Always handled here, including with the left button held and during drags.
         e.Handled = true;
         var x = e.GetPosition(this).X;
         WheelAt(e.Delta, Keyboard.Modifiers, MomentumScroller.Now(), Math.Max(x - _headerWidth, 0), overTime: x >= _headerWidth);
     }
 
-    // The wheel's glide (5.4.1-M1): the plain wheel's pan over the clips and Ctrl + wheel's zoom, chased smoothly (made at the first use).
+    // WheelGlide for plain-wheel pan over clips and Ctrl+wheel zoom (created on first use).
     private WheelGlide? _wheelGlide;
 
     private WheelGlide Glide => _wheelGlide ??= new(pixels => PanRequested?.Invoke(pixels), (factor, at) => ZoomRequested?.Invoke(factor, at), () => IsVisible);
 
-    /// <summary>A notch of the plain wheel over the clips pans this share of the view's width (5.4.1-M1).</summary>
+    /// <summary>Fraction of the view width panned per plain-wheel notch over clips.</summary>
     internal const double WheelPanShare = 0.10;
 
     /// <summary>
-    /// The wheel (<paramref name="delta"/>, 120 a notch, up positive) with these keys at <paramref name="nowMs"/>. 5.4.1-M1: over the clips
-    /// (<paramref name="overTime"/>) the plain wheel pans the view, a tenth of its width a notch (down: later), gliding there; over the
-    /// track headers, or with Alt, it scrolls the rows with momentum (5.4C); Alt + Shift steps the tracks' height (5.1-Polish); Ctrl zooms
-    /// about <paramref name="zoomAt"/> (pixels from the time area's left), gliding there with the pointer's moment pinned; Shift pans the
-    /// view with momentum (a fast stream coasts on, a tick against the coast stops it). Under a drag the wheel moves exactly a notch, at
-    /// once, and never coasts. Test seam; <see cref="OnMouseWheel"/> calls it.
+    /// Test seam (called by <see cref="OnMouseWheel"/>): wheel <paramref name="delta"/> (120/notch, up positive) at <paramref name="nowMs"/>.
+    /// Over clips (<paramref name="overTime"/>) plain wheel glides a pan of 1/10 view per notch (down = later); over headers or with Alt it
+    /// scrolls rows with momentum; Alt+Shift steps track height; Ctrl glides a zoom about <paramref name="zoomAt"/> (pixels from the time
+    /// area's left) with the pointer time pinned; Shift pans with momentum (fast streams coast, an opposing tick stops). During drags each
+    /// notch applies exactly and immediately, without coasting.
     /// </summary>
     internal void WheelAt(int delta, ModifierKeys modifiers, double nowMs, double zoomAt = 0, bool overTime = false)
     {
-        // Alt + Shift + the wheel (5.1-Polish, the user's directive; Alt alone scrolls the rows since 5.4.1-M1): every track taller (a
-        // notch up) or lower.
+        // Alt+Shift+wheel: all tracks taller (up) or shorter (Alt alone scrolls rows).
         if (modifiers.HasFlag(ModifierKeys.Alt) && modifiers.HasFlag(ModifierKeys.Shift))
         {
             StopMomentum();
@@ -1159,7 +1150,7 @@ public sealed partial class UnifiedTimelineControl
         }
         else if (overTime && !modifiers.HasFlag(ModifierKeys.Alt))
         {
-            // The plain wheel over the clips: along time, a tenth of the view a notch, gliding (a coast of the rows or the view stops).
+            // Plain wheel over clips: glide-pan 1/10 view per notch (stops any row or view coast).
             _momentumX?.Stop();
             _momentumY?.Stop();
             var pixels = -delta / 120.0 * WheelPanShare * TimeAreaWidth;
@@ -1180,7 +1171,7 @@ public sealed partial class UnifiedTimelineControl
                 var (before, step) = (_verticalOffset, MomentumY.Wheel(rows, nowMs));
                 VerticalOffset = before + step;
 
-                // At the top or the bottom already: nothing coasts on into it.
+                // Already at top/bottom: do not start a coast into the limit.
                 if (step != 0 && _verticalOffset == before)
                     MomentumY.Stop();
                 KeepTicking();
@@ -1191,9 +1182,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A wheel along the view by <paramref name="pixels"/> (positive: later) at <paramref name="nowMs"/>: Shift + the wheel (its notch
-    /// negated) and the sideways wheel of a touchpad or a tilting wheel (MainWindow's own hook, as Windows sends it), with momentum; under
-    /// a drag exactly as given, never coasting. Test seam.
+    /// Test seam: horizontal pan by <paramref name="pixels"/> (positive = later) at <paramref name="nowMs"/> from Shift+wheel (negated) or
+    /// touchpad/tilt horizontal wheel (MainWindow hook), with momentum; during drags applied exactly, no coast.
     /// </summary>
     internal void PanWheelAt(double pixels, double nowMs)
     {
@@ -1207,13 +1197,13 @@ public sealed partial class UnifiedTimelineControl
         if (step != 0)
             PanRequested?.Invoke(step);
 
-        // The view at an end, or fitted (it does not pan): nothing coasts on into it.
+        // View at a limit or fitted (cannot pan): no coast.
         if (step != 0 && ViewOffsetX == before)
             MomentumX.Stop();
         KeepTicking();
     }
 
-    /// <summary>The middle button pressed at <paramref name="x"/> (pixels from the control's left): any coast stops and the pan begins. Test seam.</summary>
+    /// <summary>Test seam: middle press at <paramref name="x"/> (pixels from the control's left) stops coasts and starts a pan.</summary>
     internal void MiddlePanPress(double x, double nowMs)
     {
         _panFrom = x;
@@ -1222,7 +1212,7 @@ public sealed partial class UnifiedTimelineControl
         MomentumX.Sample(0, nowMs);
     }
 
-    /// <summary>The middle-button drag at <paramref name="x"/>: the view pans with the pointer, one pixel for one. Test seam.</summary>
+    /// <summary>Test seam: middle-drag to <paramref name="x"/> pans 1:1 with the pointer.</summary>
     internal void MiddlePanMove(double x, double nowMs)
     {
         if (_panFrom is not { } from)
@@ -1234,7 +1224,7 @@ public sealed partial class UnifiedTimelineControl
         PanRequested?.Invoke(from - x);
     }
 
-    /// <summary>The middle button let go: a flick (250 DIP/s or more, still moving within the last 40 ms) coasts on. Test seam.</summary>
+    /// <summary>Test seam: middle release; a flick (>= 250 DIP/s, moving within the last 40 ms) starts a coast.</summary>
     internal void MiddlePanRelease(double nowMs)
     {
         _panFrom = null;
@@ -1242,14 +1232,14 @@ public sealed partial class UnifiedTimelineControl
             KeepTicking();
     }
 
-    // A coast begun: the control's own frame loop carries it, while the control is on screen (a test steps it itself).
+    // Coast started: driven by the control's frame loop while visible (tests step it directly).
     private void KeepTicking()
     {
         if (((_momentumX?.IsCoasting ?? false) || (_momentumY?.IsCoasting ?? false)) && IsVisible)
             StartTicking();
     }
 
-    // Any press on the control (any button, touch and the pen too, before anything else of it): a coast stops where it is (5.4C).
+    // Any press (any button, touch or pen) stops coasts first, before other handling.
     protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseDown(e);
@@ -1257,7 +1247,7 @@ public sealed partial class UnifiedTimelineControl
         _wheelGlide?.Stop();
     }
 
-    /// <summary>The view moved under a drag held still: what is dragged goes on from where the pointer is over the view now.</summary>
+    /// <summary>View moved under a stationary drag: re-place the dragged item for the pointer's new layout position.</summary>
     private void FollowHeldDrag()
     {
         if (!IsDragging)
@@ -1282,8 +1272,8 @@ public sealed partial class UnifiedTimelineControl
         }
         else if (_drag is { } drag && !_dragParked)
         {
-            // (A block parked over a place outside that takes it stays where it began, whatever the view does under it: 5.4.4.) Pass 5.5A final
-            // review: with the keys as they are now, as a move of the pointer would give it.
+            // A block parked over an external target stays at its origin regardless of view movement. Uses current modifiers, as a pointer
+            // move would.
             _lastPointer = laid;
             drag.Keys = Keyboard.Modifiers;
             Follow(drag, laid, pointerMoved: false, Now());
@@ -1306,7 +1296,7 @@ public sealed partial class UnifiedTimelineControl
         base.OnMouseUp(e);
         if (e.ChangedButton == MouseButton.Middle && _panFrom is not null)
         {
-            // Let go of the capture first (losing it mid-drag stops a coast), then the flick, if it was one, coasts on.
+            // Release capture first (capture loss stops coasts), then start the flick coast if any.
             var now = MomentumScroller.Now();
             _panFrom = null;
             ReleaseMouseCapture();

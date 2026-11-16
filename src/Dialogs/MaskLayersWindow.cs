@@ -12,12 +12,10 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// Cutouts from a Mask: a mask of the whole frame, white over a game's HUD, taken apart into one Cutout per HUD
-/// element. Every patch the mask shows is found; patches closer together than the distance set are one
-/// element, so a row of separately traced ability icons becomes one Cutout and not one each. The parts are
-/// shown over a still of the video as they will be cut, numbered, before anything is added; a click on one
-/// leaves it out or takes it back. Parts that a Cutout already cuts out start left out, so the same window
-/// adds the Cutouts a Game Preset did not (an ultimate meter, say). Built in code.
+/// Cutouts from a Mask: splits a full-frame mask (white over HUD) into one Cutout per HUD element. Connected patches closer than the
+/// merge distance form one element (a row of traced ability icons becomes one Cutout). Numbered parts preview over a still before
+/// anything is added; clicking toggles inclusion. Parts already covered by a Cutout start excluded, so the window can add what a
+/// Game Preset missed (e.g. an ultimate meter). Built in code.
 /// </summary>
 public sealed class MaskLayersWindow : Window
 {
@@ -25,10 +23,10 @@ public sealed class MaskLayersWindow : Window
     private readonly List<Rect> _islands;
     private readonly List<Rect> _existing;
 
-    // Where pieces were clicked: a piece with an odd number of clicks in it is the other way round from how it started.
+    // Click points; a piece with an odd click count is toggled from its initial state.
     private readonly List<Point> _toggles = [];
 
-    // Clicks taken back with Ctrl+Z, newest last, to be put back with Ctrl+Y (or Ctrl+Shift+Z); a new click lets them go.
+    // Redo stack of undone clicks (newest last) for Ctrl+Y / Ctrl+Shift+Z; cleared by a new click.
     private readonly List<Point> _untoggled = [];
     private List<Rect> _all = [];
     private List<bool> _included = [];
@@ -43,14 +41,14 @@ public sealed class MaskLayersWindow : Window
     private readonly string _stillPath = Path.Combine(SessionPaths.Previews, $"mask_still_{Guid.NewGuid():N}.png");
     private readonly CancellationTokenSource _closing = new();
 
-    /// <summary>The pieces, as fractions of the frame, once the window was confirmed.</summary>
+    /// <summary>Confirmed pieces as frame fractions.</summary>
     public List<Rect> Pieces { get; private set; } = [];
 
     public bool Vertical => _vertical.IsChecked == true;
     public bool ReplaceExisting => _replace.IsChecked == true;
 
-    /// <summary>Null when the mask cannot be read, or shows nothing: the window is then not shown.</summary>
-    /// <param name="existing">The areas Cutouts already cut out of the video, as fractions of the frame.</param>
+    /// <summary>Returns null (window not shown) when the mask is unreadable or empty.</summary>
+    /// <param name="existing">Areas already covered by Cutouts, as frame fractions.</param>
     public static MaskLayersWindow? Open(MainViewModel viewModel, string maskPath, List<Rect> existing) =>
         MaskStore.FindIslands(maskPath) is { Count: > 0 } islands ? new MaskLayersWindow(viewModel, maskPath, islands, existing) : null;
 
@@ -70,7 +68,7 @@ public sealed class MaskLayersWindow : Window
         SetResourceReference(ForegroundProperty, "TextBrush");
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
 
-        // The mask itself, faintly over the still: what shows of it is where the HUD elements were found.
+        // Faint mask overlay on the still, showing detected HUD regions.
         var mask = new Image { Stretch = Stretch.Fill, Opacity = 0.45, IsHitTestVisible = false };
         try
         {
@@ -84,7 +82,7 @@ public sealed class MaskLayersWindow : Window
         }
         catch (Exception ex) when (ex is IOException or NotSupportedException or UriFormatException)
         {
-            // The pieces are still drawn.
+            // Pieces are drawn regardless.
         }
 
         _surface = new PieceSurface(_width, _height);
@@ -160,7 +158,7 @@ public sealed class MaskLayersWindow : Window
         _all = MaskStore.GroupIslands(_islands, _join.Value / 2560, _width / _height);
         _included = _all.Select(piece =>
         {
-            // Left out to begin with when a layer already cuts most of it out (and its layers are not being replaced).
+            // Start excluded when an existing layer already covers most of it (unless layers are being replaced).
             var covered = !ReplaceExisting && _existing.Any(area => Rect.Intersect(area, piece) is { IsEmpty: false } overlap
                                                                      && overlap.Width * overlap.Height > 0.5 * piece.Width * piece.Height);
             var clicks = _toggles.Count(point => piece.Contains(point));
@@ -175,9 +173,8 @@ public sealed class MaskLayersWindow : Window
     }
 
     /// <summary>
-    /// Undo (Ctrl+Z) takes back the last click on a piece, redo (Ctrl+Y or Ctrl+Shift+Z) puts it back. The distance and the two
-    /// switches are not steps: each shows what it is set to, and is set again as directly. The window is modal and adds
-    /// nothing until it is confirmed, so the main window's Undo has no part in it.
+    /// Ctrl+Z undoes the last piece click; Ctrl+Y / Ctrl+Shift+Z redoes. Distance and the two switches are direct settings, not
+    /// steps. Modal and non-committing until confirmed, so the main Undo is not involved.
     /// </summary>
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -199,7 +196,7 @@ public sealed class MaskLayersWindow : Window
 
     private async Task LoadStillAsync()
     {
-        // The video at the playhead's (5.2-AuditB: whichever file it plays), else the file last opened's start.
+        // Still from the video at the playhead (its file), else the start of the last opened file.
         var (source, seconds) = _viewModel.FileMomentAt(_viewModel.PositionMs / 1000) ?? (_viewModel.LocalMediaPath, 0.0);
         if (string.IsNullOrWhiteSpace(source) || !File.Exists(source))
             return;
@@ -218,9 +215,8 @@ public sealed class MaskLayersWindow : Window
     }
 
     /// <summary>
-    /// The pieces over the still, as numbered boxes (solid when they are to be added, grey and dashed when left
-    /// out), in the source's pixels; lines are sized to stay thin when scaled. A click is passed on as a point
-    /// in fractions of the frame.
+    /// Numbered piece boxes over the still in source pixels (solid = included, grey dashed = excluded), with zoom-compensated line
+    /// widths. Clicks are forwarded as frame-fraction points.
     /// </summary>
     private sealed class PieceSurface(double width, double height) : FrameworkElement
     {
@@ -251,7 +247,7 @@ public sealed class MaskLayersWindow : Window
                 ? TransformToAncestor(window).TransformBounds(new Rect(0, 0, 1, 1)).Width
                 : 1;
             var px = scale > 0 ? 1 / scale : 1;
-            // Something to click on everywhere: a click in a box toggles it.
+            // Hit-testable everywhere; a click inside a box toggles it.
             dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, width, height));
             var pen = new Pen(Line, 2 * px);
             var skippedPen = new Pen(Skipped, 1.5 * px) { DashStyle = DashStyles.Dash };

@@ -8,18 +8,17 @@ using System.Windows.Threading;
 
 namespace HandPegApp;
 
-// The unified timeline's dragged families (moved out of UnifiedTimelineControl.Input.cs in Pass 5.5A, unchanged): what a dragged
-// block carries along (its children, its group, the captions under it, the sound taken with it) and how they follow the drag.
+// Drag families for the unified timeline: what a dragged block carries (children, selection group, captions beneath, linked
+// audio) and how each follows the drag.
 public sealed partial class UnifiedTimelineControl
 {
-    // ----- What a dragged block carries along (4.4 BugHunt) -----
+    // ----- Drag family collection -----
 
     /// <summary>
-    /// Finds what goes with a dragged block, on every lane (open or collapsed): moved, the children that ride with it
-    /// (and theirs); a trim (or a seam's edge), the children on that edge of it, through an unbroken line of children on
-    /// that edge, and the children the trim may leave outside it; a roll, the earlier clip's on its end and the later's on
-    /// its start; a slip, none. 5.0: the other blocks of a selected group the block is one of (moved, or trimmed at the same
-    /// end) with what each of them carries along, and the captions under every clip dragged (see <see cref="Captions"/>).
+    /// Collects everything that follows a dragged block across all lanes (expanded or collapsed): move = all riding descendants; trim
+    /// or seam edge = descendants on that edge via an unbroken edge chain, plus direct children the trim may detach; roll = the earlier
+    /// clip's end children and the later clip's start children; slip = none. Also adds the other members of a selected group (moved or
+    /// trimmed at the same end) with their own families, and captions under every dragged clip (see <see cref="Captions"/>).
     /// </summary>
     private void CollectFamily(BlockDrag drag)
     {
@@ -29,8 +28,8 @@ public sealed partial class UnifiedTimelineControl
         _groupSet.Clear();
         (drag.Group, drag.CarriedByGroup) = (null, false);
 
-        // The blocks of every lane by the parent they belong to (the dragged block and its roll's neighbour among them: a
-        // group's other block may be the parent of either).
+        // Index all lane blocks by parent key (including the dragged block and roll neighbour, since another group member may
+        // parent either).
         var byParent = new Dictionary<object, List<(TimelineRow Row, TimelineBlock Block)>>();
         foreach (var lane in _lanes)
         {
@@ -61,7 +60,7 @@ public sealed partial class UnifiedTimelineControl
                     lowest = Math.Min(lowest, member.Left);
             }
 
-            // Moved as one, the group stops where the first of it would pass the timeline's start.
+            // Group moves as one, clamped where its earliest member would cross the timeline start.
             drag.GroupFloor = double.IsPositiveInfinity(lowest) ? double.NegativeInfinity : drag.Left - lowest;
         }
 
@@ -85,7 +84,7 @@ public sealed partial class UnifiedTimelineControl
                     break;
             }
 
-            // What each other block of the group carries along goes with it the same way.
+            // Each other group member's family follows it the same way.
             foreach (var member in drag.Group ?? [])
             {
                 Gather(member.Block, drag.Kind switch { BlockEdit.TrimEnd => BlockEdges.End, BlockEdit.TrimStart => BlockEdges.Start, _ => null },
@@ -93,7 +92,7 @@ public sealed partial class UnifiedTimelineControl
             }
         }
 
-        // The captions under every clip dragged (5.0): never at a seam of folded dead air (what slides there is the fold's).
+        // Captions under every dragged clip, except at a folded dead-air seam (the fold owns what slides there).
         if (drag.Seam is null)
         {
             var how = drag.Kind switch { BlockEdit.Move => Follows.Move, BlockEdit.Slip => Follows.SlipWithin, _ => Follows.Within };
@@ -104,9 +103,9 @@ public sealed partial class UnifiedTimelineControl
                 Captions(member.Row, member.Block, how);
         }
 
-        // Every child (and theirs, the children on the same edge) that rides with the block: on that edge (a trim), or
-        // all of them (a move). A trim also shows the children it may leave outside the parent, which come loose. The
-        // dragged block, its neighbour and the group's own blocks are never anyone's children here: each goes by itself.
+        // BFS over riding descendants: edge children for a trim (recursively on the same edge), all for a move. Trims also add
+        // direct children they may leave outside the parent (detachable). The dragged block, its neighbour and group members are
+        // excluded as children: each is driven on its own.
         void Gather(TimelineBlock root, BlockEdges? edge, Follows how, bool ofNeighbor)
         {
             var queue = new Queue<TimelineBlock>();
@@ -128,7 +127,7 @@ public sealed partial class UnifiedTimelineControl
                     var onEdge = edge is { } wanted && (childFamily.OnParentEdges & wanted) != 0;
                     if (edge is not null && !onEdge)
                     {
-                        // Off the dragged edge: only the root's own children can be left outside by a trim, and come loose.
+                        // Off the trimmed edge: only the root's direct children can end up outside and detach.
                         if (ReferenceEquals(parent, root) && drag.Seam is null && drag.Kind is BlockEdit.TrimEnd or BlockEdit.TrimStart)
                             Add(row, child, how, ofNeighbor, mayDetach: true, root);
                         continue;
@@ -154,10 +153,9 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The other selected blocks a drag of a selected block takes along (5.0, multi-select): a move, or a plain trim of either
-    /// end (no ripple, roll, slip or seam), of one of them is made to every one that can take it (moved: it can be dragged;
-    /// trimmed: it has that edge). One the model moves or trims with another of them (a child riding with its parent, on
-    /// the edge trimmed) is left to it; when the dragged block itself is such a child, its own edit is left out.
+    /// Other selected blocks that follow a drag of a selected block (multi-select): a move or plain end trim (no ripple, roll, slip,
+    /// seam or Alt) applies to every member that supports it (draggable for moves; has that edge for trims). Members the model already
+    /// carries with another (a riding child on the trimmed edge) are dropped; if the dragged block is such a child, CarriedByGroup is set.
     /// </summary>
     private List<(TimelineRow Row, TimelineBlock Block)> GroupOf(BlockDrag drag, Dictionary<object, List<(TimelineRow Row, TimelineBlock Block)>> byParent)
     {
@@ -189,7 +187,7 @@ public sealed partial class UnifiedTimelineControl
         if (found.Count == 0)
             return found;
 
-        // What the model takes along with each of them (and with the dragged block): never edited twice.
+        // Remove blocks the model already carries with a member (or the dragged block) so none is edited twice.
         var edge = drag.Kind switch { BlockEdit.TrimEnd => BlockEdges.End, BlockEdit.TrimStart => BlockEdges.Start, _ => BlockEdges.None };
         var carried = new HashSet<TimelineBlock>(ReferenceEqualityComparer.Instance);
         Reach(drag.Block);
@@ -233,10 +231,9 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The captions under a clip's row (5.0, the user's directive 2): the blocks of a captions lane in the row's own stack
-    /// (the captions are anchored to the sound of its track) that lie within the clip as the drag began. They go with it
-    /// every move, as its HUD pieces do: moved by as much; trimmed or rolled, cut to the clip as it is now (what its new
-    /// edge leaves outside it is not shown); slipped, slid with what of its file it plays.
+    /// Couples caption blocks under a clip: captions-lane blocks parented to the clip's row (anchored to its track audio) overlapping
+    /// the clip at drag start. They follow like its HUD parts: moved by the same delta; on trim or roll, clipped to the current clip
+    /// bounds (parts outside are hidden); on slip, shifted with the source content.
     /// </summary>
     private void Captions(TimelineRow row, TimelineBlock clip, Follows how)
     {
@@ -257,14 +254,13 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    // The children a trim may leave outside their parent (they stay where they are, and are shown coming loose once it does).
+    // Children a trim may leave outside their parent; they stay in place and render as detaching once outside.
     private readonly HashSet<TimelineBlock> _loose = new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
-    /// The blocks whose sound a drag takes along with it (5.2B, Snap to Audio Beats): a move's (the dragged block, the rest of its group and
-    /// what rides with them, as <see cref="CollectFamily"/> found them) and a slip's (what of its file the block plays slides under it). Their
-    /// clips' beats move with the drag, so they are no moments to snap to. A trim, a roll or a seam's edge leaves every beat where it is (what
-    /// of the file plays moves with the edge): none then, and a clip's own beats stay for its edges to catch on.
+    /// Blocks whose audio beats move with the drag (Snap to Audio Beats), so their beats are excluded as snap targets: for a move, the
+    /// dragged block plus its coupled family (<see cref="CollectFamily"/>); for a slip, the dragged block (its source slides beneath it).
+    /// Trims, rolls and seam edges leave beats fixed, so none are returned and a clip's own beats remain snap targets for its edges.
     /// </summary>
     private List<TimelineBlock> SoundTakenAlong(BlockDrag? drag)
     {
@@ -278,7 +274,7 @@ public sealed partial class UnifiedTimelineControl
         return moving;
     }
 
-    /// <summary>The snapping moments less the edges of what the drag carries along (each its own child's), but never the dragged block's own.</summary>
+    /// <summary>Snap times minus the original edges of coupled blocks (they move with the drag); the dragged block's and neighbour's edges are kept.</summary>
     private IReadOnlyList<double> WithoutFamily(IReadOnlyList<double> times, BlockDrag drag)
     {
         var scale = PixelsPerSecond;
@@ -301,9 +297,9 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// Lays out what the dragged block carries along for where it is now: moved by as much as it moved, or with its dragged
-    /// edge (the edge's own children trimmed with it); a child the trim leaves wholly outside the parent comes loose (it
-    /// stays where it is, drawn coming away). A child that would start before the timeline's start makes the move refused.
+    /// Positions the coupled family for the current drag: moved by the block's delta, or trimmed with the dragged edge (edge children
+    /// follow). A child left wholly outside its parent detaches (stays put, drawn detaching). A child crossing the timeline start
+    /// clears FamilyFits, refusing the move.
     /// </summary>
     private void FollowFamily(BlockDrag drag)
     {
@@ -321,8 +317,8 @@ public sealed partial class UnifiedTimelineControl
             var root = child.Root ?? block;
             switch (child.How)
             {
-                // A caption: where it was (slid with its clip's file, slipped), cut to its clip as it is now; nothing of it
-                // when it lies outside.
+                // Caption: original position (shifted by the slip when slipping), clipped to the current clip; zero width when
+                // fully outside.
                 case Follows.Within or Follows.SlipWithin:
                 {
                     var from = child.Left0 + (child.How == Follows.SlipWithin ? drag.Slip : 0);
@@ -351,7 +347,7 @@ public sealed partial class UnifiedTimelineControl
                     break;
             }
 
-            // One of a selected group: never loose; trimmed no shorter than a block is drawn, nor before the timeline's start.
+            // Group member: never detaches; minimum drawn width 4 px, and start trims clamp at the timeline start.
             if (child.Member)
             {
                 if (left < 0 && !child.Block.MayStartBeforeZero && drag.Kind == BlockEdit.TrimStart)
@@ -360,7 +356,7 @@ public sealed partial class UnifiedTimelineControl
                 continue;
             }
 
-            // Trimmed past: left wholly outside its parent, it comes loose and stays where it was.
+            // Trimmed past: a child wholly outside its parent detaches and keeps its original position.
             var (parentLeft, parentRight) = (root.Left, root.Left + root.Width);
             var loose = _loose.Contains(child.Block)
                 ? drag.Kind == BlockEdit.TrimEnd && child.Left0 >= parentRight - 0.5 || drag.Kind == BlockEdit.TrimStart && child.Left0 + child.Width0 <= parentLeft + 0.5

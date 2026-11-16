@@ -4,19 +4,14 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// The time bars' edits beyond moving a clip and trimming its end (see UnifiedTimelineControl): trimming its start, ripple (the
-// later clips follow), roll (two clips' cut moved together), slip (what of its file a clip plays), ripple delete; a
-// clip's gain line; its fades and their transition styles (picture and sound); crossfades between clips that meet on a
-// track and between clips on separate tracks that overlap; and solo as a set of tracks. Each is an edit of the timeline
-// document (Edit, 4.3C), every clip the same as any other: no track is privileged (5.2-AuditB: a file's streams are Sub-Lanes
-// of clips, edited as any clip is).
+// Timeline edits beyond move/end-trim (UnifiedTimelineControl): start trim, ripple, roll, slip, ripple delete, gain line, fades
+// and transition styles, same-track and cross-track crossfades, and track solo. Each is one document Edit; all clips (including
+// stream Sub-Lanes) are treated uniformly.
 public partial class MainViewModel
 {
     /// <summary>
-    /// The left edge of a clip dragged: where it starts, and (a video or a sound) where in its file it starts, with what it
-    /// shows staying where it was on the timeline. Rippled, its start stays and the clips after it follow its end. At a seam
-    /// of folded dead air (Q11, 4.4-BugHunt), a plain drag opens the fold or folds more of the clip into it instead
-    /// (<see cref="TrimIntoSeam"/>); a ripple trim there stays a ripple trim.
+    /// Start-trim: moves the clip start and its source in-point so content stays in place; with ripple, the start stays and later
+    /// clips follow the end. At a folded dead-air seam a plain drag unfolds/folds instead (<see cref="TrimIntoSeam"/>); ripple stays ripple.
     /// </summary>
     public void TrimClipStart(Layer clip, double start, bool ripple)
     {
@@ -42,7 +37,7 @@ public partial class MainViewModel
             Log($"Trimmed the start of {clip.Name}{(ripple ? ", rippled" : "")}: it now runs {TimeDisplay.Format(model.Start)} to {TimeDisplay.Format(model.End)}");
     }
 
-    /// <summary>The right edge of a clip dragged with Ctrl: its new length, and the clips after it follow its end.</summary>
+    /// <summary>Ctrl end-trim (ripple): sets the length and later clips follow the end.</summary>
     public void RippleClipEnd(Layer clip, double length)
     {
         if (ClipOf(clip) is not { } model)
@@ -64,10 +59,7 @@ public partial class MainViewModel
         Log($"Rippled the end of {clip.Name}: {(moved > 0 ? $"what follows moved {TimeDisplay.Format(moved)} later" : $"what follows moved {TimeDisplay.Format(-moved)} earlier")}");
     }
 
-    /// <summary>
-    /// A roll: the cut between two clips that meet moved to a new moment; the first ends there and the second starts there,
-    /// each playing more or less of its file, and nothing else on the timeline moves.
-    /// </summary>
+    /// <summary>Roll edit: moves the cut between two adjacent clips, adjusting both source ranges; nothing else moves.</summary>
     public void RollCut(Layer before, Layer after, double cut)
     {
         if (ClipOf(before) is not { } earlier || ClipOf(after) is not { } later)
@@ -83,10 +75,7 @@ public partial class MainViewModel
             Log($"Rolled the cut between {before.Name} and {after.Name} to {TimeDisplay.Format(later.Start)}");
     }
 
-    /// <summary>
-    /// A slip: what of its file a clip plays moved by so many seconds of the timeline (later in the file for a drag to the
-    /// left), the clip staying where it is, as long as it is.
-    /// </summary>
+    /// <summary>Slip edit: shifts the source range by timeline seconds (drag left = later in file); position and length unchanged.</summary>
     public void SlipClip(Layer clip, double seconds)
     {
         if (ClipOf(clip) is not { PlaysFile: true } model)
@@ -103,8 +92,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Shift+Delete: the clip goes (to the recycle bin), and what came after it on its track (or every track) closes the gap.
-    /// One of a group of clips selected together (5.0): the whole group, as one step (<see cref="DeleteClips"/>).
+    /// Shift+Delete ripple delete to the recycle bin, closing the gap on its track (or all tracks). For a multi-selection, deletes the
+    /// group in one step (<see cref="DeleteClips"/>).
     /// </summary>
     public bool RippleDelete(object? selected)
     {
@@ -123,8 +112,7 @@ public partial class MainViewModel
         AddToBin(deleted.Clip, view.Name, deleted.Preview);
         if (moved < length - 0.001)
         {
-            // Held back: something that stays (a clip of another track across the stretch, with Ripple affects all tracks)
-            // would have run into what follows, or out of step with it.
+            // Refused: a non-moving clip on another track (with ripple-all) would collide with or desync from following content.
             StatusText = moved < 0.001
                 ? $"Deleted {view.Name} (in the recycle bin), but the gap stays: a clip of another track lies across it. Delete that part too (split it with [ and ]), then close the gap."
                 : $"Deleted {view.Name} (in the recycle bin); what follows moved back {TimeDisplay.Format(moved)}, as far as the clips of other tracks let it.";
@@ -136,10 +124,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A clip let go after a move along its track, or after its right edge was dragged (a new length). Let go a little over
-    /// a clip it meets there (from a frame up to two seconds, and up to half of either), the two are put end to end with a
-    /// crossfade of that much at their cut instead. A right edge at a seam of folded dead air (Q11, 4.4-BugHunt) opens the
-    /// fold or folds more of the clip into it (<see cref="TrimIntoSeam"/>).
+    /// Commits a move or end-trim. A small overlap with a neighbour (one frame to 2 s, at most half of either) becomes a butt joint
+    /// with a crossfade of that length. An end at a folded dead-air seam unfolds/folds instead (<see cref="TrimIntoSeam"/>).
     /// </summary>
     public void CommitClipMove(Layer clip, double start, double length)
     {
@@ -174,8 +160,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// "Show for the Whole Video" (a sound's "Play from Its Start to Its End"): the clip from the start of the timeline to
-    /// its end, and one that plays a file from its file's start, for as much of the timeline as its file has. One step of Undo.
+    /// "Show for the Whole Video" / "Play from Its Start to Its End": spans the clip over the whole timeline (file clips from file
+    /// start, limited by file length). One undo step.
     /// </summary>
     public void ShowThroughout(Layer view)
     {
@@ -199,10 +185,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Takes a stretch out of the timeline (what 4.2.0's cut list did to the stretches it left out): every clip of every
-    /// unlocked track is split at its two ends, what lies between goes, and everything after it on every unlocked track moves
-    /// back by its length. A clip whose edge lies too near an end to be split there goes whole with the stretch. In the
-    /// edit given; refused as a whole when a track cannot follow (a locked one, which never moves, may then lie across it).
+    /// Ripple-deletes a time range across all unlocked tracks: split at both ends, remove the middle, shift later content back.
+    /// Clips with an edge too near an end go whole. Runs in the given edit; refused entirely if a track cannot follow (a locked
+    /// track spanning it).
     /// </summary>
     private void TakeOutStretch(ITimelineTransaction edit, double from, double to)
     {
@@ -224,7 +209,7 @@ public partial class MainViewModel
                 }
                 catch (TimelineEditException)
                 {
-                    // Its sound too short on one side to be split (a J or L cut): it goes whole.
+                    // Audio too short on one side to split (J/L cut): remove it whole.
                 }
 
                 edit.DeleteClip(inside);
@@ -235,7 +220,7 @@ public partial class MainViewModel
             edit.CloseGap(first, from, to, rippleAllUnlockedTracks: true);
     }
 
-    /// <summary>The clip after one on its track that starts where it ends; null when there is none.</summary>
+    /// <summary>Adjacent following clip on the same track (starts at this clip's end); null when none.</summary>
     private TimelineClip? After(TimelineClip clip)
     {
         if (Document.TrackOf(clip) is not { } track)
@@ -245,7 +230,7 @@ public partial class MainViewModel
         return index + 1 < track.Clips.Count && Math.Abs(track.Clips[index + 1].Start - clip.End) < 1e-6 ? track.Clips[index + 1] : null;
     }
 
-    /// <summary>The clip just before a clip on its track: the one whose end meets its start; null when there is none.</summary>
+    /// <summary>Adjacent preceding clip on the same track (ends at this clip's start); null when none.</summary>
     public Layer? ClipBefore(Layer clip)
     {
         if (ClipOf(clip) is not { } model || Document.TrackOf(model) is not { } track)
@@ -255,7 +240,7 @@ public partial class MainViewModel
         return index > 0 && Math.Abs(track.Clips[index - 1].End - model.Start) < 1e-6 ? ViewOf(track.Clips[index - 1]) : null;
     }
 
-    /// <summary>A crossfade of so many seconds from the clip before this one (0: a plain cut again).</summary>
+    /// <summary>Sets the crossfade length from the preceding clip (0 = hard cut).</summary>
     public void SetCrossfade(Layer clip, double seconds)
     {
         if (ClipOf(clip) is not { } model)
@@ -269,7 +254,7 @@ public partial class MainViewModel
             StatusText = $"{clip.Name} does not meet the clip before it: put them end to end first (snapping puts one where the other ends).";
     }
 
-    /// <summary>A clip's gain line dragged: its gain (dB). Its fades are its corner handles' (SetClipFade).</summary>
+    /// <summary>Gain line drag: sets clip gain (dB); fades use the corner handles (SetClipFade).</summary>
     public void SetClipGain(Layer clip, double gainDb)
     {
         if (ClipOf(clip) is not { } model)
@@ -280,11 +265,10 @@ public partial class MainViewModel
     }
 
     // ----- Fades and transitions -----
-    // Every clip fades on its own, picture and sound, over whatever is under it: a clip on a track of its own (where a
-    // dropped clip goes) needs no neighbour on its track to come on or go. The picture's side has a style
-    // (TransitionStyle: dissolve, wipe, slide, zoom, blur); its sound fades with it whatever the style.
+    // Each clip fades independently (picture and audio) over whatever lies beneath, so no same-track neighbour is required. The
+    // picture uses a TransitionStyle (dissolve, wipe, slide, zoom, blur); audio fades regardless of style.
 
-    /// <summary>A clip's fade handle let go: its fade in (or out) is so many seconds now, no more than the clip leaves beside its other fade.</summary>
+    /// <summary>Fade handle release: sets fade in/out seconds, clamped so both fades fit within the clip.</summary>
     public void SetClipFade(Layer clip, bool fadeIn, double seconds)
     {
         if (ClipOf(clip) is not { } model)
@@ -300,7 +284,7 @@ public partial class MainViewModel
             StatusText = FadeText(clip.Name, fadeIn, seconds, fadeIn ? model.FadeInStyle : model.FadeOutStyle);
     }
 
-    /// <summary>How the picture of a clip comes on (or goes) over its fade. Chosen for a clip with no fade there, it gets one of the default length.</summary>
+    /// <summary>Sets a fade's picture transition style; adds a default-length fade if none exists.</summary>
     public void SetClipFadeStyle(Layer clip, bool fadeIn, TransitionStyle style)
     {
         if (ClipOf(clip) is not { } model)
@@ -318,7 +302,7 @@ public partial class MainViewModel
             Log(FadeText(clip.Name, fadeIn, seconds, style));
     }
 
-    /// <summary>The length a fade gets when a style is chosen for a clip with none: the default transition length (Settings), in what room there is.</summary>
+    /// <summary>Default fade length for a new style (Settings default transition length, clamped to available room).</summary>
     private static double DefaultFade(double room) => Math.Round(Math.Clamp(AppSettings.Current.DefaultTransitionSeconds, 0, Math.Max(room, 0)), 2);
 
     private static string FadeText(string name, bool fadeIn, double seconds, TransitionStyle style) => seconds < 0.005
@@ -326,9 +310,8 @@ public partial class MainViewModel
         : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{name}: fade {(fadeIn ? "in" : "out")} {seconds:0.##} s, {TransitionStyles.Label(style)}");
 
     /// <summary>
-    /// The clip on another track that is on while this clip's start (or end) comes, and for how long the two are on
-    /// together there: the stretch a crossfade between them spans. Pictures pair with pictures and sounds with sounds;
-    /// of several, the longest stretch. Null when no clip of another track lies across that moment.
+    /// Cross-track overlap partner at this clip's start (or end) and the overlap duration (the crossfade span); same media kind only,
+    /// longest overlap wins. Null when none.
     /// </summary>
     public (Layer Other, double Seconds)? OverlapAt(Layer clip, bool atStart)
     {
@@ -362,9 +345,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Crossfades a clip with the one on another track it overlaps at its start (or end): its fade there, and the other's
-    /// fade on the opposite side, both made as long as the overlap. Whichever lies above carries the picture's side (its
-    /// style); the one under it keeps its picture until it ends (see PairLayerCrossfades), and their sounds cross.
+    /// Cross-track crossfade: sets this clip's fade and the partner's opposite fade to the overlap length. The upper clip carries the
+    /// picture transition style; the lower keeps its picture until it ends (PairLayerCrossfades); audio crossfades.
     /// </summary>
     public void CrossfadeWithOverlap(Layer clip, bool atStart)
     {
@@ -397,18 +379,17 @@ public partial class MainViewModel
             $"Crossfade of {seconds:0.##} s between {(atStart ? other.Name : clip.Name)} and {(atStart ? clip.Name : other.Name)}, across separate tracks"));
     }
 
-    // ----- Solo: a set of tracks (5.2-AuditB: the document's, TimelineTrackModel.IsSoloed) -----
+    // ----- Track solo (TimelineTrackModel.IsSoloed) -----
 
     /// <summary>
-    /// The tracks played on their own: none, one or several. While any is, the preview's sound engine hears only them (and the
-    /// Sub-Lanes under them), and no voiceover; an export hears everything.
+    /// Soloed tracks (zero or more). While any exist, preview audio plays only them and their Sub-Lanes (no voiceover); exports
+    /// ignore solo.
     /// </summary>
     public IReadOnlyList<TimelineTrackModel> SoloedTracks => Document.Tracks.Where(t => t.IsSoloed).ToList();
 
     /// <summary>
-    /// A track's Solo button (a row: its track): the track joins the set of those played on their own, or leaves it. Alt-click (or
-    /// Settings, Solo is exclusive) plays it alone, the others' solo going off; pressed again, it goes off too. With no row, every
-    /// solo goes off. One step of Undo.
+    /// Toggles a track's solo. Alt-click (or exclusive solo in Settings) solos it alone, clearing others; again turns it off. Null row
+    /// clears all solos. One undo step.
     /// </summary>
     [CommunityToolkit.Mvvm.Input.RelayCommand]
     private void ToggleSolo(Layer? row)

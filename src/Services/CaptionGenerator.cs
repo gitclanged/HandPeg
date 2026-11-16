@@ -13,15 +13,14 @@ namespace HandPegApp.Services;
 public readonly record struct CaptionWord(string Text, double Start, double End);
 
 /// <summary>
-/// How whisper.cpp is asked to decode, and how its silence detection listens: what the Auto-Captions tab of
-/// the settings sets. The defaults are whisper's own, and an option left at its default is not written into
-/// the command at all, so settings nobody touched run whisper exactly as it ran before there were any.
+/// whisper.cpp decoding and VAD options from the Auto-Captions settings. Defaults match whisper's; options at their default are
+/// omitted from the command line.
 /// </summary>
-/// <param name="BeamSize">How many candidate sentences are followed at once (--beam-size).</param>
-/// <param name="BestOf">How many candidates are kept when sampling (--best-of).</param>
-/// <param name="Temperature">0 to 1: how freely words are chosen (--temperature).</param>
-/// <param name="TemperatureFallback">Try again at a higher temperature when a stretch fails to decode; off is --no-fallback.</param>
-/// <param name="VadThreshold">0 to 1: how sure the detector has to be that a sound is speech (--vad-threshold).</param>
+/// <param name="BeamSize">Beam width (--beam-size).</param>
+/// <param name="BestOf">Sampling candidates (--best-of).</param>
+/// <param name="Temperature">Sampling temperature 0-1 (--temperature).</param>
+/// <param name="TemperatureFallback">Retry failed segments at higher temperature; false emits --no-fallback.</param>
+/// <param name="VadThreshold">VAD speech probability threshold 0-1 (--vad-threshold).</param>
 public readonly record struct WhisperOptions(
     int BeamSize = 5, int BestOf = 5, double Temperature = 0, bool TemperatureFallback = true,
     double VadThreshold = 0.5, int VadMinSpeechMs = 250, int VadMinSilenceMs = 100, int VadSpeechPadMs = 30)
@@ -35,19 +34,16 @@ public readonly record struct WhisperOptions(
 }
 
 /// <summary>
-/// A transcription still to be done, and everything it takes to do it: what to listen to, how whisper is
-/// asked to listen (the model, the language, and the decoding and silence settings as they were when this
-/// was made), and how the words are then written. A queued job carries one, so that its captions are made
-/// when the job runs, from what was set when it was queued, whatever the window shows by then.
+/// Pending transcription snapshot: audio source, whisper model/language/decoding/VAD settings, and output formatting, captured at
+/// creation so queued jobs use the settings from queue time.
 /// </summary>
-/// <param name="Ranges">The stretches of the audio that are heard, joined end to end; none for all of it.</param>
-/// <param name="UseVad">Skip silence, when the detection model is installed and whisper.exe knows how.</param>
-/// <param name="Width">The caption box on the output frame, in pixels: the canvas the file is written for.</param>
-/// <param name="TextScale">What the style's sizes, given for a 1080-pixel frame, are multiplied by.</param>
-/// <param name="AssPath">Where the caption file is written: the file the job's command draws.</param>
+/// <param name="Ranges">Audio ranges concatenated for transcription; empty for the whole track.</param>
+/// <param name="UseVad">Skip silence when the VAD model is installed and supported by whisper.exe.</param>
+/// <param name="Width">Caption box width in output pixels.</param>
+/// <param name="TextScale">Multiplier for style sizes authored at 1080p.</param>
+/// <param name="AssPath">Output caption file path.</param>
 /// <param name="Spans">
-/// Where the words heard are put on the sequence (4.4): every clip window that plays the audio, as it was when the job was
-/// made. The words are heard in the audio's own time and shown through these (CaptionProjection.ProjectWords).
+/// Clip windows playing the audio at creation time; words in audio time are mapped through these (CaptionProjection.ProjectWords).
 /// </param>
 public sealed record CaptionJob(
     string AudioPath, int TrackIndex, IReadOnlyList<(double Start, double End)> Ranges,
@@ -56,14 +52,11 @@ public sealed record CaptionJob(
     IReadOnlyList<CaptionSpan>? Spans = null);
 
 /// <summary>
-/// The auto-captions pipeline, step by step: cut the audio that will be heard into a small speech-quality
-/// file, have whisper.cpp find the words and their times, and write them as an animated ASS subtitle file
-/// for FFmpeg to draw.
+/// Auto-captions pipeline: extract audio to 16 kHz mono WAV, transcribe with whisper.cpp (word timings), write an animated ASS file.
 /// </summary>
 public static partial class CaptionGenerator
 {
-    // With voice activity detection, whisper listens to the stretches of speech joined end to end, and says
-    // in its log where each of them was in the audio it was given:
+    // With VAD, whisper transcribes concatenated speech segments and logs each segment's original and compacted times:
     //   whisper_vad: vad_segment_info: orig_start: 18.08, orig_end: 20.83, vad_start: 4.74, vad_end: 7.49
     [GeneratedRegex(@"vad_segment_info: orig_start: ([\d.]+), orig_end: ([\d.]+), vad_start: ([\d.]+), vad_end: ([\d.]+)")]
     private static partial Regex VadSegmentRegex();
@@ -71,13 +64,12 @@ public static partial class CaptionGenerator
     [GeneratedRegex(@"progress\s*=\s*(\d+)\s*%")]
     private static partial Regex ProgressRegex();
 
-    /// <summary>One stretch of speech: where it is in the audio, and where it is on the clock whisper counts by when it skips silence.</summary>
+    /// <summary>VAD segment: original audio range and compacted (silence-removed) range.</summary>
     private readonly record struct SpeechStretch(double OriginalStart, double OriginalEnd, double Start, double End);
 
     /// <summary>
-    /// A silence longer than this between two words is a gap the captions show (4.4): it starts a new caption, however few
-    /// words the last one has, and the caption before it is gone when its last word ends. A shorter one is bridged: the
-    /// caption stays up until the next one replaces it, so speech never flickers.
+    /// Inter-word silence threshold (s): longer gaps start a new caption and end the previous one at its last word; shorter gaps are
+    /// bridged so captions do not flicker.
     /// </summary>
     public const double SilentGapSeconds = 0.35;
 
@@ -85,10 +77,9 @@ public static partial class CaptionGenerator
     private const double ReferenceSide = 1080;
 
     /// <summary>
-    /// The FFmpeg command that writes the given stretches of an audio track, joined end to end, as the
-    /// 16 kHz mono wave file whisper.cpp reads. No ranges means the whole track.
+    /// FFmpeg command extracting the given ranges of an audio track, concatenated, to 16 kHz mono WAV for whisper.cpp. Empty = whole track.
     /// </summary>
-    /// <param name="trackIndex">Which of the file's audio tracks, counted from 0.</param>
+    /// <param name="trackIndex">Zero-based audio track index.</param>
     public static string BuildExtractCommand(string audioPath, int trackIndex, IReadOnlyList<(double Start, double End)> ranges, string wavPath)
     {
         var track = $"0:a:{Math.Max(trackIndex, 0)}";
@@ -110,22 +101,20 @@ public static partial class CaptionGenerator
     }
 
     /// <summary>
-    /// Runs whisper.cpp on a wave file and returns the words it heard. Its full JSON output is asked for,
-    /// which is what carries a time for every token.
+    /// Runs whisper.cpp on a WAV and returns words; requests full JSON output for per-token timing.
     /// </summary>
-    /// <param name="language">The spoken language as whisper names it (en, es...), or auto.</param>
-    /// <param name="prompt">Words and names to expect; blank for none.</param>
-    /// <param name="translate">Write English whatever is spoken.</param>
+    /// <param name="language">whisper language code (en, es, ...) or auto.</param>
+    /// <param name="prompt">Initial prompt with expected words and names; blank for none.</param>
+    /// <param name="translate">Translate to English.</param>
     /// <param name="vadModelPath">
-    /// The voice activity detection model, or null to listen to everything. With it, whisper is given only
-    /// the stretches that have speech in them, which stops it writing words into the silences.
+    /// VAD model path, or null to transcribe everything; VAD prevents hallucinated words in silence.
     /// </param>
     public static Task<List<CaptionWord>> TranscribeAsync(
         string wavPath, string modelPath, string language, string prompt, bool translate, string? vadModelPath, CancellationToken cancellationToken,
         IProgress<double>? progress = null, WhisperOptions? options = null) =>
         RunWhisperAsync(wavPath, modelPath, language, prompt, translate, vadModelPath, cancellationToken, progress, options, onProcessor: false);
 
-    /// <param name="onProcessor">Run on the processor whatever is chosen: the graphics card fell over on this very audio.</param>
+    /// <param name="onProcessor">Force CPU (GPU retry after a crash on this audio).</param>
     private static async Task<List<CaptionWord>> RunWhisperAsync(
         string wavPath, string modelPath, string language, string prompt, bool translate, string? vadModelPath, CancellationToken cancellationToken,
         IProgress<double>? progress, WhisperOptions? options, bool onProcessor)
@@ -133,10 +122,8 @@ public static partial class CaptionGenerator
         var useVad = !string.IsNullOrWhiteSpace(vadModelPath);
         var said = 0;
 
-        // -ojf: output JSON, full. -of: where to write it (whisper adds .json). -np: no progress chatter;
-        // left out with voice activity detection, whose log is what says where the speech was.
-        // -pp: say how far along it is, which is what the progress bar shows. Its log is read as well: it says
-        // which processor or graphics card whisper is running on.
+        // -ojf: full JSON; -of: output base (whisper appends .json); -np: quiet, omitted with VAD because its log carries segment times;
+        // -pp: progress for the progress bar. The log also reports the CPU/GPU in use.
         var arguments = new List<string> { "-m", modelPath, "-f", wavPath, "-ojf", "-of", "", "-pp" };
         if (!string.IsNullOrWhiteSpace(language))
             arguments.AddRange(["--language", language.Trim()]);
@@ -147,8 +134,7 @@ public static partial class CaptionGenerator
         if (useVad)
             arguments.AddRange(["--vad", "--vad-model", vadModelPath!]);
 
-        // Only what was moved off whisper's own default is said, and only to a whisper.exe that knows the option:
-        // an older build of the user's own is run as before rather than refused.
+        // Emit only non-default options, and only those the whisper.exe supports, so older custom builds still run.
         var (set, standard, help) = (options ?? new WhisperOptions(), new WhisperOptions(), await HelpAsync(cancellationToken));
         void Option(string name, string value)
         {
@@ -165,12 +151,11 @@ public static partial class CaptionGenerator
         if (!set.TemperatureFallback && help.Contains("--no-fallback", StringComparison.Ordinal))
             arguments.Add("--no-fallback");
 
-        // Settings > Performance, "Whisper threads": Auto leaves it to whisper (at most 4). It changes how fast, not what is heard.
+        // Whisper threads setting; Auto leaves whisper's default (max 4). Affects speed only.
         if (AppSettings.Current.WhisperThreads > 0)
             Option("--threads", Math.Clamp(AppSettings.Current.WhisperThreads, 1, 64).ToString(CultureInfo.InvariantCulture));
 
-        // What it runs on (5.2-Arm64AndNpu): whisper uses its graphics back end unless told not to (--no-gpu); the silence
-        // detection runs inside it, on the same one. It changes how fast, not what is heard.
+        // Device: whisper uses its GPU backend unless --no-gpu; VAD runs on the same device. Affects speed only.
         var plan = onProcessor
             ? new SpeechPlan(AppSettings.SpeechOnCpu, true, "On the processor: whisper.exe fell over on the graphics card, so the audio was transcribed again.")
             : PlanSpeech();
@@ -207,7 +192,7 @@ public static partial class CaptionGenerator
                 return;
             }
 
-            // What it runs on, for the log: a build with graphics card support says which card it found, or that it found none.
+            // Log the device reported by GPU-capable builds (adapter name or none found).
             if (said < 6 && (line.Contains("gpu", StringComparison.OrdinalIgnoreCase) || line.Contains("vulkan", StringComparison.OrdinalIgnoreCase)
                              || line.Contains("cuda", StringComparison.OrdinalIgnoreCase) || line.Contains("system_info", StringComparison.OrdinalIgnoreCase)))
             {
@@ -237,8 +222,7 @@ public static partial class CaptionGenerator
                 .WithStandardErrorPipe(ProcessPipes.Lines(OnLine)),
                 cancellationToken);
 
-            // Crashed (an NTSTATUS, not an exit code of its own) while on the graphics card: transcribed again on the processor,
-            // and Auto keeps to the processor with this build and these drivers (AppSettings.WhisperGpuFailedOn).
+            // GPU crash (NTSTATUS exit): retry on CPU; Auto then stays on CPU for this build/driver (AppSettings.WhisperGpuFailedOn).
             fellOver = result.ExitCode < 0 && !plan.NoGpu && plan.Device == AppSettings.SpeechOnGpu;
             if (!fellOver && (result.ExitCode != 0 || !File.Exists(jsonPath)))
                 throw new InvalidOperationException($"whisper.exe exited with code {result.ExitCode}: {string.Join(" | ", lastLines.TakeLast(3))}");
@@ -253,8 +237,7 @@ public static partial class CaptionGenerator
             }
             else if (speech.Count > 0)
             {
-                // The word times are on the shortened clock; without knowing where the speech was they cannot
-                // be put back, and captions at the wrong moments are worse than captions in a silence.
+                // Without VAD segment info, compacted word times cannot be mapped back; mistimed captions are worse than none.
                 return ParseWhisperJson(File.ReadAllText(jsonPath), (from, to) => ToOriginalWord(speech, from, to));
             }
             else
@@ -269,7 +252,7 @@ public static partial class CaptionGenerator
 
         if (fellOver)
         {
-            // The card is kept off only once the processor has done the same work: a crash there too was the audio's or the model's.
+            // Blacklist the GPU only after the CPU succeeds; a CPU crash too implicates the audio or model.
             var words = await RunWhisperAsync(wavPath, modelPath, language, prompt, translate, vadModelPath, cancellationToken, progress, options, onProcessor: true);
             NoteGpuFellOver();
             return words;
@@ -278,22 +261,19 @@ public static partial class CaptionGenerator
         return await RunWhisperAsync(wavPath, modelPath, language, prompt, translate, vadModelPath: null, cancellationToken, progress, options, onProcessor);
     }
 
-    // ----- What whisper runs on (5.2-Arm64AndNpu) -----
+    // ----- Transcription device selection -----
 
     /// <summary>
-    /// Where a transcription runs: <c>Device</c> "npu", "gpu" or "cpu" (AppSettings' SpeechOn names), whether whisper is
-    /// told to keep off the graphics card (--no-gpu), and why, in a sentence (the log, Settings, the Auto-Captions window).
+    /// Transcription device: <c>Device</c> "npu", "gpu" or "cpu" (AppSettings SpeechOn names), whether to pass --no-gpu, and a
+    /// one-sentence reason (log, Settings, Auto-Captions window).
     /// </summary>
     public readonly record struct SpeechPlan(string Device, bool NoGpu, string Why);
 
     /// <summary>
-    /// What a transcription runs on, from the choice (<see cref="AppSettings.CaptionAccelerator"/>) and what is installed.
-    /// Auto: the NPU when a speech build for it is installed (<see cref="DependencyUpdater.NpuSpeechBuildInstalled"/>: none is
-    /// yet), else the graphics card when the whisper.cpp build in use has a back end for one (<see cref="DependencyUpdater.WhisperGpuBackend"/>:
-    /// the Adreno OpenCL build on a Snapdragon PC) that has not fallen over here, else the processor. The NPU chosen without a
-    /// build for it is Auto's choice, said so. The processor is asked for with --no-gpu only where the build has a graphics
-    /// back end or the user chose it: a build that keeps its back ends inside (one set by hand) decides for itself, as before.
-    /// Pure: the golden tests check it (hardware-tier).
+    /// Resolves the device from <see cref="AppSettings.CaptionAccelerator"/> and installed builds. Auto: NPU if an NPU build exists
+    /// (<see cref="DependencyUpdater.NpuSpeechBuildInstalled"/>, currently never), else GPU if the build has a backend
+    /// (<see cref="DependencyUpdater.WhisperGpuBackend"/>) that has not crashed here, else CPU. NPU without a build falls back to Auto.
+    /// --no-gpu is passed only when the build has an external GPU backend or CPU was chosen. Pure (hardware-tier golden).
     /// </summary>
     public static SpeechPlan ChooseSpeechAccelerator(string choice, bool npuBuild, string gpuBackend, bool gpuFellOverHere)
     {
@@ -318,8 +298,8 @@ public static partial class CaptionGenerator
     }
 
     /// <summary>
-    /// What a transcription started now would run on, with <paramref name="choice"/> (the setting in effect when null). A few
-    /// file checks and the cards' list: off the UI thread.
+    /// Device a transcription would use now for <paramref name="choice"/> (current setting when null). File I/O and adapter enumeration:
+    /// off the UI thread.
     /// </summary>
     public static SpeechPlan PlanSpeech(string? choice = null) =>
         ChooseSpeechAccelerator(choice ?? AppSettings.Current.CaptionAccelerator, DependencyUpdater.NpuSpeechBuildInstalled, DependencyUpdater.WhisperGpuBackend,
@@ -342,7 +322,7 @@ public static partial class CaptionGenerator
         return string.Create(CultureInfo.InvariantCulture, $"{path}|{written}|{GpuAdapters.Fingerprint}");
     }
 
-    /// <summary>Remembers (and saves) that whisper fell over on the graphics card with this build and these drivers: Auto keeps to the processor.</summary>
+    /// <summary>Persists a GPU crash for this build/driver so Auto uses the CPU.</summary>
     private static void NoteGpuFellOver()
     {
         var stamp = GpuStamp();
@@ -352,10 +332,8 @@ public static partial class CaptionGenerator
     private static double Seconds(Group group) => double.Parse(group.Value, CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// A word's start and end on the clock whisper counts by when it skips silence, as times in the audio it was given
-    /// (4.4). A start that falls between two stretches of speech (in the short gap whisper leaves there) is the start of
-    /// the later one; an end there is the end of the earlier one, so the last word before a pause never runs on through
-    /// the silence the pause was. And a word ends at the latest where the stretch it starts in ends.
+    /// Maps a word's compacted start/end to original audio time. A start in an inter-segment gap snaps to the later segment's start;
+    /// an end snaps to the earlier segment's end (no word spans a pause). Ends are capped at the end of the start's segment.
     /// </summary>
     private static (double Start, double End) ToOriginalWord(List<SpeechStretch> speech, double from, double to)
     {
@@ -365,8 +343,8 @@ public static partial class CaptionGenerator
     }
 
     /// <summary>
-    /// The word mapping silence skipping needs, for the stretches of speech whisper reported (original start and end, then
-    /// start and end on its shortened clock): what TranscribeAsync hands ParseWhisperJson. Public for the golden tests.
+    /// Builds the compacted-to-original word mapper from VAD segments (original start/end, compacted start/end) for ParseWhisperJson.
+    /// Public for goldens.
     /// </summary>
     public static Func<double, double, (double Start, double End)> SpeechWordMap(
         IReadOnlyList<(double OriginalStart, double OriginalEnd, double Start, double End)> stretches)
@@ -375,8 +353,8 @@ public static partial class CaptionGenerator
         return (from, to) => ToOriginalWord(speech, from, to);
     }
 
-    /// <summary>A time on whisper's shortened clock as a time in the audio, and the stretch of speech it falls in (or by).</summary>
-    /// <param name="isEnd">The time ends a word: between two stretches, it is the earlier one's end, not the later one's start.</param>
+    /// <summary>Maps a compacted time to original time and returns its segment.</summary>
+    /// <param name="isEnd">Word end: in a gap, resolve to the earlier segment's end rather than the later one's start.</param>
     private static (double Time, int Stretch) ToOriginalTime(List<SpeechStretch> speech, double time, bool isEnd)
     {
         for (var i = 0; i < speech.Count; i++)
@@ -392,13 +370,12 @@ public static partial class CaptionGenerator
     }
 
     /// <summary>
-    /// A time on the clock of stretches of a source joined end to end (what BuildExtractCommand writes) as a time in the
-    /// source (4.4). Past the last stretch, the end of it.
+    /// Maps a time on the concatenated-ranges clock (BuildExtractCommand output) to source time; clamps past the last range.
     /// </summary>
     public static double JoinedToSource(IReadOnlyList<(double Start, double End)> ranges, double time) =>
         ranges.Count == 0 ? time : ranges[JoinedRange(ranges, time, out var into)].Start + into;
 
-    /// <summary>Words heard on the joined clock of <paramref name="ranges"/>, in the source's own time: each ends at the latest where its stretch ends.</summary>
+    /// <summary>Maps words from the concatenated <paramref name="ranges"/> clock to source time, capping each end at its range end.</summary>
     public static List<CaptionWord> JoinedToSource(IReadOnlyList<(double Start, double End)> ranges, IReadOnlyList<CaptionWord> words)
     {
         var placed = new List<CaptionWord>(words.Count);
@@ -440,15 +417,15 @@ public static partial class CaptionGenerator
     }
 
     /// <summary>
-    /// The longest a segment's last word is taken to last (4.4): whisper gives it the segment's end, which can run on into
-    /// the silence after it. A short word is said in a quarter of a second, a long one in a little more; never more than 1.5 s.
+    /// Max duration for a segment's last word (whisper extends it to the segment end, into silence): ~0.25 s for short words, scaled by
+    /// length, capped at 1.5 s.
     /// </summary>
     public static double LongestLastWord(string word) => Math.Clamp(0.25 + 0.08 * word.Count(char.IsLetterOrDigit), 0.35, 1.5);
 
     // What the whisper.exe in use says it understands (its --help), by the program asked: older builds know fewer options.
     private static (string Program, string Help)? _help;
 
-    /// <summary>Whether the whisper.exe in use can skip silence with a voice activity detection model. Asked of it once.</summary>
+    /// <summary>True when the active whisper.exe supports VAD; probed once.</summary>
     public static async Task<bool> SupportsVadAsync(CancellationToken cancellationToken) =>
         (await HelpAsync(cancellationToken)).Contains("--vad-model", StringComparison.Ordinal);
 
@@ -480,12 +457,10 @@ public static partial class CaptionGenerator
     }
 
     /// <summary>
-    /// Puts whisper's tokens back together into words. A token is a piece of a word; one that starts with a
-    /// space starts a new word, and punctuation, having no space, stays on the word before it.
+    /// Reassembles whisper tokens into words: a leading space starts a new word; punctuation attaches to the previous word.
     /// </summary>
     /// <param name="mapWord">
-    /// Turns a word's start and end on whisper's clock into times in the audio, when the two differ (silence skipped);
-    /// null when they are the same. Given both at once, so an end can be held to the speech its start is in.
+    /// Maps compacted start/end to audio time when VAD was used (null otherwise); takes both so the end can be bounded by the start's segment.
     /// </param>
     public static List<CaptionWord> ParseWhisperJson(string json, Func<double, double, (double Start, double End)>? mapWord = null)
     {
@@ -497,7 +472,7 @@ public static partial class CaptionGenerator
         var text = new StringBuilder();
         double start = 0, end = 0;
 
-        // endsSegment: the word is the last of whisper's segment, whose end whisper stretches to the segment's (4.4).
+        // endsSegment: last word of a whisper segment, whose end whisper stretches to the segment end.
         void Finish(bool endsSegment = false)
         {
             var word = text.ToString().Trim();
@@ -568,8 +543,7 @@ public static partial class CaptionGenerator
         var primary = AssColor(style.PrimaryColor, "FFFFFF");
         var highlight = AssColor(style.HighlightColor, "FFE600");
 
-        // In a karaoke line the words start in the secondary colour and turn into the primary one as they
-        // are sung, so there the highlight is the primary colour.
+        // Karaoke lines sweep from secondary to primary colour, so the highlight is the primary colour.
         var (first, second) = isKaraoke ? (highlight, primary) : (primary, highlight);
 
         var ass = new StringBuilder();
@@ -585,8 +559,7 @@ public static partial class CaptionGenerator
         ass.AppendLine("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, "
                        + "StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding");
 
-        // Centred at the bottom of the box, a little in from its edges; solid (ASS writes transparency: 00), and no shadow
-        // of its own (the caption layer's opacity and drop shadow are the export's overlay's).
+        // Bottom-centre with margins, opaque (ASS alpha 00), no own shadow (layer opacity and drop shadow apply at composite).
         var (marginLeft, marginRight, marginBottom) = (width / 40, width / 40, height / 12);
         var font = string.IsNullOrWhiteSpace(style.FontName) ? "Arial" : style.FontName.Replace(",", " ").Trim();
         ass.AppendLine(string.Create(CultureInfo.InvariantCulture,
@@ -603,8 +576,7 @@ public static partial class CaptionGenerator
             var caption = captions[c];
             var captionStart = caption[0].Start;
 
-            // Gone when its last word ends (4.4: no word is left up through a silence), unless the next caption follows
-            // within a breath: then it stays until that one replaces it, so speech never flickers.
+            // End at the last word unless the next caption follows within the gap threshold; then hold until replaced (no flicker).
             var captionEnd = caption[^1].End;
             if (c + 1 < captions.Count)
             {
@@ -647,12 +619,11 @@ public static partial class CaptionGenerator
         WriteWordsBeside(path, captions, style, scale, timeOffset);
     }
 
-    // ----- The words beside the caption file (5.1-Polish, the user's Q2) -----
+    // ----- Word sidecar beside the caption file -----
 
     /// <summary>
-    /// The captions a caption file was written from, as the GPU engine draws them (TextRasterizer.SetCaptions): each line's
-    /// words on the file's clock, the style and the text scale. Written beside every caption file (<see cref="WordsPath"/>),
-    /// so a GPU export draws the very captions its FFmpeg graph would burn in, among its layers or over them.
+    /// Caption source data for GPU rendering (TextRasterizer.SetCaptions): per-line words on the file clock, style and text scale.
+    /// Written beside each caption file (<see cref="WordsPath"/>) so GPU exports render identical captions.
     /// </summary>
     public sealed record CaptionWords(List<List<CaptionWord>> Lines, CaptionStyle Style, double TextScale);
 
@@ -674,8 +645,7 @@ public static partial class CaptionGenerator
     }
 
     /// <summary>
-    /// The words a caption file was written from (<see cref="CaptionWords"/>); null when they are not beside it, are older
-    /// than it (it was written again without them), or cannot be read.
+    /// Reads the <see cref="CaptionWords"/> sidecar; null when missing, older than the caption file, or unreadable.
     /// </summary>
     public static CaptionWords? ReadWords(string assPath)
     {
@@ -698,8 +668,7 @@ public static partial class CaptionGenerator
     public static List<List<CaptionWord>> Lines(IReadOnlyList<CaptionWord> words, CaptionStyle style) => Chunk(words, Math.Clamp(style.MaxWordsPerLine, 2, 5));
 
     /// <summary>
-    /// Groups the words into captions: so many at most, a new one after a silent gap (<see cref="SilentGapSeconds"/>, 4.4:
-    /// so a caption never holds a silence) or the end of a sentence.
+    /// Groups words into captions with a max word count, breaking after a silent gap (<see cref="SilentGapSeconds"/>) or sentence end.
     /// </summary>
     private static List<List<CaptionWord>> Chunk(IReadOnlyList<CaptionWord> words, int maxWords)
     {

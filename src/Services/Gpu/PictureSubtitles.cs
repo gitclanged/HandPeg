@@ -11,20 +11,16 @@ using CliWrap;
 
 namespace HandPegApp.Services.Gpu;
 
-// ----- Picture subtitles in the GPU preview (5.0-Verify) -----
-// A picture subtitle track (a PGS .sup, a VobSub .idx/.sub; DVB and the others FFmpeg reads as well) is pictures, not
-// words. libmpv drew the imported file over its picture itself; with it gone, the GPU preview draws them. The file is
-// decoded once, in the background, by HandPeg's FFmpeg: its subtitle stream laid on a see-through canvas of the stream's
-// own size (sub2video, which hands on a frame at every change: a picture coming, going), each frame written as a PNG
-// down a pipe with its time on stderr (showinfo). Each picture is cut to what it covers and kept packed (Brotli) in
-// memory, within a budget. The track the preview draws pairs the cues with them (the cue's picture is the one the file
-// shows at the cue's own moment, so a cue retimed in the Subtitle Studio keeps its picture), and the scene plan hands a
-// cue's picture to the worker as a still while the playhead is near it (GpuScenePlan.Pictures.cs). The export is as it
-// was: picture subtitles are not written into it.
+// ----- Picture subtitles in the GPU preview -----
+// Bitmap subtitle tracks (PGS .sup, VobSub .idx/.sub, DVB and other FFmpeg-readable formats) are decoded once in the background by FFmpeg:
+// the stream is rendered on a transparent canvas of its own size (sub2video emits a frame at every change), each frame piped as a PNG with
+// its time on stderr (showinfo). Each picture is cropped to its content and kept Brotli-packed in memory within a budget. The preview track
+// pairs cues with pictures by the cue's own file time (so cues retimed in Subtitle Studio keep their picture), and the scene plan uploads a
+// cue's picture as a still near the playhead (GpuScenePlan.Pictures.cs). Exports do not include picture subtitles.
 
 /// <summary>
-/// One picture of a picture subtitle file: when the file shows it (on its own clock), where it is on the stream's canvas
-/// (its pixels' bounding box), and its pixels, BGRA8 with straight alpha, kept packed. Immutable.
+/// One picture of a bitmap subtitle file: its display interval (file clock), its bounding box on the stream canvas, and its BGRA8
+/// straight-alpha pixels, kept packed. Immutable.
 /// </summary>
 public sealed class PictureSubtitlePicture
 {
@@ -36,12 +32,12 @@ public sealed class PictureSubtitlePicture
         (_packed, Hash) = (packed, hash);
     }
 
-    /// <summary>When the file shows it: from (in) to (not), in the file's seconds; the end is infinity when nothing follows it.</summary>
+    /// <summary>Display interval [Start, End) in file seconds; End is infinity when nothing follows.</summary>
     public double Start { get; }
 
     public double End { get; }
 
-    /// <summary>Its place on the stream's canvas, in the canvas's pixels.</summary>
+    /// <summary>Position on the stream canvas, in canvas pixels.</summary>
     public int X { get; }
 
     public int Y { get; }
@@ -50,13 +46,13 @@ public sealed class PictureSubtitlePicture
 
     public int Height { get; }
 
-    /// <summary>What the GPU engine's resource table knows its still by: the file, the stream and the picture's place in it.</summary>
+    /// <summary>Resource-table key for its still: file, stream and picture index.</summary>
     public long Hash { get; }
 
-    /// <summary>How much memory its packed pixels take.</summary>
+    /// <summary>Size of the packed pixels in bytes.</summary>
     public int PackedBytes => _packed.Length;
 
-    /// <summary>A picture from its pixels (<paramref name="bgra"/>: <paramref name="width"/> x <paramref name="height"/>, BGRA8, straight alpha).</summary>
+    /// <summary>Creates a picture from <paramref name="bgra"/>: <paramref name="width"/> x <paramref name="height"/> BGRA8 straight-alpha pixels.</summary>
     public static PictureSubtitlePicture Create(double start, double end, int x, int y, int width, int height, ReadOnlySpan<byte> bgra, long hash)
     {
         if (width <= 0 || height <= 0 || bgra.Length != width * height * 4)
@@ -64,10 +60,10 @@ public sealed class PictureSubtitlePicture
         return new PictureSubtitlePicture(start, end, x, y, width, height, Pack(bgra), hash);
     }
 
-    /// <summary>The same picture at other times (its pixels are shared, never copied).</summary>
+    /// <summary>The same picture with other times (pixels shared, never copied).</summary>
     internal PictureSubtitlePicture At(double start, double end) => new(start, end, X, Y, Width, Height, _packed, Hash);
 
-    /// <summary>Its pixels unpacked: BGRA8, straight alpha, <see cref="Width"/> x <see cref="Height"/>.</summary>
+    /// <summary>Unpacked pixels: BGRA8 straight alpha, <see cref="Width"/> x <see cref="Height"/>.</summary>
     public byte[] Pixels()
     {
         var pixels = new byte[Width * Height * 4];
@@ -76,8 +72,8 @@ public sealed class PictureSubtitlePicture
         return pixels;
     }
 
-    // Brotli at quality 4: a subtitle picture is mostly runs of a few colours, which pack ten to a hundred times (1,500
-    // busy 1,200 x 110 lines measured 38 MB, from 603 MB; quality 2 was a quarter larger, for a tenth less time).
+    // Brotli quality 4: subtitle pictures are mostly runs of a few colours and pack 10-100x (1,500 busy 1,200x110 lines: 603 MB to 38 MB;
+    // quality 2 was 25 % larger for 10 % less time).
     private static byte[] Pack(ReadOnlySpan<byte> pixels)
     {
         var room = ArrayPool<byte>.Shared.Rent(BrotliEncoder.GetMaxCompressedLength(pixels.Length));
@@ -94,38 +90,37 @@ public sealed class PictureSubtitlePicture
     }
 }
 
-/// <summary>A picture subtitle file decoded, or as far as it has been: the stream's canvas and its pictures in the order the file shows them.</summary>
+/// <summary>A decoded (or partially decoded) bitmap subtitle file: the stream canvas and its pictures in display order.</summary>
 public sealed class PictureSubtitleSet(string path, int canvasWidth, int canvasHeight, IReadOnlyList<PictureSubtitlePicture> pictures, bool isComplete, bool overBudget)
 {
     public string Path { get; } = path;
 
-    /// <summary>The canvas the stream's pictures are placed on (a PGS stream's video size, a VobSub's "size:"), in pixels.</summary>
+    /// <summary>Canvas the pictures are placed on (PGS video size, VobSub "size:"), in pixels.</summary>
     public int CanvasWidth { get; } = Math.Max(canvasWidth, 1);
 
     public int CanvasHeight { get; } = Math.Max(canvasHeight, 1);
 
-    /// <summary>The pictures, by their start.</summary>
+    /// <summary>Pictures sorted by start.</summary>
     public IReadOnlyList<PictureSubtitlePicture> Pictures { get; } = pictures;
 
-    /// <summary>The whole file has been read (or as much of it as the budget keeps); false while more is coming.</summary>
+    /// <summary>True once the whole file (or as much as the budget keeps) has been read; false while decoding continues.</summary>
     public bool IsComplete { get; } = isComplete;
 
-    /// <summary>The pictures after a point were not kept: their packed pixels would have taken more than <see cref="PictureSubtitleDecoder.BudgetBytes"/>.</summary>
+    /// <summary>True when later pictures were dropped because their packed size would exceed <see cref="PictureSubtitleDecoder.BudgetBytes"/>.</summary>
     public bool OverBudget { get; } = overBudget;
 
     public long PackedBytes { get; } = pictures.Sum(p => (long)p.PackedBytes);
 }
 
 /// <summary>
-/// A cue of the track the preview draws: when its picture is up on the sequence clock (from, in; to, not), the picture, and
-/// the clip it is shown in when that is known (burned subtitles: the clip its piece of the cue was placed by; empty: the
-/// scene plan finds the clip of the stream's file that is on).
+/// A preview track cue: display interval [From, To) on the sequence clock, its picture, and its clip when known (burned subtitles: the clip
+/// that placed this piece; empty: the scene plan finds the visible clip of the stream's file).
 /// </summary>
 public readonly record struct PictureSubtitleCue(double From, double To, PictureSubtitlePicture Picture, Guid ClipId = default);
 
 /// <summary>
-/// The subtitle track's pictures as the GPU preview draws them (<see cref="SequenceExportState.PictureSubtitles"/>): each
-/// cue's picture and when it is up on the sequence clock, and the canvas they are placed on. Immutable.
+/// Picture-subtitle track as the GPU preview draws it (<see cref="SequenceExportState.PictureSubtitles"/>): each cue's picture and sequence
+/// interval, plus the canvas they are placed on. Immutable.
 /// </summary>
 public sealed class PictureSubtitleTrack
 {
@@ -136,20 +131,19 @@ public sealed class PictureSubtitleTrack
 
     public int CanvasHeight { get; }
 
-    /// <summary>The cues, by their start.</summary>
+    /// <summary>Cues sorted by start.</summary>
     public IReadOnlyList<PictureSubtitleCue> Cues => CueArray;
 
     internal PictureSubtitleCue[] CueArray { get; }
 
-    /// <summary>How far after a cue's own moment its picture may come and still be its picture (a VobSub's display delay), in seconds.</summary>
+    /// <summary>How late a picture may start after its cue's time and still match it (VobSub display delay), seconds.</summary>
     public const double MatchToleranceSeconds = 0.5;
 
     /// <summary>
-    /// The track of a decoded file's pictures, cue for cue: the <paramref name="fileCues"/> as they were read from the file,
-    /// in its order, and the same cues by position as they are to be shown (retimed, the offset added). A cue's picture is
-    /// the one the file shows at the cue's own moment there (or that comes within <see cref="MatchToleranceSeconds"/> of
-    /// it); a cue with none (not decoded yet, or past the budget) is left out. <paramref name="shownClips"/>, when given, holds
-    /// the clip each shown cue is shown in, by position (<see cref="PictureSubtitleCue.ClipId"/>). Null when no cue has a picture.
+    /// Builds the track by pairing cues with decoded pictures: <paramref name="fileCues"/> as read from the file and the same cues by position
+    /// as shown (retimed, offset applied). A cue's picture is the one the file shows at the cue's file time (or starting within
+    /// <see cref="MatchToleranceSeconds"/> after it); cues without one (not decoded yet, or over budget) are skipped. <paramref name="shownClips"/>,
+    /// when given, holds each shown cue's clip by position (<see cref="PictureSubtitleCue.ClipId"/>). Null when no cue has a picture.
     /// </summary>
     public static PictureSubtitleTrack? Match(PictureSubtitleSet set, IReadOnlyList<(double Start, double End)> fileCues, IReadOnlyList<(double Start, double End)> shownCues,
         IReadOnlyList<Guid>? shownClips = null)
@@ -171,7 +165,7 @@ public sealed class PictureSubtitleTrack
         return cues.Count == 0 ? null : new PictureSubtitleTrack(set.CanvasWidth, set.CanvasHeight, [.. cues]);
     }
 
-    /// <summary>The picture up at a moment of the file, or failing that the first to come within the tolerance after it; null for none.</summary>
+    /// <summary>Picture visible at file time <paramref name="t"/>, else the first starting within the tolerance after it; null when none.</summary>
     private static PictureSubtitlePicture? PictureAt(IReadOnlyList<PictureSubtitlePicture> pictures, double t)
     {
         const double Epsilon = 1e-4;
@@ -191,34 +185,31 @@ public sealed class PictureSubtitleTrack
     }
 }
 
-/// <summary>Reads the pictures of a picture subtitle file (or of a picture stream of a media file) with HandPeg's FFmpeg.</summary>
+/// <summary>Decodes the pictures of a bitmap subtitle file (or a picture stream in a media file) with HandPeg's FFmpeg.</summary>
 public static partial class PictureSubtitleDecoder
 {
     /// <summary>
-    /// How much memory the packed pictures of one file may take: a film's track (some 1,500 lines) packs to a few MB, and
-    /// one made up of 1,500 busy, noisy lines to 38 MB, so only a pathological file reaches it. The pictures after that
-    /// point are not kept, and the set says so.
+    /// Memory budget for one file's packed pictures: a film track (~1,500 lines) packs to a few MB and 1,500 busy, noisy lines to 38 MB, so
+    /// only pathological files reach it. Later pictures are dropped and the set reports it.
     /// </summary>
     public const long BudgetBytes = 64L << 20;
 
-    /// <summary>How often a decode in progress hands on what it has (seconds): the preview shows the start while the rest is read.</summary>
+    /// <summary>Interval at which an in-progress decode publishes partial results (seconds), so the preview shows the start early.</summary>
     private const double PublishSeconds = 1;
 
     [GeneratedRegex(@"\bn:\s*(\d+)\s+pts:\s*-?\d+\s+pts_time:(-?[0-9.]+(?:e[-+]?\d+)?)")]
     private static partial Regex FrameLineRegex();
 
-    // A distinct frame of what sub2video handed on: a picture (cut to its pixels and packed, its times not set yet), or
-    // the canvas cleared (null).
+    // A distinct sub2video frame: a picture (cropped and packed, times not yet assigned) or a cleared canvas (null).
     private sealed record Change(int Frame, PictureSubtitlePicture? Picture);
 
     /// <summary>
-    /// Decodes a picture subtitle file: the whole of it, in the background (call it on a background lane: it starts
-    /// <paramref name="ffmpeg"/> through ProcessPipes, so the tool is in that lane's job). <paramref name="progress"/> is
-    /// given what has been read so far about once a second, on the decoding thread. Null when nothing could be read (the
-    /// reason is in the log).
+    /// Decodes a bitmap subtitle file fully in the background (call on a background lane: it starts <paramref name="ffmpeg"/> via ProcessPipes,
+    /// so the tool joins that lane's job). <paramref name="progress"/> receives partial results about once a second on the decoding thread.
+    /// Null when nothing could be read (reason logged).
     /// </summary>
-    /// <param name="path">A .sup, a VobSub's .idx (its .sub beside it), or any file with a picture subtitle stream.</param>
-    /// <param name="streamOrdinal">Which of the file's subtitle streams ("0:s:N"); 0 for a subtitle file's only one.</param>
+    /// <param name="path">A .sup, a VobSub .idx (with its .sub alongside), or any file with a bitmap subtitle stream.</param>
+    /// <param name="streamOrdinal">Subtitle stream index ("0:s:N"); 0 for a subtitle file's only stream.</param>
     public static async Task<PictureSubtitleSet?> DecodeAsync(string path, int streamOrdinal, string ffmpeg, Action<PictureSubtitleSet>? progress, CancellationToken cancellationToken)
     {
         var info = new FileInfo(path);
@@ -231,9 +222,9 @@ public static partial class PictureSubtitleDecoder
         var identity = default(GpuHash).Add("picture-subtitle").Add(info.FullName).Add(info.Length).Add(info.LastWriteTimeUtc.Ticks).Add(streamOrdinal);
         var stream = Math.Max(streamOrdinal, 0).ToString(CultureInfo.InvariantCulture);
 
-        // -copyts keeps the file's own times (FFmpeg otherwise starts them at the first subtitle); every frame is passed on
-        // at its time (passthrough), as a PNG (no prediction, the fastest packing: the pipe's cost is mostly the canvas's
-        // empty rows); showinfo says when each frame is, without its checksums (which would cost more than the rest).
+        // -copyts keeps the file's own times (FFmpeg otherwise rebases to the first subtitle); every frame passes through at its time as a
+        // PNG (no prediction, fastest compression: pipe cost is dominated by empty canvas rows); showinfo reports frame times without
+        // checksums (which would cost more than everything else).
         string[] arguments =
         [
             "-hide_banner", "-nostdin", "-nostats", "-loglevel", "info", "-copyts", "-i", path,
@@ -254,7 +245,7 @@ public static partial class PictureSubtitleDecoder
                 var (frame, at) = (int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture), double.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture));
                 lock (times)
                 {
-                    // Frames are numbered in order; one line lost would shift every time after it, so a gap is filled.
+                    // Frames are numbered sequentially; a lost line would shift every later time, so gaps are filled with NaN.
                     while (times.Count < frame)
                         times.Add(double.NaN);
                     if (times.Count == frame)
@@ -281,9 +272,8 @@ public static partial class PictureSubtitleDecoder
             }
         }
 
-        // One PNG of the pipe taken in; false once the budget is spent (the decode stops there). sub2video hands on a picture
-        // again just before what follows it, and the cleared canvas each time it is cleared: the same bytes are the same
-        // frame, decoded once.
+        // Takes one PNG from the pipe; false once the budget is exhausted (decoding stops). sub2video repeats a picture just before the next
+        // one and the cleared canvas at each clear: identical bytes are the same frame and are decoded once.
         byte[]? previous = null, blank = null;
         bool Take(ReadOnlySpan<byte> bytes, int frame)
         {
@@ -376,8 +366,8 @@ public static partial class PictureSubtitleDecoder
     }
 
     /// <summary>
-    /// The pictures of the changes whose times are known: each from its frame's time to the next change's (infinity for the
-    /// last, and for one whose end is not known yet while the file is still being read).
+    /// Pictures of the changes whose times are known, each lasting until the next change (infinity for the last, and for one whose end is
+    /// still unknown while reading).
     /// </summary>
     private static List<PictureSubtitlePicture> Pictures(List<Change> changes, List<double> times)
     {
@@ -397,7 +387,7 @@ public static partial class PictureSubtitleDecoder
         return pictures;
     }
 
-    /// <summary>Reads the next PNG of the pipe whole (its signature, its chunks to IEND) into <paramref name="room"/> (grown as it needs); a length of 0 at the end.</summary>
+    /// <summary>Reads the next complete PNG (signature, chunks through IEND) into <paramref name="room"/>, growing it; length 0 at end of stream.</summary>
     private static async Task<(byte[] Room, int Length)> ReadPngAsync(Stream input, byte[] room, CancellationToken token)
     {
         var at = 0;
@@ -436,7 +426,7 @@ public static partial class PictureSubtitleDecoder
         }
     }
 
-    /// <summary>A frame of the canvas decoded and cut to the box its visible pixels fill (BGRA8, straight alpha); null for a cleared canvas.</summary>
+    /// <summary>Decodes a canvas frame and crops it to the bounding box of its visible pixels (BGRA8, straight alpha); null for a cleared canvas.</summary>
     private static (int X, int Y, int Width, int Height, byte[] Pixels)? Decode(ReadOnlySpan<byte> png, out int width, out int height)
     {
         BitmapSource bitmap;
@@ -460,7 +450,7 @@ public static partial class PictureSubtitleDecoder
             {
                 var row = pixels.Slice(y * width, width);
 
-                // Most rows are wholly see-through and empty: skipped at the speed of memory.
+                // Most rows are fully transparent: skipped at memory speed.
                 if (row.IndexOfAnyExcept(0u) < 0)
                     continue;
                 var first = -1;

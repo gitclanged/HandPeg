@@ -3,18 +3,16 @@ using HandPegApp.Compositor.Native;
 
 namespace HandPegApp.Services;
 
-/// <summary>One NPU (a neural processing unit), as DXCore lists it.</summary>
-/// <param name="SharedMemoryMb">The computer's memory it may use, MB (an SoC's NPU has none of its own).</param>
-/// <param name="GenericMl">DirectML and ONNX Runtime can run models on it (DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML).</param>
+/// <summary>An NPU as enumerated by DXCore.</summary>
+/// <param name="SharedMemoryMb">Usable system memory in MB (SoC NPUs have no dedicated memory).</param>
+/// <param name="GenericMl">Supports DirectML / ONNX Runtime (DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML).</param>
 internal sealed record NpuAdapter(string Name, string Vendor, uint VendorId, uint DeviceId, string DriverVersion, long SharedMemoryMb, bool GenericMl);
 
 /// <summary>
-/// The NPUs of this computer (Pass 5.2-Arm64AndNpu): a Snapdragon X's 45 TOPS Hexagon NPU, an Intel or AMD laptop's NPU. Listed
-/// by DXCore (Compositor.Native.DxCore: dxcore.dll loaded when first asked for), once, on a pool thread, the first time Settings
-/// or the benchmark asks: never at start-up. None (no DXCore, no NPU, a driver that will not answer) is an empty list.
-/// <para>What they are used for: nothing yet, said as it is. The whisper.cpp builds HandPeg installs (b5454: the processor, CUDA,
-/// Adreno OpenCL) have no NPU back end; Auto-Captions on the NPU need a speech model built for it (QNN or ONNX Runtime), planned
-/// with the AI worker in 6.0 (AppSettings.CaptionAccelerator already offers the choice).</para>
+/// Local NPUs (e.g. Snapdragon Hexagon, Intel/AMD laptop NPUs) enumerated once via DXCore (Compositor.Native.DxCore, dxcore.dll loaded
+/// lazily) on a pool thread when Settings or the benchmark first asks; never at startup. Empty when unavailable.
+/// <para>Currently unused: installed whisper.cpp builds (CPU, CUDA, Adreno OpenCL) have no NPU back end; NPU captions would require a
+/// QNN or ONNX Runtime speech model (AppSettings.CaptionAccelerator already exposes the option).</para>
 /// </summary>
 internal static class NpuAdapters
 {

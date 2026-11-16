@@ -8,11 +8,9 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Subtitle files, read and written by hand. The text formats (.srt, .vtt) are lists of blocks: a number, a
-/// line of two times, and the words. The picture formats are read only for when each picture is shown: a
-/// Blu-ray .sup (PGS) is a run of segments each stamped with its time, and a VobSub is an .idx of times beside
-/// a .sub of pictures. Their pictures are never decoded here; a track of them is retimed by writing the same
-/// bytes out again with other times.
+/// Hand-written subtitle readers/writers. Text formats (.srt, .vtt): blocks of index, time line and text. Bitmap formats are parsed for
+/// timing only: Blu-ray .sup (PGS, timestamped segments) and VobSub (.idx times beside .sub images). Images are never decoded;
+/// retiming rewrites the same bytes with new times.
 /// </summary>
 public static partial class SubtitleFiles
 {
@@ -33,21 +31,19 @@ public static partial class SubtitleFiles
 
     public static bool IsImageFile(string path) => ImageExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
 
-    /// <summary>Reads a subtitle file of any kind HandPeg knows into cues. Throws InvalidDataException for one it cannot make sense of.</summary>
+    /// <summary>Reads any supported subtitle file into cues; throws InvalidDataException when unparseable.</summary>
     public static List<SubtitleCue> Read(string path) =>
         IsImageFile(path) ? ReadImageTimings(path) : ParseText(File.ReadAllText(path, DetectEncoding(path)));
 
     // ----- Text: .srt and .vtt -----
 
     /// <summary>
-    /// Parses SubRip or WebVTT text. The two differ in little: .vtt has a header, may leave the hours and the
-    /// numbers out, writes a point where .srt writes a comma, and may add settings after the times. A block is
-    /// found by its line of times; what follows it, up to the next empty line, is its words.
+    /// Parses SubRip or WebVTT (.vtt adds a header, optional hours/indices, '.' decimals and cue settings). Blocks are located by their
+    /// time line; text runs to the next blank line.
     /// </summary>
     public static List<SubtitleCue> ParseText(string content)
     {
-        // Read where it lies: no copy of the file with its line ends changed, no string for each line, and
-        // one builder for the words of every cue.
+        // Parse in place: no normalized copy, no per-line strings, one shared StringBuilder for cue text.
         var cues = new List<SubtitleCue>();
         var words = new StringBuilder();
         var (open, start, end) = (false, 0.0, 0.0);
@@ -112,8 +108,7 @@ public static partial class SubtitleFiles
     }
 
     /// <summary>
-    /// A line of times: "00:01:02,500 --> 00:01:04,000", with a point for the comma and without the hours in
-    /// .vtt. Whatever follows the second time (.vtt's settings) is left alone.
+    /// Parses a time line ("00:01:02,500 --&gt; 00:01:04,000"; .vtt may use '.' and omit hours); trailing cue settings are ignored.
     /// </summary>
     private static bool TryReadTiming(ReadOnlySpan<char> line, out double start, out double end)
     {
@@ -206,7 +201,7 @@ public static partial class SubtitleFiles
         return string.Create(CultureInfo.InvariantCulture, $"{(int)time.TotalHours:00}:{time.Minutes:00}:{time.Seconds:00},{time.Milliseconds:000}");
     }
 
-    /// <summary>UTF-8 unless the file says otherwise with a byte order mark; a file that is not valid UTF-8 is read as the system's code page would be, Latin-1.</summary>
+    /// <summary>Detects encoding: BOM, else UTF-8, falling back to Latin-1 for invalid UTF-8.</summary>
     private static Encoding DetectEncoding(string path)
     {
         var bytes = File.ReadAllBytes(path);
@@ -235,7 +230,7 @@ public static partial class SubtitleFiles
     private const int SupHeader = 13;
     private const byte PresentationSegment = 0x16;
 
-    /// <summary>The segments of a .sup file: where each begins, how long it is with its header, its kind and its time (90000 to the second).</summary>
+    /// <summary>Parses .sup segments: offset, length including header, type and 90 kHz timestamp.</summary>
     private static List<(int At, int Length, byte Kind, uint Pts)> ReadSupSegments(byte[] bytes)
     {
         var segments = new List<(int, int, byte, uint)>();
@@ -257,8 +252,7 @@ public static partial class SubtitleFiles
     }
 
     /// <summary>
-    /// The display sets of a .sup: each begins with a presentation segment, which says how many pictures it
-    /// puts on screen. One with pictures is a subtitle appearing; the next one with none is it going.
+    /// Groups .sup display sets by presentation segment: a set with objects starts a subtitle; the next empty set ends it.
     /// </summary>
     private static List<SubtitleCue> ReadSup(string path)
     {
@@ -288,7 +282,7 @@ public static partial class SubtitleFiles
         return Numbered(cues);
     }
 
-    /// <summary>The .idx of a VobSub: one line per picture with the time it appears. When it goes is in the .sub; here it is taken to stay until the next, four seconds at most.</summary>
+    /// <summary>Parses VobSub .idx start times; end times (stored in .sub) are approximated as the next start, capped at 4 s.</summary>
     private static List<SubtitleCue> ReadIdx(string idxPath)
     {
         if (!File.Exists(idxPath))

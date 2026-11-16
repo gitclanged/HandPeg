@@ -5,12 +5,12 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp.Views;
 
-// ----- The Color Studio's writes into its Color Grade card -----
-// Through the same GestureWriter as the Effects pane: a gesture (a wheel's, the curves', a slider's drag) is one undo step, its values
-// written at most Pacing.GestureWritesPerSecond times a second (the scene plan is made again on every write) and the last as it ends; a
-// lone change (a typed value, a reset row) takes a step unless it continues a run. Values are stored as the Effects pane stores them
-// (EffectParam.Quantize, KeyEdit.Upsert). The first write on a target without a card puts one on: that step
-// (MainViewModel.EnsureColorGrade's) is the gesture's, or the lone change's.
+// ----- Color Studio writes into the Color Grade card -----
+// Uses the same GestureWriter as the Effects pane: a gesture (wheel, curves or slider drag) is one Undo step, written at most
+// Pacing.GestureWritesPerSecond times per second (each write rebuilds the scene plan) with the final value flushed at the end; a lone
+// change (typed value, row reset) records a step unless it continues a run. Values are stored like the Effects pane does
+// (EffectParam.Quantize, KeyEdit.Upsert). The first write on a card-less target adds a card, and that step
+// (MainViewModel.EnsureColorGrade) belongs to the gesture or lone change.
 public partial class ColorStudioPane
 {
     private GestureWriter<(bool Text, string Key)>? _writes;
@@ -19,7 +19,7 @@ public partial class ColorStudioPane
 
     private GestureWriter<(bool Text, string Key)> Writes => _writes ??= MakeWriter();
 
-    /// <summary>Whether a gesture (a drag) is under way.</summary>
+    /// <summary>True while a gesture (drag) is in progress.</summary>
     private bool InGesture => _writes?.InGesture == true;
 
     private GestureWriter<(bool Text, string Key)> MakeWriter()
@@ -54,10 +54,10 @@ public partial class ColorStudioPane
         }));
     }
 
-    /// <summary>What is waiting written into the card now (the card put on first when there is none).</summary>
+    /// <summary>Flushes pending writes to the card now (adding the card first if needed).</summary>
     internal void FlushWrites() => _writes?.Flush();
 
-    // Each batch: its echo skipped while writing (Card_ValueChanged), and a lone write shown at once (no gesture's end refreshes it).
+    // Batch wrapper: suppresses self-echo during writes (Card_ValueChanged) and refreshes immediately for lone writes (no gesture end to do it).
     private void AroundWrites(Action batch)
     {
         _writing = true;
@@ -74,7 +74,7 @@ public partial class ColorStudioPane
         }
     }
 
-    // One queued value: the card found (or put on), the write's undo step, the value.
+    // Writes one queued value: resolve (or add) the card, record the undo step, then apply.
     private void WriteToCard(string key, Action<EffectInstance> write)
     {
         if (_vm is null || EnsureCard() is not { } card)
@@ -84,8 +84,8 @@ public partial class ColorStudioPane
     }
 
     /// <summary>
-    /// The target's card, put on it first when it has none (that step of Undo counts as the gesture's, or the lone change's). None for a
-    /// target that cannot be graded (a sound clip), whatever its stack holds: never a card put on it.
+    /// Returns the target's card, adding one if missing (that Undo step belongs to the gesture or lone change). Returns null for
+    /// non-gradable targets (e.g. audio clips) regardless of their stack; never adds a card to them.
     /// </summary>
     private EffectInstance? EnsureCard()
     {
@@ -102,7 +102,7 @@ public partial class ColorStudioPane
         return found;
     }
 
-    /// <summary>A number written as the Effects pane writes it: quantized to its step and range; a key at the playhead when the value is keyed.</summary>
+    /// <summary>Writes a number like the Effects pane: quantized to step and range; upserts a key at the playhead when keyed.</summary>
     private void WriteNumber(EffectInstance card, string key, double value)
     {
         if (card.Definition?.Param(key) is not { } param)
@@ -115,10 +115,10 @@ public partial class ColorStudioPane
             card.Set(key, value);
     }
 
-    /// <summary>What the pane writes outside its paced batches is its own look too: the view model takes no step for it.</summary>
+    /// <summary>Ownership scope for writes outside paced batches, so the view model records no look step of its own.</summary>
     private MainViewModel.OwnedLooks? OwnLooks() => _vm?.OwnLookScope();
 
-    /// <summary>The whole grade back to a new card's (its keys too, its curves and its LUT), one step of Undo.</summary>
+    /// <summary>Resets the whole grade to new-card defaults (including keys, curves and LUT) as one Undo step.</summary>
     private void ResetGrade()
     {
         FlushWrites();

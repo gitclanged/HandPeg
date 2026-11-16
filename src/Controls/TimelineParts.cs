@@ -9,10 +9,8 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// A bar of a timeline that draws itself. Everything on it (blocks, frames, waveforms, keyframe diamonds) is
-/// drawn in OnRender as shapes; nothing on it is an element of its own, so a bar with a thousand blocks costs
-/// what a bar with one does to lay out. The playhead is the one thing that moves while a video plays, and is
-/// a visual of its own that is slid along: the bar is not drawn again for it.
+/// Immediate-mode timeline bar: blocks, frames, waveforms and keyframe diamonds are drawn in OnRender with no child elements, so layout
+/// cost is independent of block count. The playhead is a separate translated visual, so playback never re-renders the bar.
 /// </summary>
 public abstract class TimelineBar : FrameworkElement
 {
@@ -40,7 +38,7 @@ public abstract class TimelineBar : FrameworkElement
         AddVisualChild(_playhead);
     }
 
-    /// <summary>What is behind the blocks. Also what makes the whole bar answer the mouse, so it is never left out: none is drawn as transparent.</summary>
+    /// <summary>Background fill; also makes the whole bar hit-testable (null renders as Transparent).</summary>
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -48,8 +46,7 @@ public abstract class TimelineBar : FrameworkElement
     }
 
     /// <summary>
-    /// The well's sunken edge (Pass 4.1C.2: the theme's WellBorderBrush along the top and left), drawn over the background
-    /// and under everything else. It takes no room: blocks and times are where they were.
+    /// Sunken well edge, top and left (theme WellBorderBrush), drawn above the background and below content; takes no layout space.
     /// </summary>
     public Brush? BorderBrush
     {
@@ -57,21 +54,21 @@ public abstract class TimelineBar : FrameworkElement
         set => SetValue(BorderBrushProperty, value);
     }
 
-    /// <summary>The edge's bottom and right (WellBorderLowerBrush); null for one colour all round.</summary>
+    /// <summary>Bottom and right edge brush (WellBorderLowerBrush); null uses one colour for all sides.</summary>
     public Brush? LowerBorderBrush
     {
         get => (Brush?)GetValue(LowerBorderBrushProperty);
         set => SetValue(LowerBorderBrushProperty, value);
     }
 
-    /// <summary>The edge's width (its top is used for all four sides); 0, as in the flat themes, draws none.</summary>
+    /// <summary>Edge thickness (Top used for all sides); 0 (flat themes) draws none.</summary>
     public Thickness BorderThickness
     {
         get => (Thickness)GetValue(BorderThicknessProperty);
         set => SetValue(BorderThicknessProperty, value);
     }
 
-    /// <summary>Where the playhead is, in pixels from the left; NaN for none.</summary>
+    /// <summary>Playhead x in pixels; NaN for none.</summary>
     public double PlayheadX
     {
         get => _playheadX;
@@ -108,10 +105,10 @@ public abstract class TimelineBar : FrameworkElement
             _playhead.Offset = new Vector(_playheadX, 0);
     }
 
-    // The edge's pens, kept while their brush and width stay (the theme's brushes are frozen: the same brush is the same look).
+    // Cached edge pens, reused while brush and width are unchanged (theme brushes are frozen, so reference equality suffices).
     private Pen? _edgePen, _lowerEdgePen;
 
-    // Square ends: each half of a lit edge covers its corners whole, the lower half (drawn last) taking the two it shares.
+    // Square caps: each half of a two-tone edge covers its corners fully; the lower half (drawn last) owns the shared corners.
     private static Pen EdgePen(ref Pen? kept, Brush brush, double width)
     {
         if (kept is null || !ReferenceEquals(kept.Brush, brush) || kept.Thickness != width)
@@ -128,7 +125,7 @@ public abstract class TimelineBar : FrameworkElement
         if (edge <= 0 || BorderBrush is not { } brush || width <= 2 * edge || height <= 2 * edge)
             return;
 
-        // On whole device pixels, as the buttons' edges are (ButtonChrome); along the edge's centre line.
+        // Snap to device pixels like ButtonChrome edges, stroking along the edge centre line.
         var guidelines = new GuidelineSet([0, width], [0, height]);
         guidelines.Freeze();
         drawing.PushGuidelineSet(guidelines);
@@ -156,13 +153,12 @@ public abstract class TimelineBar : FrameworkElement
         return line;
     }
 
-    /// <summary>A keyframe's diamond, centred on a point.</summary>
+    /// <summary>Keyframe diamond geometry centred on a point.</summary>
     protected static void DrawDiamond(DrawingContext drawing, double x, double y, double radius) =>
         drawing.DrawGeometry(HandPegApp.Services.ThemeManager.KeyFill, KeyOutline, Diamonds([x], double.MaxValue, y, radius));
 
     /// <summary>
-    /// Keyframes' diamonds as one shape: one centred on each of the given x, all at the height y, those that
-    /// would lie wholly outside 0 to <paramref name="width"/> left out. Made once and frozen, however many keys.
+    /// Single frozen geometry of diamonds at each x (height y), culling those wholly outside [0, <paramref name="width"/>].
     /// </summary>
     protected static Geometry Diamonds(IReadOnlyList<double> xs, double width, double y, double radius)
     {
@@ -198,10 +194,9 @@ public abstract class TimelineBar : FrameworkElement
     }
 
     // ----- UI Automation -----
-    // A bar is one element with a name and its place on screen; what it draws has no peers (and the playhead is a visual,
-    // not an element), so its peer never walks its children.
+    // One named automation element with bounds; drawn content has no peers (the playhead is a Visual), so children are not walked.
 
-    /// <summary>What UI Automation calls the bar when no AutomationProperties.Name is set on it.</summary>
+    /// <summary>Fallback automation name when AutomationProperties.Name is unset.</summary>
     protected abstract string AutomationName { get; }
 
     protected override AutomationPeer OnCreateAutomationPeer() => new TimelineBarPeer(this);
@@ -217,74 +212,67 @@ public abstract class TimelineBar : FrameworkElement
 }
 
 /// <summary>
-/// The stretch of a sound that a block shows: the whole sound laid out along the timeline would be
-/// <paramref name="Span"/> pixels wide, and the block begins <paramref name="Offset"/> pixels into it. A span
-/// of nothing means the whole sound, fitted to the block.
+/// Waveform window for a block: the full waveform laid out is <paramref name="Span"/> pixels wide and the block starts
+/// <paramref name="Offset"/> pixels into it. A zero span fits the whole waveform to the block.
 /// </summary>
 public readonly record struct WaveSpan(HandPegApp.Services.WaveformData Data, double Offset, double Span);
 
 /// <summary>
-/// The stretch of a sound a block of the unified timeline shows (4.4), by time rather than by fraction: the sound's own
-/// seconds from <paramref name="MediaFrom"/> to <paramref name="MediaTo"/>, laid from the left edge of the block's sound
-/// (its left edge, less a J-cut's lead-in, see TimelineBlock.AudioSplit) at <paramref name="Speed"/>, drawn
-/// <paramref name="GainScale"/> times as tall (the clip's or the track's gain as a scale, 1 for 0 dB). A second
-/// <c>s</c> of the sound is at <c>soundLeft + (s - MediaFrom) / Speed * pixelsPerSecond</c>, so trims, cuts and folds
-/// can never put a sound where it is not.
+/// Time-based waveform window for a unified-timeline block: media seconds [<paramref name="MediaFrom"/>, <paramref name="MediaTo"/>] at
+/// <paramref name="Speed"/>, scaled by <paramref name="GainScale"/> (1 = 0 dB), laid from the audio's left edge (block left minus any J-cut
+/// lead-in, TimelineBlock.AudioSplit). Media second <c>s</c> maps to <c>soundLeft + (s - MediaFrom) / Speed * pixelsPerSecond</c>, so
+/// trims, cuts and folds always place audio exactly.
 /// </summary>
 public readonly record struct WaveWindow(HandPegApp.Services.WaveformData Data, double MediaFrom, double MediaTo, double Speed = 1, double GainScale = 1);
 
 /// <summary>
-/// The pictures of a block's video on the unified timeline (4.4): frames taken evenly along the whole file (frame k at
-/// <c>k * SecondsPerFrame</c> of it), the block showing its file from <paramref name="MediaFrom"/> on at
-/// <paramref name="Speed"/>. The control lays them on the file's own time grid, so they stay still while the block's start
-/// is trimmed and slide while it is slipped.
+/// A block's thumbnails: frames sampled evenly over the whole file (frame k at <c>k * SecondsPerFrame</c>), shown from
+/// <paramref name="MediaFrom"/> at <paramref name="Speed"/>. Laid on the file's time grid, so they stay fixed under start trims and
+/// slide under slips.
 /// </summary>
 public readonly record struct FilmWindow(IReadOnlyList<ImageSource> Frames, double SecondsPerFrame, double MediaFrom, double Speed);
 
-/// <summary>What a drag does to a block (and, for a roll, the block it meets).</summary>
+/// <summary>Block drag mode (a roll also affects the adjacent block).</summary>
 public enum BlockEdit
 {
-    /// <summary>Moved along its bar (or onto another track's).</summary>
+    /// <summary>Move along its row or onto another track.</summary>
     Move,
 
-    /// <summary>Its right edge: how long it is.</summary>
+    /// <summary>Right-edge trim (duration).</summary>
     TrimEnd,
 
-    /// <summary>Its left edge: where it starts, and what of its file it starts with.</summary>
+    /// <summary>Left-edge trim (start time and media in-point).</summary>
     TrimStart,
 
-    /// <summary>The cut where it meets the block after it: its end and the next one's start move together.</summary>
+    /// <summary>Roll: its end and the next block's start move together.</summary>
     Roll,
 
-    /// <summary>Alt-dragged inside: what of its file it plays, with the block left where it is.</summary>
+    /// <summary>Slip (Alt-drag inside): shifts media content; the block stays in place.</summary>
     Slip,
 }
 
-/// <summary>A drag of a block that was let go: its new left edge and width, how far its file was slipped (pixels), whether
-/// it ripples (Ctrl: the later clips move by as much as its end did), and for a roll the block after it, as it is now.</summary>
+/// <summary>Released block drag: new left and width, slip offset (pixels), ripple flag (Ctrl: later clips follow its end), and for a
+/// roll the adjacent block as it is now.</summary>
 public readonly record struct BlockEditDone(BlockEdit Kind, double Left, double Width, double Slip, bool Ripple, TimelineBlock? Neighbor);
 
-/// <summary>A gain line dragged on a block: its new gain (dB), or a fade handle's new length (seconds) at its start or end.</summary>
+/// <summary>Gain line edit: new gain (dB), or a fade handle's new length (seconds) at start or end.</summary>
 public readonly record struct GainEditDone(double GainDb, double FadeIn, double FadeOut);
 
-/// <summary>Which edges of its parent a child block shares (4.4 BugHunt): a trim of such an edge takes the child's along.</summary>
+/// <summary>Parent edges a child block shares; trimming such an edge trims the child too.</summary>
 [Flags]
 public enum BlockEdges { None = 0, Start = 1, End = 2 }
 
 /// <summary>
-/// Where a block stands in a family of clips on the unified timeline (4.4 BugHunt), for a drag to draw what goes with
-/// what: <paramref name="Key"/> is what the block is known by (its clip's id, or a key made from it: the same across a
-/// rebuild of the rows, never shared by two blocks); <paramref name="Parent"/> the Key of the block it belongs to (its
-/// parent clip's id), null for none; <paramref name="Rides"/> whether a move of the parent carries it (it overlaps the
-/// parent, on a track that is not locked: what the model moves with it); <paramref name="OnParentEdges"/> which of the
-/// parent's edges it shares (a trim of that edge trims it too). Worked out in seconds by the host, never from pixels.
+/// A block's clip-family relation, used to draw carried blocks during drags: <paramref name="Key"/> (stable across rebuilds, unique per
+/// block), <paramref name="Parent"/> (parent's Key, or null), <paramref name="Rides"/> (parent moves carry it: overlaps on an unlocked
+/// track, matching the model), <paramref name="OnParentEdges"/> (shared edges trimmed along). Computed by the host in seconds, not pixels.
 /// </summary>
 public readonly record struct BlockFamily(object Key, object? Parent, bool Rides, BlockEdges OnParentEdges);
 
-/// <summary>One block of a Timeline row: a clip, a cut segment, a part of an audio track, a subtitle.</summary>
-/// <summary>Which of a block's own switches was pressed (5.2).</summary>
+/// <summary>Per-block switch identifier.</summary>
 public enum BlockSwitch { OnOff, Lock }
 
+/// <summary>One block of a Timeline row: a clip, cut segment, audio track part or subtitle.</summary>
 public sealed class TimelineBlock
 {
     public double Left { get; set; }
@@ -294,173 +282,165 @@ public sealed class TimelineBlock
     public Brush Fill { get; init; } = Brushes.Gray;
     public string Name { get; init; } = "";
 
-    /// <summary>What the block stands for: what is selected when it is.</summary>
+    /// <summary>Model object the block represents (selected when the block is).</summary>
     public object? Clip { get; init; }
 
-    /// <summary>Frames of the block's video, side by side from its left edge: each a picture, where it begins and how wide it is.</summary>
+    /// <summary>Thumbnails from the left edge: image, x offset and width each.</summary>
     public IReadOnlyList<(ImageSource Picture, double Left, double Width)>? Frames { get; init; }
 
-    /// <summary>A picture of the block's sound, drawn over the frames.</summary>
+    /// <summary>Waveform image drawn over the thumbnails.</summary>
     public Brush? Wave { get; init; }
 
-    /// <summary>The block's sound as peaks, drawn over the frames at whatever size the block is: used in place of <see cref="Wave"/> when given.</summary>
+    /// <summary>Resolution-independent peaks drawn over thumbnails; overrides <see cref="Wave"/> when set.</summary>
     public WaveSpan? Peaks { get; init; }
 
-    /// <summary>The block's keyframes, in pixels from its left edge.</summary>
+    /// <summary>Keyframe x offsets from the left edge, in pixels.</summary>
     public IReadOnlyList<double>? Keys { get; init; }
 
     /// <summary>
-    /// The beats found in its sound (5.2B, Detect &amp; Snap to Audio Beats), in pixels from where its file's stretch is laid (its left edge, as
-    /// <see cref="Keys"/> are), in order: faint ticks along its foot (the beat grid); null for none.
+    /// Detected beat x offsets (Detect &amp; Snap to Audio Beats) from the left edge like <see cref="Keys"/>, ascending; drawn as faint
+    /// ticks along the bottom. Null for none.
     /// </summary>
     public IReadOnlyList<double>? Beats { get; init; }
 
-    /// <summary>Whether the block can be moved right now; null for one that never can.</summary>
+    /// <summary>Whether the block can currently move; null if never movable.</summary>
     public Func<bool>? CanDrag { get; init; }
 
-    /// <summary>Whether its right edge can be dragged to change its length.</summary>
+    /// <summary>Right edge is trimmable.</summary>
     public bool Resizable { get; init; }
 
-    /// <summary>Whether its left edge can be dragged too (trimming where it starts in its file), and it can be rolled and rippled.</summary>
+    /// <summary>Left edge is trimmable (media in-point), and roll/ripple are allowed.</summary>
     public bool TrimmableStart { get; init; }
 
-    /// <summary>Whether Alt-dragging inside it slips what of its file it plays (a video or a sound with a length).</summary>
+    /// <summary>Alt-drag slips its media (video or audio with a duration).</summary>
     public bool Slippable { get; init; }
 
-    /// <summary>What letting go of a trim of its start, a roll, a slip or a ripple does; null for a block that only moves and trims its end.</summary>
+    /// <summary>Commit callback for start trim, roll, slip or ripple; null when only move and end trim apply.</summary>
     public Action<BlockEditDone>? Edit { get; init; }
 
     /// <summary>
-    /// Its sound's gain line, for a clip that carries sound: the gain in dB (drawn as a line, 0 dB at two thirds of its
-    /// height), and its fades in and out (seconds); null for a block with none. Dragged, <see cref="GainEdit"/> is told.
+    /// Audio gain line: gain in dB (0 dB at two thirds of the height) plus fade in/out seconds; null when silent. Drags call
+    /// <see cref="GainEdit"/>.
     /// </summary>
     public (double GainDb, double FadeIn, double FadeOut)? Gain { get; set; }
 
-    /// <summary>What letting go of a dragged gain line does.</summary>
+    /// <summary>Gain line commit callback.</summary>
     public Action<GainEditDone>? GainEdit { get; init; }
 
     /// <summary>
-    /// The clip's fades in and out (seconds of the timeline) and their transition styles: handles at its top corners (or
-    /// as far in as each fade), dragged along to set them, and each fade shaded above its curve. Null for a block with none.
+    /// Fade in/out lengths (timeline seconds) and styles: handles at the top corners (inset by each fade), dragged to set them; each fade
+    /// is shaded above its curve. Null for none.
     /// </summary>
     public (double In, double Out, Models.TransitionStyle InStyle, Models.TransitionStyle OutStyle)? Fades { get; set; }
 
-    /// <summary>What letting go of a dragged fade handle does: the fade in (true) or out, and its new length in seconds.</summary>
+    /// <summary>Fade handle commit: fade in (true) or out, and new length in seconds.</summary>
     public Action<bool, double>? FadeEdit { get; init; }
 
-    /// <summary>A crossfade from the block before it on its bar, in seconds: drawn as a box across their cut, centred on it.</summary>
+    /// <summary>Crossfade length (seconds) from the previous block, drawn as a box centred on the cut.</summary>
     public double CrossfadeIn { get; set; }
 
-    /// <summary>What letting go of a crossfade's dragged edge does (its new length, seconds), and its remove button (0). Null for one that cannot be changed here.</summary>
+    /// <summary>Crossfade commit: new length in seconds (0 = remove button). Null when not editable here.</summary>
     public Action<double>? CrossfadeEdit { get; init; }
 
-    /// <summary>How many pixels a second of its file takes on the bar (its speed taken in), for a slip and for fades; 0 for none.</summary>
+    /// <summary>Pixels per media second (speed applied), used by slips and fades; 0 for none.</summary>
     public double PixelsPerMediaSecond { get; init; }
 
-    /// <summary>What letting go of a moved block does, given its new left edge and width in pixels.</summary>
+    /// <summary>Move/end-trim commit with the new left and width in pixels.</summary>
     public Action<double, double>? Commit { get; init; }
 
-    /// <summary>What to say when it cannot be dragged.</summary>
+    /// <summary>Status text shown when a drag is refused.</summary>
     public string CannotDrag { get; init; } = "";
 
-    /// <summary>May be dragged past the left end of the bar: a sound that was slipped.</summary>
+    /// <summary>May extend left of x = 0 (slipped audio).</summary>
     public bool MayStartBeforeZero { get; init; }
 
     /// <summary>
-    /// Whether the block may be let go on another bar (another track's row), given that bar's data and the block's
-    /// left edge in pixels; null for a block that stays on its own bar.
+    /// Cross-row drop predicate given the target row's data and the block's left in pixels; null when the block stays on its row.
     /// </summary>
     public Func<object, double, bool>? CanMoveTo { get; init; }
 
-    /// <summary>What letting go of the block on another bar does, given that bar's data and the block's left edge in pixels.</summary>
+    /// <summary>Cross-row drop commit given the target row's data and the block's left in pixels.</summary>
     public Action<object, double>? MoveTo { get; init; }
 
     /// <summary>
-    /// Whether the block may be let go at a seam onto a new track (5.4A, the unified timeline's "+ New Video Track" bar), given the data
-    /// of the top-level picture row the new track goes beside, whether it goes above that row (false: below), and the block's left edge in
-    /// pixels; null for a block that never goes onto a new track.
+    /// New-track seam drop predicate ("+ New Video Track"): adjacent top-level video row's data, above (false = below), and the block's
+    /// left in pixels. Null when the block never moves to a new track.
     /// </summary>
     public Func<object, bool, double, bool>? CanMoveToNewTrack { get; init; }
 
-    /// <summary>What letting go of the block at a seam does (see <see cref="CanMoveToNewTrack"/>): the row's data, above or below it, the left edge.</summary>
+    /// <summary>New-track seam drop commit (arguments as <see cref="CanMoveToNewTrack"/>).</summary>
     public Action<object, bool, double>? MoveToNewTrack { get; init; }
 
     /// <summary>
-    /// Whether the block, its left edge at these pixels, may be let go as a child of the given block's clip (5.5A, the clip tether: a move
-    /// dropped on the bottom edge of a clip it overlaps on another lane, or anywhere on it with Alt pressed during the drag): the parent's
-    /// name for the tether's pill (from the host: a picture block's own Name is empty), or null when it may not. Null for a block that never
-    /// becomes another's child by a drag.
+    /// Tether predicate: may the block (left in pixels) become a child of the given block's clip (dropped on the bottom edge of an
+    /// overlapped clip on another lane, or anywhere with Alt)? Returns the parent name for the pill (video blocks have empty Name), or
+    /// null if not allowed. Null property: never tetherable.
     /// </summary>
     public Func<TimelineBlock, double, string?>? CanAttachTo { get; init; }
 
-    /// <summary>What letting go of the block on a tether does (see <see cref="CanAttachTo"/>): the parent's block and the block's left edge in pixels.</summary>
+    /// <summary>Tether commit (see <see cref="CanAttachTo"/>): parent block and the block's left in pixels.</summary>
     public Action<TimelineBlock, double>? AttachTo { get; init; }
 
-    /// <summary>The block's sound by time, for the unified timeline (4.4): drawn in place of <see cref="Peaks"/> when given.</summary>
+    /// <summary>Time-based waveform window; overrides <see cref="Peaks"/> when set.</summary>
     public WaveWindow? SoundWindow { get; init; }
 
     /// <summary>
-    /// A video block's sound stack heard as one (5.3-Stage2, the user's call): the audible lanes of its audio stack combined
-    /// (WaveformData.Combine, each at its gain), laid on the block's own file time from its left edge, drawn across the whole
-    /// block, see-through over its pictures. Set by the host once the stacks are made; null for none (nothing audible, or no stack).
+    /// Combined waveform of a video block's audible audio-stack lanes (WaveformData.Combine, per-lane gain) in the block's file time,
+    /// drawn translucent across the block. Set by the host after stacking; null when nothing is audible or there is no stack.
     /// </summary>
     public WaveWindow? StackSound { get; set; }
 
-    /// <summary>The block's pictures on its file's time grid, for the unified timeline (4.4): drawn in place of <see cref="Frames"/> when given.</summary>
+    /// <summary>File-time thumbnails; override <see cref="Frames"/> when set.</summary>
     public FilmWindow? Film { get; init; }
 
-    /// <summary>A few words or a sign shown in a small tag at the block's top right (its speed, "FX"); null for none.</summary>
+    /// <summary>Short top-right badge text (speed, "fx N"); null for none.</summary>
     public string? Badge { get; init; }
 
     /// <summary>
-    /// Its own On/Off, drawn at its top right (5.2: one click, its clip's alone, a parent's leaving its children as they are):
-    /// true on, false off, null for none. Pressed: <see cref="Switched"/>.
+    /// Top-right On/Off for this clip only (a parent's does not affect children): true on, false off, null hidden. Raises
+    /// <see cref="Switched"/>.
     /// </summary>
     public bool? IsOn { get; init; }
 
-    /// <summary>Whether its On/Off is a sound's (a speaker) rather than a picture's (an eye).</summary>
+    /// <summary>On/Off glyph is a speaker (audio) rather than an eye (video).</summary>
     public bool SwitchIsSound { get; init; }
 
-    /// <summary>Its Lock to its parent, beside its On/Off (5.2: a Cutout's, a child clip's, an effect's): true locked, false free, null for none.</summary>
+    /// <summary>Lock-to-parent switch beside On/Off (Cutouts, child clips, effects): true locked, false free, null hidden.</summary>
     public bool? IsLocked { get; init; }
 
-    /// <summary>One of its own switches pressed.</summary>
+    /// <summary>Callback for a block switch press.</summary>
     public Action<BlockSwitch>? Switched { get; init; }
 
     /// <summary>
-    /// A J/L cut of a clip with linked sound, in seconds: how much sooner than its picture its sound starts (a J cut;
-    /// negative, later) and how much longer it lasts (an L cut; negative, shorter). The sound is drawn in the lower part
-    /// of the block, reaching out past its edges that far (the one sound not drawn across the whole block). Null for none (or a
-    /// clip whose sound is not its picture's).
+    /// J/L cut in seconds: audio lead-in before the video (J; negative = later) and tail-out after it (L; negative = shorter). Drawn as a
+    /// lower band extending past the block edges. Null for none or when the audio is not the video's own.
     /// </summary>
     public (double LeadIn, double TailOut)? AudioSplit { get; init; }
 
     /// <summary>
-    /// What letting go of a J/L trim does (Alt on the lower half of an edge of the block): the new lead-in and tail-out,
-    /// in seconds. Null for a block whose sound cannot be split from its picture.
+    /// J/L commit (Alt on an edge's lower half): new lead-in and tail-out in seconds. Null when the audio cannot be split.
     /// </summary>
     public Action<double, double>? AudioSplitEdit { get; init; }
 
-    /// <summary>Where the block stands among its clip's family (4.4 BugHunt): what a drag of it carries along, and what it is known by. Null for a block that is in none.</summary>
+    /// <summary>Family relation (drag carry set and identity); null when not in a family.</summary>
     public BlockFamily? Family { get; init; }
 
     /// <summary>
-    /// Whether an edge of the block lies at a seam of folded dead air (4.4 BugHunt, fold-aware trims): given the edge
-    /// (true: its start), how far it may be dragged outward (seconds of the fold shown again) and inward (seconds of the
-    /// clip folded in with it); null when that edge is at no fold. Asked as the edge is pressed.
+    /// Fold-aware trim query on edge press: for the given edge (true = start), the outward (unfold) and inward (fold) limits in seconds;
+    /// null when the edge is at no dead-air seam.
     /// </summary>
     public Func<bool, (double Reveal, double Fold)?>? SeamRange { get; init; }
 
-    /// <summary>What letting go of an edge dragged at a seam does: which edge (true: its start), and how far outward it went (seconds; negative: inward).</summary>
+    /// <summary>Seam edge commit: edge (true = start) and outward travel in seconds (negative = inward).</summary>
     public Action<bool, double>? SeamTrim { get; init; }
 
-    /// <summary>Drawn small, as a lane of a collapsed mini-stack: the unified timeline's business (set as it lays out), not the host's.</summary>
+    /// <summary>Drawn as a collapsed mini-stack lane; set by the unified timeline during layout, not by the host.</summary>
     public bool IsMini { get; internal set; }
 
     internal FormattedText? Label;
 
-    // The unified timeline's drawing of the block, made once and used again while it keeps its place (4.4): its badge's
-    // words, its keys' diamonds and its fades' shapes (with where they were made for), and the J/L sound band's clip.
+    // Unified-timeline render cache, valid while position is unchanged: badge text, keyframe diamonds and fade geometry (with the
+    // rect they were built for), and the J/L audio band clip.
     internal FormattedText? BadgeText;
     internal Rect KeyShapeRect;
     internal Geometry? KeyShape;
@@ -469,18 +449,17 @@ public sealed class TimelineBlock
     internal Rect SoundClipRect;
     internal Geometry? SoundClip;
 
-    // What its drawing is made of, made once and used again while the block keeps its place and size (a pan or a
-    // playhead move draws it again unchanged): its rounded outline, and its keyframes' diamonds as one shape.
+    // Geometry cache valid while position and size are unchanged (pans and playhead moves reuse it): rounded outline and keyframe diamonds.
     internal Rect ShapeRect;
     internal Geometry? Shape;
     internal Geometry? Diamonds;
 
-    /// <summary>The block's rounded outline at <paramref name="rect"/>: the one made before when it is still there.</summary>
+    /// <summary>Rounded outline geometry for <paramref name="rect"/>, cached while the rect is unchanged.</summary>
     internal Geometry ShapeAt(Rect rect)
     {
         if (Shape is null || ShapeRect != rect)
         {
-            // Resized (its right edge dragged): the diamonds are laid out again for its new width.
+            // Width changed (end trim): rebuild diamonds for the new width.
             if (ShapeRect.Size != rect.Size)
                 Diamonds = null;
 
@@ -494,21 +473,20 @@ public sealed class TimelineBlock
 }
 
 /// <summary>
-/// The measures the Timeline's bars share (5.2-Audit: what was left of the old per-track bar control, which the unified
-/// Timeline replaced): how near an edge or a snap has to be, the gain line's reach, and the shade past the sequence's end.
+/// Shared Timeline metrics: edge and snap tolerances, gain line range, and the past-end shade.
 /// </summary>
 public static class TimelineMetrics
 {
-    /// <summary>How close to a block's right edge the pointer has to be to take hold of its length.</summary>
+    /// <summary>Right-edge trim hit tolerance in pixels.</summary>
     public const double EdgePixels = 7;
 
-    /// <summary>The gain line's reach: from silence at the bottom of a block to +12 dB at its top, 0 dB a third of the way down.</summary>
+    /// <summary>Gain line range: silence at the bottom, +12 dB at the top, 0 dB one third down.</summary>
     public const double LowestGain = -40, HighestGain = 12;
 
-    /// <summary>How close, in pixels, a dragged edge has to come to something to snap to it.</summary>
+    /// <summary>Snap distance in pixels.</summary>
     public const double SnapPixels = 8;
 
-    /// <summary>The room after the end of the sequence: darker, and where a clip dropped or dragged makes it longer.</summary>
+    /// <summary>Shade for the area past the sequence end (drops or drags there extend the sequence).</summary>
     internal static readonly Brush PastEndShade = FrozenBrush(Color.FromArgb(90, 0, 0, 0));
     internal static readonly Pen EndLine = Frozen(new Pen(FrozenBrush(Color.FromArgb(150, 255, 255, 255)), 1));
 
@@ -522,11 +500,9 @@ public static class TimelineMetrics
 }
 
 /// <summary>
-/// The time ruler over a tab's time bars: ticks and times for the stretch of the sequence the bars show, the end of
-/// the sequence (the room after it, where clips can be dropped and dragged, shaded), and the playhead. A press or
-/// a drag on it moves the playhead; the wheel zooms the bars about the pointer, and Shift + wheel or a drag with
-/// the middle button moves them along, with momentum (5.4C): a flick of the middle button or a fast Shift + wheel
-/// coasts on and slows to a stop, through a <see cref="MomentumScroller"/>; any press, a zoom, or the ruler hidden stops it.
+/// Time ruler: ticks and labels for the visible range, shaded past-end area, markers and playhead. Press/drag seeks; wheel zooms about
+/// the pointer; Shift+wheel or middle-drag pans with momentum (<see cref="MomentumScroller"/>: flicks and fast Shift+wheel coast); any
+/// press, zoom or hiding stops the coast.
 /// </summary>
 public sealed class TimelineRuler : TimelineBar
 {
@@ -537,7 +513,7 @@ public sealed class TimelineRuler : TimelineBar
     private static readonly Pen MinorTick = Frozen(new Pen(FrozenBrush(Color.FromArgb(80, 255, 255, 255)), 1));
     private static readonly Brush LabelBrush = FrozenBrush(Color.FromArgb(200, 255, 255, 255));
 
-    // Steps between labelled ticks, in seconds, with the step between the small ticks in between.
+    // Major tick steps in seconds, each with its minor tick step.
     private static readonly (double Major, double Minor)[] Steps =
     [
         (0.05, 0.01), (0.1, 0.02), (0.2, 0.05), (0.5, 0.1), (1, 0.2), (2, 0.5), (5, 1), (10, 2), (15, 5), (30, 5), (60, 10),
@@ -548,7 +524,7 @@ public sealed class TimelineRuler : TimelineBar
     private double? _panFrom;
     private bool _seeking;
 
-    // Momentum (5.4C): made at its first use; how far the middle-button drag has panned since its press; whether a coast has the frame.
+    // Momentum scroller (created on first use), middle-drag pan since press, and whether the frame hook is attached.
     private MomentumScroller? _momentum;
     private double _panTravel;
     private bool _coastHooked;
@@ -566,37 +542,37 @@ public sealed class TimelineRuler : TimelineBar
     }
     private IReadOnlyList<double> _markers = [], _highlights = [];
 
-    /// <summary>The colour markers are drawn in, here and on the Sequence Overview Scrubber.</summary>
+    /// <summary>Marker colour (ruler and Sequence Overview Scrubber).</summary>
     public static readonly Brush MarkerBrush = FrozenBrush(Color.FromRgb(0x7C, 0xD9, 0x92));
 
-    /// <summary>The colour Ping-to-Mark highlights are drawn in (5.2C: TimelineMarker.Highlight).</summary>
+    /// <summary>Ping-to-Mark highlight colour (TimelineMarker.Highlight).</summary>
     public static readonly Brush HighlightBrush = FrozenBrush(Color.FromRgb(0xFF, 0xB3, 0x47));
 
-    /// <summary>A marker's flag: pointing down at its moment, 9 pixels wide.</summary>
+    /// <summary>Downward-pointing marker flag geometry, 9 px wide.</summary>
     public static readonly Geometry MarkerFlag = Frozen(Geometry.Parse("M -4.5,0 L 4.5,0 L 4.5,6 L 0,10 L -4.5,6 Z"));
 
-    /// <summary>A marker was right-clicked: which one (its index in the list shown), for its menu.</summary>
+    /// <summary>Marker right-clicked: its index in the shown list.</summary>
     public event Action<int>? MarkerMenuRequested;
 
-    /// <summary>The ruler was pressed or dragged on: the playhead goes to this moment, in seconds.</summary>
+    /// <summary>Seek request from a ruler press or drag (seconds).</summary>
     public event Action<double>? SeekRequested;
 
-    /// <summary>The press or drag that seeks was let go, or its capture taken away (5.4.2B: the host sets the playhead's value it held back).</summary>
+    /// <summary>Seek drag ended (release or capture loss); the host commits the deferred playhead value.</summary>
     public event Action? SeekEnded;
 
-    /// <summary>The wheel was turned over it: zoom by a factor about a point (pixels from its left).</summary>
+    /// <summary>Wheel zoom: factor and anchor (pixels from the left).</summary>
     public event Action<double, double>? ZoomRequested;
 
-    /// <summary>Shift + wheel, or a middle-button drag: move along by so many pixels.</summary>
+    /// <summary>Horizontal pan in pixels (Shift+wheel or middle-drag).</summary>
     public event Action<double>? PanRequested;
 
     /// <summary>
-    /// The moment under the pointer (seconds, never before 0) as it moves over the ruler, a seek's drag too; null when it
-    /// leaves (5.0, Instant Seek's hints). Raised only when the moment changes, and allocates nothing.
+    /// Pointer time over the ruler (seconds, >= 0; also during seek drags) for Instant Seek hints; null on leave. Raised only on change;
+    /// allocation-free.
     /// </summary>
     public event Action<double?>? PointerSecondsChanged;
 
-    // The moment last told (PointerSecondsChanged), NaN for none.
+    // Last raised pointer time (PointerSecondsChanged), NaN for none.
     private double _pointerSeconds = double.NaN;
 
     private void NotePointer(double seconds)
@@ -613,9 +589,8 @@ public sealed class TimelineRuler : TimelineBar
     }
 
     /// <summary>
-    /// Shows a stretch of the sequence: from <paramref name="start"/> seconds, <paramref name="span"/> seconds across,
-    /// of a sequence <paramref name="sequence"/> seconds long, with its markers (in seconds), those of them that are
-    /// Ping-to-Mark highlights (5.2C) drawn in their own colour.
+    /// Sets the visible range (<paramref name="start"/>, <paramref name="span"/>) of a <paramref name="sequence"/>-second sequence, plus
+    /// marker times; Ping-to-Mark highlights use their own colour.
     /// </summary>
     public void Show(double start, double span, double sequence, IReadOnlyList<double> markers, IReadOnlyList<double>? highlights = null)
     {
@@ -623,7 +598,7 @@ public sealed class TimelineRuler : TimelineBar
         if (start == _start && span == _span && sequence == _sequence && markers.SequenceEqual(_markers) && highlights.SequenceEqual(_highlights))
             return;
 
-        // A zoom or a fit: a coast along the old view stops.
+        // Zoom or fit: stop any coast on the old view.
         if (span != _span)
             StopMomentum();
 
@@ -631,7 +606,7 @@ public sealed class TimelineRuler : TimelineBar
         InvalidateVisual();
     }
 
-    /// <summary>The marker within a few pixels of a point along the ruler, as its index; -1 for none.</summary>
+    /// <summary>Index of the marker within a few pixels of x; -1 for none.</summary>
     private int MarkerNear(double x)
     {
         var (best, nearest) = (-1, 6.0);
@@ -645,10 +620,10 @@ public sealed class TimelineRuler : TimelineBar
         return best;
     }
 
-    /// <summary>The moment at a point along the ruler.</summary>
+    /// <summary>Time in seconds at x.</summary>
     public double TimeAt(double x) => ActualWidth > 0 ? _start + x / ActualWidth * _span : 0;
 
-    // The labels by their text: a zoom or a pan draws mostly the same ones again, and they are not made afresh.
+    // FormattedText cache by label text (zooms and pans mostly redraw the same labels).
     private readonly Dictionary<string, FormattedText> _labels = [];
     private double _labelsDpi;
 
@@ -682,7 +657,7 @@ public sealed class TimelineRuler : TimelineBar
                 drawing.DrawLine(TimelineMetrics.EndLine, new Point(end + 0.5, 0), new Point(end + 0.5, ActualHeight));
         }
 
-        // Labels at least this far apart, so that they never run into each other.
+        // Minimum label spacing so labels never overlap.
         var (major, minor) = Steps.FirstOrDefault(step => step.Major * scale >= 84, Steps[^1]);
         var bottom = ActualHeight;
         var first = Math.Floor(_start / minor) * minor;
@@ -705,7 +680,7 @@ public sealed class TimelineRuler : TimelineBar
             }
         }
 
-        // The markers: a flag at the top at each.
+        // Marker flags along the top.
         foreach (var marker in _markers)
         {
             var x = (marker - _start) * scale;
@@ -718,7 +693,7 @@ public sealed class TimelineRuler : TimelineBar
         }
     }
 
-    /// <summary>A moment as the ruler writes it: as precisely as its step needs, minutes and seconds, hours when there are any.</summary>
+    /// <summary>Formats a ruler label with the precision the step needs (m:ss, with hours when non-zero).</summary>
     private static string Format(double seconds, double step)
     {
         var whole = (long)Math.Floor(seconds + 1e-6);
@@ -741,7 +716,7 @@ public sealed class TimelineRuler : TimelineBar
         if (!CaptureMouse())
             return;
 
-        // On a marker, exactly to it.
+        // Snap exactly to a marker under the pointer.
         _seeking = true;
         var x = e.GetPosition(this).X;
         SeekRequested?.Invoke(MarkerNear(x) is >= 0 and var marker ? _markers[marker] : TimeAt(x));
@@ -770,7 +745,7 @@ public sealed class TimelineRuler : TimelineBar
         e.Handled = true;
     }
 
-    // Any press on the ruler (before anything else of it): a coast stops where it is.
+    // Any ruler press first stops a coast in place.
     protected override void OnPreviewMouseDown(MouseButtonEventArgs e)
     {
         base.OnPreviewMouseDown(e);
@@ -793,7 +768,7 @@ public sealed class TimelineRuler : TimelineBar
         base.OnMouseUp(e);
         if (e.ChangedButton == MouseButton.Middle && _panFrom is not null)
         {
-            // Let go of the capture first (losing it mid-drag stops a coast), then the flick, if it was one, coasts on.
+            // Release capture first (capture loss stops coasts), then start the flick coast if any.
             var now = MomentumScroller.Now();
             _panFrom = null;
             Cursor = null;
@@ -803,7 +778,7 @@ public sealed class TimelineRuler : TimelineBar
         }
     }
 
-    /// <summary>The middle button pressed at <paramref name="x"/>: any coast stops and the pan begins (5.4C test seam).</summary>
+    /// <summary>Test seam: middle press at <paramref name="x"/> stops any coast and starts a pan.</summary>
     internal void MiddlePanPress(double x, double nowMs)
     {
         _panFrom = x;
@@ -812,7 +787,7 @@ public sealed class TimelineRuler : TimelineBar
         Momentum.Sample(0, nowMs);
     }
 
-    /// <summary>The middle-button drag at <paramref name="x"/>: the bars move along with the pointer (test seam).</summary>
+    /// <summary>Test seam: middle-drag to <paramref name="x"/> pans with the pointer.</summary>
     internal void MiddlePanMove(double x, double nowMs)
     {
         if (_panFrom is not { } from)
@@ -824,7 +799,7 @@ public sealed class TimelineRuler : TimelineBar
         PanRequested?.Invoke(from - x);
     }
 
-    /// <summary>The middle button let go: a flick (250 DIP/s or more, still moving within the last 40 ms) coasts on (test seam).</summary>
+    /// <summary>Test seam: middle release; a flick (>= 250 DIP/s, moving within the last 40 ms) starts a coast.</summary>
     internal void MiddlePanRelease(double nowMs)
     {
         _panFrom = null;
@@ -833,8 +808,8 @@ public sealed class TimelineRuler : TimelineBar
     }
 
     /// <summary>
-    /// Shift + the wheel by <paramref name="pixels"/> (positive: later) at <paramref name="nowMs"/>, with momentum: a fast stream coasts on,
-    /// a tick against the coast stops it (test seam; <see cref="OnMouseWheel"/> calls it).
+    /// Test seam (called by <see cref="OnMouseWheel"/>): Shift+wheel pan of <paramref name="pixels"/> (positive = later) at
+    /// <paramref name="nowMs"/>; fast streams coast, an opposing tick stops the coast.
     /// </summary>
     internal void PanWheelAt(double pixels, double nowMs)
     {
@@ -847,8 +822,8 @@ public sealed class TimelineRuler : TimelineBar
             HookCoast();
     }
 
-    /// <summary>One frame of the coast at <paramref name="nowMs"/>: the bars move along by what it covered (the host shows the new view at
-    /// once); a view that did not move (an end, the view fitted) stops it. Whether the view moved (test seam; the frame hook calls it).</summary>
+    /// <summary>Test seam (called by the frame hook): advances the coast to <paramref name="nowMs"/> and pans (host applies synchronously);
+    /// stops when the view did not move (end reached, fitted). Returns whether it moved.</summary>
     internal bool StepCoast(double nowMs)
     {
         var moved = false;
@@ -871,17 +846,17 @@ public sealed class TimelineRuler : TimelineBar
         return moved;
     }
 
-    /// <summary>Whether the bars are coasting along from this ruler (5.4C).</summary>
+    /// <summary>True while a coast started by this ruler is active.</summary>
     public bool IsCoasting => _momentum?.IsCoasting == true;
 
-    /// <summary>Stops any coast from this ruler where it is (a press elsewhere on the timeline, the playhead turning the page).</summary>
+    /// <summary>Stops this ruler's coast in place (press elsewhere on the timeline, playhead page turn).</summary>
     public void StopMomentum()
     {
         _momentum?.Stop();
         UnhookCoast();
     }
 
-    // The frame is hooked only while a coast runs and the ruler is shown; a test steps the coast itself.
+    // Frame hook attached only while coasting and visible; tests step the coast directly.
     private void HookCoast()
     {
         if (_coastHooked || !IsVisible)
@@ -921,7 +896,7 @@ public sealed class TimelineRuler : TimelineBar
     {
         base.OnLostMouseCapture(e);
 
-        // A middle-button drag taken away mid-way is no flick: nothing coasts from it.
+        // Capture lost mid middle-drag: not a flick, no coast.
         if (_panFrom is not null)
             StopMomentum();
         var wasSeeking = _seeking;
@@ -929,7 +904,7 @@ public sealed class TimelineRuler : TimelineBar
         if (wasSeeking)
             SeekEnded?.Invoke();
 
-        // A seek's drag let go outside the ruler: nothing of it is under the pointer.
+        // Seek drag released outside: clear the pointer time.
         if (!IsMouseOver)
             NotePointer(double.NaN);
     }
@@ -949,7 +924,7 @@ public sealed class TimelineRuler : TimelineBar
         }
         else
         {
-            // 5.4.1-M1: the zoom glides there, the pointer's moment pinned.
+            // Glide the zoom (WheelGlide) with the time under the pointer pinned.
             StopMomentum();
             _wheelGlide ??= new(_ => { }, (factor, at) => ZoomRequested?.Invoke(factor, at), () => IsVisible);
             _wheelGlide.Zoom(Math.Pow(1.25, e.Delta / 120.0), e.GetPosition(this).X);

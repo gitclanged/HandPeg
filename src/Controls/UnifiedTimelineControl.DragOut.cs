@@ -2,36 +2,35 @@ using System.Windows;
 
 namespace HandPegApp;
 
-// ----- A block dragged out of the control (5.4.4: onto the Personal Clip Library) -----
-// A clip's move that leaves the control asks the host, every move, whether the place under the pointer takes it (the Media pane's
-// Clip Library). While the host says yes the block is drawn back where it began, the drag goes onto no row and no new track, and
-// the view does not scroll by itself; let go there, the host takes it and nothing is committed (no edit, no step of Undo). Back
-// inside, or over a place that takes nothing, the drag is the same as before. A trim, a roll, a slip or a seam's edge never asks.
+// ----- Drag-out of blocks (e.g. onto the Personal Clip Library) -----
+// While a clip move is outside the control, each move asks the host whether the point accepts a drop (the Media pane's Clip Library).
+// While accepted, the block is parked at its origin with no target row or new track and no auto-scroll; releasing there hands it to
+// the host with nothing committed (no edit, no Undo step). Back inside, or over a non-accepting target, the drag behaves normally.
+// Trims, rolls, slips and seam-edge drags never query the host.
 public sealed partial class UnifiedTimelineControl
 {
     /// <summary>
-    /// Each move of a block's move while the pointer is outside the control (the point on the screen, in its real pixels), and once
-    /// with null when it comes back inside or the drag ends (5.4.4). True: the host offers a drop there, and the block is drawn back
-    /// where it began while it does.
+    /// Host query on every move of a block move while the pointer is outside the control (screen point in physical pixels), and once with
+    /// null when it re-enters or the drag ends. Return true to offer a drop there; the block stays parked at its origin while offered.
     /// </summary>
     public Func<TimelineRow, TimelineBlock, Point?, bool>? DragOutside { get; set; }
 
-    /// <summary>A block's move let go outside the control where the host offered a drop (5.4.4): true when it takes the block; nothing is committed then.</summary>
+    /// <summary>Host drop handler for a release outside at an offered point; return true when taken (the control commits nothing).</summary>
     public Func<TimelineRow, TimelineBlock, Point, bool>? DropOutside { get; set; }
 
-    // The drag whose pointer is outside the control (the host has been asked about it, and is told null when it comes back or the drag
-    // ends), where the pointer last was (the control's own coordinates), and whether the host offered a drop there (the block parked).
+    // Drag currently outside the control (host was queried; it gets null on re-entry or end), last pointer position in control
+    // coordinates, and whether the host offered a drop (block parked).
     private (TimelineRow Row, TimelineBlock Block)? _outside;
     private Point _outsideAt;
     private bool _dragParked;
 
-    /// <summary>Whether the block of the drag under way is held back where it began over a place outside that takes it (5.4.4).</summary>
+    /// <summary>True while the dragged block is parked at its origin over an external drop target.</summary>
     internal bool IsDragParked => _dragParked;
 
     /// <summary>
-    /// The pointer of a block's drag at <paramref name="point"/> on the control (<paramref name="laid"/> on the rows) at <paramref name="nowMs"/>
-    /// (the drags' clock): the block follows it as before, unless it is outside and the host offers a drop there (5.4.4), which parks it.
-    /// False when parked (no auto-scroll then). 5.5A: every move is a sample of the pointer's speed, in the control's own coordinates.
+    /// Advances a block drag to <paramref name="point"/> (control coordinates; <paramref name="laid"/> in row space) at <paramref name="nowMs"/>
+    /// (drag clock): the block follows normally unless outside over an offered drop, which parks it. Returns false when parked (no
+    /// auto-scroll). Every move also feeds the pointer-velocity sampler (Settle) in control coordinates.
     /// </summary>
     private bool FollowPointer(BlockDrag drag, Point point, Point laid, double nowMs)
     {
@@ -58,7 +57,7 @@ public sealed partial class UnifiedTimelineControl
         return true;
     }
 
-    // The block (and what it carries along) back where it began, onto no row and no new track, the view still.
+    // Parks the block (and its family) at its origin with no target row or new track, and stops auto-scroll.
     private void Park(BlockDrag drag)
     {
         _autoScroll.Stop();
@@ -72,7 +71,7 @@ public sealed partial class UnifiedTimelineControl
         InvalidateVisual();
     }
 
-    // The pointer is back inside, or the drag ended: the host is told (null), and the block follows the pointer again.
+    // Pointer re-entered or the drag ended: notify the host with null and resume following the pointer.
     private void LeaveOutside()
     {
         _dragParked = false;
@@ -84,8 +83,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A parked block let go at <paramref name="point"/> (the control's own coordinates): the host is asked to take it. Taken, the drag
-    /// is put back and ended as an abort is (DragEnded told, the mouse let go) and nothing is committed; true then.
+    /// Offers a parked block released at <paramref name="point"/> (control coordinates) to the host. If taken, the drag is restored and
+    /// ended like an abort (DragEnded raised, capture released) with nothing committed, and true is returned.
     /// </summary>
     private bool TryDropOutside(BlockDrag drag, Point point)
     {
@@ -101,6 +100,6 @@ public sealed partial class UnifiedTimelineControl
         return true;
     }
 
-    // A point on the control on the screen, in its real pixels; the point itself while the control is in no window (a test).
+    // Control point to screen physical pixels; returns the point unchanged when not in a window (tests).
     private Point ScreenOf(Point point) => PresentationSource.FromVisual(this) is null ? point : PointToScreen(point);
 }

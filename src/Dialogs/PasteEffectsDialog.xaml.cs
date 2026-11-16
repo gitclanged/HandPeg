@@ -6,15 +6,14 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 /// <summary>
-/// Paste Selected Effects... (the Effects pane's stack menu, 4.1.1-B): the copied effects, each with a box, all ticked,
-/// and whether they go onto this clip only or every clip on its track. The ticked ones are added to the stack;
-/// an effect a clip has once at most (one whose values are the clip's, such as Drop Shadow) takes the pasted values.
+/// Paste Selected Effects... (Effects pane stack menu): checkbox per copied effect (all checked) and scope (this clip or whole track).
+/// Checked effects are appended; single-instance effects (clip-owned values, e.g. Drop Shadow) take the pasted values.
 /// </summary>
 public partial class PasteEffectsDialog : Window
 {
     private readonly List<(CheckBox Box, EffectState State)> _choices = [];
 
-    /// <param name="canPasteToTrack">Whether the target is a clip on a track (not the Sequence Output).</param>
+    /// <param name="canPasteToTrack">Target is a track clip (not the Sequence Output).</param>
     public PasteEffectsDialog(IReadOnlyList<EffectState> copied, string target, bool canPasteToTrack, bool toTrack)
     {
         InitializeComponent();
@@ -33,7 +32,7 @@ public partial class PasteEffectsDialog : Window
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
     }
 
-    /// <summary>The effects ticked, in the copied order.</summary>
+    /// <summary>Checked effects in copied order.</summary>
     public IReadOnlyList<EffectState> Chosen => [.. _choices.Where(c => c.Box.IsChecked == true).Select(c => c.State)];
 
     public bool ToTrack => ToTrackBox.IsChecked == true;

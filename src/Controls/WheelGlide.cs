@@ -4,25 +4,25 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// The wheel's glide (5.4.1-M1): a notch sets a target (a pan in pixels, a zoom as a factor about a point) and the view chases it on the
-/// frame clock, an exponential chase that settles in about 160 ms (tau 40 ms), so a mouse wheel's steps read as one smooth motion and a
-/// zoom stays pinned to the pointer. Hooked on CompositionTarget.Rendering only while something is left to go; <see cref="Stop"/> (a
-/// press, another pan taking over) ends it where it is. A control not shown (a hidden pane, a golden test's control) gets it at once.
+/// Wheel glide: each notch adds to a target (pan in pixels, zoom factor about a point) that the view chases on the frame clock with an
+/// exponential approach settling in ~160 ms (tau 40 ms), so discrete wheel steps read as one smooth motion and zoom stays pinned to the
+/// pointer. Hooks CompositionTarget.Rendering only while motion remains; <see cref="Stop"/> (a press, another pan taking over) halts in
+/// place. Hidden controls (hidden panes, golden-test controls) apply changes immediately.
 /// </summary>
 internal sealed class WheelGlide(Action<double> pan, Action<double, double> zoom, Func<bool> shown)
 {
     private const double Tau = 0.040, PanDone = 0.5, ZoomDone = 1e-3;
 
-    // What is left to go: pixels of pan, the natural log of the zoom (about _zoomAt, pixels from the time area's left).
+    // Remaining motion: pan in pixels and zoom as a natural log factor about _zoomAt (pixels from the time area's left edge).
     private double _panLeft, _zoomLeft, _zoomAt;
     private long _clock;
     private bool _hooked;
     private TimeSpan _lastRendering;
 
-    /// <summary>Whether a pan or a zoom is still on its way.</summary>
+    /// <summary>True while pan or zoom motion remains.</summary>
     public bool IsGliding => _panLeft != 0 || _zoomLeft != 0;
 
-    /// <summary>A pan of <paramref name="pixels"/> (positive: later) added to what is left to go.</summary>
+    /// <summary>Adds a pan of <paramref name="pixels"/> (positive = later) to the remaining motion.</summary>
     public void Pan(double pixels)
     {
         if (!double.IsFinite(pixels) || pixels == 0)
@@ -37,7 +37,7 @@ internal sealed class WheelGlide(Action<double> pan, Action<double, double> zoom
         Hook();
     }
 
-    /// <summary>A zoom by <paramref name="factor"/> about <paramref name="at"/> added to what is left to go (the newest point pins it).</summary>
+    /// <summary>Adds a zoom by <paramref name="factor"/> about <paramref name="at"/> (the latest anchor wins).</summary>
     public void Zoom(double factor, double at)
     {
         if (!double.IsFinite(factor) || factor <= 0 || factor == 1)
@@ -53,7 +53,7 @@ internal sealed class WheelGlide(Action<double> pan, Action<double, double> zoom
         Hook();
     }
 
-    /// <summary>Ends the pan where it is (the zoom goes on).</summary>
+    /// <summary>Stops the pan in place (zoom continues).</summary>
     public void StopPan()
     {
         _panLeft = 0;
@@ -61,7 +61,7 @@ internal sealed class WheelGlide(Action<double> pan, Action<double, double> zoom
             Unhook();
     }
 
-    /// <summary>Ends both where they are.</summary>
+    /// <summary>Stops pan and zoom in place.</summary>
     public void Stop()
     {
         (_panLeft, _zoomLeft) = (0, 0);
@@ -87,7 +87,7 @@ internal sealed class WheelGlide(Action<double> pan, Action<double, double> zoom
 
     private void Tick(object? sender, EventArgs e)
     {
-        // Rendering can come more than once for one frame: the frame's own time tells.
+        // Rendering can fire more than once per frame; dedupe on RenderingTime.
         if (e is RenderingEventArgs rendering)
         {
             if (rendering.RenderingTime == _lastRendering)

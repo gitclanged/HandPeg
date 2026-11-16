@@ -2,35 +2,31 @@ using System.Collections.Concurrent;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- Spectral Audio: the phase vocoder (5.6.0) -----
+// ----- Spectral Audio: phase vocoder -----
 //
-// A sound slowed down (or sped up a little) with its pitch kept, by the short-time Fourier transform instead of WSOLA's moved
-// frames: smooth slow-motion sound, with no grain heard twice. Frames of 2048 samples at 48 kHz (4096 above 64 kHz, 1024 below
-// 32 kHz) under a Hann window, a quarter of a frame apart on the output; each frame is read from where the tempo puts it on the
-// input. Identity phase locking (Laroche and Dolson): each peak of the spectrum turns by the frequency it is measured to have, and
-// the bins around it turn with it, so a partial stays one partial and its shape in the frame is kept. The phases are taken again
-// from the input (a phase reset) where the spectral flux jumps: an onset keeps its attack. An attack still ahead of a frame's
-// middle is held out of that frame (its part from the attack on is the part before it, mirrored), so nothing of it is heard before
-// its time.
+// Pitch-preserving time stretch by STFT instead of WSOLA frame shifting: smooth slow-motion audio without repeated grains. Frames of 2048
+// samples at 48 kHz (4096 above 64 kHz, 1024 below 32 kHz), Hann-windowed, output hop = frame / 4; each frame is read where the tempo maps
+// it on the input. Identity phase locking (Laroche-Dolson): each spectral peak advances by its measured frequency and the bins of its region
+// rotate with it, preserving partials. Phases reset from the input when spectral flux jumps (onsets keep their attack), and an attack ahead
+// of a frame's centre is masked out of that frame (mirrored pre-attack audio), so it is never heard early.
 
 /// <summary>
-/// The sound at <see cref="Tempo"/> times its speed, its pitch kept, by a phase vocoder. Output sample j is the input around sample
-/// j x tempo, as <see cref="WsolaStretcher"/> lays it (each frame's middle on that line), so either can feed the resampler the same
-/// way. Two channels share one complex transform (left in the real part, right in the imaginary), and turn by one phase taken from
-/// their sum, so the stereo image holds. Nothing is allocated while reading.
+/// Phase-vocoder stretch at <see cref="Tempo"/> with pitch preserved. Output sample j maps to input around j x tempo, the same alignment as
+/// <see cref="WsolaStretcher"/> (frame centres on that line), so either can feed the resampler. Both channels share one complex FFT (left =
+/// real, right = imaginary) and rotate by one phase derived from their sum, preserving the stereo image. Allocation-free while reading.
 /// </summary>
 internal sealed class AudioPhaseVocoder : IStereoSource
 {
-    /// <summary>The fastest tempo the vocoder takes: a frame's analysis hop must stay under a frame for a partial's frequency to be measured (faster is WSOLA's).</summary>
+    /// <summary>Fastest supported tempo: the analysis hop must stay under a frame to measure partial frequencies (faster tempos use WSOLA).</summary>
     public const double FastestTempo = 3.5;
 
     private const int Capacity = 1 << 17;
 
-    // The attack guard's blocks (samples), how many before one it compares with, and how much louder an attack is (power).
+    // Attack guard: block size (samples), blocks averaged before it, and the power jump and floors that define an attack.
     private const int Block = 64, Before = 8;
     private const float AttackJump = 8f, AttackFloor = 1e-5f, QuietFloor = 1e-7f;
 
-    // A phase reset: the flux (the new part of the spectrum's magnitude) over this much, three times its recent median, and rising.
+    // Phase reset when flux (new spectral magnitude) exceeds LeastFlux and 3x its recent median, and is rising.
     private const float LeastFlux = 0.2f, FluxOverMedian = 3f;
     private const int FluxHistory = 16;
 
@@ -55,10 +51,10 @@ internal sealed class AudioPhaseVocoder : IStereoSource
 
     public double Tempo { get; private set; } = 1;
 
-    /// <summary>The frame's length at a sample rate: about 43 ms.</summary>
+    /// <summary>Frame length for a sample rate (~43 ms).</summary>
     public static int FrameFor(int sampleRate) => sampleRate > 64000 ? 4096 : sampleRate < 32000 ? 1024 : 2048;
 
-    /// <summary>How many output samples (at the input's rate) the first frames need before the overlap is whole: what a voice reads before where it starts.</summary>
+    /// <summary>Output samples (at the input rate) the first frames need to complete the overlap: the pre-roll a voice reads before its start.</summary>
     public static int WarmUp(int sampleRate) => FrameFor(sampleRate);
 
     public void Reset(IStereoSource source, double tempo, int sampleRate)
@@ -70,7 +66,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
             (_size, _hop, _half) = (size, size / 4, size / 2);
             _fft = Transforms.GetOrAdd(size, static n => new Radix2Fft(n));
 
-            // A periodic Hann window, on the input and again on the output: its squares a quarter apart sum to 1.5.
+            // Periodic Hann for analysis and synthesis: squared windows at quarter-frame hops sum to 1.5.
             _window = new float[size];
             for (var n = 0; n < size; n++)
                 _window[n] = (float)(0.5 - 0.5 * Math.Cos(2 * Math.PI * n / size));
@@ -115,7 +111,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         return produced;
     }
 
-    // After the finished hop is read: the accumulator moves on by a hop.
+    // After the finished hop is read, slide the accumulator by one hop.
     private void Shift()
     {
         _accL.AsSpan(_hop).CopyTo(_accL);
@@ -125,7 +121,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         _readyAt = 0;
     }
 
-    // Where frame k is read from: its middle (output k x hop + half a frame) on the input's tempo line.
+    // Input position of frame k: its centre (output k x hop + half a frame) mapped onto the tempo line.
     private long AnalysisAt(long frame) => (long)Math.Round((frame * _hop + _half) * Tempo - _half);
 
     private bool NextFrame()
@@ -134,7 +130,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         if (!Have(at + _size))
             return false;
 
-        // The frame as read (before the input's start: silence), an attack still ahead of its middle held out of it, then windowed.
+        // Read the frame (silence before the input start), mask any attack ahead of its centre, then window it.
         var offset = at - _inBase;
         for (var n = 0; n < _size; n++)
         {
@@ -152,7 +148,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         _fft!.Transform(_re, _im, inverse: false);
         var flux = Analyse();
 
-        // A phase reset: the first frame, a frame read no further on than the last (a tempo so slow it rounds to 0), or an onset.
+        // Phase reset on the first frame, a non-advancing frame (tempo so slow the hop rounds to 0), or an onset.
         var hop = at - _analysedAt;
         var reset = _frame == 0 || hop <= 0
                     || (flux > LeastFlux && flux > FluxOverMedian * MedianFlux() && flux > _fluxBefore && at - _resetAt >= _half);
@@ -168,10 +164,9 @@ internal sealed class AudioPhaseVocoder : IStereoSource
     }
 
     /// <summary>
-    /// The attack guard: the first attack (a block of 64 samples eight times louder than the eight before it, and not quiet) found in
-    /// the frame's second half (past its middle by a block) is held out: from the block before it to the frame's end, the frame is the
-    /// part before that, mirrored. A stationary sound goes on as it was (the mirror has its spectrum); the attack is heard only from
-    /// the frame in which it has reached the middle, whose phases the flux then resets.
+    /// Attack guard: the first attack (a 64-sample block 8x louder than the mean of the 8 before it, above the floor) in the frame's second
+    /// half (a block past the centre) is masked: from the block before it to the frame end, the frame mirrors the audio before that point.
+    /// Stationary sound continues (the mirror shares its spectrum); the attack sounds only once it reaches a frame's centre, where flux resets phases.
     /// </summary>
     private void GuardAttack()
     {
@@ -205,9 +200,8 @@ internal sealed class AudioPhaseVocoder : IStereoSource
     }
 
     /// <summary>
-    /// Splits the shared transform into the two channels' spectra; their magnitude (the two together) and one phase for both (their
-    /// sum's, or their difference's where the sum cancels); returns the flux against the frame before: the magnitude that is new, as
-    /// a share of the whole.
+    /// Splits the shared transform into per-channel spectra, computes the joint magnitude and one phase for both (from the sum, or the
+    /// difference where the sum cancels), and returns the flux versus the previous frame: new magnitude as a fraction of the total.
     /// </summary>
     private float Analyse()
     {
@@ -235,9 +229,9 @@ internal sealed class AudioPhaseVocoder : IStereoSource
     }
 
     /// <summary>
-    /// Each bin's turn from its analysis phase to its output phase. Reset: none (the frame as read). Otherwise each peak turns by
-    /// its measured frequency over the output hop, from its own output phase in the frame before, and every bin of its region (to the
-    /// lowest bin between it and the next peak) turns as it does. Returns false for no turn at all (the frame is put back as read).
+    /// Per-bin rotation from analysis to synthesis phase. On reset: none (frame as read). Otherwise each peak advances by its measured
+    /// frequency over the output hop from its previous synthesis phase, and every bin of its region (up to the minimum before the next peak)
+    /// rotates with it. Returns false when nothing rotates (frame resynthesized as read).
     /// </summary>
     private bool Turn(bool reset, long hop)
     {
@@ -264,7 +258,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         {
             var k = _peaks[p];
 
-            // The advance a bin's centre makes over the hops, exact (whole multiples of 2 pi dropped in integers).
+            // Expected bin-centre advance over the hop, exact (whole 2 pi multiples dropped in integer arithmetic).
             var expected = (float)(2 * Math.PI * (k * hop % size) / size);
             var deviation = Wrap(_phase[k] - _phaseBefore[k] - expected);
             var advance = (float)(2 * Math.PI * (k * (long)outHop % size) / size) + deviation * outHop / hop;
@@ -287,7 +281,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
             start = end + 1;
         }
 
-        // The ends of the spectrum stay real (a transform of a real frame): no turn there.
+        // DC and Nyquist stay real (transform of a real frame): no rotation.
         (_turn[0], _turnCos[0], _turnSin[0]) = (0f, 1f, 0f);
         (_turn[_half], _turnCos[_half], _turnSin[_half]) = (0f, 1f, 0f);
         for (var b = 0; b <= _half; b++)
@@ -295,7 +289,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         return true;
     }
 
-    // The spectra turned, put back together into one transform, back to time, windowed and added on.
+    // Rotate the spectra, recombine into one transform, inverse FFT, window and overlap-add.
     private void Synthesise(bool turned)
     {
         for (var k = 0; k <= _half; k++)
@@ -321,7 +315,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
             _accR[n] += _im[n] * gain;
         }
 
-        // This frame is the one the next is measured against.
+        // This frame becomes the reference for the next.
         _magnitude.AsSpan().CopyTo(_magnitudeBefore);
         _phase.AsSpan().CopyTo(_phaseBefore);
     }
@@ -344,7 +338,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         _fluxBefore = flux;
     }
 
-    // An angle brought into [-pi, pi].
+    // Wraps an angle into [-pi, pi].
     private static float Wrap(float angle)
     {
         if (angle is >= -MathF.PI and <= MathF.PI)
@@ -354,7 +348,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         return angle - turns * 2 * MathF.PI;
     }
 
-    // Whether the input reaches the absolute sample index (exclusive), reading more as far as the source has it.
+    // True when the input reaches the absolute sample index (exclusive), reading more from the source as needed.
     private bool Have(long end)
     {
         while (_inBase + _inCount < end)
@@ -370,7 +364,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         return true;
     }
 
-    // What no later frame can reach is released.
+    // Releases input no later frame can reach (compacts once a quarter of capacity is droppable).
     private void Drop(long before)
     {
         var drop = (int)Math.Min(Math.Max(before - _inBase, 0), _inCount);

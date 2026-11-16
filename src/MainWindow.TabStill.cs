@@ -5,26 +5,25 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp;
 
-// ----- The paused still kept fresh (Pass 5.4D-TabPerf) -----
-// A tab put behind keeps a still of its paused picture, shown over the player at once as it comes back until the engine has drawn its
-// first frame (MainWindow.ProjectTabs.cs). A switch never waits for one (the user's U1): the still is taken ahead, in the background, a
-// moment (350 ms) after the playhead or the picture last changed, only while nothing plays, nothing is dragged on the Timeline and no
-// switch is under way, and only once the project tabs have been shown (never before the first frame: Law 1). A still a little out of
-// date is fine: it only covers the player until the first frame. The capture is the engine's (a GPU readback, Law 4), at most one at a
-// time, never in place of one a save is waiting for.
+// ----- Pre-captured paused still for tab switches -----
+// A backgrounded tab keeps a still of its paused picture, shown over the player on reactivation until the engine renders its first frame
+// (MainWindow.ProjectTabs.cs). Switches never wait for one: the still is captured ahead in the background, 350 ms after the playhead or
+// picture last changed, only while paused, with no Timeline drag and no switch in progress, and only after the project tab strip has been
+// shown (never before Frame 1: Law 1). Slight staleness is acceptable since it only covers the player until the first frame. Capture
+// is an engine GPU readback (Law 4), at most one at a time, and never displaces a pending save capture.
 public partial class MainWindow
 {
-    /// <summary>How long after the last change the still is taken, ms.</summary>
+    /// <summary>Settle delay after the last change before capturing the still, ms.</summary>
     private const int StillSettleMs = 350;
 
-    // The tab in front's still as last taken, and its moment; null while there is none (a new project, a file opened, playback since).
+    // Active tab's latest still and its state mark; null when none (new project, file opened, or playback since).
     private BitmapSource? _liveStill;
     private StillMark _liveStillMark;
 
     private DispatcherTimer? _stillSettle;
     private int _stillAsked;
 
-    /// <summary>The still kept fresh from now on (once: the strip has been shown, so there are tabs to switch between).</summary>
+    /// <summary>Starts keeping the still fresh (idempotent; called once the tab strip is shown, i.e. tabs exist to switch between).</summary>
     private void KeepTabStillFresh()
     {
         if (_stillSettle is not null)
@@ -42,7 +41,7 @@ public partial class MainWindow
         _viewModel.SessionCleared += ForgetLiveStill;
         _viewModel.PropertyChanged += (_, e) =>
         {
-            // Playback started: the paused picture is gone from the player (5.4D-TabPerf review), and one being taken is dropped as it comes in.
+            // Playback started: the paused picture is gone; drop the still and invalidate any capture in flight.
             if (e.PropertyName is nameof(MainViewModel.IsPlaying) && _viewModel.IsPlaying)
                 ForgetLiveStill();
             if (e.PropertyName is nameof(MainViewModel.PositionMs) or nameof(MainViewModel.IsPlaying))
@@ -52,8 +51,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The picture may have changed: the still is taken again once it settles (never re-armed frame by frame while playing). The 5.4D-TabPerf
-    /// review: also the 3D view entered or left and its camera moved (MainWindow.Exploded.cs).
+    /// Picture may have changed: re-arm the settle timer (not while playing, to avoid per-frame re-arming). Also called on 3D view
+    /// entry/exit and camera moves (MainWindow.Exploded.cs).
     /// </summary>
     private void NoteStillStale()
     {
@@ -63,22 +62,22 @@ public partial class MainWindow
         _stillSettle.Start();
     }
 
-    /// <summary>Another project in front of the same tab (a file or project opened, a new one): the still of the one before goes.</summary>
+    /// <summary>Discards the still when the active tab's content changes (file or project opened, new project).</summary>
     private void ForgetLiveStill()
     {
         (_liveStill, _liveStillMark) = (null, default);
         _stillAsked++;
     }
 
-    /// <summary>How long a tab put behind waits for the picture on screen to be read back when it has no still of its playhead, ms (a few frames).</summary>
+    /// <summary>Max wait for an on-screen readback when a tab is backgrounded without a current still, ms (a few frames).</summary>
     private const int StillOnScreenWaitMs = 40;
 
     /// <summary>
-    /// The tab in front about to go behind with no still of its playhead (5.4.3: it was playing, or its still had not settled yet): the frame
-    /// on the screen now, read back at once (GpuPreviewEngine.SnapshotPresented), so it never comes back to an uncovered player. A soft one
-    /// (the frame drawn smaller while playing, when the whole one was not read in time: 5.4.4) is marked so: it covers the player as any
-    /// still does, but the next quiet moment or switch away reads a whole one in its place: never while that still is over the player (the tab
-    /// passed through before its own frame is up: the screen shows the emptied player, not the tab).
+    /// Active tab is being backgrounded without a current still (it was playing, or the still had not settled): read back the presented
+    /// frame immediately (GpuPreviewEngine.SnapshotPresented) so reactivation never shows an uncovered player. A soft snapshot (the reduced
+    /// playback-resolution frame, used when the full one could not be read in time) covers the player like any still, but the next quiet
+    /// capture or switch replaces it with a full one, except while that soft still is itself displayed (a tab passed through before its first
+    /// frame: the screen then shows the emptied player, not the tab).
     /// </summary>
     private void TakeStillOnScreen()
     {
@@ -90,13 +89,13 @@ public partial class MainWindow
             (_liveStill, _liveStillMark) = (StillOf(frame.Bgra, frame.Width, frame.Height), mark with { Soft = soft });
     }
 
-    /// <summary>The still taken now when it is out of date and the editor is quiet; kept only if the same tab is still in front, unchanged meanwhile.</summary>
+    /// <summary>Captures a fresh still when stale and the editor is idle; kept only if the same tab stays active and unchanged meanwhile.</summary>
     private async Task TakeLiveStillAsync()
     {
         if (_viewModel.IsPlaying || _switchingTab || TimelineDragHeld || !_viewModel.HasSource || _gpu is not { IsPlaying: false, IsThumbnailWaiting: false } engine)
             return;
 
-        // A soft still (5.4.4) never equals the mark of now (its Soft is set), so it is read again whole.
+        // A soft still's mark has Soft set, so it never matches and is recaptured at full resolution.
         var mark = new StillMark(_viewModel.UndoMark, _viewModel.PositionMs, _explodedUi);
         if (_liveStill is not null && _liveStillMark == mark)
             return;
@@ -104,7 +103,7 @@ public partial class MainWindow
         var (asked, front) = (++_stillAsked, _tabs.Active);
         try
         {
-            // In the 3D view, the still is the 3D picture as it is shown (5.4D): the tab comes back in it.
+            // In the 3D view, capture the displayed 3D picture so the tab reactivates in it.
             if (await engine.CaptureThumbnailAsync(StillShortSide, asShown: mark.Shown3D) is not { } frame)
                 return;
             if (asked != _stillAsked || _switchingTab || !ReferenceEquals(front, _tabs.Active) || !ReferenceEquals(mark.UndoMark, _viewModel.UndoMark))

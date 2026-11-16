@@ -5,21 +5,19 @@ using System.IO;
 namespace HandPegApp.Services.Audio;
 
 /// <summary>
-/// What a Matroska / WebM file's track entries say about where each track's sound starts (5.0-Verify), as FFmpeg's demuxer
-/// has it: a track's CodecDelay (an encoder's priming: 1024 samples of AAC in every track of an OBS recording, an Opus
-/// encoder's pre-skip), which FFmpeg drops before the first sample it gives, and Windows' Matroska source does not
-/// (measured: every AAC track came 1024 samples late). Read from the file's head (EBML, Segment, Tracks before the first
-/// Cluster, as recorders write it), once per file as it is.
+/// Reads Matroska/WebM track entries for each track's CodecDelay (encoder priming: 1024 AAC samples in OBS recordings, Opus pre-skip).
+/// FFmpeg drops it before the first sample; the Windows Matroska source does not (measured: AAC tracks arrive 1024 samples late).
+/// Parses only the file head (EBML, Segment, Tracks before the first Cluster); cached per path, length and write time.
 /// </summary>
 internal static class MatroskaTiming
 {
-    /// <summary>One track entry: its Matroska type (1 video, 2 audio, 17 subtitles) and its CodecDelay in seconds.</summary>
+    /// <summary>A track entry: Matroska type (1 video, 2 audio, 17 subtitles) and CodecDelay in seconds.</summary>
     public sealed record Track(int Type, double CodecDelay)
     {
         public bool IsAudio => Type == 2;
     }
 
-    // Where the track entries are looked for: the head of the file (SeekHead, Info and Tracks come before the clusters).
+    // Bytes read from the file head, where SeekHead, Info and Tracks precede the clusters.
     private const int HeadBytes = 4 << 20;
 
     private const uint EbmlId = 0x1A45DFA3, SegmentId = 0x18538067, TracksId = 0x1654AE6B, ClusterId = 0x1F43B675;
@@ -27,7 +25,7 @@ internal static class MatroskaTiming
 
     private static readonly ConcurrentDictionary<string, (long Length, long Written, Track[]? Tracks)> Known = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>The file's track entries in their order (FFmpeg's order of streams), or null for a file that is not Matroska (or cannot be read).</summary>
+    /// <summary>Track entries in file order (FFmpeg stream order); null when not Matroska or unreadable.</summary>
     public static Track[]? Read(string path)
     {
         long length, written;
@@ -65,13 +63,13 @@ internal static class MatroskaTiming
         return tracks;
     }
 
-    /// <summary>The CodecDelay (seconds) of a file's n-th audio track ("0:a:N"); 0 when it has none or is not Matroska.</summary>
+    /// <summary>CodecDelay in seconds of the file's n-th audio track ("0:a:N"); 0 when absent or not Matroska.</summary>
     public static double CodecDelayOfAudio(string path, int stream) =>
         Read(path)?.Where(t => t.IsAudio).Skip(stream).FirstOrDefault()?.CodecDelay ?? 0;
 
     private static Track[]? Parse(ReadOnlySpan<byte> data)
     {
-        // The EBML header first, then the Segment (its size may be unknown: a recording still being written).
+        // EBML header, then the Segment (size may be unknown while a recording is still being written).
         if (!Element(data, 0, out var id, out var body, out var size, out _) || id != EbmlId)
             return null;
         var at = (int)(body + size);
@@ -87,7 +85,7 @@ internal static class MatroskaTiming
             if (id == TracksId)
                 return Tracks(data.Slice(body, (int)Math.Min(size, data.Length - body)));
 
-            // Every step moves forward in 64-bit arithmetic: a crafted size can neither wrap back onto the same element nor past the end.
+            // Advance in 64-bit arithmetic so a crafted size can neither loop on one element nor wrap past the end.
             var next = (long)body + size;
             if (next <= at || next >= end)
                 break;
@@ -132,8 +130,8 @@ internal static class MatroskaTiming
         return [.. found];
     }
 
-    // An element at an offset: its ID (with its length marker, as Matroska writes IDs), where its body starts, its size. An element
-    // larger than the data is refused, except where the caller allows it (the Segment, whose known size normally runs past the head read).
+    // Parses an element header: ID (length marker kept, as Matroska IDs are written), body offset and size. Elements larger than
+    // the data are rejected unless oversizeOk (the Segment, whose declared size usually exceeds the head read).
     private static bool Element(ReadOnlySpan<byte> data, int at, out uint id, out int body, out long size, out bool unknown, bool oversizeOk = false)
     {
         (id, body, size, unknown) = (0, 0, 0, false);
@@ -145,7 +143,7 @@ internal static class MatroskaTiming
         return body <= data.Length && (unknown || size <= data.Length - body || oversizeOk);
     }
 
-    // EBML's variable-length number: its length from the first byte's leading zeros; all ones is an unknown size.
+    // EBML variable-length integer: length from the first byte's leading zeros; all value bits set means unknown size.
     private static bool Number(ReadOnlySpan<byte> data, int at, bool keepMarker, out ulong value, out int length, out bool allOnes)
     {
         (value, length, allOnes) = (0, 0, false);

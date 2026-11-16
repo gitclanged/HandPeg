@@ -8,11 +8,9 @@ using System.Windows.Media.Imaging;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The media browser's pictures of a video: a strip of a few frames spread over its length (15 by default, 480
-/// pixels tall), made once (by the GPU compositor with the GPU preview engine, else by FFmpeg: the same strip either way,
-/// see <see cref="FfmpegRunner.GenerateFilmstripAsync"/>) and kept in the browser's cache (<see cref="PreviewCache.Browser"/>), and the
-/// frames cut from it at the size a tile shows them. What a file is (its length and shape) is kept there too, so a
-/// folder opened again needs no FFmpeg at all. With the cache off, both are kept for the session only.
+/// Media Browser imagery: a per-video filmstrip (default 15 frames, 480 px tall) generated once (GPU, else FFmpeg; identical layout,
+/// <see cref="FfmpegRunner.GenerateFilmstripAsync"/>), cached in <see cref="PreviewCache.Browser"/>, and sliced into tile-sized frames.
+/// Probe data (duration, size) is cached too so reopened folders need no FFmpeg. With caching off, data lasts for the session only.
 /// </summary>
 public static class MediaBrowserFrames
 {
@@ -21,13 +19,11 @@ public static class MediaBrowserFrames
 
     private static string SessionFolder => Path.Combine(SessionPaths.Root, "browser");
 
-    /// <summary>What a video is: how long it plays and its picture's size; null when it cannot be read.</summary>
-    /// <param name="lane">Background for the tiles on screen; the folder indexer runs it inside its own Idle work.</param>
+    /// <summary>Video duration and size; null when unreadable.</summary>
+    /// <param name="lane">Background for visible tiles; the folder indexer calls it inside its own Idle work.</param>
     /// <remarks>
-    /// Like <see cref="StripAsync"/> and <see cref="PosterOnlyAsync"/>, all of it runs on the thread pool (4.3E): the cache's
-    /// reads and writes, and the start of the tool. Asked for on the interface's thread, as the browser asks, the work
-    /// started there, and with it every ffprobe and FFmpeg the browser and the folder indexer ran, a few dozen
-    /// milliseconds each, in the middle of a drag and drop.
+    /// Like <see cref="StripAsync"/> and <see cref="PosterOnlyAsync"/>, cache I/O and tool launches run on the thread pool, never on the
+    /// calling UI thread (previously tens of ms per call during drag-and-drop).
     /// </remarks>
     public static Task<(double Seconds, int Width, int Height)?> DescribeAsync(string path, CancellationToken token, WorkLane lane = WorkLane.Background) =>
         Task.Run<(double Seconds, int Width, int Height)?>(async () =>
@@ -45,9 +41,8 @@ public static class MediaBrowserFrames
         }, token);
 
     /// <summary>
-    /// A file's details for the List view's columns and the Filmstrip view's second line (5.4C): its length, picture size, frame rate,
-    /// codec and number of sound streams; null when it cannot be read. Kept in the browser's cache as its own kind ("details"), apart
-    /// from the tiles' "probe" (whose three parts the tiles read). All of it on the thread pool, as <see cref="DescribeAsync"/>.
+    /// File details for List columns and the Filmstrip subtitle: duration, size, frame rate, codec, audio stream count; null when unreadable.
+    /// Cached as a separate "details" kind from the tiles' "probe". Runs on the pool like <see cref="DescribeAsync"/>.
     /// </summary>
     public static Task<MediaDetails?> DetailsAsync(string path, CancellationToken token, WorkLane lane = WorkLane.Background) =>
         Task.Run<MediaDetails?>(async () =>
@@ -65,7 +60,7 @@ public static class MediaBrowserFrames
             return details;
         }, token);
 
-    /// <summary>The "details" kind's text: "1|seconds|width|height|fps|codec|audio streams" (invariant; the codec never holds a bar).</summary>
+    /// <summary>"details" cache format: "1|seconds|width|height|fps|codec|audio streams" (invariant culture; codecs never contain "|").</summary>
     internal static string FormatDetails(MediaDetails details) => string.Create(CultureInfo.InvariantCulture,
         $"1|{details.Seconds:0.###}|{details.Width}|{details.Height}|{details.FrameRate:0.####}|{details.Codec.Replace('|', '_')}|{details.AudioStreams}");
 
@@ -95,8 +90,7 @@ public static class MediaBrowserFrames
     }
 
     /// <summary>
-    /// A video's tile from what the cache already holds (4.1.1): its kept description and strip, and the poster cut from
-    /// that strip, with no tool run and no wait for anything queued; null when either is not kept. Off the interface.
+    /// Tile from cache only (description, strip, derived poster) with no tool run or queue wait; null if either is missing. Off the UI thread.
     /// </summary>
     public static (double Seconds, int Width, int Height, string Strip, BitmapSource? Poster)? Kept(string path, int frames, int frameHeight, int height, double at)
     {
@@ -111,9 +105,8 @@ public static class MediaBrowserFrames
     }
 
     /// <summary>
-    /// The strip the Media Browser keeps of a video (5.4.1-M3: its frames and height as Settings have the browser make them), decoded whole
-    /// at <paramref name="height"/> with every frame a whole number of pixels wide: a Timeline block's strip at once, with no tool run, for a
-    /// file dropped from the browser. Null when the browser keeps none. Off the interface. Frozen.
+    /// Cached browser strip decoded at <paramref name="height"/> with integer frame widths, reused as a Timeline block strip for files dropped
+    /// from the browser (no tool run). Null when not cached. Off the UI thread. Frozen.
     /// </summary>
     public static BitmapSource? KeptStripAt(string path, int height)
     {
@@ -141,8 +134,7 @@ public static class MediaBrowserFrames
         string.Create(CultureInfo.InvariantCulture, $"frames{frames}h{(int)Math.Min(frameHeight, 60000 / (frames * shape))}");
 
     /// <summary>
-    /// The strip of a video's frames: kept, or made now. Null when it could not be made. Its frames are as tall as
-    /// asked, unless that would make a strip too wide for a JPEG (65,535 pixels), when they are made smaller.
+    /// Returns the cached strip or generates it; null on failure. Frame height is reduced if the strip would exceed JPEG's 65,535 px width.
     /// </summary>
     public static Task<string?> StripAsync(string path, double seconds, int width, int height, int frames, int frameHeight, CancellationToken token, WorkLane lane = WorkLane.Background) =>
         Task.Run<string?>(async () =>
@@ -164,13 +156,12 @@ public static class MediaBrowserFrames
             return made;
         }, token);
 
-    /// <summary>The least height of a poster made on its own (4.2D): taller tiles get a taller one, in steps of this.</summary>
+    /// <summary>Minimum standalone poster height; taller tiles use multiples of it.</summary>
     public const int PosterOnlyHeight = 144;
 
     /// <summary>
-    /// A video's poster on its own, before its strip (4.2D, the first of two passes): one frame at 30 % of its length (1 s
-    /// when the length is not known), at least <see cref="PosterOnlyHeight"/> pixels tall, kept in the browser's cache as
-    /// <c>posterh144.jpg</c> (or taller), or made now. The path of the JPEG; null when it could not be made.
+    /// First-pass poster before the strip: one frame at 30 % of duration (1 s if unknown), at least <see cref="PosterOnlyHeight"/> px,
+    /// cached as <c>posterh144.jpg</c> (or taller). Returns the JPEG path; null on failure.
     /// </summary>
     public static Task<string?> PosterOnlyAsync(string path, double seconds, int height, CancellationToken token, WorkLane lane) =>
         Task.Run<string?>(async () =>
@@ -192,8 +183,7 @@ public static class MediaBrowserFrames
         }, token);
 
     /// <summary>
-    /// A video's tile from a kept description and a kept poster made on its own (4.2D), when its strip is not kept yet: the
-    /// poster at once, the strip after (the second pass). Null when either is not kept. Off the interface.
+    /// Tile from cached description and standalone poster while the strip is pending (second pass follows); null if either is missing. Off the UI thread.
     /// </summary>
     public static (double Seconds, int Width, int Height, BitmapSource? Poster)? KeptPosterOnly(string path, int height)
     {
@@ -206,21 +196,17 @@ public static class MediaBrowserFrames
         return (video.Seconds, video.Width, video.Height, DecodeAt(poster, height));
     }
 
-    // The height a poster is made at for a tile so many pixels tall: whole steps of PosterOnlyHeight, so a few sizes serve all.
+    // Poster height for a tile height, quantized to PosterOnlyHeight steps so few sizes are cached.
     private static int PosterHeightFor(int height) =>
         Math.Max(PosterOnlyHeight, (height + PosterOnlyHeight - 1) / PosterOnlyHeight * PosterOnlyHeight);
 
     /// <summary>
-    /// The frames of a strip, each a picture of its own at the given height, all the same size. Decoded small (JPEG can be
-    /// decoded at a fraction of its size): it is for a tile. Frozen.
+    /// Slices a strip into equal-size frames at the given height, decoding at reduced JPEG scale for tiles. Frozen.
     /// </summary>
     /// <remarks>
-    /// The strip is decoded once, at the tile's height and at a width of exactly as many frames of one whole number of
-    /// pixels each, so every frame is cut exactly where it begins (4.3E). Decoded at the height alone, its frames came out
-    /// a fraction of a pixel wide past a whole number (4,973 pixels for 25 frames: 198.9 each, a 420-pixel strip decoded
-    /// 112 tall), they were cut a whole 198 apart, and each was cut further left of where it begins the further along the
-    /// strip it is: 22 pixels by the 25th, a sliver of the frame before it at the left and the picture pushed right, more
-    /// at every frame as the pointer crossed the tile. That was the hover picture sliding right.
+    /// Decodes once at tile height and a width of N x integer frame width so each frame is cut exactly at its start. Decoding by height
+    /// alone yields fractional frame widths whose cumulative rounding error shifts later frames (22 px by frame 25), visibly sliding the
+    /// hover picture.
     /// </remarks>
     public static IReadOnlyList<BitmapSource>? Frames(string strip, double shape, int height)
     {
@@ -232,8 +218,7 @@ public static class MediaBrowserFrames
             var frameHeight = Math.Max(height, 8);
             var decoded = Decode(strip, FrameWidthAt(layout, frameHeight) * layout.Count, frameHeight, null);
 
-            // Where each frame begins in what was decoded: exactly a whole frame's width apart, unless the decoder gave
-            // another width than asked; then where it falls, never a step that adds up along the strip.
+            // Frame offsets: integer multiples of the frame width, or proportional (non-accumulating) when the decoder returned another width.
             var across = (double)decoded.PixelWidth / layout.Count;
             var width = Math.Max((int)across, 1);
             var frames = new List<BitmapSource>(layout.Count);
@@ -249,11 +234,8 @@ public static class MediaBrowserFrames
     }
 
     /// <summary>
-    /// One frame of a strip as a picture standing on its own: a tile's poster, the same size as <see cref="Frames"/>' frames
-    /// at that height, so the poster and the frames scrubbed through fill the tile's box alike. Only that frame is kept (the
-    /// strip's size is read from its header, and the decode is cropped to the frame, in the strip's own pixels, before it
-    /// is scaled), never the whole strip decoded for it, which left a megabyte and a half of pixels per tile waiting to be
-    /// collected. Frozen.
+    /// Single strip frame as a tile poster, same size as <see cref="Frames"/> output. Reads the strip size from the header and decodes only
+    /// the cropped frame region before scaling (avoids ~1.5 MB of garbage per tile). Frozen.
     /// </summary>
     public static BitmapSource? Poster(string strip, double shape, int height, double at)
     {
@@ -275,11 +257,8 @@ public static class MediaBrowserFrames
     }
 
     /// <summary>
-    /// How a strip is laid out, from its header alone (no pixels decoded): its size in pixels and how many frames it holds.
-    /// FFmpeg makes every frame of a strip the same width (scale=-2: the video's shape at the strip's height, to an even
-    /// pixel; the compositor's strip keeps to the same rule, GpuFilmstrips.FrameWidth) and sets them side by side, so the
-    /// strip is exactly that many of them: the count is the one nearest what
-    /// the video's shape gives that divides the strip's width (the shape as probed can be a pixel or two off the frames').
+    /// Strip layout from the header only (size and frame count). Frames share one even width (scale=-2; GpuFilmstrips.FrameWidth), so the
+    /// count is the divisor of the strip width nearest the probed aspect estimate (which may be a pixel or two off).
     /// </summary>
     private static (int Width, int Height, int Count)? Layout(string strip, double shape)
     {
@@ -305,8 +284,7 @@ public static class MediaBrowserFrames
         return (width, height, guess);
     }
 
-    // Where a frame of a strip begins, in the strip's own pixels: a whole number of frames' widths in (the last frame's end
-    // for one past the last).
+    // Frame start in strip pixels: index x frame width (one past the last gives the strip end).
     private static int FrameStart((int Width, int Height, int Count) layout, int index) =>
         (int)Math.Round(index * (double)layout.Width / layout.Count);
 
@@ -314,9 +292,8 @@ public static class MediaBrowserFrames
     private static int FrameWidthAt((int Width, int Height, int Count) layout, int height) =>
         Math.Max((int)Math.Round((double)height * layout.Width / layout.Count / layout.Height), 1);
 
-    // A JPEG decoded at exactly the size given (both sides set: WPF then keeps to them, rather than working one out from the
-    // other and rounding it), from a file stream; with a source rectangle, only that part of it, cut in its own pixels
-    // before it is scaled. No IgnoreImageCache with a stream: WPF's image cache is kept by address, and with none it throws.
+    // Decodes a JPEG stream at an exact size (both dimensions set to avoid WPF rounding), optionally cropping in source pixels before
+    // scaling. No IgnoreImageCache with streams: WPF's cache is URI-keyed and throws without one.
     private static BitmapSource Decode(string path, int width, int height, Int32Rect? source)
     {
         using var file = File.OpenRead(path);
@@ -335,8 +312,7 @@ public static class MediaBrowserFrames
     }
 
     /// <summary>
-    /// The pixels of one rectangle of a picture, copied into a picture of their own at 96 DPI (whatever the JPEG said), so
-    /// that every frame and poster is sized alike by WPF. Frozen.
+    /// Copies a rectangle into a new 96-DPI bitmap (ignoring JPEG DPI) so WPF sizes all frames consistently. Frozen.
     /// </summary>
     private static BitmapSource Cut(BitmapSource source, Int32Rect rect)
     {
@@ -348,11 +324,10 @@ public static class MediaBrowserFrames
         return frame;
     }
 
-    /// <summary>A picture file, decoded at the given height: an image's poster. Frozen; null when it cannot be read.</summary>
+    /// <summary>Decodes an image file at the given height as its poster. Frozen; null when unreadable.</summary>
     public static BitmapSource? Picture(string path, int height) => DecodeAt(path, height);
 
-    // Read from a file stream, not a URI: a URI goes through WPF's web request path (URL monikers and security zones,
-    // loaded for a local file). No IgnoreImageCache with a stream: the image cache is kept by address, and with none it throws.
+    // Use a file stream, not a URI (URIs go through WPF's web request path: URL monikers, security zones). No IgnoreImageCache with streams.
     private static BitmapSource? DecodeAt(string path, int height)
     {
         try
@@ -415,7 +390,6 @@ public static class MediaBrowserFrames
 }
 
 /// <summary>
-/// What the Media Browser's List view shows of a file (5.4C): its length in seconds, its picture's size (0 for a sound), its frame rate,
-/// its codec as FFmpeg names it (the picture's, else the first sound's) and how many sound streams it has.
+/// List view file details: duration (s), video size (0 for audio), frame rate, FFmpeg codec name (video, else first audio), audio stream count.
 /// </summary>
 public sealed record MediaDetails(double Seconds, int Width, int Height, double FrameRate, string Codec, int AudioStreams);

@@ -6,19 +6,18 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Compositor;
 
-// ----- The first-run window's two-phase hardware profile (Pass 5.5A) -----
+// ----- Two-phase hardware profile for the first-run window -----
 //
-// Phase 1, HandPeg.exe --hw-benchmark --estimate: the cards (DXGI's descriptions, whether each shares the computer's memory), the
-// hardware encoders Media Foundation has for each (MFTEnum2 by LUID) and the NPUs, and the roles that follow, with nothing measured:
-// no Direct3D 11 device (no card's video driver loaded), no clip, no FFmpeg, no GpuAdapters.Fingerprint. Its own time is in the result
-// (TotalSeconds; under 100 ms is the aim), and the cards arrive on the first "adapters" line, so the window fills its role cards at once.
+// Phase 1 (--hw-benchmark --estimate): adapters (DXGI descriptions, unified-memory flag), MF hardware encoders per adapter (MFTEnum2
+// by LUID), NPUs and derived roles, with nothing measured: no D3D11 device (no video driver load), clip, FFmpeg or fingerprint. Target
+// under 100 ms (TotalSeconds); adapters arrive on the first "adapters" line so the role cards fill at once.
 //
-// Phase 2, HandPeg.exe --hw-benchmark [clip] --quick --adapters 0[,2]: only the cards named (the compositor's, and the Export card when
-// it is another: never a card with no role, CLAUDE.md 8), each its hardware decoding of the test clip (when there is one: FFmpeg makes
-// it) and its bus, in about a second and a half. No processor decode, no seeks, no accuracy frames, no decoding across two cards.
+// Phase 2 (--hw-benchmark [clip] --quick --adapters 0[,2]): only the named adapters (compositor, plus Export when different; never an
+// adapter without a role), each measuring hardware decode of the test clip (when FFmpeg made one) and bus bandwidth in ~1.5 s.
+// No software decode, seeks, accuracy frames or cross-adapter decode.
 public static unsafe partial class HardwareBenchmark
 {
-    /// <summary>The estimate (Phase 1): the cards, their encoders, the NPUs and the roles; nothing measured.</summary>
+    /// <summary>Phase 1: adapters, encoders, NPUs and roles; nothing measured.</summary>
     private static int Estimate()
     {
         Clock.Start();
@@ -30,7 +29,7 @@ public static unsafe partial class HardwareBenchmark
 
         try
         {
-            // The JSON writer's first line costs it about 20 ms of looking at the types: done beside the listing, not after it.
+            // Warm the JSON serializer (~20 ms of type inspection on first use) in parallel with enumeration.
             var warm = Task.Run(() => JsonSerializer.Serialize(new HardwareBenchmarkLine { Type = "progress", Progress = new() { Partial = new() { Adapters = [new()], Npus = [new()] } } }, Json));
             _ = Com.CoInitializeEx(0, Com.CoInitMultithreaded);
             result.Adapters = EnumerateAdapters(decoderProfiles: false);
@@ -52,9 +51,9 @@ public static unsafe partial class HardwareBenchmark
     }
 
     /// <summary>
-    /// The quick check (Phase 2): every card listed as the full test lists it (its decoders too: what the editor reads from the saved
-    /// result), and on the cards in <paramref name="only"/> the hardware decoding of <paramref name="clip"/> (frames per second; none
-    /// without a clip) and the bus. A card whose device cannot be made is noted, as in the full test.
+    /// Phase 2: lists every adapter as the full test does (decoders included: the editor reads them from the saved result) and, on
+    /// <paramref name="only"/>, measures hardware decode fps of <paramref name="clip"/> (skipped without a clip) and bus bandwidth.
+    /// Adapters whose device creation fails get a note, as in the full test.
     /// </summary>
     private static int MeasureQuick(string clip, IReadOnlySet<int> only)
     {
@@ -71,10 +70,10 @@ public static unsafe partial class HardwareBenchmark
             result.Adapters = EnumerateAdapters();
             NoteRepeats(result);
 
-            // 5.5A review: the NPUs before the first line, as the estimate has them (the window shows this line over the estimate).
+            // NPUs before the first line, matching the estimate (this line replaces it in the window).
             result.Npus = ListNpus();
 
-            // The roles the listing names, before anything is measured: what a card that fails to be measured falls back on (QuickRoles).
+            // Roles from the listing alone, before measuring: the fallback when an adapter fails (QuickRoles).
             var listed = Recommend(result);
             result.Recommended = listed;
             var targets = result.Adapters.Where(a => only.Contains(a.Index) && a.SameCardAs < 0).ToList();
@@ -91,7 +90,7 @@ public static unsafe partial class HardwareBenchmark
                     using var gpu = GpuDevice.Create(adapter.Index, allowWarp: false);
                     if (decodes)
                     {
-                        // A card that will not decode the clip in hardware still has its bus measured: no note, the decode left at 0.
+                        // A hardware decode failure leaves decode fps at 0 without a note; the bus is still measured.
                         try
                         {
                             var (fps, _, _) = DecodeRun(gpu, clip, hardware: true, out var frames, quick: true);
@@ -115,12 +114,12 @@ public static unsafe partial class HardwareBenchmark
                     adapter.Note = ex.Message;
                     failed.Add(adapter.Index);
 
-                    // The progress lines after it carry the roles without it already (the window may write them on Start Editing).
+                    // Later progress lines carry roles without the failed adapter (the window may persist them on Start Editing).
                     result.Recommended = QuickRoles(result, listed, failed);
                 }
             }
 
-            // The compositor's all-slots frame on the cards it measured (a card that failed is left out: no role is given to it).
+            // All-slots compositor timing on the measured adapters (failed ones get no role).
             TimeCompositors(result, [.. targets.Where(a => !failed.Contains(a.Index))], 0.9, 0.97);
 
             result.MediaFoundationDecodeCodecs = MediaFoundationDecoders();
@@ -138,7 +137,7 @@ public static unsafe partial class HardwareBenchmark
         return result.Error.Length == 0 ? 0 : 1;
     }
 
-    /// <summary>The cards a quick check measures, from its --adapters word ("0,2"); a word that is not a number is left out.</summary>
+    /// <summary>Parses the --adapters list ("0,2"); non-numeric entries are skipped.</summary>
     internal static IReadOnlySet<int> ParseAdapters(string list)
     {
         var cards = new HashSet<int>();
@@ -152,11 +151,10 @@ public static unsafe partial class HardwareBenchmark
     }
 
     /// <summary>
-    /// The roles a quick check gives (5.5A review): <see cref="Recommend"/> over what it listed and measured while every card it measured
-    /// worked. Once one failed (its device not made, its bus not measured: <paramref name="failed"/>), the roles the listing named before
-    /// anything was measured (<paramref name="listed"/>), the failed card's role(s) Auto, Decode and Background Auto as always: Recommend
-    /// would leave the failed card out and move its role onto a card the quick check never measured (the Desktop's Arc A310 beside an RX
-    /// 7900 XTX whose device failed: CLAUDE.md 8). Pure: the goldens check it.
+    /// Quick-check roles: <see cref="Recommend"/> while every measured adapter succeeded. After a failure (<paramref name="failed"/>),
+    /// keeps the pre-measurement roles (<paramref name="listed"/>) with the failed adapter's role(s) and Decode/Background set to Auto,
+    /// because Recommend would otherwise move the role onto an unmeasured secondary adapter (a small card beside a discrete primary
+    /// whose device failed). Pure (goldens).
     /// </summary>
     internal static HardwareBenchmarkRoles QuickRoles(HardwareBenchmarkResult result, HardwareBenchmarkRoles listed, IReadOnlyCollection<int> failed)
     {
@@ -186,14 +184,14 @@ public static unsafe partial class HardwareBenchmark
         return roles;
     }
 
-    /// <summary>A card DXGI lists twice is measured, and given a role, once: each repeat says which card it repeats.</summary>
+    /// <summary>Adapters DXGI lists twice are measured and given roles once; each repeat notes the adapter it duplicates.</summary>
     private static void NoteRepeats(HardwareBenchmarkResult result)
     {
         foreach (var repeat in result.Adapters.Where(a => a.SameCardAs >= 0))
             repeat.Note = string.Create(CultureInfo.InvariantCulture, $"The same card as #{repeat.SameCardAs}, listed twice by Windows.");
     }
 
-    /// <summary>The NPUs DXCore lists, each with what it is used for.</summary>
+    /// <summary>NPUs listed by DXCore, with their use.</summary>
     private static List<HardwareBenchmarkNpu> ListNpus() =>
     [
         .. NpuAdapters.Enumerate().Select(n => new HardwareBenchmarkNpu

@@ -6,10 +6,9 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// The picture in the Squisher's processing square: one still frame of the video, and, while the video is
-/// being squeezed, "macroblocks" crunching over it. All of it is drawn in OnRender. A block is a square of
-/// the picture painted in the one colour found at its middle, which is what a starved encoder does to a
-/// picture; which squares, and how large, changes several times a second.
+/// Squisher processing preview: a still video frame with animated macroblock artefacts while compressing, all drawn in OnRender.
+/// Each block is a grid-aligned square filled with the colour at its centre (mimicking a bit-starved encoder); block placement
+/// and size change several times per second.
 /// </summary>
 public sealed class SquishView : FrameworkElement
 {
@@ -32,7 +31,7 @@ public sealed class SquishView : FrameworkElement
         Unloaded += (_, _) => _tick.Stop();
     }
 
-    /// <summary>The still frame; null draws an empty, dark square.</summary>
+    /// <summary>Still frame; null draws an empty dark square.</summary>
     public ImageSource? Thumbnail
     {
         get => _thumbnail;
@@ -43,7 +42,7 @@ public sealed class SquishView : FrameworkElement
         }
     }
 
-    /// <summary>Whether the blocks are crunching. Off, the picture is shown as it is.</summary>
+    /// <summary>True to animate macroblock artefacts; false shows the clean frame.</summary>
     public bool IsCrunching
     {
         get => _crunching;
@@ -65,14 +64,14 @@ public sealed class SquishView : FrameworkElement
         if (_thumbnail is not { Width: > 0, Height: > 0 } picture || bounds.Width < 8 || bounds.Height < 8)
             return;
 
-        // The picture, whole, in the middle of the square.
+        // Letterbox the frame centred in the square.
         var scale = Math.Min(bounds.Width / picture.Width, bounds.Height / picture.Height);
         var shown = new Rect((bounds.Width - picture.Width * scale) / 2, (bounds.Height - picture.Height * scale) / 2, picture.Width * scale, picture.Height * scale);
         drawing.DrawImage(picture, shown);
         if (!_crunching)
             return;
 
-        // The blocks: on a grid, as an encoder's are, in three sizes. Each is the picture's own colour at its middle.
+        // Grid-aligned blocks in three sizes (16/32/64), each filled with the frame colour at its centre.
         const double cell = 16;
         var count = 28 + _random.Next(36) + (_frame % 9 == 0 ? 40 : 0);
         for (var i = 0; i < count; i++)
@@ -84,13 +83,13 @@ public sealed class SquishView : FrameworkElement
             if (block.IsEmpty || block.Width < 2 || block.Height < 2)
                 continue;
 
-            // A brush that shows one point of the picture, stretched over the whole block.
+            // ImageBrush sampling a tiny viewbox at the block centre, stretched across the block.
             var point = new Rect((block.Left + block.Width / 2 - shown.Left) / shown.Width, (block.Top + block.Height / 2 - shown.Top) / shown.Height, 0.004, 0.004);
             var flat = new ImageBrush(picture) { Viewbox = point, ViewboxUnits = BrushMappingMode.RelativeToBoundingBox, Stretch = Stretch.Fill };
             drawing.DrawRectangle(flat, BlockEdge, block);
         }
 
-        // And a band or two, a few rows deep, pulled sideways: the frame that did not get enough bits at all.
+        // One or two horizontally displaced bands, a few block rows deep: severe bit starvation.
         for (var band = 0; band < 1 + _frame % 2; band++)
         {
             var top = shown.Top + Math.Floor(_random.NextDouble() * shown.Height / cell) * cell;

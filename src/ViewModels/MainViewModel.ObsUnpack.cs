@@ -4,32 +4,28 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Unpack OBS Side-by-Side Canvas (Pass 5.2C, Services/ObsUnpacker.cs) -----
-// A double-wide recording (the gameplay and the facecam side by side on one canvas) is unpacked in one step of Undo: the clip keeps its
-// left half (cropped to it, placed as ObsUnpacker lays it for the Sequence's shape) and a Cutout of the same file on the same clock shows
-// its right half on a Sub-Lane above, as a Game Preset's Cutouts are made (MainViewModel.Templates.cs): the clip's child, so the two
-// split, trim, move and go together. A Sequence that took the double-wide canvas's own shape (the first file opened) takes one half's.
+// ----- Unpack OBS Side-by-Side Canvas (Services/ObsUnpacker.cs) -----
+// Splits a double-wide recording (gameplay + facecam) in one undo step: the clip keeps the left half (cropped, laid out by ObsUnpacker
+// for the Sequence aspect) and a same-file, same-clock Cutout child on a Sub-Lane above shows the right half (as Game Preset Cutouts,
+// MainViewModel.Templates.cs), so both split/trim/move/delete together. A Sequence sized to the double-wide canvas is resized to one half.
 public partial class MainViewModel
 {
-    /// <summary>What a side-by-side Cutout is called.</summary>
+    /// <summary>Name given to the side-by-side Cutout.</summary>
     public const string FacecamName = "Facecam";
 
-    /// <summary>Whether a clip is a side-by-side recording to unpack: a clip of a video file (not a Cutout) whose picture is double wide.</summary>
+    /// <summary>Whether a clip is an unpackable side-by-side recording (file video, not a Cutout, double-wide picture).</summary>
     public bool CanUnpackSideBySide(Layer view) =>
         view is { IsVideoFile: true, IsDeleted: false } && ClipOf(view) is { ContentKind: LayerKind.VideoFile } clip && !IsCutout(clip)
         && ObsUnpacker.IsSideBySide(view.ImageWidth, view.ImageHeight);
 
-    /// <summary>Says once that a clip just placed can be unpacked (the clip's menu has it): never done unasked.</summary>
+    /// <summary>One-time hint that a placed clip can be unpacked via its menu; never automatic.</summary>
     private void OfferSideBySide(Layer view)
     {
         if (!_isBackgroundWorker && CanUnpackSideBySide(view))
             StatusText = $"{view.Name} is two pictures side by side ({view.ImageWidth} x {view.ImageHeight}): right-click its clip, Unpack OBS Side-by-Side Canvas, for the gameplay and the facecam as two clips that stay in step.";
     }
 
-    /// <summary>
-    /// Unpacks a side-by-side recording (see the top of this file): the clip shows the gameplay (the left half), a Cutout above it the facecam
-    /// (the right half), placed for the Sequence's shape. One step of Undo.
-    /// </summary>
+    /// <summary>Unpacks a side-by-side recording: clip = gameplay (left half), Cutout above = facecam (right half). One undo step.</summary>
     /// <returns>Whether it was unpacked.</returns>
     public bool UnpackSideBySide(Layer view)
     {
@@ -45,7 +41,7 @@ public partial class MainViewModel
         using var held = HoldLookSteps();
         using var whole = DeferCommand();
 
-        // A Sequence shaped as the whole canvas (the first file opened gave it its shape) takes one half's: two 16:9 pictures, a 16:9 frame.
+        // A Sequence matching the whole canvas (from the first opened file) is resized to one half: two 16:9 halves, 16:9 frame.
         if (GetRequestedSize() is null && ObsUnpacker.IsSideBySide(FrameWidth, FrameHeight) && Document.HasNaturalSize)
         {
             Edit(label, edit => edit.SetFrame(Even(view.ImageWidth / 2.0), Even(view.ImageHeight), Document.ExplicitFrame), undoable: false);
@@ -54,14 +50,14 @@ public partial class MainViewModel
 
         var layout = ObsUnpacker.Layout(view.ImageWidth, view.ImageHeight, Math.Max(FrameWidth, 2), Math.Max(FrameHeight, 2));
 
-        // The facecam's look is the clip's as it was (its colour, its effects), without its place's keys or its blur fill (one is enough).
+        // Facecam inherits the clip's look (colour, effects) minus placement keys and blur fill (one fill suffices).
         var facecam = TimelineTransaction.CopyOf(view.ToState());
         (facecam.KeysX, facecam.KeysY, facecam.KeysScale, facecam.KeysRotation, facecam.KeysTiltX, facecam.KeysTiltY) = (null, null, null, null, null, null);
         (facecam.Name, facecam.BlurFill, facecam.Rotation, facecam.TiltX, facecam.TiltY) = (FacecamName, null, 0, 0, 0);
         (facecam.CustomMask, facecam.MaskPath, facecam.MaskShapes, facecam.MaskFrame, facecam.MaskInvert, facecam.MaskGrow) = (false, "", "", false, false, 0);
         Place(facecam, layout.Facecam);
 
-        // The clip itself: the gameplay.
+        // The original clip becomes the gameplay half.
         var placing = _placingViews;
         _placingViews = true;
         try
@@ -111,7 +107,7 @@ public partial class MainViewModel
         return true;
     }
 
-    // A half's crop and box on a state.
+    // Applies a half's crop and placement rect to a state.
     private static void Place(LayerState state, UnpackedPart part)
     {
         (state.CropLeft, state.CropTop, state.CropRight, state.CropBottom) = (part.CropLeft, part.CropTop, part.CropRight, part.CropBottom);

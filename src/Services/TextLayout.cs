@@ -7,15 +7,13 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// How a text layer's words lie in its box, at the size its font is set to: the box, in pixels, and where each
-/// line's baseline is in it. The box is what the layer is on the frame, so it is measured here, with the
-/// font's own figures, and FFmpeg's drawtext is then told where to put each line; a line is centred in the
-/// box, which has room to spare at the sides for the little that two text engines differ by.
+/// Text layer layout at its font size: box size in output pixels and per-line baselines, measured from the font's own metrics. Lines are
+/// centred with side margin to absorb small differences between text renderers.
 /// </summary>
-/// <param name="Width">The box, in pixels of the output frame at the font's set size. Even.</param>
-/// <param name="LineHeight">From one line's baseline to the next.</param>
-/// <param name="Baseline">From the top of a line to its baseline.</param>
-/// <param name="FontFile">The font's file, for drawtext's fontfile; empty when it is not a file drawtext can open by itself.</param>
+/// <param name="Width">Box width in output pixels at the set font size (even).</param>
+/// <param name="LineHeight">Baseline-to-baseline distance.</param>
+/// <param name="Baseline">Line top to baseline.</param>
+/// <param name="FontFile">Font file path; empty when not a standalone first-face file.</param>
 public sealed record TextLayout(int Width, int Height, double LineHeight, double Baseline, string FontFile, string FontName, IReadOnlyList<string> Lines)
 {
     public const string DefaultFont = Models.TextDefaults.Font;
@@ -72,8 +70,7 @@ public sealed record TextLayout(int Width, int Height, double LineHeight, double
     }
 
     /// <summary>
-    /// The text as lines. Each line is drawn by a drawtext of its own, so no line break ever has to be written
-    /// into a filter graph. What cannot be drawn (control characters) is left out, and a tab is four spaces.
+    /// Splits text into lines, dropping control characters and expanding tabs to four spaces.
     /// </summary>
     private static List<string> SplitLines(string? content)
     {
@@ -86,8 +83,7 @@ public sealed record TextLayout(int Width, int Height, double LineHeight, double
     }
 
     /// <summary>
-    /// The file the font is read from. drawtext opens the first face of a file, so a font that is a later face
-    /// of a collection (.ttc) is left to be found by its name instead.
+    /// Font file path; empty for non-first faces of a .ttc collection (resolved by family name instead).
     /// </summary>
     private static string FindFontFile(Typeface typeface)
     {

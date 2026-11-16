@@ -5,7 +5,7 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-/// <summary>What was answered when HandPeg was closed with unsaved changes.</summary>
+/// <summary>Answer to the unsaved-changes prompt on exit.</summary>
 public enum ExitChoice
 {
     Cancel,
@@ -13,13 +13,13 @@ public enum ExitChoice
     CloseWithoutSaving,
 }
 
-/// <summary>Asked when the main window is closed while the open video has changes that were not saved as a project.</summary>
+/// <summary>Prompt when closing the main window with unsaved project changes.</summary>
 public partial class SaveOnExitDialog : Window
 {
-    /// <param name="suggestedName">The name the project would be saved under: the video's, or the project's own.</param>
+    /// <param name="suggestedName">Default save name (the video's or the project's).</param>
     /// <param name="projectPath">
-    /// Pass 5.5A review: the project file the project was opened from or last saved to ("" for work never saved). With one, Save &amp; Close saves
-    /// there (as Ctrl+S does) and no name is asked; the name box is only for work never saved.
+    /// Project file opened from or last saved to ("" if never saved). When set, Save &amp; Close saves there like Ctrl+S without asking
+    /// for a name; the name box appears only for never-saved work.
     /// </param>
     public SaveOnExitDialog(string suggestedName, string projectPath = "")
     {
@@ -44,7 +44,7 @@ public partial class SaveOnExitDialog : Window
 
     public string ProjectName => NameBox.Text.Trim();
 
-    /// <summary>Whether Save &amp; Close saves to the project's own file (Pass 5.5A review): no name is asked then.</summary>
+    /// <summary>Whether Save &amp; Close writes to the existing project file (no name prompt).</summary>
     public bool SavesToFile { get; }
 
     private void NameBox_TextChanged(object sender, TextChangedEventArgs e)

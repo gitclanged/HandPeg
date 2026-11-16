@@ -4,11 +4,9 @@ using System.Numerics;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// An animated GIF made in HandPeg (Pass 5.2-Audit: FFmpeg's palettegen and paletteuse graph is gone; the GPU export pipes its
-/// frames here instead of to FFmpeg). As those two steps made it: one palette of 256 colours for the whole clip, from every
-/// frame's colours (a histogram of 5 bits a channel, cut by median cut, the most-used colours weighing most), each frame
-/// dithered onto it (Floyd-Steinberg), and only what changed from the frame before written (its bounding box), LZW-packed, the
-/// clip looping for ever. The frames wait in a file until the palette is known: a GIF is short, and its frames are small.
+/// In-house animated GIF encoder fed by the GPU export: one global 256-colour palette (5-bit-per-channel histogram, weighted median
+/// cut), Floyd-Steinberg dithering, per-frame changed-region bounding boxes, LZW, infinite loop. Frames are spooled to a temp file
+/// until the palette is built (GIFs are short and small).
 /// </summary>
 public sealed class GifEncoder : IDisposable
 {
@@ -46,8 +44,7 @@ public sealed class GifEncoder : IDisposable
     }
 
     /// <summary>
-    /// The GIF of every frame added, each shown for its share of <paramref name="framesPerSecond"/> (GIF counts in hundredths of a
-    /// second: the delays are rounded so they add up), looping for ever.
+    /// Writes the looping GIF at <paramref name="framesPerSecond"/>; centisecond delays are error-diffused so totals stay exact.
     /// </summary>
     public void Write(string path, double framesPerSecond, IProgress<double>? progress = null, CancellationToken token = default)
     {
@@ -104,8 +101,7 @@ public sealed class GifEncoder : IDisposable
         if (bins.Count == 0)
             return palette;
 
-        // Each box's score (its widest side times the root of its weight) is worked out once, as it is made: only the two
-        // halves of the box just cut are new, and every other box scores as it did.
+        // Box score (widest side x sqrt(weight)) is computed once at creation; only the two new halves need scoring per cut.
         var boxes = new List<List<int>> { bins };
         var scores = new List<double> { Score(bins) };
         double Score(List<int> box)
@@ -195,8 +191,8 @@ public sealed class GifEncoder : IDisposable
         return (axis, range);
     }
 
-    // The palette entry nearest each bin (by squared distance, green weighing most), worked out once, with its colour beside
-    // it (entry | red << 8 | green << 16 | blue << 24), so that dithering finds both at once.
+    // Precomputed nearest palette entry per bin (green-weighted squared distance), packed with its colour
+    // (entry | red << 8 | green << 16 | blue << 24) for single-lookup dithering.
     private static uint[] NearestTable(byte[] palette)
     {
         // The palette by channel, as whole numbers, so that a vector's width of entries is measured at once.
@@ -220,8 +216,8 @@ public sealed class GifEncoder : IDisposable
         return table;
     }
 
-    // The first of the nearest entries. Each lane keeps the first nearest of its own entries (a strictly nearer one replaces
-    // it), and of the lanes the nearest wins, the lowest entry among equals: the first nearest of all, as one at a time finds it.
+    // SIMD nearest search: each lane keeps its first strict minimum; the reduction picks the nearest, lowest index on ties, matching
+    // a scalar scan.
     private static byte Nearest(int[] reds, int[] greens, int[] blues, int r, int g, int b)
     {
         var (best, distance, i) = (0, int.MaxValue, 0);
@@ -258,11 +254,8 @@ public sealed class GifEncoder : IDisposable
 
     // ----- The frames -----
 
-    // Floyd-Steinberg onto the palette: each pixel's error spread right and to the row below (7, 3, 5, 1 sixteenths). The
-    // errors the row above left (this row's) and those for the row below are two arrays, a pixel's three side by side,
-    // swapped as a row is done. The errors of the last two pixels are kept in hand: the one on the left gives this pixel
-    // seven sixteenths of its own, and a pixel of the row below takes one, five and three of the three above it, so each of
-    // its sums is written once, when the third is known (the same whole numbers, added in another order).
+    // Floyd-Steinberg (7, 3, 5, 1 sixteenths) with two swapped interleaved-RGB error rows. The last two pixels' errors stay in
+    // registers so each next-row sum (1, 5, 3 sixteenths from three pixels) is written once when complete (same integers, reordered).
     private void Dither(byte[] bgra, uint[] nearest, byte[] indices, int[] current, int[] next)
     {
         Array.Clear(current);
@@ -290,9 +283,8 @@ public sealed class GifEncoder : IDisposable
         }
     }
 
-    // The bounding box of the pixels that differ from the frame before: left, top, right, bottom (exclusive). A row is
-    // compared whole (a vector at a time); in one that changed, its first difference is its run of equal pixels from the
-    // left, and its last is found from the right, a vector at a time and then pixel by pixel.
+    // Bounding box (exclusive right/bottom) of pixels changed since the previous frame: rows compared with SIMD; in changed rows the
+    // first and last differences are found from each end, vector-wise then per pixel.
     private (int Left, int Top, int Right, int Bottom) Changed(byte[] now, byte[] before)
     {
         var (left, top, right, bottom) = (_width, _height, 0, 0);
@@ -368,7 +360,7 @@ public sealed class GifEncoder : IDisposable
         output.WriteByte((byte)(value >> 8));
     }
 
-    // GIF's LZW of 8-bit indices: codes from 9 bits up to 12, a clear code when the table is full, in sub-blocks of 255 bytes.
+    // GIF LZW for 8-bit indices: 9-12-bit codes, clear code when full, 255-byte sub-blocks.
     private static void Lzw(Stream output, ReadOnlySpan<byte> pixels, LzwTable table)
     {
         const int minimum = 8, clear = 1 << minimum, end = clear + 1, largest = 4096;
@@ -445,9 +437,8 @@ public sealed class GifEncoder : IDisposable
     }
 
     /// <summary>
-    /// LZW's table of strings, by the code of a string less its last index and that index (code &lt;&lt; 8 | index, under
-    /// 2^20): one slot each, the code of the string or 0 for none (no string's code is 0), and the slots in use, so that
-    /// clearing the table clears only those. One for a whole file, made once.
+    /// LZW dictionary keyed by prefix code and suffix index (code &lt;&lt; 8 | index, &lt; 2^20); 0 means empty. Tracks used slots so a
+    /// clear touches only those. Allocated once per file.
     /// </summary>
     private sealed class LzwTable
     {

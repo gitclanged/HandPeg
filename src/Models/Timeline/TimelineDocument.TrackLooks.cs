@@ -1,9 +1,8 @@
 namespace HandPegApp.Models.Timeline;
 
 /// <summary>
-/// Legacy track looks (<see cref="TimelineTrackModel.TrackLook"/>: a look shared by a track's clips, from projects made before every clip
-/// carried its whole look) folded into the clips once, so nothing downstream merges looks: the editor folds a document as it is put in
-/// place, and the lowering folds a copy of any document that still has one (a document built in code, a path that did not install it).
+/// Folds legacy shared track looks (<see cref="TimelineTrackModel.TrackLook"/>) into their clips once so nothing downstream merges looks:
+/// the editor folds on install, and lowering folds a copy of any document still carrying one (code-built or uninstalled documents).
 /// </summary>
 public sealed partial class TimelineDocument
 {
@@ -12,8 +11,8 @@ public sealed partial class TimelineDocument
     public bool HasTrackLooks => Tracks.Exists(t => t.TrackLook is not null);
 
     /// <summary>
-    /// Folds every track's shared look into its clips (<see cref="LookOver"/>) and clears it; true when there was one. Each clip gets a
-    /// new LayerState (looks are never changed in place), so a shallow copy of a document can be folded without touching the original.
+    /// Folds each track look into its clips (<see cref="LookOver"/>) and clears it; true if any existed. Clips get new LayerStates (never
+    /// mutated), so shallow document copies fold without affecting the original.
     /// </summary>
     public bool FoldTrackLooks()
     {
@@ -32,9 +31,8 @@ public sealed partial class TimelineDocument
     }
 
     /// <summary>
-    /// A clip's look over its track's: what the track's clips share from <paramref name="trackLook"/>; what is the clip's own (its name and
-    /// file, where it sits and how large, its shape, turn and crop, its blur fill, its keyframes, its anchor, its effect stack and its
-    /// speed options) from <paramref name="state"/>. Neither is changed.
+    /// Merges a clip look over its track look: shared fields from <paramref name="trackLook"/>, clip-owned fields (name, file, placement,
+    /// shape, rotation, crop, blur fill, keyframes, anchor, effects, speed options) from <paramref name="state"/>. Inputs are not mutated.
     /// </summary>
     public static LayerState LookOver(LayerState trackLook, LayerState state)
     {

@@ -9,14 +9,14 @@ using HandPegApp.Views;
 
 namespace HandPegApp;
 
-// ----- Pass 5.6A: the Color tab (the Color Studio) and the grade's Before/After on the player -----
-// The Color Studio is wired to the window as its tab is made (RealizeTabContent); the Effects pane's Color Grade card opens it. The
-// Before/After: \ held shows the picture without its grade (Bypass) at once and until the key is let go; the Color Studio's Compare eye
-// splits the player at a divider (Before on the left, After on the right) that is dragged by a handle on the player; the dial's and a
-// hotbar slot's Before/After switch the Bypass on and off. The engine draws it (GpuPreviewEngine.SetGradeCompare): only the player's frames.
+// ----- Color tab (Color Studio) and grade Before/After on the player -----
+// The Color Studio is wired when its tab is realized (RealizeTabContent); the Effects pane's Color Grade card opens it. Before/After:
+// holding \ bypasses the grade immediately until release; the Compare eye splits the player at a draggable divider (Before left, After
+// right); the dial's and hotbar slot's Before/After toggle Bypass. The engine renders it (GpuPreviewEngine.SetGradeCompare) on player
+// frames only.
 public partial class MainWindow
 {
-    /// <summary>The Color tab's pane id (its TabItem's header is "Color"; saved "Tab:Filters" become it: ReplacedPanes).</summary>
+    /// <summary>Color tab pane id (TabItem header "Color"; legacy saved "Tab:Filters" maps to it via ReplacedPanes).</summary>
     internal const string ColorTabId = "Tab:Color";
 
     private ColorStudioPane? _colorStudio;
@@ -40,8 +40,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The paused player's frame without one Color Grade card (its id; none: as shown), small, for the Color Studio's histogram. A save's
-    /// or a tab's still waiting goes first (as CaptureForScopes): the engine keeps one request.
+    /// Small paused-player frame with the given Color Grade card excluded (Guid.Empty: as displayed), for the Color Studio histogram.
+    /// A pending save or tab still goes first (as in CaptureForScopes), since the engine holds one request.
     /// </summary>
     private async Task<(byte[] Bgra, int Width, int Height)?> CaptureForColorStudio(Guid card)
     {
@@ -53,15 +53,15 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The Effects pane's Open Color Studio: the Color tab shown (un-hidden when it was), brought forward where it is: its side window to
-    /// the front, or its group in the main window; when no group on screen holds it, a Pane Docker of its own.
+    /// Effects pane's Open Color Studio: shows the Color tab (un-hiding it if needed) and activates it where it lives: its side window, its
+    /// main-window group, or, when no visible group holds it, a new Pane Docker window.
     /// </summary>
     private void OpenColorStudio()
     {
         if (!TabWanted(ColorTabId))
             SetTabShown(ColorTabId, true);
 
-        // After the layout the un-hiding asked for (BringForward's own priority).
+        // Run after the un-hide layout pass (at BringForward's Loaded priority).
         Dispatcher.BeginInvoke(() =>
         {
             if (_dock.SideIdOf(ColorTabId) is { } side)
@@ -80,12 +80,12 @@ public partial class MainWindow
         }, DispatcherPriority.Loaded);
     }
 
-    // ----- The Before/After -----
+    // ----- Before/After -----
 
-    /// <summary>The compare the player shows now: held or switched on, the plain Before; else the Compare eye's split, else none.</summary>
+    /// <summary>Current compare mode: Bypass when held or toggled, else Split when the Compare eye is on, else Off.</summary>
     internal GradeCompareMode GradeCompareNow => _gradeHeld || _gradeToggled ? GradeCompareMode.Bypass : _gradeSplit ? GradeCompareMode.Split : GradeCompareMode.Off;
 
-    /// <summary>\ pressed (KeybindManager's view.compareGrade, a Hold action): the Before at once, until the key is let go.</summary>
+    /// <summary>\ pressed (view.compareGrade Hold action): bypass the grade until release.</summary>
     private void BeginGradeHold()
     {
         if (_gradeHeld)
@@ -94,7 +94,7 @@ public partial class MainWindow
         ApplyGradeCompare();
     }
 
-    /// <summary>\ let go, or the window let go of the keyboard (DropTransientInput): the picture as it was.</summary>
+    /// <summary>\ released, or keyboard focus lost (DropTransientInput): restore the previous compare state.</summary>
     private void EndGradeHold()
     {
         if (!_gradeHeld)
@@ -103,7 +103,7 @@ public partial class MainWindow
         ApplyGradeCompare();
     }
 
-    /// <summary>The dial's or a hotbar slot's Before/After: the Before switched on, or off again.</summary>
+    /// <summary>Dial or hotbar Before/After: toggles grade Bypass.</summary>
     private void ToggleGradeBypass()
     {
         _gradeToggled = !_gradeToggled;
@@ -118,14 +118,14 @@ public partial class MainWindow
         PlaceGradeWipe();
     }
 
-    // ----- The divider's handle on the player (the split) -----
+    // ----- Split divider handle on the player -----
 
     private void EnsureGradeWipe()
     {
         if (_gradeWipeLayer is not null)
             return;
 
-        // A grip on the divider; the divider itself drawn here (the engine splits the picture, it draws no line).
+        // Grip and divider line drawn in WPF (the engine splits the picture but draws no line).
         var handle = _gradeWipeHandle = UiBrushes.WipeHandle("Drag: Before on the left, After on the right", "Before/After Divider");
         handle.MouseLeftButtonDown += (_, e) =>
         {
@@ -169,7 +169,7 @@ public partial class MainWindow
         PlayerOverlay.SizeChanged += (_, _) => PlaceGradeWipe();
     }
 
-    /// <summary>The divider dragged to <paramref name="x"/> (the handle's layer, the player's units): the same span and formula the line is placed by.</summary>
+    /// <summary>Moves the divider to <paramref name="x"/> (handle layer, player units) using the same span and formula as line placement.</summary>
     private void DragGradeWipe(double x)
     {
         var (viewWidth, viewHeight) = _loopback.LoopbackViewSize();
@@ -183,13 +183,13 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The handle and divider over the split's line, only while the player splits (not in the 3D view, the Live Encoded Preview or a source
-    /// view, where the engine shows the plain Before): the line where the engine splits, rounded to a device pixel, 2 pixels wide.
+    /// Positions handle and divider on the engine's split line (device-pixel rounded, 2 px wide), only while splitting; hidden in the 3D
+    /// view, Live Encoded Preview or a source view, where the engine shows plain Before.
     /// </summary>
     private void PlaceGradeWipe()
     {
-        // While the split is asked for, looked at again twice a second (made on first use): the 3D view, the Live Encoded Preview and a
-        // source view come and go by their own buttons, and the handle follows them.
+        // While split is requested, re-check every 500 ms (timer created lazily): 3D view, Live Encoded Preview and source views toggle
+        // independently, and the handle must follow.
         var splitting = GradeCompareNow == GradeCompareMode.Split;
         if (splitting && _gradeWipeRecheck is null)
         {

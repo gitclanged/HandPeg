@@ -7,24 +7,23 @@ using HandPegApp.Services;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// A Media Browser poster decoded in this process by Media Foundation (5.4.2A): when the thumbnail compositor does not draw it (busy, or
-/// declined), the key frame nearest the moment (the file's own index, NativeKeyFrames) is read by a Source Reader on the processor, made
-/// small with a box filter as it is turned from YUV into BGRA, and written as a JPEG, with no FFmpeg started. One at a time: the decoder
-/// and its pictures go with each poster, so nothing of it stays in memory between posters.
+/// In-process Media Foundation poster decode for the Media Browser, used when the thumbnail compositor is busy or declines: reads the key
+/// frame nearest the time (file index via NativeKeyFrames) with a software Source Reader, box-filters it down during YUV-to-BGRA conversion
+/// and writes a JPEG without starting FFmpeg. Serialized; the decoder is released after each poster, so nothing stays resident.
 /// </summary>
 internal static class MfPoster
 {
-    // One poster at a time: a software HEVC decoder of a 1440p file holds some tens of MB while it works.
+    // Serialize posters: a software HEVC decoder for a 1440p file holds tens of MB while working.
     private static readonly SemaphoreSlim One = new(1, 1);
 
-    // How many samples are read past a seek for the first picture (a decoder may first answer with a format change).
+    // Samples read after a seek before giving up on the first picture (decoders may first report a format change).
     private const int MostReads = 16;
 
     private const int JpegQuality = 88;
 
     /// <summary>
-    /// The frame at <paramref name="atSeconds"/> (the container's clock; the key frame nearest it) written to <paramref name="imagePath"/> as a JPEG
-    /// <paramref name="height"/> pixels tall. False, and nothing left written, when Media Foundation cannot decode it (FFmpeg then makes it).
+    /// Writes the key frame nearest <paramref name="atSeconds"/> (container clock) to <paramref name="imagePath"/> as a JPEG <paramref name="height"/> px
+    /// tall. Returns false, leaving no file, when Media Foundation cannot decode it (FFmpeg then makes the poster).
     /// </summary>
     public static async Task<bool> TryWriteAsync(string videoPath, string imagePath, double atSeconds, int height, CancellationToken token)
     {
@@ -70,8 +69,8 @@ internal static class MfPoster
     }
 
     /// <summary>
-    /// The key frame nearest <paramref name="atSeconds"/> as a frozen BGR32 picture <paramref name="height"/> pixels tall (the video's shape, its
-    /// width even); null when the file has no video Media Foundation decodes. Throws <see cref="GpuException"/> on a reader that fails midway.
+    /// The key frame nearest <paramref name="atSeconds"/> as a frozen BGR32 bitmap <paramref name="height"/> px tall (source aspect, even width); null
+    /// when the file has no MF-decodable video. Throws <see cref="GpuException"/> when the reader fails midway.
     /// </summary>
     internal static unsafe BitmapSource? Decode(string videoPath, double atSeconds, int height)
     {
@@ -89,10 +88,9 @@ internal static class MfPoster
             if (Mf.SetStreamSelection(reader, Mf.FirstVideoStream, true) < 0 || !SetOutput(reader, MfGuids.Nv12) && !SetOutput(reader, MfGuids.P010))
                 return null;
 
-            // To the key frame nearest the moment, from the file's own index when it has one: a seek lands on the key frame at or before
-            // where it is sent, and decodes nothing more for the first picture. Sent half way to the key frame after it (a second at most),
-            // so it lands on that very one whatever small difference there is between the index's clock and the reader's (a stream's
-            // start: B-frames' delay, an edit list).
+            // Seek to the nearest key frame using the file's own index when available. MF seeks land on the key frame at or before the
+            // target and decode nothing more, so aim halfway to the following key frame (at most 1 s) to absorb small clock offsets between
+            // the index and the reader (B-frame delay, edit lists).
             var at = Math.Max(atSeconds, 0);
             if (NativeKeyFrames.Read(videoPath) is { Length: > 0 } keys)
                 at = SeekFor(keys, at);
@@ -122,8 +120,8 @@ internal static class MfPoster
     }
 
     /// <summary>
-    /// Where to send a seek for the key frame nearest <paramref name="at"/> (<paramref name="keys"/> ascending, seconds): half way from it to
-    /// the next (at most a second on, a tenth after the last), the earlier of two as near (pure: the goldens' gpu-filmstrip).
+    /// Seek target for the key frame nearest <paramref name="at"/> (<paramref name="keys"/> ascending, seconds): halfway to the next key (at
+    /// most 1 s; 0.1 s after the last), preferring the earlier on ties. Pure (gpu-filmstrip golden).
     /// </summary>
     internal static double SeekFor(double[] keys, double at)
     {
@@ -155,7 +153,7 @@ internal static class MfPoster
         }
     }
 
-    // The sample's picture (NV12 or P010, rows of pitch bytes, the chroma after the padded luma), boxed down to the height asked.
+    // Converts the sample (NV12 or P010; pitch-strided rows, chroma after the padded luma), box-filtered down to the requested height.
     private static unsafe BitmapSource? PictureOf(nint sample, nint type, int height)
     {
         _ = Mf.GetGuid(type, MfGuids.Subtype, out var subtype);
@@ -170,7 +168,7 @@ internal static class MfPoster
         if (width < 2 || height0 < 2)
             return null;
 
-        // BT.709 unless the type says otherwise (2 BT.601, 4 BT.2020), as the compositor reads it (MfVideoDecoder); limited range unless it says full (1).
+        // BT.709 unless the type says 2 (BT.601) or 4 (BT.2020), as MfVideoDecoder reads it; limited range unless nominal range is full (1).
         var matrix = Mf.GetUInt32(type, MfGuids.YuvMatrix, out var m) >= 0 ? (int)m : 1;
         var fullRange = Mf.GetUInt32(type, MfGuids.NominalRange, out var range) >= 0 && range == 1;
 
@@ -213,13 +211,13 @@ internal static class MfPoster
     }
 
     /// <summary>
-    /// YUV 4:2:0 (one or two bytes a sample: P010's top byte is taken) to BGRA, each output pixel the mean of the source pixels it covers
-    /// (luma) and of the chroma samples under them: a box filter, as the picture is made a tenth of its size or less.
+    /// YUV 4:2:0 (8-bit, or P010 via its high byte) to BGRA with a box filter: each output pixel averages the luma and chroma samples it
+    /// covers (posters are a tenth of source size or smaller).
     /// </summary>
     internal static unsafe void Convert(byte* luma, byte* chroma, int pitch, int bytesPerSample, int width, int height, int outWidth, int outHeight, int matrix,
         bool fullRange, byte[] bgra)
     {
-        // The matrix's coefficients (Kr, Kb), and the range's scale and offsets.
+        // Matrix coefficients (Kr, Kb) and range scale/offsets.
         var (kr, kb) = matrix switch { 2 => (0.299, 0.114), 4 => (0.2627, 0.0593), _ => (0.2126, 0.0722) };
         var kg = 1 - kr - kb;
         var (yScale, cScale, yOffset) = fullRange ? (1.0, 1.0, 0.0) : (255.0 / 219, 255.0 / 224, 16.0);

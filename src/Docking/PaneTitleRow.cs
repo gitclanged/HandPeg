@@ -5,24 +5,18 @@ using System.Windows.Media;
 namespace HandPegApp.Docking;
 
 /// <summary>
-/// A pane's title row: its tabs (the <see cref="PaneTitleSlot"/>) at the left, the pane's own controls against the right
-/// edge, in the order written. Short of room, the row gives up room in this order: the controls marked
-/// <see cref="OptionalProperty"/> (a label whose control says enough by its tooltip) leave, those marked
-/// <see cref="CanCompactProperty"/> take their compact form (<see cref="IsCompactProperty"/>, which their styles answer:
-/// shorter labels), the tabs give up room down to the one shown (their strip lists the others in its menu), the
-/// controls with a MinWidth narrow down to it, and then what still does not fit leaves, from the right. The tab shown is
-/// never cut, nothing is ever placed left of it, and nothing is drawn outside the row (it clips), so a narrow pane
-/// can never have its controls lie over the pane beside it. A control that can be compact is never given less than
-/// its width in the form it shows: it takes the compact form, or leaves, instead of being cut.
+/// Pane title row: tabs (<see cref="PaneTitleSlot"/>) left, controls right-aligned in declaration order. Overflow shedding order:
+/// <see cref="OptionalProperty"/> controls hide, <see cref="CanCompactProperty"/> controls switch to compact form
+/// (<see cref="IsCompactProperty"/>, styled with shorter labels), tabs shrink to the active one (others via the strip menu), MinWidth
+/// controls narrow, then remaining overflow hides from the right. The active tab is never cut or overlapped and the row clips, so
+/// controls never spill onto a neighbouring pane. Compactable controls are never truncated: they compact or hide.
 ///
-/// A row may also hold a control marked <see cref="IsTrailingProperty"/> (the window's header, joined to the pane under
-/// it by the dock manager): it stays whole at the right-hand end. The pane's own controls sit between the tabs and it
-/// while they all fit as they are; otherwise they go onto a second line under it, against the right edge, with the
-/// whole width to give up room in.
+/// An <see cref="IsTrailingProperty"/> control (window header joined by the dock manager) stays whole at the right end; other controls
+/// sit between tabs and it while all fit, else wrap to a right-aligned second line with the full width.
 /// </summary>
 public sealed class PaneTitleRow : Panel
 {
-    /// <summary>Left out of the row first when it is short of room.</summary>
+    /// <summary>First control hidden on overflow.</summary>
     public static readonly DependencyProperty OptionalProperty = DependencyProperty.RegisterAttached(
         "Optional", typeof(bool), typeof(PaneTitleRow), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsParentMeasure));
 
@@ -30,7 +24,7 @@ public sealed class PaneTitleRow : Panel
 
     public static void SetOptional(UIElement element, bool value) => element.SetValue(OptionalProperty, value);
 
-    /// <summary>Has a compact form, which the row asks for (through <see cref="IsCompactProperty"/>) before it leaves anything else out.</summary>
+    /// <summary>Has a compact form, requested via <see cref="IsCompactProperty"/> before other controls are hidden.</summary>
     public static readonly DependencyProperty CanCompactProperty = DependencyProperty.RegisterAttached(
         "CanCompact", typeof(bool), typeof(PaneTitleRow), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsParentMeasure));
 
@@ -39,8 +33,7 @@ public sealed class PaneTitleRow : Panel
     public static void SetCanCompact(UIElement element, bool value) => element.SetValue(CanCompactProperty, value);
 
     /// <summary>
-    /// Set by the row on a control that can be compact, and inherited by what is in it: whether it is to show its
-    /// compact form now. Its styles answer it (a trigger on it, shorter labels); nothing else should set it.
+    /// Inherited flag set only by the row on compactable controls; styles trigger on it (shorter labels).
     /// </summary>
     public static readonly DependencyProperty IsCompactProperty = DependencyProperty.RegisterAttached(
         "IsCompact", typeof(bool), typeof(PaneTitleRow), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.Inherits));
@@ -49,7 +42,7 @@ public sealed class PaneTitleRow : Panel
 
     public static void SetIsCompact(DependencyObject element, bool value) => element.SetValue(IsCompactProperty, value);
 
-    /// <summary>Kept whole at the row's right-hand end, with the pane's own controls moved under it when they do not fit beside it.</summary>
+    /// <summary>Pinned whole at the right end; other controls wrap below it when they do not fit beside it.</summary>
     public static readonly DependencyProperty IsTrailingProperty = DependencyProperty.RegisterAttached(
         "IsTrailing", typeof(bool), typeof(PaneTitleRow), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsParentMeasure));
 
@@ -57,19 +50,17 @@ public sealed class PaneTitleRow : Panel
 
     public static void SetIsTrailing(UIElement element, bool value) => element.SetValue(IsTrailingProperty, value);
 
-    // The room between the first line and the second, when the controls are under a trailing control.
+    // Gap between lines when controls wrap below a trailing control.
     private const double LineGap = 4;
 
     public PaneTitleRow() => ClipToBounds = true;
 
-    // As of the last measure: the slot's width, the room each control was given (0 for one left out), the trailing
-    // control's width, and the lines' heights (no second line: 0).
+    // Last measure results: slot width, per-control allotted width (0 = hidden), trailing width, line heights (0 = no second line).
     private double _slotWidth, _trailingWidth, _firstLine, _secondLine;
     private UIElement? _trailing;
     private readonly Dictionary<UIElement, double> _given = [];
 
-    // The widths of the controls that can be compact, in each form, as last measured in it: the row decides from them
-    // without measuring a control in the form it is not in on every pass (which would change it there and back).
+    // Cached widths of compactable controls in each form, so layout avoids toggling forms every pass just to measure.
     private readonly Dictionary<UIElement, double> _wideWidth = [], _compactWidth = [];
 
     protected override Size MeasureOverride(Size availableSize)
@@ -86,8 +77,7 @@ public sealed class PaneTitleRow : Panel
             Remember(child);
         }
 
-        // Each control that can be compact has its width in both forms known before anything is decided: the form it
-        // does not show is measured once (the first pass it is in this row), then it goes back.
+        // Ensure both form widths are known before deciding: measure the hidden form once on first pass, then revert.
         foreach (var child in extras.Where(GetCanCompact))
         {
             var shows = GetIsCompact(child);
@@ -104,7 +94,7 @@ public sealed class PaneTitleRow : Panel
         var slotHeight = slot?.DesiredSize.Height ?? 0;
         var trailingHeight = _trailing?.DesiredSize.Height ?? 0;
 
-        // With a trailing control: the controls stay on the first line only while every one of them fits there as it is.
+        // With a trailing control, keep controls on line 1 only if all fit at full size.
         var oneLine = _trailing is null || slotFull + extras.Sum(c => WidthIn(c, compact: false)) + _trailingWidth <= width;
         if (oneLine)
         {
@@ -127,19 +117,18 @@ public sealed class PaneTitleRow : Panel
     }
 
     /// <summary>
-    /// Gives the controls their room on a line of a width (beside tabs of these widths, or none): fills <see cref="_given"/>
-    /// and returns the line's height. Short of room: labels leave, compact forms are taken, MinWidth controls narrow,
-    /// and what still does not fit leaves from the right.
+    /// Allocates control widths on a line (beside the given tab widths, if any) into <see cref="_given"/> and returns the line
+    /// height. Overflow: hide optional labels, compact, narrow MinWidth controls, then hide from the right.
     /// </summary>
     private double Fit(List<UIElement> extras, double width, double slotFull, double slotLeast, double height)
     {
-        // Each control's width in the form it would have, and the least it can be narrowed to.
+        // Per-control width in its target form and its minimum narrowed width.
         var compact = false;
         double Full(UIElement c) => WidthIn(c, compact);
         double Least(UIElement c) => c is FrameworkElement { MinWidth: > 0 } f && !GetCanCompact(c) ? Math.Min(f.MinWidth + Margins(f), Full(c)) : Full(c);
         double Need(List<UIElement> list, bool narrowed) => list.Sum(c => narrowed ? Least(c) : Full(c));
 
-        // The labels go first, then the compact forms are taken: whichever first leaves the tabs whole.
+        // Hide optional labels, then compact, stopping as soon as the tabs fit whole.
         var kept = extras.ToList();
         foreach (var optional in extras.Where(GetOptional).Reverse())
         {
@@ -151,15 +140,15 @@ public sealed class PaneTitleRow : Panel
         if (slotFull + Need(kept, false) > width && kept.Any(GetCanCompact))
             compact = true;
 
-        // Whatever still does not fit beside the tab shown, narrowed as far as it goes, leaves: from the right.
+        // Anything still overflowing beside the active tab after max narrowing hides, from the right.
         while (kept.Count > 0 && slotLeast + Need(kept, true) > width)
             kept.RemoveAt(kept.Count - 1);
 
         foreach (var child in kept.Where(c => GetCanCompact(c) && GetIsCompact(c) != compact))
             MeasureAs(child, compact, height);
 
-        // The tabs give up their room first (down to the one shown), then the controls with a MinWidth narrow. A control
-        // that can be compact is never narrowed: it has the width of the form it shows.
+        // Tabs shrink first (to the active one), then MinWidth controls narrow. Compactable controls never narrow below their
+        // current form's width.
         var full = Need(kept, false);
         var narrowed = slotFull + full > width;
         var room = narrowed ? Math.Max(Math.Min(full, width - slotLeast), Need(kept, true)) : full;
@@ -185,8 +174,8 @@ public sealed class PaneTitleRow : Panel
         var lineHeight = twoLines ? _secondLine : finalSize.Height;
         var lineEnd = twoLines ? finalSize.Width : finalSize.Width - _trailingWidth;
 
-        // Against the right edge (or the trailing control), and never over the tabs on their line: what is wider than
-        // the row (arranged at another width than it was measured for) is cut at the right by the row's clip instead.
+        // Right-align against the edge (or trailing control), never over tabs; content wider than the row (arranged at a different
+        // width than measured) is clipped on the right.
         var x = Math.Max(lineEnd - used, twoLines ? 0 : _slotWidth);
         foreach (var child in InternalChildren.Cast<UIElement>())
         {
@@ -212,17 +201,17 @@ public sealed class PaneTitleRow : Panel
         return finalSize;
     }
 
-    /// <summary>A control's width in a form: the one known for that form, for a control that can be compact.</summary>
+    /// <summary>Cached width of a compactable control in the given form.</summary>
     private double WidthIn(UIElement child, bool compact) => !GetCanCompact(child) ? child.DesiredSize.Width
         : (compact ? _compactWidth : _wideWidth).TryGetValue(child, out var known) ? known : child.DesiredSize.Width;
 
-    /// <summary>Puts a control that can be compact into one form or the other, and measures it there.</summary>
+    /// <summary>Switches a compactable control's form and measures it.</summary>
     private void MeasureAs(UIElement child, bool compact, double height)
     {
         SetIsCompact(child, compact);
 
-        // The form changes what is deep inside the control (its labels), and that marks only those for measuring: the
-        // elements between them and the control would answer with their size in the other form. All of them are marked.
+        // A form change only invalidates the inner labels; intermediate ancestors would report stale sizes, so invalidate the
+        // whole chain.
         InvalidateTree(child);
         child.Measure(new Size(double.PositiveInfinity, height));
         Remember(child);

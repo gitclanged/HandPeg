@@ -4,21 +4,20 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// A file's key frames read from its own index, in C#, with nothing decoded and no ffprobe (5.4.1-M4): an MP4 / MOV's first video
-/// track's sync samples (stss; every sample without one) placed by its stts, ctts and edit list, and an MKV / WebM's Cues for its first
-/// video track. The times are FFmpeg's packet pts_time, as <see cref="FfmpegRunner.GetIFramesAsync"/> lists them from the packets'
-/// flags, ascending. Null when the file is neither, has no index (a fragmented MP4, an MKV still being written without Cues) or cannot
-/// be read: ffprobe then lists them as before. Only the boxes and elements wanted are read, never the media.
+/// Managed keyframe index reader (no decode, no ffprobe): MP4/MOV first video track sync samples (stss, or all samples) timed via
+/// stts, ctts and the edit list; MKV/WebM Cues for the first video track. Returns ascending pts_time matching
+/// <see cref="FfmpegRunner.GetIFramesAsync"/>. Null for other formats, missing indexes (fragmented MP4, Cue-less MKV) or read
+/// failures (ffprobe fallback). Reads only the needed boxes/elements.
 /// </summary>
 internal static class NativeKeyFrames
 {
     // The most of one index table read (bytes): a sample table this big is a recording of days.
     private const long MostTable = 64L << 20;
 
-    // The most key frames listed (a day of every frame a key frame at 194 fps); a table claiming more is not believed: ffprobe lists them.
+    // Sanity cap on keyframe count; larger tables are distrusted and deferred to ffprobe.
     private const long MostSamples = 1L << 24;
 
-    /// <summary>The key frames of <paramref name="path"/> (seconds, ascending), or null when they are not read this way.</summary>
+    /// <summary>Keyframe times of <paramref name="path"/> (s, ascending), or null when unsupported.</summary>
     public static double[]? Read(string path)
     {
         try
@@ -111,7 +110,7 @@ internal static class NativeKeyFrames
         if (scale == 0)
             return null;
 
-        // The edit list (as Mp4Timing reads it): leading empty edits delay the track (movie units), the first real one's media time is skipped.
+        // Edit list (as Mp4Timing): leading empty edits delay the track (movie units); the first real edit's media time is skipped.
         double emptyEdit = 0;
         long mediaTime = 0;
         if (elst is { Length: >= 8 })
@@ -177,9 +176,8 @@ internal static class NativeKeyFrames
     }
 
     /// <summary>
-    /// A walk through a run-length table of (count, value) entries after a full box's 8-byte header (stts: deltas, ctts: offsets), by
-    /// 1-based sample number, forward only: <see cref="Time"/> is the sum of the values of the samples before it (with stts, its dts),
-    /// <see cref="Value"/> its entry's value.
+    /// Forward-only cursor over a run-length (count, value) table after a full box header (stts deltas, ctts offsets), by 1-based
+    /// sample: <see cref="Time"/> sums prior values (dts for stts), <see cref="Value"/> is the current entry value.
     /// </summary>
     private sealed class SampleCursor(byte[] table, int start)
     {
@@ -203,7 +201,7 @@ internal static class NativeKeyFrames
             }
         }
 
-        /// <summary>Moves to <paramref name="sample"/>; false when the table ends before it, or it lies behind the cursor.</summary>
+        /// <summary>Advances to <paramref name="sample"/>; false past the end or behind the cursor.</summary>
         public bool MoveTo(long sample)
         {
             if (sample < _next)
@@ -296,7 +294,7 @@ internal static class NativeKeyFrames
         var segment = file.Position;
         var segmentEnd = unknown ? file.Length : Math.Min(segment + segmentSize, file.Length);
 
-        // The top level up to the first Cluster (the SeekHead, Info and Tracks are there in every muxer's files); the rest by the SeekHead.
+        // Scan top level up to the first Cluster (SeekHead, Info, Tracks precede it in practice); locate the rest via SeekHead.
         long info = -1, tracks = -1, cues = -1;
         var seekHeads = new List<long>();
         var at = segment;

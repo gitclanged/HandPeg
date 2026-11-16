@@ -23,65 +23,62 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Effects pane: one panel per effect of the target's stack (the selected clip, the blur fill's settings, or the Sequence
-/// Output), in the order they are applied, with zone headings. The panels are built here, not templated: each parameter kind
-/// has its own row, and the values are read from the effect (or, for the effects whose values are the clip's, from the clip).
-/// An effect's main values come first; its Advanced ones (EffectParam.IsAdvanced) are folded under a chevron (5.0-Release).
-/// What the pane changes is the clip's own (Layer.Echo): the track's other clips do not follow it.
+/// Effects pane: one card per effect in the target's stack (selected clip, blur fill row, or Sequence Output) in apply order with zone
+/// headings. Cards are built in code (not templated), one row type per parameter kind, reading values from the effect or, for clip-bound
+/// effects, the clip. Advanced parameters (EffectParam.IsAdvanced) fold under a chevron. Edits are clip-local (Layer.Echo).
 /// </summary>
 public partial class EffectsPane : UserControl
 {
     private MainViewModel? _vm;
 
-    // The clip shown (null for the Sequence Output) and its stack.
+    // Target clip (null for Sequence Output) and its effect stack.
     private Layer? _layer;
     private ObservableCollection<EffectInstance>? _stack;
 
-    // No clip to show (5.0-Verify, the user's bug 2): what the panes would work on is a stand-in that is no clip on the
-    // timeline (the hidden "No Video" stand-in, while there is no video clip). Nothing is shown or added then: an effect put on
-    // it would be drawn nowhere.
+    // Target is the hidden "No Video" stand-in (no video clip on the timeline): show and add nothing, since effects on it would never
+    // render.
     private bool _noClip;
 
-    // 5.6A review: the sound clip selected on the timeline (MainWindow.SelectClip, SelectSound): the target while the key layer it was
-    // selected over is still the key layer (KeyLayer holds pictures only: the Keyframes pane, the text tools and the crop keep theirs).
+    // Selected audio clip (MainWindow.SelectClip -> SelectSound) and the key layer at selection time; the audio clip is the target while
+    // that key layer is unchanged (KeyLayer is video-only, so Keyframes, text tools and crop keep their target).
     private Layer? _sound, _soundOver;
 
     private readonly List<ParamModel> _params = [];
     private readonly HashSet<Guid> _collapsed = [];
 
-    // The effects whose Advanced section is open (by type): folded to start with, and remembered while HandPeg runs.
+    // Effect types with an expanded Advanced section (collapsed by default; process-lifetime).
     private static readonly HashSet<string> AdvancedOpen = new(StringComparer.Ordinal);
 
-    // The Advanced section's chevron: a right-pointing stroke, turned down while the section is open.
+    // Advanced chevron: right-pointing stroke, rotated down when expanded.
     private static readonly Geometry Chevron = FrozenGeometry("M 0,0 L 4,4 L 0,8");
 
-    // The pane's editing writes (its rows, a sound's filters, the Pitch Shift): paced at Pacing.GestureWritesPerSecond, written as
-    // one look batch and grouped into undo steps in one place (GestureWriter: one step per drag, a run rule for lone writes). A drag on
-    // a slider or number box is a gesture while it holds the mouse capture (CaptureThrottle).
+    // Edit writes (rows, audio filters, Pitch Shift) paced at Pacing.GestureWritesPerSecond, flushed as one look batch and grouped into
+    // undo steps by GestureWriter (one per drag, run rule for isolated writes). Slider/number-box drags are gestures while they hold mouse
+    // capture (CaptureThrottle).
     private readonly TimerScope _timers = new();
     private readonly GestureWriter<object> _writes;
     private readonly CaptureThrottle _drag;
     private static readonly object AudioWriteKey = new(), PitchWriteKey = new();
 
-    // Copy Effects's cards, for Paste Effects and Paste Some Effects...: shared by every target.
+    // Copy Effects clipboard for Paste Effects / Paste Some Effects..., shared across targets.
     private static List<EffectState>? _clipboard;
 
-    // The stack menu's "Apply Paste to All Clips on Track" (4.1.1-B), kept while HandPeg runs.
+    // Stack menu "Apply Paste to All Clips on Track" toggle (process-lifetime).
     private static bool _pasteToTrack;
 
-    // The window whose clicks outside the Add Effect flyout close it, while it is open.
+    // Window hooked for click-away close while the Add Effect flyout is open.
     private Window? _addOwner;
 
-    // The Add Effect flyout closes a moment after the pointer leaves it and its button (the Settings button's 260 ms).
+    // Add Effect flyout close delay after the pointer leaves it and its button (260 ms, matching Settings).
     private readonly DispatcherTimer _addClose;
 
-    // One queued rebuild of the cards, and one queued refresh of their values, however often they are asked for before they run.
+    // Coalesced card rebuild and value refresh (at most one of each queued).
     private readonly RunGate _rebuild, _refresh;
 
-    // The view model's handlers are on (Attach, then while the pane is loaded); a rebuild skipped while the loaded pane was hidden.
+    // View-model handlers attached (Attach, then while loaded); a rebuild deferred while the loaded pane was hidden.
     private bool _hooked, _rebuildWhenShown;
 
-    /// <summary>The Mask card's Edit Mask... button: the window opens the layer's mask tools.</summary>
+    /// <summary>Raised by the Mask card's Edit Mask... button; the window opens the layer's mask tools.</summary>
     public event Action<Layer>? EditMaskRequested;
 
     private static readonly SolidColorBrush GreenCost = Frozen(Color.FromRgb(0x4C, 0xAF, 0x50));
@@ -100,7 +97,7 @@ public partial class EffectsPane : UserControl
         AddPopup.Closed += AddPopup_Closed;
         ReorderBehavior.Reordered += OnReordered;
 
-        // A pane closed or moved out of the window holds no view-model handlers; loaded again it hooks them and follows the target.
+        // Unloaded (closed or undocked) panes hold no view-model handlers; reloading re-hooks and retargets.
         Loaded += (_, _) => Hook();
         Unloaded += (_, _) => Unhook();
         IsVisibleChanged += (_, e) =>
@@ -120,7 +117,7 @@ public partial class EffectsPane : UserControl
         return geometry;
     }
 
-    /// <summary>Works on <paramref name="viewModel"/>: its handlers hooked now (and again whenever the pane is loaded), its target followed.</summary>
+    /// <summary>Binds to <paramref name="viewModel"/>: hooks handlers now (and on every load) and follows its target.</summary>
     public void Attach(MainViewModel viewModel)
     {
         if (ReferenceEquals(_vm, viewModel))
@@ -131,7 +128,7 @@ public partial class EffectsPane : UserControl
         Hook();
     }
 
-    /// <summary>Lets go of the view model: every handler <see cref="Attach"/> and the target hooked is taken off, pending writes made.</summary>
+    /// <summary>Unbinds the view model: removes all handlers from <see cref="Attach"/> and the target, flushing pending writes.</summary>
     public void Detach()
     {
         Unhook();
@@ -139,7 +136,7 @@ public partial class EffectsPane : UserControl
         DataContext = null;
     }
 
-    // The view model's and the target's handlers on; the target looked at again (a rebuild when it changed meanwhile).
+    // Hooks view-model handlers and retargets (rebuilding if the target changed while unhooked).
     private void Hook()
     {
         if (_hooked || _vm is not { } viewModel)
@@ -151,7 +148,7 @@ public partial class EffectsPane : UserControl
         Retarget();
     }
 
-    // The exact mirror of Hook, and of Retarget's own handlers: the target is let go, so a later Hook rebuilds for whatever it is then.
+    // Exact inverse of Hook and Retarget's handlers; clears the target so the next Hook rebuilds for the current one.
     private void Unhook()
     {
         if (!_hooked || _vm is not { } viewModel)
@@ -183,7 +180,7 @@ public partial class EffectsPane : UserControl
                 UpdateHeader();
                 break;
 
-            // The blur fill's own values, set elsewhere (Blur Settings..., the timeline's inspector, Undo).
+            // Blur fill values changed externally (Blur Settings..., timeline inspector, Undo).
             case nameof(MainViewModel.BlurRadius) or nameof(MainViewModel.BlurPasses) or nameof(MainViewModel.BackgroundDim) or nameof(MainViewModel.BackgroundZoom)
                 when _layer is { IsBackground: true }:
                 QueueRefresh();
@@ -193,10 +190,10 @@ public partial class EffectsPane : UserControl
 
     private void Layers_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => Retarget();
 
-    // Loaded but not shown (a tab behind another, a collapsed column): nothing is drawn for it; it is made again once it shows.
+    // Loaded but invisible (inactive tab, collapsed column): skip building; rebuild once visible.
     private bool HiddenNow => IsLoaded && !IsVisible;
 
-    // The Sequence Output switched from the Color Studio's toggle (MainViewModel.EditSequenceOutput): this pane's toggle follows it.
+    // Syncs this pane's Sequence Output toggle when Color Studio changes MainViewModel.EditSequenceOutput.
     private void FollowSequenceOutput()
     {
         if (_vm is null || SequenceToggle.IsChecked == _vm.EditSequenceOutput)
@@ -207,20 +204,19 @@ public partial class EffectsPane : UserControl
 
     private bool IsSequence => SequenceToggle.IsChecked == true;
 
-    /// <summary>Seconds into the target at the playhead: into the clip, or into the sequence.</summary>
+    /// <summary>Playhead time in target-local seconds (clip-relative, or sequence time).</summary>
     private double ClipTime => (_vm?.PositionMs ?? 0) / 1000 - (_layer?.StartTime ?? 0);
 
-    // ----- The target -----
+    // ----- Target selection -----
 
     private void Retarget()
     {
         if (_vm is null)
             return;
 
-        // The blur fill's settings row (5.0-Release; 5.2-AuditB: the look every video clip's own blur fill takes) is no clip of the
-        // timeline, and has a stack of effects all the same.
-        // A sound clip selected is the target too (5.6A: its Speed & Pitch card and its SOUND cards; ActiveKeyLayer is pictures only).
-        // 5.6A review: the timeline's selection tells the pane which (SelectSound, SoundTarget).
+        // The blur fill row (template for every video clip's blur fill) is not a timeline clip but still has an effect stack.
+        // A selected audio clip can also be the target (Speed & Pitch and audio cards; ActiveKeyLayer is video-only), as reported by
+        // the timeline selection (SelectSound, SoundTarget).
         var layer = IsSequence ? null
             : _vm.BackgroundSelected ? _vm.BackgroundLayer
             : SoundTarget() ?? _vm.ActiveKeyLayer;
@@ -256,9 +252,8 @@ public partial class EffectsPane : UserControl
     }
 
     /// <summary>
-    /// The timeline's selection (MainWindow.SelectClip, every selection): a sound clip selected becomes the pane's target (5.6A review),
-    /// anything else (null) gives the target back to the key layer. Through the pane, not KeyLayer: that one is the picture the
-    /// Keyframes pane, the keyframe buttons, the text tools and the crop work on, which a sound selected leaves as they were.
+    /// Timeline selection hook (MainWindow.SelectClip, every selection): an audio clip becomes the target; null reverts to the key layer.
+    /// Routed here rather than via KeyLayer, which stays the video target for Keyframes, keyframe buttons, text tools and crop.
     /// </summary>
     public void SelectSound(Layer? clip)
     {
@@ -271,9 +266,8 @@ public partial class EffectsPane : UserControl
     }
 
     /// <summary>
-    /// The sound clip selected, while it is the target (5.6A review): none once another key layer was set since (a clip added, a tab's
-    /// own); followed by its clip's id, as KeyLayer is (FollowSelection), when an undo or redo made every view anew; none while its clip
-    /// is not on this timeline (deleted, another tab's), so that it comes back with it.
+    /// Selected audio clip while still the target: null once the key layer changed (clip added, tab switch); re-resolved by id after
+    /// undo/redo rebuilds views (as KeyLayer via FollowSelection); null while absent from this timeline so it returns with the clip.
     /// </summary>
     private Layer? SoundTarget()
     {
@@ -293,9 +287,9 @@ public partial class EffectsPane : UserControl
         static bool SameClip(Layer? a, Layer? b) => ReferenceEquals(a, b) || a is { ClipId: var id } && id != Guid.Empty && id == b?.ClipId;
     }
 
-    // ----- The target, published to the view model (MainViewModel.EditTarget) -----
+    // ----- Target publication (MainViewModel.EditTarget) -----
 
-    /// <summary>What the pane works on now: the clip, the Sequence Output, or nothing.</summary>
+    /// <summary>Current edit target: clip, Sequence Output, or none.</summary>
     private ColorGradeTarget EditTarget =>
         _noClip || _stack is null ? ColorGradeTarget.None : _layer is null ? ColorGradeTarget.ForSequence : ColorGradeTarget.For(_layer);
 
@@ -354,13 +348,13 @@ public partial class EffectsPane : UserControl
         var bypassed = _layer?.EffectsBypassed ?? _vm?.SequenceEffectsBypassed ?? false;
         TargetLabel.Text = _noClip ? "No clip" : _layer is null ? "Sequence Output" : _layer.IsBackground ? _layer.Name : $"Clip: {_layer.Name}";
         BypassButton.IsChecked = bypassed;
-        // 5.6A review: no sound path reads a sound clip's EffectsBypassed (its SOUND cards are Audio Filters): nothing to bypass.
+        // No audio path reads an audio clip's EffectsBypassed (its cards are Audio Filters), so bypass is disabled for audio.
         BypassButton.IsEnabled = !_noClip && _layer is not { IsAudio: true };
         BypassButton.Content = bypassed ? Glyphs.Hide : Glyphs.RedEye;
         AddButton.IsEnabled = EffectRegistry.All.Any(d => Fits(d, ignorePresent: true));
     }
 
-    // ----- The cards -----
+    // ----- Cards -----
 
     private void Rebuild()
     {
@@ -403,18 +397,18 @@ public partial class EffectsPane : UserControl
             CardsPanel.Children.Add(BuildCard(card));
         }
 
-        // The Speed & Time card (Pass 5.6A: Speed & Pitch for a sound), above the stack (EffectsPane.Speed.cs).
+        // Speed & Time card (Speed & Pitch for audio) above the stack (EffectsPane.Speed.cs).
         AddSpeedCard();
 
-        // The opacity: for a picture, animated by the clip's own Opacity keyframes; shown as ShowsOpacityCard says (Pass 5.6A).
+        // Pinned Opacity card for visual clips (animated by the clip's Opacity keyframes), gated by ShowsOpacityCard.
         if (_layer is { HasStyle: true, IsAdjustment: false } && ShowsOpacityCard(_layer) && EffectRegistry.Find(EffectRegistry.Opacity) is { } opacity)
             PinnedPanel.Children.Add(BuildCard(null, opacity));
 
-        // The blur fill's own blur and zoom (5.0-Release): the sequence's, at the top of its stack.
+        // Blur fill's own blur/zoom card (sequence-level values) at the top of its stack.
         if (_layer is { IsBackground: true } && EffectRegistry.Find(EffectRegistry.BackgroundBlur) is { } blur)
             CardsPanel.Children.Insert(0, BuildCard(null, blur));
 
-        // A sound's own filters (5.2B): Studio Voice, the De-Esser, the Equalizer and the dynamics, as cards of their own (EffectsPane.Audio.cs).
+        // Audio filter cards: Studio Voice, De-Esser, Equalizer and dynamics (EffectsPane.Audio.cs).
         if (_layer is { IsAudio: true } sound)
             AddAudioCards(sound);
         else
@@ -438,7 +432,7 @@ public partial class EffectsPane : UserControl
         return heading;
     }
 
-    /// <param name="pinned">For the pinned opacity row: its definition (there is no card).</param>
+    /// <param name="pinned">Definition for a pinned card with no EffectInstance (Opacity, blur fill).</param>
     private Border BuildCard(EffectInstance? card, EffectDefinition? pinned = null)
     {
         var definition = card?.Definition ?? pinned;
@@ -543,7 +537,7 @@ public partial class EffectsPane : UserControl
 
         if (definition.HasAdvanced)
             body.Children.Add(BuildAdvanced(card, definition, title));
-        // The Color Grade card's indicators and Open Color Studio (Pass 5.6A, EffectsPane.ColorGrade.cs).
+        // Color Grade card footer: indicators and Open Color Studio (EffectsPane.ColorGrade.cs).
         if (card is not null && definition.Type == EffectRegistry.ColorStudio)
             body.Children.Add(BuildColorGradeFooter(card, title));
         if (card is not null)
@@ -552,8 +546,7 @@ public partial class EffectsPane : UserControl
     }
 
     /// <summary>
-    /// A card's Advanced values (5.0-Release), under a chevron: folded to start with, and kept open or folded for every card
-    /// of that effect while HandPeg runs.
+    /// Advanced parameters under a chevron toggle; collapsed by default, expansion shared per effect type for the process lifetime.
     /// </summary>
     private FrameworkElement BuildAdvanced(EffectInstance? card, EffectDefinition definition, string title)
     {
@@ -599,8 +592,8 @@ public partial class EffectsPane : UserControl
     }
 
     /// <summary>
-    /// The card's range: on, the effect only works between two moments, in the clip's own seconds (the Sequence
-    /// Output's: the sequence's); the buttons beside each box trim it to the playhead. Off, it works throughout.
+    /// Range row: when on, the effect applies only between Start and End in target-local seconds (sequence time for Sequence Output);
+    /// buttons trim either end to the playhead. When off, it applies throughout.
     /// </summary>
     private FrameworkElement BuildRangeRow(EffectInstance card, string title)
     {
@@ -638,7 +631,7 @@ public partial class EffectsPane : UserControl
         return row;
     }
 
-    /// <summary>Writes a card's range as one undo step (a value box dragged: one step per burst).</summary>
+    /// <summary>Writes a card's range as one undo step (value-box drags coalesce per burst).</summary>
     private void WriteRange(EffectInstance card, (double Start, double End)? range, string what)
     {
         if (card.Range == range)
@@ -713,8 +706,7 @@ public partial class EffectsPane : UserControl
                 Grid.SetColumn(box, 2);
                 row.Children.Add(box);
 
-                // A value that shapes the clip's edge (a key's, a matte's, a mask's, the corners' and feather's): while it is
-                // held by the pointer, the player magnifies that edge (the loupe, 5.0-Verify, the user's bug 6).
+                // Edge-shaping values (key, matte, mask, corners/feather): while held, the player shows the edge loupe.
                 if (EdgeKindOf(card?.Type) is not EdgeTuningKind.None and var edge)
                 {
                     NumericInput.WatchHold(slider, held => HoldEdge(held, edge));
@@ -767,7 +759,7 @@ public partial class EffectsPane : UserControl
         return row;
     }
 
-    /// <summary>The stopwatch (animate this value: keyframes from now on) and the diamond (a keyframe at the playhead).</summary>
+    /// <summary>Stopwatch (toggle keyframe animation) and diamond (toggle a keyframe at the playhead) buttons.</summary>
     private StackPanel BuildKeyButtons(ParamModel model, string name)
     {
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 0, 0, 0) };
@@ -791,9 +783,9 @@ public partial class EffectsPane : UserControl
         return buttons;
     }
 
-    // ----- An edge being tuned (the player's loupe) -----
+    // ----- Edge tuning loupe -----
 
-    /// <summary>What a card's values shape of the clip's edge, for the loupe; None for a card whose values shape no edge.</summary>
+    /// <summary>Loupe edge kind for an effect type; None when its values do not shape an edge.</summary>
     private static EdgeTuningKind EdgeKindOf(string? type) => type switch
     {
         EffectRegistry.ChromaKey => EdgeTuningKind.ChromaKey,
@@ -803,7 +795,7 @@ public partial class EffectsPane : UserControl
         _ => EdgeTuningKind.None,
     };
 
-    // One of those values pressed (its slider) or dragged (its box), and let go: the player shows the clip's edge magnified meanwhile.
+    // Slider press or box drag start/end on an edge value: toggles the player's edge loupe.
     private void HoldEdge(bool held, EdgeTuningKind kind)
     {
         if (held && _layer is not null)
@@ -813,8 +805,7 @@ public partial class EffectsPane : UserControl
     }
 
     /// <summary>
-    /// The blur fill's own values (the pinned Blur Fill effect, 5.0-Release): the sequence's blur radius, zoom,
-    /// passes and dimming, read from and written to the view model, which takes their undo steps.
+    /// Pinned Blur Fill accessors: sequence-level radius, zoom, passes and dim on the view model (which records their undo steps).
     /// </summary>
     private static (Func<double> Get, Action<double> Set)? BackgroundValue(MainViewModel vm, string key) => key switch
     {
@@ -825,24 +816,24 @@ public partial class EffectsPane : UserControl
         _ => null,
     };
 
-    // ----- Writing values -----
+    // ----- Value writes -----
 
-    /// <summary>The undo step for a write about to be made (see <see cref="MainViewModel.StepForLook"/>): one per drag, a run rule otherwise.</summary>
+    /// <summary>Opens the undo step for an imminent write (<see cref="MainViewModel.StepForLook"/>): one per drag, run rule otherwise.</summary>
     private void Step(object? target, string field, string what, bool startRun = false)
     {
         if (_vm is { } vm && (target ?? _layer ?? (object)vm) is { } owner)
             vm.StepForLook(owner, field, what, _writes.Gesture, startRun);
     }
 
-    /// <summary>Writes every paced value still waiting (a row's drag, a sound's filters, the Pitch Shift) now.</summary>
+    /// <summary>Flushes all pending paced writes (row drags, audio filters, Pitch Shift).</summary>
     internal void FlushWrites() => _writes.Flush();
 
-    /// <summary>What the pane writes outside its paced batches is its own look too: the view model takes no step for it.</summary>
+    /// <summary>Owned-look scope for unpaced writes, so the view model records no extra undo step.</summary>
     private MainViewModel.OwnedLooks? OwnLooks() => _vm?.OwnLookScope();
 
     /// <summary>
-    /// A value from a row, paced (<see cref="GestureWriter{TKey}"/>): the newest is held (and shown) until it is written, and a drag's
-    /// last value is written when the pointer lets go (or the pane moves on).
+    /// Paced row write (<see cref="GestureWriter{TKey}"/>): the latest value is shown as Pending until flushed; a drag's final value is
+    /// written on release or retarget.
     /// </summary>
     private void WriteValue(ParamModel model, double value)
     {
@@ -862,7 +853,7 @@ public partial class EffectsPane : UserControl
         if (Math.Abs(value - model.Value) < 1e-9)
             return;
 
-        // A value of the view model's own (the blur fill's blur): its step taken here, as the pane writes it.
+        // View-model-bound value (blur fill): record its undo step here before writing.
         if (model.Bound is { } own)
         {
             Step(_vm, param.Key, $"change {param.Label}");
@@ -874,7 +865,7 @@ public partial class EffectsPane : UserControl
         Step(model.Card, param.Key, $"change {param.Label}");
         using (OwnLooks())
         {
-            // A value of the layer's own that is animated by commands (the key's) keeps its keyframes on the card.
+            // Layer-bound values with card keyframes (e.g. chroma key) upsert a keyframe on the card instead.
             if (model.Card is { } keyed && param.Bind != nameof(Layer.Opacity) && keyed.HasKeys(param.Key))
                 keyed.SetKeys(param.Key, KeyEdit.Upsert(keyed.GetKeys(param.Key), ClipTime, value));
             else if (param.Bind is { } bind && _layer is not null && typeof(Layer).GetProperty(bind) is { } property)
@@ -921,7 +912,7 @@ public partial class EffectsPane : UserControl
                 card.Set(param.Key, value);
                 card.SetKeys(param.Key, on ? [new Keyframe(time, value)] : null);
 
-                // A value of the layer's own stays as it was here.
+                // Layer-bound value keeps the value at this time.
                 if (!on && param.Bind is { } bind && _layer is not null && typeof(Layer).GetProperty(bind) is { PropertyType: var type } property && type == typeof(double))
                     property.SetValue(_layer, value);
             }
@@ -944,7 +935,7 @@ public partial class EffectsPane : UserControl
             }
             else if (model.Card is { } card)
             {
-                // The last keyframe gone, the value stays what it was there.
+                // Last keyframe removed: keep the value from this time as the static value.
                 if (keys.Count == 0)
                     card.Set(param.Key, value);
                 card.SetKeys(param.Key, keys);
@@ -954,12 +945,12 @@ public partial class EffectsPane : UserControl
         model.Refresh();
     }
 
-    /// <summary>Keyframes at a moment, eased as the graph eases them.</summary>
+    /// <summary>Evaluates keyframes at a time using the graph's easing.</summary>
     private static double Evaluate(IReadOnlyList<Keyframe> keys, double time) => EasingCurves.ValueAt(keys, time);
 
-    // ----- Adding, removing, reordering -----
+    // ----- Add, remove, reorder -----
 
-    /// <summary>Whether an effect can go on the target: the whole picture takes the Look effects; a clip what its kind allows, and a bound effect once.</summary>
+    /// <summary>True if the effect fits the target: Look effects for Sequence Output; per clip kind for clips; bound effects at most once.</summary>
     private bool Fits(EffectDefinition definition, bool ignorePresent = false)
     {
         if (_stack is null)
@@ -994,7 +985,7 @@ public partial class EffectsPane : UserControl
             return;
         }
 
-        // A clip's (or the blur fill's) effect, with its visible starting values: the same as a track's Add Effect menu.
+        // Clip or blur fill: add with visible defaults, same path as the track menu's Add Effect.
         var layer = _layer;
         if (_vm.AddEffect(layer, definition) is not null && definition.Type == EffectRegistry.Mask && !layer.CustomMask)
             EditMaskRequested?.Invoke(layer);
@@ -1043,7 +1034,7 @@ public partial class EffectsPane : UserControl
         }
     }
 
-    // ----- The title row -----
+    // ----- Title row -----
 
     private void BypassButton_Click(object sender, RoutedEventArgs e)
     {
@@ -1074,7 +1065,7 @@ public partial class EffectsPane : UserControl
         }
 
         var has = _stack is { Count: > 0 };
-        // (5.6A review: a sound clip takes none of a stack's cards, which are pictures' effects.)
+        // Audio clips cannot take video effect cards.
         var canPaste = _clipboard is { Count: > 0 } && _stack is not null && _layer is not { IsAudio: true };
         Item("Copy Effects", "Copies every effect of this stack, with its values, to paste onto another clip or the Sequence Output.", has, CopyStack);
         Item("Paste Effects", "Replaces this clip's stack with the effects copied. Hold Shift while clicking (or tick Apply Paste to All Clips on Track) to give every clip on this track the copied stack.",
@@ -1093,13 +1084,13 @@ public partial class EffectsPane : UserControl
         menu.IsOpen = true;
     }
 
-    /// <summary>Whether Paste Effects has anything to put down (a clip's menu asks).</summary>
+    /// <summary>True when the effects clipboard is non-empty (queried by the clip context menu).</summary>
     public bool HasCopiedEffects => _clipboard is { Count: > 0 };
 
-    /// <summary>Copies the stack of the clip the pane shows (a clip's menu, which selects it first).</summary>
+    /// <summary>Copies the target's stack (clip context menu selects the clip first).</summary>
     public void CopyEffects() => CopyStack();
 
-    /// <summary>Puts what was copied on the clip the pane shows, or the clips selected with it (a clip's menu).</summary>
+    /// <summary>Pastes the clipboard onto the target or its multi-selection (clip context menu).</summary>
     public void PasteCopiedEffects() => PasteEffects(toTrack: false);
 
     private List<EffectState> CaptureStack() => _stack is null ? [] : [.. _stack.Select(c => _layer?.CaptureEffect(c) ?? c.ToState())];
@@ -1111,16 +1102,16 @@ public partial class EffectsPane : UserControl
             _vm.StatusText = $"Copied {_clipboard.Count} effect{(_clipboard.Count == 1 ? "" : "s")}: Paste Effects puts them on another clip.";
     }
 
-    /// <summary>Whether the target is a clip on a track (the blur fill's settings and the Sequence Output are not).</summary>
+    /// <summary>True when the target is a timeline clip (not the blur fill row or Sequence Output).</summary>
     private bool CanPasteToTrack => _layer is not null && _vm?.Layers.Contains(_layer) == true;
 
-    /// <summary>Paste Effects (4.1.1-B, Paste Stack and Paste to Track in one): the copied stack replaces the clip's, or every clip's on its track.</summary>
+    /// <summary>Paste Effects: the copied stack replaces the target's, or every clip's on its track.</summary>
     private void PasteEffects(bool toTrack)
     {
         if (_clipboard is null || _vm is null || _layer is { IsAudio: true })
             return;
 
-        // Clips selected together (Ctrl / Shift on the timeline): every one of them, one undo step.
+        // Multi-selection (Ctrl/Shift on the timeline): paste to all in one undo step.
         if (!toTrack && _layer is { } target && _vm.IsInClipGroup(target))
         {
             _vm.PasteEffectsToClips(_vm.SelectedClips, _clipboard);
@@ -1137,7 +1128,7 @@ public partial class EffectsPane : UserControl
         ReplaceWith(_clipboard, append: false);
     }
 
-    /// <summary>Paste Some Effects... (4.1.1-B; named so in 4.4): the copied effects ticked in a list are added to the clip, or to every clip on its track.</summary>
+    /// <summary>Paste Some Effects...: appends the effects checked in a dialog to the target, or to every clip on its track.</summary>
     private void PasteSelected()
     {
         if (_clipboard is null || _vm is null || _stack is null || _layer is { IsAudio: true })
@@ -1155,7 +1146,7 @@ public partial class EffectsPane : UserControl
             return;
         }
 
-        // Clips selected together: the chosen effects are added to every one of them, one undo step.
+        // Multi-selection: append the chosen effects to all in one undo step.
         if (_layer is { } grouped && _vm.IsInClipGroup(grouped))
         {
             _vm.PasteEffectsToClips(_vm.SelectedClips, chosen, append: true);
@@ -1166,7 +1157,7 @@ public partial class EffectsPane : UserControl
         ReplaceWith(chosen, append: true);
     }
 
-    /// <summary>Puts cards on the target, adopted by it: what it cannot take is left out (a missing effect is kept); a bound effect it already has is not doubled.</summary>
+    /// <summary>Applies effect states to the target (adopted): skips unfitting ones (unknown types kept); single-instance effects never duplicate.</summary>
     private void ReplaceWith(IReadOnlyList<EffectState> states, bool append)
     {
         if (_stack is null)
@@ -1182,7 +1173,7 @@ public partial class EffectsPane : UserControl
                 if (definition is not null && !Fits(definition, ignorePresent: true))
                     continue;
 
-                // An effect a clip has once at most: added again, the pasted one takes the place of the one there (4.1.1-B).
+                // Single-instance effect already present: the pasted one replaces the existing one.
                 if (definition is { Feature: not null } && cards.FindIndex(c => c.Type == state.Type) is var present and >= 0)
                 {
                     if (!append || present >= keep.Count)
@@ -1194,7 +1185,7 @@ public partial class EffectsPane : UserControl
                 cards.Add(_layer?.AdoptEffect(state) ?? EffectInstance.FromState(state));
             }
 
-            // Each in its zone, the order within a zone kept.
+            // Stable sort by zone, preserving order within each zone.
             cards = [.. cards.OrderBy(c => (int)(c.Definition?.Zone ?? EffectZone.Look))];
             if (_layer is not null)
             {
@@ -1272,7 +1263,7 @@ public partial class EffectsPane : UserControl
         }
     }
 
-    // ----- Add Effect: the flyout -----
+    // ----- Add Effect flyout -----
 
     private void OpenAdd(bool focusSearch)
     {
@@ -1297,7 +1288,7 @@ public partial class EffectsPane : UserControl
                 AddList.Children.Add(MenuButton(definition.Name, $"{definition.Description} ({definition.Cost} cost in the preview.)", () => Add(definition)));
         }
 
-        // Presets saved from this pane.
+        // Effect presets (.hpfx) saved from this pane.
         var presets = Directory.Exists(AppPaths.EffectPresets)
             ? Directory.EnumerateFiles(AppPaths.EffectPresets, "*.hpfx").Where(f => Matches(System.IO.Path.GetFileNameWithoutExtension(f))).Order().ToList()
             : [];
@@ -1356,8 +1347,8 @@ public partial class EffectsPane : UserControl
     }
 
     /// <summary>
-    /// Closes the Add Effect flyout and takes the keyboard out of its search box (4.1.1-B): a focused search box kept
-    /// the flyout open (see <see cref="AddClose_Tick"/>), and with it closed the typing would go nowhere.
+    /// Closes the Add Effect flyout and moves focus out of its search box (which otherwise keeps it open via <see cref="AddClose_Tick"/>
+    /// and would swallow typing once hidden).
     /// </summary>
     private void CloseAdd()
     {
@@ -1368,9 +1359,8 @@ public partial class EffectsPane : UserControl
             Keyboard.Focus(AddButton);
     }
 
-    // While the flyout is open, a press anywhere in the window outside it and its button closes it, and so does the
-    // window losing the foreground: a search box with the keyboard otherwise held it open (4.1.1-B). A press inside the
-    // flyout never reaches the window (a popup is a window of its own).
+    // While open, a press in the window outside the flyout and its button, or window deactivation, closes it (a focused search box
+    // would otherwise hold it open). Presses inside the flyout also route to the window and are filtered by IsInFlyout.
     private void AddPopup_Opened(object? sender, EventArgs e)
     {
         _addOwner = Window.GetWindow(this);
@@ -1397,8 +1387,8 @@ public partial class EffectsPane : UserControl
             CloseAdd();
     }
 
-    // A press in the flyout reaches the window all the same (5.1-TrackEqualityAndVram, the user's directive): a popup's events route on
-    // through the popup's parent, so the window hears them first, and closing here took the button away before its Click.
+    // Popup input routes through the popup's logical parent, so the window's PreviewMouseDown sees flyout presses first; closing on them
+    // would remove the button before its Click.
     private bool IsInFlyout(DependencyObject? source)
     {
         for (var at = source; at is not null; at = at is Visual ? VisualTreeHelper.GetParent(at) ?? LogicalTreeHelper.GetParent(at) : LogicalTreeHelper.GetParent(at))
@@ -1412,7 +1402,7 @@ public partial class EffectsPane : UserControl
 
     private void AddOwner_Deactivated(object? sender, EventArgs e)
     {
-        // The flyout's own window taking the keyboard deactivates nothing; another window does.
+        // Focus moving into the popup's own HWND is not a real deactivation; any other window is.
         if (!AddFlyoutPanel.IsKeyboardFocusWithin)
             CloseAdd();
     }
@@ -1436,7 +1426,7 @@ public partial class EffectsPane : UserControl
         Keyboard.Focus(AddButton);
     }
 
-    // ----- A parameter's row, as the bindings see it -----
+    // ----- Parameter row binding model -----
 
     private sealed class ParamModel(EffectsPane pane, EffectInstance? card, EffectParam param, Layer? layer, (Func<double> Get, Action<double> Set)? bound = null)
         : INotifyPropertyChanged
@@ -1447,10 +1437,10 @@ public partial class EffectsPane : UserControl
 
         public EffectInstance? Card => card;
 
-        /// <summary>A value of the view model's (the blur fill's blur) rather than an effect's or a clip's.</summary>
+        /// <summary>View-model accessor (blur fill) used instead of an effect or clip value.</summary>
         public (Func<double> Get, Action<double> Set)? Bound => bound;
 
-        /// <summary>A value a slider's drag has given and that is not written yet (<see cref="WriteValue"/>): shown meanwhile.</summary>
+        /// <summary>Unflushed drag value (<see cref="WriteValue"/>), displayed until written.</summary>
         public double? Pending { get; set; }
 
         private System.Reflection.PropertyInfo? BoundProperty => param.Bind is { } name && layer is not null ? typeof(Layer).GetProperty(name) : null;
@@ -1498,12 +1488,12 @@ public partial class EffectsPane : UserControl
         public void Refresh() => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(string.Empty));
     }
 
-    /// <summary>A card's range, as its row's boxes see it: off, the boxes show where it would start (0) and end (the clip's end).</summary>
+    /// <summary>Range row binding model; when off, boxes show the default span (0 to target length).</summary>
     private sealed class RangeModel(EffectsPane pane, EffectInstance card) : INotifyPropertyChanged
     {
         public event PropertyChangedEventHandler? PropertyChanged;
 
-        // How long the target is, for a range switched on: the clip's length (the blur fill's: the sequence's), or 5 s for one with none.
+        // Default range length: clip duration (sequence length for the blur fill), or 5 s if unknown.
         private double Length => pane._layer is { IsBackground: true } && pane._vm is { SequenceSeconds: > 0.01 } vm ? vm.SequenceSeconds
             : pane._layer is { Duration: > 0.01 } clip ? clip.Duration : 5;
 
@@ -1525,7 +1515,7 @@ public partial class EffectsPane : UserControl
             set => Write((Start, Math.Max(value, Start + 0.01)), "change an effect's range");
         }
 
-        /// <summary>One end of the range to the playhead (switching the range on).</summary>
+        /// <summary>Trims one range end to the playhead (enabling the range).</summary>
         public void TrimToPlayhead(bool end)
         {
             var at = Math.Max(pane.ClipTime, 0);

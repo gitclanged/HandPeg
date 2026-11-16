@@ -4,12 +4,10 @@ using System.Windows.Media.Imaging;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The frames of one file that is not on the Sequence, for the Media Browser's preview and cutter (5.4C): the still at a moment, drawn by
-/// the thumbnail compositor (<see cref="GpuFilmstrips.TryStillAsync"/>: a key frame while the pointer drags, the exact frame once it
-/// rests), decoded off the interface's thread. Latest wins: one still is made at a time, and a request that comes while one is being
-/// made takes the place of any that waited (its task ends with null), so a scrub never queues a frame for every move. Nothing is asked
-/// for while a drag and drop holds background work (<see cref="WorkScheduler.IsHeld"/>). No FFmpeg: where the compositor draws nothing
-/// (a file it cannot decode, the GPU off for background work), the coarse strip the browser already has stays the picture.
+/// Off-Sequence file stills for the Media Browser preview and cutter via the thumbnail compositor (<see cref="GpuFilmstrips.TryStillAsync"/>:
+/// key frame while dragging, exact frame at rest), decoded off the UI thread. Latest-wins: one in flight, newer requests replace the
+/// waiting one (which completes null). Paused while drag-and-drop holds background work (<see cref="WorkScheduler.IsHeld"/>). No FFmpeg
+/// fallback: the existing coarse strip remains when the compositor cannot draw.
 /// </summary>
 public sealed class SourceFrames
 {
@@ -29,14 +27,14 @@ public sealed class SourceFrames
         public TaskCompletionSource<BitmapSource?> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
-    /// <param name="fetch">What makes one still (the golden tests give their own); by default the thumbnail compositor's.</param>
+    /// <param name="fetch">Still producer (goldens inject one); defaults to the thumbnail compositor.</param>
     public SourceFrames(Func<string, double, int, bool, CancellationToken, Task<BitmapSource?>>? fetch = null) => _fetch = fetch ?? StillAsync;
 
     /// <summary>
-    /// The frame of <paramref name="path"/> at <paramref name="mediaSeconds"/> (a clip's MediaOffset clock), <paramref name="pixelHeight"/>
-    /// pixels tall, frozen; null when it could not be made, was cancelled, or a newer request took its place.
+    /// Frozen still of <paramref name="path"/> at <paramref name="mediaSeconds"/> (MediaOffset clock), <paramref name="pixelHeight"/> px tall;
+    /// null on failure, cancel or supersession.
     /// </summary>
-    /// <param name="fast">A key frame near the moment is enough (the pointer is still moving).</param>
+    /// <param name="fast">Nearest key frame suffices (pointer still moving).</param>
     public Task<BitmapSource?> FrameAsync(string path, double mediaSeconds, int pixelHeight, bool fast, CancellationToken token)
     {
         var request = new Request(path, Math.Max(double.IsFinite(mediaSeconds) ? mediaSeconds : 0, 0), Math.Clamp(pixelHeight, 16, 2160), fast, token);
@@ -55,7 +53,7 @@ public sealed class SourceFrames
         return request.Done.Task;
     }
 
-    /// <summary>Lets go of the request waiting, if any (the file shown changed, or the preview closed).</summary>
+    /// <summary>Drops any waiting request (file changed or preview closed).</summary>
     public void Cancel()
     {
         Request? replaced;
@@ -79,8 +77,7 @@ public sealed class SourceFrames
                     return;
                 }
 
-                // The hold is read once per decision: the request is either left waiting for a held turn or taken out to be served,
-                // never taken out and then skipped (which would leave its caller waiting for good).
+                // Read the hold once per decision: either leave the request waiting or dequeue and serve it, never dequeue then skip.
                 held = WorkScheduler.IsHeld;
                 next = _waiting;
                 if (!held)
@@ -117,15 +114,15 @@ public sealed class SourceFrames
     }
 
     /// <summary>
-    /// The moment to ask the compositor for, on the file's own clock as it seeks (<see cref="GpuFilmstrips.TryStillAsync"/>), for a moment
-    /// of a clip's MediaOffset clock: later by how far the video starts after the container does (as MainViewModel.FileMomentAt shifts it).
+    /// Converts MediaOffset time to file seek time for <see cref="GpuFilmstrips.TryStillAsync"/>, adding the video-vs-container start offset
+    /// (as MainViewModel.FileMomentAt).
     /// </summary>
     public static double StillMoment(double mediaSeconds, double? videoStart, double? containerStart) =>
         Math.Max(mediaSeconds + (videoStart is { } video && containerStart is { } container ? Math.Max(video - container, 0) : 0), 0);
 
     private static string Folder => Path.Combine(SessionPaths.Root, "browser-scrub");
 
-    /// <summary>One still through the thumbnail compositor into a JPEG of the session's, decoded and the file deleted.</summary>
+    /// <summary>Renders a still via the thumbnail compositor to a session JPEG, decodes it and deletes the file.</summary>
     private static async Task<BitmapSource?> StillAsync(string path, double mediaSeconds, int height, bool fast, CancellationToken token)
     {
         Directory.CreateDirectory(Folder);

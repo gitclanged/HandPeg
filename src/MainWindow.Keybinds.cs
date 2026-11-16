@@ -13,29 +13,26 @@ using HandPegApp.Services;
 
 namespace HandPegApp;
 
-// Input (4.4): the shortcuts KeybindManager resolves and the actions they run, the held navigation keys (4.4-BugHunt: W,
-// A, S and D zoom and pan the timeline, the Canvas or the player under the pointer while held, no button needed), the
-// Lightning Dial, the X-Ray HUD held on Tab, and the Quick-Start Tour. Nothing here is made before the first frame: the
-// dial, the HUD and the tour are made when first used, the action table at the first key, and the key map itself from
-// the settings in memory.
+// Input: KeybindManager shortcuts and their actions, held navigation keys (WASD zoom/pan the timeline, Canvas or player under the
+// pointer, no button needed), Lightning Dial, Tab-held X-Ray HUD, and the Quick-Start Tour. Nothing is built before Frame 1: dial,
+// HUD and tour on first use, the action table on the first key, the key map from in-memory settings.
 public partial class MainWindow
 {
     // ----- Setup (called from the constructor) -----
 
     private void InitializeKeybinds()
     {
-        // Every window of the editor (this one, the side window, and the window kept over the video) is heard for the mouse
-        // buttons a shortcut can use, a press that takes the keyboard from a text box, the right button held over a surface
-        // while a navigation key is down, and the release of a held key.
+        // All editor windows (main, side, video overlay) route shortcut mouse buttons, text-box focus release on press, right-button
+        // navigation holds, and held-key release here.
         EventManager.RegisterClassHandler(typeof(Window), Mouse.PreviewMouseDownEvent, new MouseButtonEventHandler(Editor_PreviewMouseDown), handledEventsToo: true);
         EventManager.RegisterClassHandler(typeof(Window), Mouse.PreviewMouseUpEvent, new MouseButtonEventHandler(Editor_PreviewMouseUp), handledEventsToo: true);
         EventManager.RegisterClassHandler(typeof(Window), Keyboard.PreviewKeyUpEvent, new KeyEventHandler(Editor_PreviewKeyUp), handledEventsToo: true);
 
-        // The video takes the right button, the side buttons and the wheel too (a see-through pixel of the window over it took
-        // no click, so they went to the native video window and were lost): a nearly see-through fill, as the boxes have.
+        // Near-transparent overlay fill so right/side buttons and wheel hit-test (fully transparent pixels passed them to the native
+        // video HWND, where they were lost).
         PlayerOverlay.Background = PlayerHitBrush;
 
-        // A file loaded is seen whole again, on the Canvas and in the player (the engine keeps its zoom from file to file).
+        // Reset Canvas and player zoom on file load (the engine would otherwise keep it across files).
         _viewModel.MediaLoaded += _ => ResetNavigationViews();
         LayoutCanvas.SizeChanged += (_, _) => ClampCanvasView();
         HookCanvasBand();
@@ -48,11 +45,10 @@ public partial class MainWindow
             }
         };
 
-        // Another program is brought forward: nothing is left open over it or held.
+        // App deactivated: close overlays and release held inputs.
         Application.Current.Deactivated += (_, _) => DropTransientInput();
 
-        // The tour is offered once, by itself, on any install that has not had it (a new one after its first-run window, one
-        // from before 4.4-BugHunt the first time this version starts), when the window is up, idle and free of dialogs.
+        // Auto-offer the tour once per install that has not seen it (after first-run, or on upgrade), when idle with no dialogs.
         if (!AppSettings.Current.QuickStartTourDone)
             ContentRendered += OfferTourOnce;
     }
@@ -72,12 +68,12 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Whether a drag on the timeline is held now (4.4-BugHunt): an action that changes the project waits for it to end (it is
-    /// refused: its key is taken and does nothing), so the drag never commits over a document changed under it.
+    /// True while a timeline drag is active; project-changing actions are refused (key consumed, no-op) so a drag never commits over
+    /// a changed document.
     /// </summary>
     private bool TimelineDragHeld => UnifiedTimeline.Surface.IsDragging;
 
-    // A key that changes the project waits for a timeline drag to end, and for a project tab switch to finish (5.4A).
+    // Project-changing keys are refused during a timeline drag or a tab switch.
     private bool RefusedWhileDragging(string id) =>
         (TimelineDragHeld || _switchingTab) && KeybindManager.Action(id) is { } action && action.Has(KeyActionFlags.ChangesProject);
 
@@ -85,7 +81,7 @@ public partial class MainWindow
 
     private Dictionary<string, (Func<bool> Can, Action Run)>? _keyActions;
 
-    /// <summary>What every KeybindManager action does here, and when it can (made at the first key press).</summary>
+    /// <summary>Action table (handler and CanRun per KeybindManager id), built on the first key press.</summary>
     private Dictionary<string, (Func<bool> Can, Action Run)> KeyActions => _keyActions ??= MakeKeyActions();
 
     private Dictionary<string, (Func<bool> Can, Action Run)> MakeKeyActions()
@@ -100,7 +96,7 @@ public partial class MainWindow
             ["edit.redo"] = (always, () => RunUndo(redo: true)),
             ["file.addMedia"] = (always, () => AddMedia_Click(AddMediaButton, new RoutedEventArgs())),
             ["ui.settings"] = (always, () => OpenSettings()),
-            // The title bar's project tabs (5.4A, MainWindow.ProjectTabs.cs): each says in the status bar when it cannot be done now.
+            // Project tab actions (MainWindow.ProjectTabs.cs); each reports refusals in the status bar.
             ["tab.new"] = (always, () => _ = NewProjectTabAsync()),
             ["tab.close"] = (always, () => _ = CloseProjectTabAsync(null)),
             ["tab.next"] = (always, () => _ = CycleProjectTabAsync(1)),
@@ -108,7 +104,7 @@ public partial class MainWindow
             ["captions.generate"] = (source, () => GenerateCaptionsFrom(null)),
 
             ["transport.playPause"] = (always, () => PlayPause_Click(this, new RoutedEventArgs())),
-            // The transport keys of every editor: J back, K stop, L forward; J or L again goes faster.
+            // JKL transport: J reverse, K stop, L forward; repeated J/L speeds up.
             ["transport.shuttleBack"] = (always, () => Shuttle(-1)),
             ["transport.stop"] = (always, () => Shuttle(0)),
             ["transport.shuttleForward"] = (always, () => Shuttle(1)),
@@ -127,7 +123,7 @@ public partial class MainWindow
             ["edit.trimStart"] = (source, () => TrimSelectedClip(start: true)),
             ["edit.trimEnd"] = (source, () => TrimSelectedClip(start: false)),
             ["clip.toggleLink"] = (source, ToggleSelectedClipLink),
-            // On what is selected, as the toolbar's button and the menus do (a video clip, an audio track, else the voice or the video at the playhead).
+            // Target the selection like the toolbar/menus (video clip, audio track, else voice or video at the playhead).
             ["edit.deadAir"] = (source, () => RemoveDeadAir_Click(this, new RoutedEventArgs())),
             ["edit.bypassEffects"] = (source, () => _viewModel.SequenceEffectsBypassed = !_viewModel.SequenceEffectsBypassed),
             ["edit.copy"] = (source, CopySelectedClips),
@@ -135,7 +131,7 @@ public partial class MainWindow
             ["edit.paste"] = (source, () => _viewModel.PasteClips(_viewModel.PositionMs / 1000)),
             ["edit.duplicate"] = (source, DuplicateSelectedClips),
             ["edit.pasteAttributes"] = (source, PasteAttributesToSelection),
-            // Alt+Up / Alt+Down (5.4A): only while a selected clip can move, so with none the key is the focused control's.
+            // Alt+Up/Down only when a selected clip can move; otherwise the key goes to the focused control.
             ["clip.newTrackAbove"] = (CanMoveSelectedToNewTrack, () => MoveSelectedToNewTrack(above: true, ontoNeighbour: true)),
             ["clip.newTrackBelow"] = (CanMoveSelectedToNewTrack, () => MoveSelectedToNewTrack(above: false, ontoNeighbour: true)),
 
@@ -144,15 +140,15 @@ public partial class MainWindow
             ["marker.next"] = (source, () => _viewModel.GoToMarker(forward: true)),
             ["marker.prev"] = (source, () => _viewModel.GoToMarker(forward: false)),
 
-            // The time bars: = and - zoom about the playhead, Shift+\ shows the whole timeline again (Pass 5.6A: \ alone is the Before/After).
+            // Timeline zoom: = and - about the playhead; Shift+\ fits the whole timeline (\ alone is grade Before/After).
             ["view.zoomIn"] = (source, () => ZoomAboutPlayhead(1.6)),
             ["view.zoomOut"] = (source, () => ZoomAboutPlayhead(1 / 1.6)),
             ["view.fit"] = (source, () => FitTimeline()),
             ["view.toggleSnap"] = (always, ToggleSnap),
             ["view.exploded3d"] = (() => CanToggleExplodedView, ToggleExplodedView),
-            // In and out of the Fullscreen Preview (5.4.4): in only with a picture in the player.
+            // Fullscreen Preview toggle; entering requires a picture in the player.
             ["view.fullscreen"] = (() => _fullscreen.IsOpen || VideoView.IsVisible, _fullscreen.Toggle),
-            // The grade's Before/After (Pass 5.6A): held, \ shows the picture without its grade; from the dial or a hotbar slot, on and off.
+            // Grade Before/After: holding \ shows the ungraded picture; dial/hotbar invocations toggle it.
             ["view.compareGrade"] = (() => _gpu is not null, ToggleGradeBypass),
 
             ["key.toggle"] = (source, () => ToggleKeyframe_Click(this, new RoutedEventArgs())),
@@ -173,15 +169,14 @@ public partial class MainWindow
         return actions;
     }
 
-    /// <summary>The action a slice of the dial holds, or null for a category or an empty slice.</summary>
+    /// <summary>Action id of a dial slice; null for a category or empty slice.</summary>
     private static string? DialSliceAction(int slice) =>
         KeybindManager.Dial is var dial && slice < dial.Count && dial[slice].IsAction ? dial[slice].Action : null;
 
     private bool CanRunDialSlice(int slice) => DialSliceAction(slice) is not { } id || CanRunAction(id);
 
     /// <summary>
-    /// A slice's own key (5.1-AutoHud-Part1, the user's Q1: the number keys are a hotbar of eight): a slice that holds an
-    /// action runs it at once, a slice that holds a category opens the dial on it.
+    /// Number-key hotbar (eight slots): an action slice runs immediately; a category slice opens the dial on it.
     /// </summary>
     private void RunDialSlice(int slice)
     {
@@ -191,13 +186,13 @@ public partial class MainWindow
             OpenLightningDial(held: false, slice, over: null);
     }
 
-    /// <summary>Runs an action by its id (a shortcut, a mouse button, the dial): false when it cannot run now.</summary>
+    /// <summary>Runs an action by id (shortcut, mouse button, dial); returns false if it cannot run now.</summary>
     private bool RunAction(string id)
     {
         if (!KeyActions.TryGetValue(id, out var action) || !action.Can() || RefusedWhileDragging(id))
             return false;
 
-        // A fault in what a key or the dial runs is a status line and a note in the log, never the end of the app.
+        // Action faults become a status line and a log entry, never a crash.
         DevFlightRecorder.RecordInput("action", id);
         RunGuarded(id, action.Run);
         return true;
@@ -205,7 +200,7 @@ public partial class MainWindow
 
     private bool CanRunAction(string id) => KeyActions.TryGetValue(id, out var action) && action.Can();
 
-    /// <summary>Caps Lock (4.4-BugHunt): snapping on or off, as the timeline's Snap button does.</summary>
+    /// <summary>Caps Lock toggles snapping, like the timeline Snap button.</summary>
     private void ToggleSnap()
     {
         _viewModel.SnapClips = !_viewModel.SnapClips;
@@ -215,10 +210,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Undo (or redo) from wherever it was asked (a key, a mouse button, the dial), by 4.3E's rules: the focused text box's
-    /// own while what was done last is typing in it, the timeline's otherwise; never while a drop-down is open, and not while
-    /// a drag is held (what is dragged would go on being moved from where Undo put it): a drag on the timeline, or the left
-    /// button held anywhere.
+    /// Undo/redo from any source (key, mouse button, dial): the focused text box's while its typing is newest, else the timeline's.
+    /// Never while a drop-down is open or a drag is active (timeline drag or left button held anywhere), since the drag would
+    /// continue from the undone state.
     /// </summary>
     private void RunUndo(bool redo)
     {
@@ -243,10 +237,10 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>Ripple Delete (R, Shift+Delete by default): the clips after it closing the gap.</summary>
+    /// <summary>Ripple Delete (default R, Shift+Delete): removes and closes the gap.</summary>
     private void RippleDeleteSelected()
     {
-        // Clips selected together (Ctrl / Shift): every one of them, closed up behind, one undo step.
+        // Multi-selection: ripple-delete all of them in one Undo step.
         if (GroupHolds)
         {
             LetGoOfDrag();
@@ -269,16 +263,15 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The shortcut a key press is bound to, run (MainWindow_PreviewKeyDown, after the text box's keys and the nudge): true
-    /// when the key was taken. A control with the keyboard keeps its own uses of the key (a list its arrows, the rules grid
-    /// its Delete), and an action that cannot run now leaves the key to it too.
+    /// Runs the shortcut bound to a key (from MainWindow_PreviewKeyDown, after text-box keys and nudge); true when consumed. The focused
+    /// control keeps its own keys (list arrows, rules-grid Delete), and keys whose action cannot run fall through to it.
     /// </summary>
     private bool TryRunBound(string id, InputChord chord, KeyEventArgs e, object sender, IInputElement? focused)
     {
         if (KeybindManager.Action(id) is not { } action || KeyBelongsToFocus(chord, focused))
             return false;
 
-        // The Keyframes pane's rows copy and paste their own keyframes (Ctrl+C, Ctrl+V, Ctrl+A) while they hold the keyboard.
+        // Focused Keyframes rows handle their own Ctrl+C / Ctrl+V / Ctrl+A.
         if (focused is KeyLanesView && chord.Mods == ModifierKeys.Control && chord.Key is Key.C or Key.V or Key.A)
             return false;
 
@@ -289,8 +282,7 @@ public partial class MainWindow
             return true;
         }
 
-        // A held navigation key (W, A, S, D): its first press starts the zoom or the pan, which goes on every frame while a
-        // navigation key is down (NavigationFrame); the key's repeats are swallowed.
+        // WASD: first press starts zoom/pan, continued per frame while held (NavigationFrame); auto-repeats are swallowed.
         if (action.Has(KeyActionFlags.Continuous))
         {
             if (!e.IsRepeat)
@@ -298,14 +290,14 @@ public partial class MainWindow
             return true;
         }
 
-        // While a drag on the timeline is held, nothing changes the project under it: the key is taken and does nothing.
+        // During a timeline drag, project-changing keys are consumed as no-ops.
         if (RefusedWhileDragging(id))
             return true;
 
         if (!CanRunAction(id))
             return false;
 
-        // A held key repeats only what is meant to go on (stepping, zooming); anything else runs once per press.
+        // Auto-repeat only for repeatable actions (stepping, zooming); others run once per press.
         if (e.IsRepeat && !action.Has(KeyActionFlags.Repeat))
             return true;
 
@@ -314,8 +306,7 @@ public partial class MainWindow
         else
             RunAction(id);
 
-        // Caps Lock ran a shortcut: Windows switched the capitals as the key went down, and they are switched back as it is
-        // let go (Editor_PreviewKeyUp), so snapping on and off never leaves the next typing in capitals.
+        // Caps Lock shortcut: Windows toggled caps on key-down; restore it on key-up (Editor_PreviewKeyUp) so typing is unaffected.
         if (chord.Key == Key.CapsLock)
             _capsToRestore = true;
         return true;
@@ -323,25 +314,25 @@ public partial class MainWindow
 
     private bool KeyBelongsToFocus(InputChord chord, IInputElement? focused) => OwnerOfKeys(focused)?.OwnsKey(chord.Key, chord.Mods) == true || chord.Key switch
     {
-        // A slider other than the timeline keeps its arrow keys (volume, zoom, opacity...).
+        // Non-timeline sliders keep their arrow keys (volume, zoom, opacity...).
         Key.Left or Key.Right => focused is Slider slider && !ReferenceEquals(slider, TimelineSlider),
         Key.Home or Key.End => focused is ItemsControl or ListBoxItem or Slider,
         Key.Up or Key.Down when (chord.Mods & ModifierKeys.Alt) != 0 => AltArrowBelongsToFocus(chord.Key, focused),
-        // (Down on Add Layer opens its kinds instead: AddLayerButton_PreviewKeyDown.)
+        // Down on Add Layer opens its kinds instead (AddLayerButton_PreviewKeyDown).
         Key.Up or Key.Down => focused is ItemsControl or ListBoxItem or Slider or ScrollViewer or KeyLanesView or FrameworkElement { Name: "AddLayerButton" },
         Key.PageUp or Key.PageDown => focused is ItemsControl or ListBoxItem or ScrollViewer,
-        // In the rules grid Delete is the grid's own key; in the Keyframes pane's rows, a keyframe's.
+        // Delete belongs to the rules grid, or to keyframes in focused Keyframes rows.
         Key.Delete or Key.Back => focused is DataGridCell or KeyLanesView,
-        // A grid moves between its cells with Tab (and commits what was typed in one).
+        // Grids use Tab for cell navigation (committing edits).
         Key.Tab => focused is DataGridCell or DataGrid,
-        // A grid's cell starts editing with the letter or the digit typed into it (the left hand's keys are shortcuts elsewhere).
+        // Grid cells start editing on a typed letter/digit (these are shortcuts elsewhere).
         >= Key.A and <= Key.Z or >= Key.D0 and <= Key.D9 => focused is DataGridCell or DataGrid,
         _ => false,
     };
 
     /// <summary>
-    /// The control that claims keys for itself (5.4C): the focused element or the nearest of its parents that is an <see cref="IOwnsKeys"/>
-    /// (the Media Browser's filmstrip cutter, the Subtitle Studio), so its keys are its own instead of the shortcuts'.
+    /// Nearest focused <see cref="IOwnsKeys"/> (self or ancestor; e.g. the filmstrip cutter, Subtitle Studio) whose keys take precedence
+    /// over shortcuts.
     /// </summary>
     internal static IOwnsKeys? OwnerOfKeys(IInputElement? focused)
     {
@@ -353,23 +344,21 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Whether Alt+Up or Alt+Down (5.4A: they move a clip up or down a track) is the focused control's own: a list, a scroller or any
-    /// other button gives them up; a combo box (Alt+Down opens it, Alt+Up closes it) keeps both, and the three buttons that open a
-    /// flyout on Alt+Down (Quick FX, Add Track, the Effects pane's Add: their own PreviewKeyDown runs after the window's) keep Down.
+    /// True when Alt+Up/Down belongs to the focused control: combo boxes keep both; Quick FX, Add Track and the Effects pane's Add keep
+    /// Down (their PreviewKeyDown runs after the window's); lists, scrollers and other buttons yield them to clip moves.
     /// </summary>
     internal static bool AltArrowBelongsToFocus(Key key, IInputElement? focused) =>
         focused is ComboBox || (key == Key.Down && focused is ButtonBase { Name: "QuickFxButton" or "AddLayerButton" or "AddButton" });
 
-    // ----- Keys before the shortcuts: Caps Lock's echo, and Esc for the dial, the tour and Interactive Crop -----
+    // ----- Pre-shortcut keys: Caps Lock echo, Esc routing -----
 
-    /// <summary>What an Esc is for (5.4.4), first come first served: the Lightning Dial, the tour, a 3D drag under way, the Fullscreen Preview, Interactive Crop, the 3D view.</summary>
+    /// <summary>Esc targets in priority order: Lightning Dial, tour, active 3D drag, Fullscreen Preview, Interactive Crop, 3D view.</summary>
     internal enum EscapeTaker { None, Dial, Tour, ExplodedDrag, Fullscreen, Crop, Exploded }
 
     /// <summary>
-    /// The one an Esc goes to (TakeOverlayKey): an open dial, then the tour, whatever has the keyboard; past them nothing while a text box, a
-    /// drop-down or a flyout has it (<paramref name="focusKeepsIt"/>); then a 3D drag (let go), the Fullscreen Preview (left), Interactive
-    /// Crop (ended) and the 3D view (left). The last two are answered later, after the text box's keys (EndCropOnEscape,
-    /// ExplodedWindow_PreviewKeyDown), in that order.
+    /// Pure Esc router (TakeOverlayKey): dial, then tour regardless of focus; then nothing if a text box, drop-down or flyout has focus
+    /// (<paramref name="focusKeepsIt"/>); then cancel 3D drag, exit Fullscreen Preview, end Interactive Crop, exit 3D. The last two are
+    /// handled later, after text-box keys (EndCropOnEscape, ExplodedWindow_PreviewKeyDown), in that order.
     /// </summary>
     internal static EscapeTaker EscapeTakerFor(bool dialOpen, bool tourRunning, bool focusKeepsIt, bool explodedDrag, bool fullscreen, bool crop, bool exploded) =>
         dialOpen ? EscapeTaker.Dial
@@ -381,16 +370,14 @@ public partial class MainWindow
         : exploded ? EscapeTaker.Exploded
         : EscapeTaker.None;
 
-    // Caps Lock ran a shortcut and is to be switched back as it is let go; the press HandPeg sends for that, still to come
-    // back as a key of its own (and until when it is waited for).
+    // Caps Lock restore pending on key-up; the synthetic press HandPeg sent, awaiting its echo (with deadline).
     private bool _capsToRestore;
     private int _capsEchoes;
     private long _capsEchoUntil;
 
     /// <summary>
-    /// The keys the input layers take before any shortcut (MainWindow_PreviewKeyDown's first step): the Caps Lock press
-    /// HandPeg sent itself (RestoreCapsLock) is swallowed; any other key hides a toggled X-Ray; Esc closes an open dial or ends
-    /// the tour (Interactive Crop's Esc comes after the text box's keys: EndCropOnEscape). (4.4-BugHunt: the navigation keys are ordinary shortcuts now, after the text box's keys.)
+    /// First step of MainWindow_PreviewKeyDown: swallows HandPeg's own Caps Lock echo (RestoreCapsLock), hides a toggled X-Ray on any key,
+    /// and routes Esc to the dial or tour (Interactive Crop's Esc follows text-box keys: EndCropOnEscape). WASD are ordinary shortcuts.
     /// </summary>
     private bool TakeOverlayKey(KeyEventArgs e)
     {
@@ -410,7 +397,7 @@ public partial class MainWindow
 
         if (key == Key.Escape)
         {
-            // 5.6A review: a Color Match Reference drag takes Esc first (cancelled), before the 3D view or Interactive Crop can.
+            // An active Color Match Reference drag takes Esc first (cancel), before 3D view or Interactive Crop.
             if (Mouse.Captured is ScreenEyedropper { IsDragging: true } dropper)
             {
                 dropper.Cancel();
@@ -418,8 +405,8 @@ public partial class MainWindow
                 return true;
             }
 
-            // 5.4.4: the dial, the tour, then (unless a text box, a drop-down or a flyout has the keyboard) a 3D drag under way and the
-            // Fullscreen Preview; Interactive Crop and the 3D view after the text box's keys (EndCropOnEscape, ExplodedWindow_PreviewKeyDown).
+            // Dial, tour, then (unless text box/drop-down/flyout focused) 3D drag and Fullscreen Preview; Interactive Crop and 3D view
+            // are handled after text-box keys (EndCropOnEscape, ExplodedWindow_PreviewKeyDown).
             var focused = Keyboard.FocusedElement;
             var focusKeepsIt = focused is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem
                 || (focused is DependencyObject element && PresentationSource.FromDependencyObject(element)?.RootVisual is { } root && root is not Window);
@@ -450,8 +437,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// 5.4B: Interactive Crop has no toggle of its own any more (only the clip menu's), so an Esc nothing else wanted ends it: never one
-    /// a text box, a drop-down or an open flyout (its own window: a Popup's) has the keyboard for.
+    /// Unclaimed Esc ends Interactive Crop (it has no toggle besides the clip menu), unless a text box, drop-down or flyout Popup has focus.
     /// </summary>
     private bool EndCropOnEscape(KeyEventArgs e, IInputElement? focused)
     {
@@ -465,8 +451,7 @@ public partial class MainWindow
         return true;
     }
 
-    // Windows switched Caps Lock as its key went down; one more press, sent now that the key is up, switches it back. Its
-    // echo comes back as a key of its own and is swallowed (TakeOverlayKey), unless it has not come within a second.
+    // Sends a synthetic Caps Lock press after key-up to undo Windows' toggle; its echo is swallowed by TakeOverlayKey (1 s deadline).
     private void RestoreCapsLock()
     {
         (_capsEchoes, _capsEchoUntil) = (1, Environment.TickCount64 + 1000);
@@ -480,21 +465,19 @@ public partial class MainWindow
     [System.Runtime.InteropServices.LibraryImport("user32.dll", EntryPoint = "keybd_event")]
     private static partial void KeybdEvent(byte virtualKey, byte scanCode, uint flags, nuint extraInfo);
 
-    // ----- A press outside a text box -----
+    // ----- Text-box focus release -----
 
     /// <summary>
-    /// A press outside the text box holding the keyboard takes the keyboard from it (4.4-BugHunt), so the keys after it are
-    /// shortcuts, not typing (what was typed is kept: the box is left as clicking away from it leaves it). The timeline, the
-    /// Canvas and the player take no keyboard of their own, so without this a box left holding it ate the left hand's keys.
-    /// A press on a text box or a drop-down leaves the keyboard to what was pressed, and a press in a popup (a drop-down's
-    /// list, a menu) is the popup's own.
+    /// A press outside the focused text box clears its focus (edits commit as on normal blur) so subsequent keys are shortcuts; the
+    /// timeline, Canvas and player never take focus, so a lingering text box would otherwise swallow them. Presses on text boxes,
+    /// drop-downs or inside popups are left alone.
     /// </summary>
     private static void ReleaseTypingFocus(DependencyObject? pressed)
     {
         if (Keyboard.FocusedElement is not (TextBoxBase or PasswordBox) || Keyboard.FocusedElement is not DependencyObject box)
             return;
 
-        // A run of text stands for the element it is in.
+        // Map a Run to its containing element.
         while (pressed is not null and not Visual)
             pressed = LogicalTreeHelper.GetParent(pressed);
 
@@ -509,18 +492,16 @@ public partial class MainWindow
         if (top is not Window)
             return;
 
-        // Its focus scope forgets it (so the box hears that it lost the focus, and a value bound to it on leaving is handed
-        // on), then the keyboard lets it go: the keys go to the window.
+        // Clear logical focus in its scope (fires LostFocus, committing LostFocus bindings), then keyboard focus, so keys go to the window.
         if (FocusManager.GetFocusScope(box) is { } scope)
             FocusManager.SetFocusedElement(scope, null);
         Keyboard.ClearFocus();
     }
 
     /// <summary>
-    /// A press outside a pane that owns keys while it holds the keyboard (<see cref="IOwnsKeys"/>, 5.4C: the Media Browser's cutter and
-    /// its Project Media list, the Subtitle Studio) takes the keyboard from it the same way: the timeline and the player take no keyboard
-    /// of their own, so without this a click there left Space, J/K/L, I/O, the arrows, Enter and Delete with the pane. A press inside the
-    /// pane, or in a popup, leaves it be.
+    /// Same release for a focused <see cref="IOwnsKeys"/> pane (cutter, Project Media list, Subtitle Studio) on a press outside it;
+    /// otherwise Space, J/K/L, I/O, arrows, Enter and Delete stay with the pane after clicking the timeline or player. Presses inside the
+    /// pane or a popup are ignored.
     /// </summary>
     internal static void ReleaseOwnedKeys(DependencyObject? pressed)
     {
@@ -541,7 +522,7 @@ public partial class MainWindow
         if (top is not Window)
             return;
 
-        // The scope forgets it too, or the window's next activation would hand it the keyboard again.
+        // Clear scope focus too, or the next window activation would restore focus to it.
         if (FocusManager.GetFocusScope(focused) is { } scope)
             FocusManager.SetFocusedElement(scope, null);
         Keyboard.ClearFocus();
@@ -559,20 +540,18 @@ public partial class MainWindow
         if (_xrayToggled)
             HideXRay();
 
-        // A press outside the text box holding the keyboard takes it from the box. Not the side buttons': Mouse 4 is Undo,
-        // which takes back the box's own typing while that is the newest.
+        // Release text-box focus on press, except side buttons (Mouse 4 = Undo, which must still undo the box's newest typing).
         if (e.ChangedButton is MouseButton.Left or MouseButton.Right or MouseButton.Middle)
         {
             ReleaseTypingFocus(e.OriginalSource as DependencyObject);
             ReleaseOwnedKeys(e.OriginalSource as DependencyObject);
         }
 
-        // A press on the video lands on the window kept over it, which never takes the keyboard: the window the player is
-        // in is brought forward, as a click on the video always did, so the shortcuts are heard after it.
+        // Presses on the video hit the non-activating overlay: activate the player's host window so shortcuts reach it.
         if (ReferenceEquals(sender, VideoView.OverlayWindow) && VideoView.OverlayWindow?.Owner is { IsActive: false } owner)
             owner.Activate();
 
-        // A dial left open without the mouse (it could not take it): a press anywhere else closes it.
+        // A dial open without mouse capture closes on any outside press.
         if (_dialPopup is { IsOpen: true })
             CloseLightningDial();
 
@@ -581,8 +560,8 @@ public partial class MainWindow
             case MouseButton.Left:
                 return;
 
-            // The right button held over a surface while a navigation key is down steers that surface (and the release is
-            // the navigation's then: no menu opens). What is under the pointer is noted; the press goes on as it would.
+            // Right button held over a surface with a navigation key down steers that surface (release opens no menu). Record the
+            // surface; the press proceeds normally.
             case MouseButton.Right:
                 BeginNavigationPress(sender, e.OriginalSource);
                 return;
@@ -594,7 +573,7 @@ public partial class MainWindow
         e.Handled = true;
         if (id == "ui.dial")
         {
-            // Not over a drag on the timeline (the dial's actions would change the project under it).
+            // Not during a timeline drag (dial actions could change the project under it).
             if (RefusedWhileDragging(id))
                 return;
 
@@ -614,8 +593,7 @@ public partial class MainWindow
 
         if (e.ChangedButton == MouseButton.Right)
         {
-            // After navigating, the release is the navigation's: no menu opens for it. A navigation key still held goes on
-            // steering what it steered; with none, the press's navigation is over.
+            // Release after navigating opens no menu. A still-held key keeps steering its surface; otherwise the navigation ends.
             if (_navEngaged)
             {
                 e.Handled = true;
@@ -627,7 +605,7 @@ public partial class MainWindow
             return;
         }
 
-        // The button holding the dial open, released where the dial could not hear it.
+        // The dial's hold button released outside the dial's hearing.
         if (e.ChangedButton == _dialButton && _dial is { IsHeld: true } dial)
         {
             e.Handled = true;
@@ -640,18 +618,18 @@ public partial class MainWindow
         }
     }
 
-    // ----- Held keys: X-Ray on Tab -----
+    // ----- Held keys: X-Ray (Tab) and Before/After -----
 
     private Key _holdKey;
     private string? _holdAction;
     private DispatcherTimer? _holdTimer;
 
-    /// <summary>How long Tab is held before X-Ray shows; let go sooner, it moves the keyboard on as Tab always did.</summary>
+    /// <summary>Tab hold time before X-Ray shows; a shorter tap performs normal Tab navigation.</summary>
     private static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(250);
 
     private void BeginHold(Key key, string id)
     {
-        // Another key held for the other hold (X-Ray under the Before/After, or the other way round): that one ends first, so neither is left on.
+        // End the other hold first (X-Ray vs Before/After) so neither is left stuck on.
         if (_holdKey != Key.None && _holdKey != key)
         {
             if (_holdAction == "view.compareGrade")
@@ -662,7 +640,7 @@ public partial class MainWindow
 
         (_holdKey, _holdAction) = (key, id);
 
-        // The grade's Before/After (Pass 5.6A) shows at once and goes as the key is let go (no tap to tell apart).
+        // Grade Before/After: immediate on press, off on release (no tap/hold distinction).
         if (id == "view.compareGrade")
         {
             _holdTimer?.Stop();
@@ -690,7 +668,7 @@ public partial class MainWindow
         if (!IsEditorWindow(sender))
             return;
 
-        // Caps Lock ran a shortcut as it went down: the capitals it switched are switched back now that it is up.
+        // Caps Lock ran a shortcut on key-down: restore the caps state now.
         if (key == Key.CapsLock && _capsToRestore)
         {
             _capsToRestore = false;
@@ -719,7 +697,7 @@ public partial class MainWindow
             return;
         }
 
-        // A quick tap of Tab still moves the keyboard to the next control.
+        // Quick Tab tap: normal focus navigation.
         if (key == Key.Tab)
         {
             var request = new TraversalRequest(FocusNavigationDirection.Next);
@@ -730,12 +708,11 @@ public partial class MainWindow
         }
     }
 
-    // ----- The held navigation keys (W, A, S, D) -----
+    // ----- Held navigation keys (WASD) -----
 
     private enum NavSurface { None, Timeline, Canvas, Player }
 
-    // Speeds, per second of a key held (three times with Shift): the timeline zooms by a factor and pans by its view's width;
-    // the Canvas and the player zoom by a factor (up to 16 times) and pan in DIPs.
+    // Per-second rates (x3 with Shift): timeline zoom factor and pan in view widths; Canvas/player zoom factor (max 16x) and pan in DIPs.
     private const double NavTimelineZoomRate = 2.5, NavTimelinePanRate = 0.8, NavZoomRate = 2.2, NavPanSpeed = 700, NavFast = 3, NavMaxZoom = 16;
 
     private NavSurface _navSurface;
@@ -748,9 +725,8 @@ public partial class MainWindow
     private double _playerZoom, _playerPanX, _playerPanY;
 
     /// <summary>
-    /// The right button went down: the surface it is on is noted (a navigation key pressed while it is held steers that one,
-    /// and its menu then does not open). With a navigation key held already, a press on another surface takes the navigation
-    /// over to it, held by the button; a press on no surface leaves it as it is.
+    /// Right-button press: records the surface so a navigation key during the hold steers it (and suppresses its menu). With a key
+    /// already held, a press on another surface transfers navigation to it; a press on no surface changes nothing.
     /// </summary>
     private void BeginNavigationPress(object sender, object originalSource)
     {
@@ -776,9 +752,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A navigation key went down (4.4-BugHunt: no button needed). It steers the surface under the pointer (the timeline, its
-    /// Sequence Overview Scrubber or keyframe lanes, the Canvas, the player), else the timeline; while the right button is held after a press
-    /// on a surface, that one. A second key held with the first steers what the first does.
+    /// Navigation key down: steers the surface under the pointer (timeline, Scrubber, keyframe lanes, Canvas, player; default timeline),
+    /// or the right-button-held surface. Additional keys steer the same surface as the first.
     /// </summary>
     private void BeginKeyNavigation()
     {
@@ -799,8 +774,7 @@ public partial class MainWindow
         StartNavigationTicker();
     }
 
-    // What the pointer is over: the player (the window kept over the video), the timeline, the Canvas; the timeline otherwise
-    // (the keys zoom and pan it wherever the pointer is, as = and - do).
+    // Surface under the pointer: player (video overlay), timeline or Canvas; default timeline (like = and -).
     private NavSurface SurfaceUnderPointer()
     {
         var over = Mouse.DirectlyOver as DependencyObject;
@@ -812,10 +786,10 @@ public partial class MainWindow
 
     private bool PlayerNavigable => _gpu is not null && VideoView.IsVisible;
 
-    // Which surface a press is on: the timeline (its pane, the Sequence Overview Scrubber or the keyframe lanes), the Canvas or the player.
+    // Surface hit by a press: timeline (pane, Scrubber, keyframe lanes), Canvas or player.
     private NavSurface SurfaceAt(DependencyObject? source)
     {
-        // A run of text stands for the element it is in.
+        // Map a Run to its containing element.
         while (source is not null and not Visual)
             source = LogicalTreeHelper.GetParent(source);
 
@@ -838,14 +812,13 @@ public partial class MainWindow
     {
         _navEngaged = true;
 
-        // The timeline's right-click opens no menu: the press was the navigation's (and the release is taken here, not by
-        // the timeline).
+        // Suppress the timeline's context menu: the press belongs to navigation (release handled here).
         _navTimeline?.CancelPendingMenu();
 
         if (_navSurface == NavSurface.Player)
             _navPicture = PictureSize();
 
-        // The window the press was in keeps the mouse until the button is let go, wherever that is.
+        // Capture the mouse to the press's window until release.
         if (_navWindow is { } window && Mouse.Captured is null)
             window.CaptureMouse();
     }
@@ -857,7 +830,7 @@ public partial class MainWindow
         (_navSurface, _navTimeline) = (NavSurface.None, null);
     }
 
-    // The right button's hold of the navigation is over: the window it captured lets the mouse go.
+    // End the right-button navigation hold and release its capture.
     private void ReleaseNavigation()
     {
         if (_navEngaged && _navWindow is { IsMouseCaptured: true } window)
@@ -865,7 +838,7 @@ public partial class MainWindow
         (_navEngaged, _navWindow) = (false, null);
     }
 
-    // The navigation moves every frame while a key is held, and stops asking for frames when none is.
+    // Per-frame navigation while any key is held; unsubscribes when none is.
     private void StartNavigationTicker()
     {
         if (_navTicking)
@@ -889,8 +862,7 @@ public partial class MainWindow
 
     private void NavigationFrame(object? sender, EventArgs e)
     {
-        // Held by the right button: over when it is let go. Over too when a text box or a dialog takes the keyboard (the
-        // keys are typing there).
+        // A right-button hold ends on release; any navigation ends when a text box or dialog takes focus (keys become typing).
         if (_navSurface == NavSurface.None || (_navEngaged && Mouse.RightButton != MouseButtonState.Pressed)
             || Keyboard.FocusedElement is TextBoxBase or PasswordBox || ComponentDispatcher.IsThreadModal)
         {
@@ -905,7 +877,7 @@ public partial class MainWindow
         var pan = Held("nav.right") - Held("nav.left");
         if (zoom == 0 && pan == 0)
         {
-            // Every key let go: a key's navigation is over; the right button's waits for its next key while it is held.
+            // All keys released: key navigation ends; a right-button hold waits for the next key.
             if (_navEngaged)
                 StopNavigationTicker();
             else
@@ -916,7 +888,7 @@ public partial class MainWindow
         if (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
             seconds *= NavFast;
 
-        // The 3D exploded view takes W, S (zoom) and A, D (orbit) over the player while it is up.
+        // In 3D over the player: W/S dolly, A/D orbit.
         if (_navSurface == NavSurface.Player && ExplodedNavigates(zoom, pan, seconds))
             return;
 
@@ -938,13 +910,13 @@ public partial class MainWindow
         }
     }
 
-    // A pan over a Canvas or a player shown fitted (nothing to pan there) pans the timeline when the user asked for it (B7).
+    // Pan over a fitted Canvas/player (nothing to pan) falls through to the timeline when that setting is on.
     private static bool PansTimelineInstead(double scale) => scale <= 1.0001 && AppSettings.Current.PanTimelineWhenNotZoomed;
 
-    // The timeline zooms about the moment under the pointer (the playhead off the timeline's own surface) and pans along.
+    // Timeline navigation: zoom about the pointer time (the playhead when off the surface) and pan.
     private void NavigateTimeline(int zoom, int pan, double seconds)
     {
-        // A key's pan or zoom takes over from a coast still running (5.4C).
+        // Key navigation cancels any running coast.
         StopTimelineMomentum();
         if (zoom != 0)
             ZoomTimeline(Math.Pow(NavTimelineZoomRate, zoom * seconds), TimelineAnchor());
@@ -963,8 +935,8 @@ public partial class MainWindow
         return fraction is >= 0 and <= 1 ? fraction : 0.5;
     }
 
-    // The Canvas: a matrix on the canvas alone (its well clips it; the boxes' drags are in its own coordinates, so they
-    // stay right), never closer than fitted, always covering the well.
+    // Canvas navigation: a RenderTransform on the canvas only (clipped by its well; box drags use canvas coordinates, so stay
+    // correct), never below fit, always covering the well.
     private MatrixTransform CanvasView
     {
         get
@@ -995,7 +967,7 @@ public partial class MainWindow
             matrix.ScaleAt(factor, factor, at.X, at.Y);
         }
 
-        // Panning left shows what is to the left: the picture moves right.
+        // Pan left reveals content to the left: translate the picture right.
         if (pan != 0)
             matrix.Translate(-pan * NavPanSpeed * seconds, 0);
 
@@ -1014,8 +986,8 @@ public partial class MainWindow
             view.Matrix = Covering(view.Matrix, LayoutCanvas.ActualWidth, LayoutCanvas.ActualHeight);
     }
 
-    // The player: the engine zooms and pans the picture (the scene is not planned again), and the boxes, the crop and the safe margins
-    // drawn over it follow by the same matrix on the overlay (their own maths is in its coordinates, so it stays right).
+    // Player navigation: the engine zooms/pans the picture (no scene replan); overlay boxes, crop and safe margins follow via the same
+    // matrix on the overlay (their math stays in overlay coordinates).
     private MatrixTransform PlayerView
     {
         get
@@ -1040,7 +1012,7 @@ public partial class MainWindow
         var scale = Math.Pow(2, _playerZoom);
         if (zoom != 0)
         {
-            // What is under the pointer stays there: the picture's middle moves away from it (or toward it) by the zoom.
+            // Zoom about the pointer: the centre moves away from (or toward) it by the zoom factor.
             var next = Math.Clamp(scale * Math.Pow(NavZoomRate, zoom * seconds), 1, NavMaxZoom);
             var at = VideoView.OverlayWindow is { } overlay ? Mouse.GetPosition(overlay) : new Point(width / 2, height / 2);
             var middle = new Point(width / 2 + _playerPanX * picture.Width * scale, height / 2 + _playerPanY * picture.Height * scale);
@@ -1052,7 +1024,7 @@ public partial class MainWindow
         if (pan != 0)
             _playerPanX -= pan * NavPanSpeed * seconds / (picture.Width * scale);
 
-        // The picture keeps covering what it covered fitted: it is never panned off its own place.
+        // Clamp the pan so the picture always covers its fitted rectangle.
         var reach = (scale - 1) / (2 * scale);
         (_playerPanX, _playerPanY) = (Math.Clamp(_playerPanX, -reach, reach), Math.Clamp(_playerPanY, -reach, reach));
         _playerZoom = Math.Log2(scale);
@@ -1071,7 +1043,7 @@ public partial class MainWindow
         PlaceGradeWipe();
     }
 
-    // The picture as the engine fits it into the player: the output frame (the source's size without one), letterboxed.
+    // Fitted picture rect in the player: output frame (source size if none), letterboxed.
     private Size PictureSize()
     {
         var (width, height) = (PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
@@ -1103,12 +1075,12 @@ public partial class MainWindow
     private LightningDialOverlay? _dial;
 
     /// <summary>
-    /// Opens the dial at the pointer (the window's middle when the pointer is not over it): <paramref name="held"/> while the
-    /// button that opened it is down, on a category's own level for its key.
+    /// Opens the dial at the pointer (window centre if outside); <paramref name="held"/> while the opening button is down; optionally
+    /// at a category's level for its key.
     /// </summary>
     private void OpenLightningDial(bool held, int? category, Window? over)
     {
-        // Over the video, the dial belongs to the window the player is in.
+        // Over the video, host the dial in the player's window.
         var window = over is not null && ReferenceEquals(over, VideoView.OverlayWindow) ? over.Owner ?? this
             : over is not null && _hookedSides.Contains(over) ? over
             : this;
@@ -1162,7 +1134,7 @@ public partial class MainWindow
 
     private static readonly string[] XRayPaneIds = ["Player", "Playback", "Timeline", "UnifiedTimeline", "Layout", "Header", "Media", "Keyframes", "Effects", "Presets"];
 
-    /// <summary>From the dial: shown until the next key or click.</summary>
+    /// <summary>Toggled from the dial: shown until the next key or click.</summary>
     private void ToggleXRay()
     {
         if (_xrayPopup is { IsOpen: true })
@@ -1212,17 +1184,16 @@ public partial class MainWindow
         CompositionTarget.Rendering -= XRayFrame;
     }
 
-    // ----- The keys over the player while X-Ray shows (4.4.0) -----
+    // ----- X-Ray key map over the player -----
     //
-    // The keyboard and mouse map in a popup of its own over the player (the X-Ray drawing lets every click through; this one
-    // takes the pointer): the pointer on a key names its action, and a click on a key or the "Edit Keybinds" pill opens
-    // Settings at Keybinds & Lightning Dial, at that key. Made again each time from the keys in effect.
+    // Keyboard/mouse map in its own hit-testable popup (the X-Ray drawing itself passes clicks through): hovering a key names its
+    // action; clicking a key or "Edit Keybinds" opens Settings at Keybinds & Lightning Dial on that key. Rebuilt from current bindings.
 
     private Popup? _keyGlancePopup;
 
     private void ShowKeyGlance(FrameworkElement root)
     {
-        // Over the player's pane when it is shown and wide enough to read; over the middle of the window otherwise.
+        // Over the player pane if visible and wide enough; else window centre.
         var area = new Rect(0, 0, root.ActualWidth, root.ActualHeight);
         if (PlayerPane is { IsVisible: true, ActualWidth: >= 480, ActualHeight: >= 220 } player && root.IsAncestorOf(player))
             area = player.TransformToAncestor(root).TransformBounds(new Rect(player.RenderSize));
@@ -1252,7 +1223,7 @@ public partial class MainWindow
         _keyGlancePopup.IsOpen = true;
     }
 
-    // The UI's frame time while X-Ray shows: the time between the frames WPF draws.
+    // UI frame time shown in X-Ray: interval between WPF render ticks.
     private void XRayFrame(object? sender, EventArgs e)
     {
         if (e is not RenderingEventArgs rendering || rendering.RenderingTime == _xrayLastFrame)
@@ -1274,7 +1245,7 @@ public partial class MainWindow
 
         (_xray.Width, _xray.Height) = (root.ActualWidth, root.ActualHeight);
 
-        // Every pane made and shown in this window, outlined with its id.
+        // Outline every realized, visible pane in this window with its id.
         var panes = new List<(Rect Bounds, string Id)>();
         foreach (var id in XRayPaneIds.Concat(_tabPanes.Select(t => t.Id)))
         {
@@ -1321,7 +1292,7 @@ public partial class MainWindow
     {
         ContentRendered -= OfferTourOnce;
 
-        // A moment after the first frame, once the window has settled (the inactive tabs are made at idle first).
+        // Shortly after Frame 1, once settled (inactive panes realize at idle first).
         var wait = new DispatcherTimer(DispatcherPriority.ApplicationIdle) { Interval = TimeSpan.FromSeconds(1.5) };
         wait.Tick += (_, _) =>
         {
@@ -1332,17 +1303,15 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Starts the tour offered by itself once HandPeg is free for it: no dialog open (a restored autosave's question, a crash
-    /// report, an engine download: it comes after them) and HandPeg in front (another program in front: it waits for HandPeg
-    /// to be brought back). It counts as had as soon as it starts, so closing HandPeg half-way never brings it back.
+    /// Auto-starts the tour once no dialog is open (autosave restore, crash report, engine download first) and HandPeg is foreground
+    /// (waits for reactivation). Marked seen on start, so quitting mid-tour never re-offers it.
     /// </summary>
     private void OfferTourWhenFree()
     {
         if (AppSettings.Current.QuickStartTourDone || !IsLoaded)
             return;
 
-        // Never before FFmpeg is there: a tour of an editor that cannot read its files is no welcome. It waits until FFmpeg is
-        // installed, however it comes (the first-run window, Settings), and is offered by the same rules then.
+        // Requires FFmpeg: wait for its install (first-run window or Settings), then apply the same offer rules.
         if (!DependencyUpdater.EnginesInstalled)
         {
             OfferTourOnceEnginesAreIn();
@@ -1377,7 +1346,7 @@ public partial class MainWindow
             MarkTourDone();
     }
 
-    // Waits (once) for the install that completes the engines; the window closing lets go of the wait.
+    // One-shot wait for engine install completion; cancelled when the window closes.
     private bool _tourWaitsForEngines;
 
     private void OfferTourOnceEnginesAreIn()
@@ -1407,13 +1376,12 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Shows the Quick-Start Tour from its first card (offered once by itself, and from Settings: asked for there, it starts
-    /// once the Settings window has closed). Finishing or skipping it marks it done.
+    /// Shows the Quick-Start Tour from the first card (auto-offered once, or from Settings, starting after Settings closes). Finish or
+    /// Skip marks it done.
     /// </summary>
     public void StartQuickStartTour() => TryStartQuickStartTour();
 
-    // Whether the tour started now (not while the Settings window is open: it starts when that closes, nor while this window
-    // is hidden or minimized).
+    // True if the tour started now (deferred while Settings is open, or the window is hidden or minimized).
     private bool TryStartQuickStartTour()
     {
         if (Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault(w => w.IsVisible) is { } settings)

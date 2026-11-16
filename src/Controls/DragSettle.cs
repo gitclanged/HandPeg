@@ -3,51 +3,51 @@ using System.Windows;
 namespace HandPegApp;
 
 /// <summary>
-/// The Timeline's drags held back while they pass over (Pass 5.5A, velocity-gated dragging): the pointer's speed over its last moves,
-/// so a zone that changes what a let-go does (a "+ New Track" seam, a clip's tether, a header's nest) wakes only once the pointer has
-/// settled on it, never while it sweeps across. Fast (over <see cref="TransitSpeed"/>) is Transit Mode: every zone asleep. Slow (under
-/// <see cref="SettleSpeed"/>) for <see cref="SettleMs"/>, or still for as long, is settled: a zone under it may wake. A zone already
-/// awake stays awake until Transit, so a slow drift across it (between the two speeds) never flickers it (the hysteresis).
-/// <para>Pure: the caller passes the time (ms: MomentumScroller.Now, a test its own clock) and the points in the control's own
-/// coordinates, so a pan or an auto-scroll under a still pointer never counts as speed. Made at the first drag, one per control.</para>
+/// Velocity-gated drop zones for Timeline drags: tracks recent pointer speed so zones that change the drop result ("+ New Track" seam,
+/// clip tether, header nest) activate only once the pointer settles, never while sweeping across. Above <see cref="TransitSpeed"/> is
+/// Transit Mode (all zones inactive). Below <see cref="SettleSpeed"/> for <see cref="SettleMs"/>, or stationary that long, is settled
+/// (the zone under the pointer may activate). An active zone stays active until Transit, so slow drift between the two thresholds
+/// never flickers it (hysteresis).
+/// <para>Pure: callers supply time in ms (MomentumScroller.Now, or a test clock) and points in control coordinates, so panning or
+/// auto-scroll under a stationary pointer never counts as speed. One instance per control, created on the first drag.</para>
 /// </summary>
 internal sealed class DragSettle
 {
-    /// <summary>DIP/s: over it, Transit Mode (every zone asleep).</summary>
+    /// <summary>Speed (DIP/s) above which Transit Mode deactivates all zones.</summary>
     public const double TransitSpeed = 160;
 
-    /// <summary>DIP/s: under it for <see cref="SettleMs"/>, settled (a zone may wake).</summary>
+    /// <summary>Speed (DIP/s) below which, sustained for <see cref="SettleMs"/>, the pointer is settled.</summary>
     public const double SettleSpeed = 60;
 
-    /// <summary>How long the pointer stays slow (or still) before it counts as settled, ms.</summary>
+    /// <summary>Slow or stationary duration required to count as settled, ms.</summary>
     public const double SettleMs = 75;
 
-    /// <summary>The speed is the moves' endpoints over this much of the newest ones, ms.</summary>
+    /// <summary>Velocity window: speed is measured between endpoints spanning the newest samples within this many ms.</summary>
     public const double WindowMs = 50;
 
-    /// <summary>A move shorter than this (DIPs) from where the pointer last moved is a hand's jitter: the pointer counts as still (MomentumScroller's).</summary>
+    /// <summary>Jitter threshold in DIPs: smaller moves from the last significant position count as stationary (as in MomentumScroller).</summary>
     public const double StillDip = 0.5;
 
     private const int Capacity = 32;
 
-    // The newest moves, a ring: where and when (ms).
+    // Ring buffer of recent samples: position and time (ms).
     private readonly (double X, double Y, double T)[] _samples = new (double, double, double)[Capacity];
     private int _count, _next;
 
-    // Since when the pointer has been slow (NaN while it is not), when it last moved by StillDip or more, and where it was then.
+    // Slow-since time (NaN while fast), time of the last move of at least StillDip, and that move's position.
     private double _slowSince = double.NaN, _lastMove = double.NaN;
     private Point _movedFrom;
 
-    /// <summary>The pointer's speed at its newest sample, DIP/s.</summary>
+    /// <summary>Pointer speed at the newest sample, DIP/s.</summary>
     public double Speed { get; private set; }
 
-    /// <summary>When the newest sample was taken (ms); NaN before the first press.</summary>
+    /// <summary>Timestamp of the newest sample (ms); NaN before the first press.</summary>
     public double LastSampleMs { get; private set; } = double.NaN;
 
-    /// <summary>Whether the drag has looked again at rest since the pointer last moved (5.5A review: the dwell's timer looks once a rest, then only when the keys change); a press or a move clears it.</summary>
+    /// <summary>True once the dwell timer has re-evaluated during the current rest (it does so once per rest, then only on modifier-key changes); cleared by a press or move.</summary>
     public bool RestLooked { get; set; }
 
-    /// <summary>A press: the pointer at rest there, settling from now.</summary>
+    /// <summary>Starts tracking on press: pointer at rest at <paramref name="at"/>, settling from <paramref name="nowMs"/>.</summary>
     public void Begin(Point at, double nowMs)
     {
         (_count, _next) = (0, 0);
@@ -58,7 +58,7 @@ internal sealed class DragSettle
         RestLooked = false;
     }
 
-    /// <summary>A move of the pointer to <paramref name="at"/> at <paramref name="nowMs"/> (never earlier than the last sample).</summary>
+    /// <summary>Records a pointer move to <paramref name="at"/> at <paramref name="nowMs"/> (clamped to be monotonic).</summary>
     public void Sample(Point at, double nowMs)
     {
         if (double.IsNaN(LastSampleMs) || !double.IsFinite(nowMs))
@@ -71,7 +71,7 @@ internal sealed class DragSettle
         RestLooked = false;
         Add(at, nowMs);
 
-        // The endpoints over the window: the oldest sample within it; with none older there, the one just before this.
+        // Velocity endpoints: the oldest sample within the window, or the immediately preceding sample if none is in it.
         var (oldest, found) = ((X: at.X, Y: at.Y, T: nowMs), false);
         for (var k = 1; k < _count; k++)
         {
@@ -94,13 +94,13 @@ internal sealed class DragSettle
         LastSampleMs = nowMs;
     }
 
-    /// <summary>Transit Mode: faster than <see cref="TransitSpeed"/>, and still moving (within the last <see cref="WindowMs"/>).</summary>
+    /// <summary>Transit Mode: speed above <see cref="TransitSpeed"/> with a significant move within the last <see cref="WindowMs"/>.</summary>
     public bool InTransit(double nowMs) => Speed > TransitSpeed && nowMs - _lastMove < WindowMs;
 
-    /// <summary>Settled: slow for <see cref="SettleMs"/>, or still (no move of <see cref="StillDip"/>) for as long.</summary>
+    /// <summary>Settled: slow for <see cref="SettleMs"/>, or stationary (no move of <see cref="StillDip"/>) for as long.</summary>
     public bool IsSettled(double nowMs) => (!double.IsNaN(_slowSince) && nowMs - _slowSince >= SettleMs) || nowMs - _lastMove >= SettleMs;
 
-    /// <summary>Whether a zone under the pointer is awake: one that already is (<paramref name="sameZoneAsActive"/>) stays so until Transit; any other wakes once settled.</summary>
+    /// <summary>Zone activation: the already active zone (<paramref name="sameZoneAsActive"/>) stays active until Transit; others activate once settled.</summary>
     public bool Awake(bool sameZoneAsActive, double nowMs) => sameZoneAsActive ? !InTransit(nowMs) : IsSettled(nowMs);
 
     private void Add(Point at, double nowMs)

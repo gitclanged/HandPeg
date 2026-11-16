@@ -6,13 +6,13 @@
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterScreen">
     <!--
-        5.5A: the studio welcome, two screens in a window of 940 x 600 (HandPeg's DIPs, as UiScale sizes every dialog; kept inside the
-        work area by FitToWorkArea, each screen's body scrolling only where the room runs short): 1. the workspace, its theme and the core
-        engines, beside a live miniature of the layout and theme under the pointer; 2. the GPU and NPU roles from the hardware profile
-        (estimated at once, then the full test, 5.6A) and the defaults exports start with.
+        Two-screen welcome, 940 x 600 DIP (scaled by UiScale, clamped to the work area by FitToWorkArea; bodies scroll only when
+        space runs short).
+        Screen 1: workspace layout, theme and core engines beside a live miniature of the hovered layout/theme.
+        Screen 2: GPU/NPU roles from the hardware profile (instant estimate, then full test) and export defaults.
     -->
     <Window.Resources>
-        <!-- A choice as a card: outlined in the accent colour while it is the one chosen. -->
+        <!-- Choice card: accent outline when selected. -->
         <Style x:Key="ChoiceCard" TargetType="RadioButton">
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="Cursor" Value="Hand" />
@@ -20,7 +20,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="RadioButton">
-                        <!-- The whole card takes the pointer (the live miniature follows it: HoverAt), whatever the theme's brushes. -->
+                        <!-- Entire card is hit-testable regardless of theme brushes (miniature tracks hover via HoverAt). -->
                         <Grid Background="Transparent">
                             <Border x:Name="card" Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}"
                                     BorderThickness="2" CornerRadius="{DynamicResource CardCornerRadius}" Padding="{TemplateBinding Padding}">
@@ -40,13 +40,13 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <!-- The cards of the workspace layouts: two to a row. -->
+        <!-- Workspace layout cards, two per row. -->
         <Style x:Key="LayoutCard" TargetType="RadioButton" BasedOn="{StaticResource ChoiceCard}">
             <Setter Property="Padding" Value="12,6" />
             <Setter Property="Margin" Value="0,0,8,6" />
             <Setter Property="GroupName" Value="Workspace" />
         </Style>
-        <!-- A theme's swatch: its window, a panel, its accent and its text, painted from the theme's own colours (FillThemeSwatches). -->
+        <!-- Theme swatch: window, panel, accent and text painted from the theme's colours (FillThemeSwatches). -->
         <Style x:Key="SwatchCard" TargetType="RadioButton" BasedOn="{StaticResource ChoiceCard}">
             <Setter Property="Padding" Value="4" />
             <Setter Property="Margin" Value="0,0,8,0" />
@@ -67,7 +67,7 @@
             <Setter Property="Margin" Value="0,0,0,2" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         </Style>
-        <!-- A card's words: two lines at most, the whole of them in the tooltip. -->
+        <!-- Card text: max two lines; full text in the tooltip. -->
         <Style x:Key="CardText" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
             <Setter Property="FontSize" Value="11.5" />
@@ -76,7 +76,7 @@
             <Setter Property="MaxHeight" Value="31" />
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
-        <!-- A layout card's words: one line (the miniature shows the rest), the whole of them in the tooltip. -->
+        <!-- Layout card text: one line (the miniature shows the rest); full text in the tooltip. -->
         <Style x:Key="LayoutText" TargetType="TextBlock" BasedOn="{StaticResource CardText}">
             <Setter Property="TextWrapping" Value="NoWrap" />
         </Style>
@@ -89,7 +89,7 @@
             <Setter Property="Foreground" Value="{DynamicResource MutedTextBrush}" />
             <Setter Property="TextWrapping" Value="Wrap" />
         </Style>
-        <!-- Back: the neutral face, beside the accent's Next and Start Editing. -->
+        <!-- Back button: neutral style beside accent Next / Start Editing. -->
         <Style x:Key="NeutralButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Background" Value="{DynamicResource NeutralButtonBrush}" />
             <Setter Property="BorderBrush" Value="{DynamicResource NeutralButtonBorderBrush}" />
@@ -105,7 +105,7 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- ===== The header: where the user is, and the two steps ===== -->
+        <!-- ===== Header: current step indicator ===== -->
         <Grid Margin="24,10,24,4">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
@@ -124,7 +124,7 @@
             </StackPanel>
         </Grid>
 
-        <!-- ===== The body: the two screens in one cell, one of them shown (GoToScreen) ===== -->
+        <!-- ===== Body: both screens share one cell; GoToScreen shows one ===== -->
         <Grid Grid.Row="1" x:Name="ScreenHost" ClipToBounds="True">
             <!-- ===== Screen 1: Workspace, Theme & Core Engines ===== -->
             <ScrollViewer x:Name="Screen1Panel" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False"
@@ -136,7 +136,7 @@
                         <ColumnDefinition Width="*" />
                     </Grid.ColumnDefinitions>
 
-                    <!-- The live miniature: the layout and the theme under the pointer, else the chosen ones; the themes under it. -->
+                    <!-- Live miniature of the hovered (else chosen) layout and theme, with theme swatches below. -->
                     <StackPanel>
                         <TextBlock Text="Live Preview" Style="{StaticResource SectionTitle}" Margin="0,2,0,5" />
                         <local:SettingsStagePreview x:Name="StagePreview" AutomationProperties.AutomationId="WorkspacePreview" />
@@ -181,7 +181,7 @@
                                     <TextBlock Style="{StaticResource LayoutText}" Text="For 9:16 shorts: the effects, keyframes, Canvas and Subtitle Studio as tabs at the left, a tall player, the media as a filmstrip, and the timeline below." />
                                 </StackPanel>
                             </RadioButton>
-                            <!-- 5.4D: the Vertical Creator Split, the fifth built-in layout. -->
+                            <!-- Vertical Creator Split (fifth built-in layout). -->
                             <RadioButton x:Name="VerticalCreatorLayoutCard" Style="{StaticResource LayoutCard}" Tag="Vertical Creator Split"
                                          AutomationProperties.Name="Vertical Creator Split Workspace" Checked="Workspace_Checked">
                                 <StackPanel>
@@ -191,7 +191,7 @@
                             </RadioButton>
                         </UniformGrid>
 
-                        <!-- The core engines: nothing ships with HandPeg, so this is where they are fetched, a package at one click. -->
+                        <!-- Core engines (not bundled): one-click package downloads. -->
                         <TextBlock Text="Core Engines" Style="{StaticResource SectionTitle}" Margin="0,8,0,5" />
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -243,8 +243,8 @@
                             </RadioButton>
                         </Grid>
 
-                        <!-- The 5.5A addenda (the user's call): no way here to point at an FFmpeg already on the PC; that stays in Settings (its
-                             ffmpeg.exe Path box), and the panel's own words follow (OffersExistingFfmpeg off, as it comes). -->
+                        <!-- No existing-FFmpeg picker here (Settings > ffmpeg.exe Path covers it); panel text follows
+                             OffersExistingFfmpeg (off by default). -->
                         <local:DependencyPanel x:Name="Dependencies" />
                     </StackPanel>
                 </Grid>
@@ -261,8 +261,8 @@
                     </Grid.ColumnDefinitions>
 
                     <!--
-                        The GPU and NPU roles: estimated at once (out of process), then the full test (5.6A, on every open), each card a click
-                        to pick its role (RoleCardsPanel, shared with Settings); the System tier beside the title once a result is in.
+                        GPU/NPU roles: instant out-of-process estimate, then the full test on every open; click a card to pick its role
+                        (RoleCardsPanel, shared with Settings). System tier appears beside the title once a result exists.
                     -->
                     <StackPanel>
                         <DockPanel Margin="0,4,0,8" LastChildFill="False">
@@ -270,17 +270,17 @@
                             <Border x:Name="SystemTierBadge" Visibility="Collapsed" Margin="10,0,0,0" VerticalAlignment="Center"
                                     AutomationProperties.AutomationId="SystemTier" />
                         </DockPanel>
-                        <!-- 5.5.0 (the user's Q10 b): said plainly when the hardware test stops (collapsed otherwise) -->
+                        <!-- Message shown when the hardware test stops (collapsed otherwise) -->
                         <TextBlock x:Name="ProfileWarningText" Visibility="Collapsed" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" FontSize="11.5"
                                    Margin="0,-4,0,8" AutomationProperties.AutomationId="ProfileWarning" />
                         <local:RoleCardsPanel x:Name="RoleCards" AutomationProperties.Name="GPU and NPU Roles" />
 
-                        <!-- 5.5.2 (the user's Q2): the optional Playback & A/V Sync Test, kept by Start Editing (Finish) -->
+                        <!-- Optional Playback & A/V Sync Test; result saved by Start Editing (Finish) -->
                         <TextBlock Text="Playback &amp; A/V Sync" Style="{StaticResource SectionTitle}" Margin="0,14,0,6" />
                         <local:PlaybackSyncCard x:Name="SyncTestCard" />
                     </StackPanel>
 
-                    <!-- The defaults every export starts with, and what happens on closing and after a failed hardware encode. -->
+                    <!-- Export defaults, close behaviour and hardware-encode failure fallback. -->
                     <StackPanel Grid.Column="2">
                         <TextBlock Text="Default Export" Style="{StaticResource SectionTitle}" Margin="0,4,0,6" />
                         <TextBlock Text="Video encoder" Margin="0,0,0,4" />
@@ -305,7 +305,7 @@
                         <CheckBox x:Name="PromptBox" Content="Prompt to save before closing"
                                   ToolTip="Asks, as HandPeg closes, whether to save the projects open in its tabs that hold work not saved as a project; with two tabs or more, one dialog lists them all and can keep every tab for the next start instead. Every tab saved: no question. Asked only when Keep open project tabs suspended between sessions is off (Settings &gt; General &gt; Projects and saving), as it is at first: while that is on, closing keeps every tab, saved or not, for the next start." />
 
-                        <!-- Crash reports (written here, kept on this PC), what they cost and what is in them. -->
+                        <!-- Crash reports: local storage, cost and contents. -->
                         <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                             <CheckBox x:Name="CrashReportsBox" Content="Save anonymous crash reports" VerticalAlignment="Center"
                                       AutomationProperties.Name="Send Crash Reports"
@@ -321,7 +321,7 @@
             </ScrollViewer>
         </Grid>
 
-        <!-- ===== The footer: Back, the download as it goes (on either screen), and Next or Start Editing ===== -->
+        <!-- ===== Footer: Back, download progress (both screens), Next / Start Editing ===== -->
         <Border Grid.Row="2" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="0,1,0,0">
             <Grid Margin="24,8,24,10">
                 <Grid.ColumnDefinitions>

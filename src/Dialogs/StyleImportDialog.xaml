@@ -8,7 +8,7 @@
         <TextBlock x:Name="FileText" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
         <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,4,0,10" />
 
-        <!-- A part the file does not have is shown unticked and greyed out -->
+        <!-- Sections absent from the file are unchecked and disabled -->
         <CheckBox x:Name="LayoutBox" Content="HUD Masks &amp; Cutouts" />
         <TextBlock x:Name="LayoutText" Foreground="{DynamicResource MutedTextBrush}" Margin="26,0,0,6" TextWrapping="Wrap" />
         <CheckBox x:Name="ColorBox" Content="Color Filters" />

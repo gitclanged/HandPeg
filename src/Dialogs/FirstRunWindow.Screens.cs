@@ -16,26 +16,25 @@ using static HandPegApp.Native.User32;
 
 namespace HandPegApp;
 
-// ----- The two screens (Pass 5.5A): the header's steps, the slide between them, the live miniature, the theme swatches, the fit -----
+// ----- Two-screen flow: step header, slide transition, live miniature, theme swatches, work-area fit -----
 //
-// Screen 1, Workspace, Theme & Core Engines: the five layout cards and five theme swatches beside a live miniature of the layout and
-// theme under the pointer (else the chosen ones: SettingsStagePreview's Workspace kind), and the two engine packages, each a click to
-// download. Screen 2, Hardware Auto-Tune & Default Export (FirstRunWindow.Profile.cs and the encoders). The window is 940 x 600 of
-// HandPeg's DIPs (UiScale sizes it as every dialog as it loads), then kept inside the work area of its monitor here (FitToWorkArea:
-// after UiScale, so never scaled twice); each screen's body scrolls only where that leaves too little room.
+// Screen 1 (Workspace, Theme & Core Engines): five layout cards and five theme swatches beside a live miniature of the hovered (else
+// chosen) layout/theme (SettingsStagePreview Workspace kind), plus two one-click engine downloads. Screen 2 (Hardware Auto-Tune &
+// Default Export): FirstRunWindow.Profile.cs and encoders. Design size 940 x 600 DIP (scaled by UiScale on load), then clamped to the
+// monitor work area by FitToWorkArea after UiScale (never double-scaled); screen bodies scroll only when space runs short.
 public partial class FirstRunWindow
 {
-    /// <summary>The screen shown: 1 (workspace, theme, engines) or 2 (hardware, export defaults).</summary>
+    /// <summary>Current screen: 1 (workspace, theme, engines) or 2 (hardware, export defaults).</summary>
     internal int Screen { get; private set; } = 1;
 
-    // The theme chosen (its swatch checked; put into effect at once), and the layout and theme under the pointer (null: none).
+    // Chosen theme (checked swatch, applied immediately) and hovered layout/theme (null when none).
     private string _chosenTheme = ThemeManager.FollowSystem;
     private string? _hoveredLayout, _hoveredTheme;
 
-    // The built-in layouts the miniature draws, by name: made the first time the miniature is drawn (window-free, MainWindow.BuiltInLayoutStates).
+    // Built-in layouts by name for the miniature, created lazily on first draw (window-free, MainWindow.BuiltInLayoutStates).
     private IReadOnlyDictionary<string, DockNode>? _layouts;
 
-    // The settings tabs' pane ids, as the main window registers them (the goldens' list): the layouts are made for them.
+    // Settings tab pane ids as MainWindow registers them (golden list); layouts are built for these.
     private static readonly IReadOnlyList<string> PreviewTabIds = ["Tab:Color", "Tab:Audio", "Tab:Export", "Tab:Command Preview"];
 
     private const string ScreenOneTitle = "Workspace, Theme & Core Engines", ScreenTwoTitle = "Hardware Auto-Tune & Default Export";
@@ -46,18 +45,18 @@ public partial class FirstRunWindow
         StagePreview.Show(StageKind.Workspace, AppSettings.Current);
         ShowStage();
 
-        // The miniature follows the pointer over the cards and swatches (HoverAt: point-based, for the goldens too).
+        // Miniature tracks the pointer over cards and swatches (HoverAt is point-based so goldens can drive it).
         MouseMove += (_, e) => HoverAt(e.GetPosition(this));
         MouseLeave += (_, _) => HoverAt(null);
 
-        // The fit to the work area: once UiScale has sized the window (its class handler runs before this instance handler), and
-        // again after a move onto a monitor of another scale (after UiScale's own, which it posts at Send).
+        // Work-area fit after UiScale sizes the window (its class handler precedes this instance handler), and again after a DPI
+        // change (following UiScale's Send-priority post).
         Loaded += (_, _) => FitToWorkArea(center: true);
         DpiChanged += (_, _) => Dispatcher.BeginInvoke(() => FitToWorkArea(center: false), DispatcherPriority.Loaded);
         Closed += (_, _) => StopSlide();
 
-        // The download: its progress in the footer, on either screen; the cards' buttons are the one way to start it here (the
-        // panel's own Install button is not shown), and say Retry when the panel would.
+        // Download progress shows in the footer on both screens; card buttons are the only trigger (panel Install hidden) and mirror
+        // the panel's Retry state.
         Dependencies.InstallButton.Visibility = Visibility.Collapsed;
         Dependencies.ProgressChanged += ShowDownloadProgress;
         Dependencies.RunningChanged += ShowDownloadRunning;
@@ -71,8 +70,8 @@ public partial class FirstRunWindow
     private void Back_Click(object sender, RoutedEventArgs e) => GoToScreen(1);
 
     /// <summary>
-    /// Shows a screen: its title, its step lit, Back on the second, Next (the default button) on the first and Start Editing on the
-    /// second; the screen slides in over 180 ms when the extra animations are on (and Windows animates windows' insides).
+    /// Shows a screen: title, lit step, Back on screen 2, Next (default) on 1 / Start Editing on 2; slides in over 180 ms when extra
+    /// animations and Windows client-area animations are on.
     /// </summary>
     internal void GoToScreen(int screen)
     {
@@ -99,19 +98,19 @@ public partial class FirstRunWindow
         StartButton.IsDefault = screen == 2;
         UpdateStartStatus();
 
-        // The keyboard stays in the window: on the button that goes on from the screen shown.
+        // Keep keyboard focus in the window on the screen's forward button.
         if (IsKeyboardFocusWithin)
             (screen == 1 ? NextButton : StartButton).Focus();
         Slide(shown, forward);
     }
 
-    /// <summary>The screen shown comes in from the side it lies on and fades up: 180 ms, eased out; at once without the extra animations.</summary>
+    /// <summary>Slides and fades the screen in from its side (180 ms ease-out); instant without extra animations.</summary>
     private void Slide(FrameworkElement screen, bool forward)
     {
         if (!IsLoaded || !AppSettings.Current.EnableExtraAnimations || !SystemParameters.ClientAreaAnimation)
             return;
 
-        // Its own transform (animated, so never frozen), made the first time it slides; the final values set, the animations then let go.
+        // Lazily created animated transform (not frozen); final values are set and the animations then released.
         if (screen.RenderTransform is not TranslateTransform move)
             screen.RenderTransform = move = new TranslateTransform();
         (move.X, screen.Opacity) = (0, 1);
@@ -127,7 +126,7 @@ public partial class FirstRunWindow
         screen.BeginAnimation(OpacityProperty, fade);
     }
 
-    // A slide under way ends where it was going (also when the window closes).
+    // Completes an in-flight slide at its end values (also on close).
     private void StopSlide()
     {
         foreach (var screen in new FrameworkElement[] { Screen1Panel, Screen2Panel })
@@ -140,8 +139,8 @@ public partial class FirstRunWindow
     // ----- The live miniature: the layout and theme under the pointer, else the chosen ones -----
 
     /// <summary>
-    /// What is under a point of the window (its own DIPs), for the miniature: a layout card shows its layout, a theme swatch its theme;
-    /// anywhere else (or null: the pointer left) the chosen layout and theme come back.
+    /// Hit-tests a window point (DIPs) for the miniature: a card previews its layout, a swatch its theme; elsewhere or null (pointer
+    /// left) restores the chosen ones.
     /// </summary>
     internal void HoverAt(Point? inWindow)
     {
@@ -174,10 +173,10 @@ public partial class FirstRunWindow
     private static DependencyObject? ParentOf(DependencyObject element) =>
         element is Visual or Visual3D ? VisualTreeHelper.GetParent(element) : LogicalTreeHelper.GetParent(element);
 
-    /// <summary>The miniature drawn again: the layout under the pointer or chosen, in the theme under the pointer or chosen.</summary>
+    /// <summary>Redraws the miniature with the hovered-or-chosen layout and theme.</summary>
     private void ShowStage()
     {
-        // Raised by the first card's Checked while the window is still being built.
+        // The first card's Checked fires during construction.
         if (StagePreview is null)
             return;
 
@@ -191,8 +190,8 @@ public partial class FirstRunWindow
     // ----- The theme swatches -----
 
     /// <summary>
-    /// One swatch for each theme (ThemeManager.Themes): a little window in the theme's own colours (ThemeManager.Look: its window, a
-    /// panel, its accent and its text, every brush frozen) over its name; the chosen one checked.
+    /// Builds one swatch per ThemeManager.Themes entry: a mini window in its colours (ThemeManager.Look window/panel/accent/text, frozen
+    /// brushes) above its name; the chosen one checked.
     /// </summary>
     private void FillThemeSwatches()
     {
@@ -240,7 +239,7 @@ public partial class FirstRunWindow
         }
     }
 
-    /// <summary>The theme of a swatch, put into effect at once so it can be chosen by looking (the window's own colours change with it).</summary>
+    /// <summary>Applies a swatch's theme immediately (live preview, including this window).</summary>
     private void ThemeSwatch_Checked(object sender, RoutedEventArgs e)
     {
         if (sender is not RadioButton { Tag: string theme } || theme == _chosenTheme)
@@ -252,13 +251,13 @@ public partial class FirstRunWindow
         ThemeManager.Apply();
     }
 
-    /// <summary>The swatches, for the goldens: their themes in order, and which is checked.</summary>
+    /// <summary>Golden hook: swatch themes in order and the checked one.</summary>
     internal IReadOnlyList<(string Theme, bool Checked)> Swatches =>
         [.. ThemeSwatches.Items.OfType<RadioButton>().Select(s => ((string)s.Tag, s.IsChecked == true))];
 
     // ----- The core engines: a package at one click -----
 
-    /// <summary>A package's Download: the package chosen, and its download started (the panel's progress shown in the footer too).</summary>
+    /// <summary>Selects a package and starts its download (progress mirrored in the footer).</summary>
     private void TierDownload_Click(object sender, RoutedEventArgs e) => Faults.Forget(TierDownload_ClickAsync(sender, e), nameof(TierDownload_Click));
 
     private async Task TierDownload_ClickAsync(object sender, RoutedEventArgs e)
@@ -268,7 +267,7 @@ public partial class FirstRunWindow
         await Dependencies.InstallAsync();
     }
 
-    // The cards' buttons: off while a download runs; Retry after a look online that failed (as the panel's own button would say).
+    // Card buttons: disabled during a download; "Retry" after a failed online check (matching the panel).
     private void UpdateTierButtons()
     {
         var label = Equals(Dependencies.InstallButton.Content, "Retry") ? "Retry" : "Download";
@@ -294,7 +293,7 @@ public partial class FirstRunWindow
         FooterProgressText.Text = string.Create(CultureInfo.InvariantCulture, $"Downloading the core engines  {Math.Clamp(fraction, 0, 1) * 100:0}%");
     }
 
-    // On the second screen while a download runs: why Start Editing waits.
+    // Screen 2 hint explaining why Start Editing is disabled during a download.
     private void UpdateStartStatus()
     {
         if (_finishing)
@@ -308,10 +307,9 @@ public partial class FirstRunWindow
     // ----- The fit to the work area -----
 
     /// <summary>
-    /// Keeps the window (as UiScale has sized it) inside the work area of its monitor: no wider or taller (MaxWidth and MaxHeight set
-    /// here, in the window's own DIPs, after UiScale: never scaled twice), centred in it when it was to be centred on the screen, else
-    /// moved inside it only as far as it must be (opened from Settings: centred on its owner). A window placed by hand (the goldens'
-    /// off-screen one) keeps its place.
+    /// Constrains the UiScale-sized window to its monitor work area: sets MaxWidth/MaxHeight in window DIPs (after UiScale, never
+    /// double-scaled), recentres CenterScreen windows, otherwise nudges only as needed (CenterOwner from Settings). Manual placement
+    /// (golden off-screen windows) is left alone.
     /// </summary>
     private void FitToWorkArea(bool center)
     {
@@ -319,8 +317,8 @@ public partial class FirstRunWindow
         if (work.IsEmpty || work.Width < 1 || work.Height < 1)
             return;
 
-        // 5.5A review: the design size at the window's UI scale (its root's LayoutTransform, as UiScale gives it), never its current size:
-        // a window fitted once to a small work area grows back to 940 x 600 on a monitor with the room.
+        // Use the design size at the root LayoutTransform scale, not the current size, so a window shrunk for a small work area grows
+        // back to 940 x 600 on a larger monitor.
         var scale = (Content as FrameworkElement)?.LayoutTransform is ScaleTransform transform ? transform.ScaleX : 1;
         var placed = FitTo(work, DesignSizeAt(scale));
         (MaxWidth, MaxHeight) = (work.Width, work.Height);
@@ -334,22 +332,22 @@ public partial class FirstRunWindow
             return;
         }
 
-        // Inside it, never past its far edges (Max/Min, not Clamp: the window may be exactly as wide as the room).
+        // Max/Min rather than Clamp: a window filling the work area can round to min > max, which Clamp throws on.
         Left = Math.Max(work.Left, Math.Min(Left, work.Right - placed.Width));
         Top = Math.Max(work.Top, Math.Min(Top, work.Bottom - placed.Height));
     }
 
-    /// <summary>The window's design size (the XAML's 940 x 600 HandPeg DIPs) at a UI scale (1 when it is not a positive number).</summary>
+    /// <summary>Design size (940 x 600 DIP from XAML) at a UI scale (non-positive treated as 1).</summary>
     internal static Size DesignSizeAt(double uiScale)
     {
         var scale = double.IsFinite(uiScale) && uiScale > 0 ? uiScale : 1;
         return new Size(DesignWidth * scale, DesignHeight * scale);
     }
 
-    /// <summary>The window's size in HandPeg DIPs, as FirstRunWindow.xaml gives it (5.5A).</summary>
+    /// <summary>Design size in DIPs, matching FirstRunWindow.xaml.</summary>
     internal const double DesignWidth = 940, DesignHeight = 600;
 
-    /// <summary>A window of <paramref name="size"/> in a work area: no larger than it, centred in it.</summary>
+    /// <summary>Rect of <paramref name="size"/> clamped to and centred in the work area.</summary>
     internal static Rect FitTo(Rect workArea, Size size)
     {
         var width = Math.Min(size.Width, workArea.Width);
@@ -357,7 +355,7 @@ public partial class FirstRunWindow
         return new Rect(workArea.Left + (workArea.Width - width) / 2, workArea.Top + (workArea.Height - height) / 2, width, height);
     }
 
-    /// <summary>The work area of the monitor the window is on (or nearest to), in its own DIPs; the main monitor's before it has a handle.</summary>
+    /// <summary>Work area (window DIPs) of the window's nearest monitor; primary monitor before the HWND exists.</summary>
     internal Rect WorkAreaHere()
     {
         var handle = new WindowInteropHelper(this).Handle;

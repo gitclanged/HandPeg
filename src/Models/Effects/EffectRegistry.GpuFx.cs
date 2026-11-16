@@ -1,16 +1,16 @@
 namespace HandPegApp.Models.Effects;
 
-// ----- Pass 5.1-GpuFx: the game-engine effects -----
-// Pure HLSL (Motion.hlsl, Light.hlsl, Vfx.hlsl), with no FFmpeg filter behind them (the roadmap's Law 4): GpuOnly, so an export only FFmpeg can make says what it left out.
-// Every card starts visible, and every number of what it does is on it, keyframeable where that means anything (the Creator Ethos: one click, full manual override).
-// Each lane is a parameter in its order (EvaluateGpuPacket); the shaders' comments name them. Slots of two effects carry a variant in the last lane.
+// ----- Game-engine GPU effects -----
+// Pure HLSL (Motion.hlsl, Light.hlsl, Vfx.hlsl), GpuOnly (no FFmpeg equivalent), so FFmpeg-only paths report them as omitted.
+// Cards start with a visible result and expose every parameter, keyframeable where meaningful (one click, full manual override).
+// Lanes map to parameters in order (EvaluateGpuPacket; named in shader comments). Shared slots carry a variant in the last lane.
 public static partial class EffectRegistry
 {
     public const string MotionBlur = "builtin.gpu.motionblur", Glow = "builtin.gpu.glow", NeonRim = "builtin.gpu.neonrim", FrostedGlass = "builtin.gpu.frostedglass",
         Shockwave = "builtin.gpu.shockwave", AnamorphicLens = "builtin.gpu.anamorphic", Explosion = "builtin.vfx.explosion", Sparks = "builtin.vfx.sparks",
         AnimeLines = "builtin.vfx.animelines", EnergyShield = "builtin.vfx.shield", Saber = "builtin.vfx.saber";
 
-    /// <summary>The effects that are clips of their own, one click from the Timeline: each an adjustment clip with this card (MainViewModel.AddVfxClip), in the order the menus list them.</summary>
+    /// <summary>One-click VFX adjustment clips (MainViewModel.AddVfxClip), in menu order.</summary>
     public static IReadOnlyList<string> VfxClips { get; } = [Explosion, Sparks, AnimeLines, EnergyShield, Saber, Shockwave];
 
     // A point of the picture, in % of it.
@@ -29,23 +29,21 @@ public static partial class EffectRegistry
     private static EffectParam Seed() =>
         new("seed", "Variation", Min: 0, Max: 100, Default: 7, Step: 1) { IsAdvanced = true, Tip = "A different one each number, the same one every time for any number." };
 
-    // Its turn about its middle (5.2, the user's call), clockwise on the picture: the last lane its shader reads (Vfx.hlsl, Light.hlsl's PSStreak).
+    // Clockwise rotation about the centre, in the last lane the shader reads (Vfx.hlsl, Light.hlsl PSStreak).
     private static EffectParam Rotation(string what) =>
         new("rotation", "Rotation", Min: -180, Max: 180, Default: 0, Step: 1, Unit: "°", Animation: ParamAnimation.Expression)
             { Tip = $"Turns {what} about its middle, clockwise on the picture: 0° as it comes. Keyframe it to spin it." };
 
-    // The audio-reactive pulse (5.2B, Services/Audio/AudioReactive.cs): how much the Sequence's sound in a band lifts the effect's strength frame
-    // by frame, 1 + pulse x the band's energy (SceneRenderer.Fx.cs, Pulse). In the lanes after the effect's own: its second packet's first two
-    // (the Glow, the Neon Rim, the Shockwave: a packet sent only while the pulse is in use, EffectDefinition.GpuPulsePacket), the Anime Lines'
-    // last two. 0, as it comes, sends the shader what it always had, in the packets it always had.
+    // Audio-reactive pulse (Services/Audio/AudioReactive.cs): per-frame strength multiplier 1 + pulse x band energy (SceneRenderer.Fx.cs).
+    // Stored after the effect's own lanes: first two of a second packet (Glow, Neon Rim, Shockwave; sent only while active,
+    // EffectDefinition.GpuPulsePacket) or the last two lanes (Anime Lines). 0 (default) leaves packets unchanged.
 
-    /// <summary>The keys of the Audio Reactive Pulse (%) and its Pulse Band (Bass, Mid, High, All) on the cards that carry them.</summary>
+    /// <summary>Parameter keys for Audio Reactive Pulse (%) and Pulse Band (Bass, Mid, High, All).</summary>
     public const string AudioPulseKey = "audioPulse", AudioBandKey = "audioBand";
 
     /// <summary>
-    /// Whether an Audio Reactive Pulse is in use (5.2B): with keyframes, any of them above 0 (keys all at 0 hold it at 0 throughout), else its
-    /// value above 0; as the card's packet reads it (its keys first). One test for the card's packets (EffectInstance.EvaluateGpuPacket) and
-    /// for whether a map of the sound is worth making (AudioReactive.Pulses). Nothing allocated.
+    /// True when the pulse is active: any keyframe above 0 if keyed, else the static value above 0 (keys take precedence, as in packets).
+    /// Shared by EffectInstance.EvaluateGpuPacket and AudioReactive.Pulses. Allocation-free.
     /// </summary>
     public static bool PulseInUse(IReadOnlyList<Keyframe>? keys, double value)
     {
@@ -102,7 +100,7 @@ public static partial class EffectRegistry
                 AudioBand(),
             ], EffectCost.Amber)
         {
-            // Its Audio Reactive Pulse in a second packet, sent only while the pulse is in use (5.2B).
+            // Pulse in a second packet, sent only while active.
             GpuSlot = GpuShaderSlot.HalationGlow, GpuPulsePacket = 1, GpuOnly = true, Description = "Light blooming from the highlights in linear light, with film's warm halo round them.",
         });
 
@@ -131,8 +129,7 @@ public static partial class EffectRegistry
                 AudioBand(),
             ], EffectCost.Amber)
         {
-            // Its first packet's last lane stays its variant's (0: Frosted Glass's is 1), so the pulse goes on in a second packet, sent only while
-            // the pulse is in use (5.2B).
+            // The first packet's last lane holds the variant (0; Frosted Glass is 1), so the pulse uses a second packet, sent only while active.
             GpuSlot = GpuShaderSlot.RimGlass, GpuVariantLane = GpuEffectPacket.Lanes - 1, GpuPulsePacket = 1, GpuOnly = true, Once = true,
             Description = "A neon line and its glow round the clip's exact shape: its mask, its key, its rounded corners, drawn from a distance field. The glow runs off the clip's box.",
         });
@@ -163,8 +160,7 @@ public static partial class EffectRegistry
                 AudioBand(),
             ], EffectCost.Green)
         {
-            // Its first packet's last lane stays its variant's (0: the Anamorphic Lens's is 1), so the pulse goes on in a second packet, sent only
-            // while the pulse is in use (5.2B).
+            // The first packet's last lane holds the variant (0; Anamorphic Lens is 1), so the pulse uses a second packet, sent only while active.
             GpuSlot = GpuShaderSlot.ShockwaveLens, GpuVariantLane = GpuEffectPacket.Lanes - 1, GpuPulsePacket = 1, GpuOnly = true,
             Description = "A ring of bent air going out from a point, and a camera shake. Works on what is under it on an adjustment clip.",
         });

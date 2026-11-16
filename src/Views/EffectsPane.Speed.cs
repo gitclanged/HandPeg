@@ -12,45 +12,44 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Views;
 
-// ----- Pass 5.6A (lane C): the Speed & Time card (Speed & Pitch for a sound) and when the Opacity card shows -----
-// A clip that plays a file has a card above its effects: its speed on a log slider (0.1x to 16x, 1x near the middle) and in a box, five
-// usual speeds, the length it should take on the timeline (the speed follows), and whether what follows ripples (a setting). A video adds
-// Smooth Slow-Mo and the engine its in-betweens are made with; a sound (or a video that carries one) adds Keep Pitch, Pitch Shift and
-// Spectral Audio. It is no effect (no packet, no lane card, nothing copied with Copy Effects): the speed is the clip's own edit
-// (MainViewModel.SetClipSpeed: one undo step, its family with it, never a checkpoint before it), the options its look. A Cutout's speed is
-// its source clip's (the Cutout runs at it), so the card sets that clip's. A drag shows the speed it would give and is written when let go.
-// The Opacity card shows only when it says something: below 100 %, keyed, or added (Add Effect) or shown once this session.
+// ----- Speed & Time card (Speed & Pitch for audio) and Opacity card visibility -----
+// File-backed clips get a card above their effects: log speed slider (0.1x-16x, 1x near centre) plus box, five preset pills, Target
+// Duration (speed follows), and Ripple Timeline (a setting). Video adds Smooth Slow-Mo and its interpolation engine; audio (or video with
+// audio) adds Keep Pitch, Pitch Shift and Spectral Audio. Not an effect (no packet, lane card, or Copy Effects): speed is a clip edit
+// (MainViewModel.SetClipSpeed: one Undo step including its family, no prior checkpoint); options are look properties. A Cutout uses its
+// source clip's speed, so the card edits the source. Drags preview and commit on release. The Opacity card appears only when meaningful:
+// below 100 %, keyed, or added/shown earlier this session.
 public partial class EffectsPane
 {
-    /// <summary>Puts the Speed & Time card into SpeedPanel for the target (called by Rebuild, after SpeedPanel was cleared).</summary>
+    /// <summary>Adds the Speed & Time card to SpeedPanel for the target (called by Rebuild after clearing it).</summary>
     private partial void AddSpeedCard();
 
-    /// <summary>Whether the pinned Opacity card shows for this picture clip.</summary>
+    /// <summary>True when the pinned Opacity card should show for this visual clip.</summary>
     private partial bool ShowsOpacityCard(Layer layer);
 
-    /// <summary>Whether a pinned definition (Opacity) is offered by Add Effect for the target.</summary>
+    /// <summary>True when Add Effect should offer a pinned definition (Opacity) for the target.</summary>
     private partial bool PinnedFits(EffectDefinition definition);
 
-    /// <summary>Add Effect chose a pinned definition (Opacity): show its card.</summary>
+    /// <summary>Add Effect picked a pinned definition (Opacity): show its card.</summary>
     private partial void AddPinned(EffectDefinition definition);
 
-    /// <summary>A property of the target clip changed (before the pane's own handling of it).</summary>
+    /// <summary>Target clip property changed (called before the pane's own handling).</summary>
     private partial void SpeedLayerChanged(string? propertyName);
 
-    // The clips whose Opacity card was added or shown this session (by clip, so a view made again by Undo keeps it): kept while HandPeg runs.
+    // Clip ids whose Opacity card was added/shown this session (keyed by clip so Undo-rebuilt views keep it); process lifetime.
     private static readonly HashSet<Guid> OpacityShownFor = [];
 
-    // The usual speeds, as pills; and the slider's ends, log2 of the slowest and fastest speeds.
+    // Preset speed pills; slider range as log2 of the slowest and fastest speeds.
     internal static readonly double[] SpeedPills = [0.25, 0.5, 1, 2, 4];
     private static readonly double SliderLow = Math.Log2(Layer.SlowestSpeed), SliderHigh = Math.Log2(Layer.FastestSpeed);
 
-    // Within this of a pill's place on the slider (log2), the slider rests on it: 1x, 2x... are easy to find by hand.
+    // Slider detent radius (log2) around pill speeds so 1x, 2x... are easy to hit.
     private const double PillDetent = 0.04;
 
-    // Why the vendor's optical flow is not offered, worked out once (the card's own words: <= 12).
+    // Cached reason (<= 12 words) why vendor optical flow is not offered.
     private static string? _vendorFlowReason;
 
-    // The card now: the clip whose speed it sets (a Cutout's source clip), the clip it was built for, and its controls.
+    // Current card: speed target (a Cutout's source), the clip it was built for, and its controls.
     private Layer? _speedTarget, _speedFor;
     private Slider? _speedSlider, _pitchSlider;
     private TextBox? _speedBox, _durationBox, _pitchBox;
@@ -58,17 +57,16 @@ public partial class EffectsPane
     private CheckBox? _rippleCheck, _smoothCheck, _keepPitchCheck, _spectralCheck;
     private TextBlock? _speedNote;
 
-    // Set while the card writes its own controls (nothing it does then is the user's); a drag's speed not yet written; whether the
-    // slider or the box is held; whether the Opacity card is shown now.
+    // Re-entrancy flag while the card updates its own controls; uncommitted drag speed; slider/box held flag; Opacity card shown flag.
     private bool _speedShowing, _speedHeld, _opacityCardShown;
     private double? _speedOwed;
 
-    // The boxes typed in since they last showed the clip: a box left without typing writes nothing (after an Undo it may show what was).
+    // Boxes typed in since last refresh; leaving an untyped box writes nothing (it may show pre-Undo text).
     private readonly HashSet<TextBox> _typedBoxes = [];
 
     private partial void AddSpeedCard()
     {
-        // A drag the card was rebuilt under is written once the rebuild is done (never from inside it: the edit syncs the views).
+        // Commit a drag interrupted by the rebuild afterwards (never during it: the edit resyncs views).
         if (_speedOwed is { } owed && _speedTarget is { } owedTarget && _vm is { } vm)
             Dispatcher.BeginInvoke(() => vm.SetClipSpeed(owedTarget, owed), DispatcherPriority.Background);
         _writes.Flush();
@@ -96,7 +94,7 @@ public partial class EffectsPane
         var header = new DockPanel { Margin = new Thickness(0, 1, 0, 2) };
         if (!ReferenceEquals(target, layer))
         {
-            // A Cutout: its speed is its source clip's.
+            // Cutout: speed belongs to its source clip.
             _speedNote = new TextBlock { Text = "Follows source clip", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0), ToolTip = "A Cutout runs at its source clip's speed." };
             _speedNote.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
             DockPanel.SetDock(_speedNote, Dock.Right);
@@ -115,7 +113,7 @@ public partial class EffectsPane
             _vm?.SetViewSetting(s => s.SpeedRipplesTimeline = on));
         body.Children.Add(_rippleCheck);
 
-        // A video: Smooth Slow-Mo and the engine of its in-betweens (a setting of this PC's).
+        // Video: Smooth Slow-Mo and the interpolation engine (a machine setting).
         if (!sound)
         {
             _smoothCheck = SpeedCheck("Smooth Slow-Mo", target.SmoothSlowMo, "Optical-flow in-betweens when slower than 1x.", on =>
@@ -124,7 +122,7 @@ public partial class EffectsPane
             body.Children.Add(EngineRow());
         }
 
-        // A sound, or a video that carries one (its own, or its streams' lanes): how its sound follows the speed.
+        // Audio, or video with audio (own or stream lanes): how audio follows the speed.
         if (sound || target.CarriesSound || SpeedFamily(target).Any(l => l.IsAudio))
         {
             _keepPitchCheck = SpeedCheck("Keep Pitch", target.KeepPitch, "Off: the pitch follows the speed, like tape.", on =>
@@ -140,7 +138,7 @@ public partial class EffectsPane
         ShowSpeed();
     }
 
-    /// <summary>The clip a clip's card sets the speed of: a Cutout's source clip (the Cutout runs at it), else the clip itself.</summary>
+    /// <summary>Speed target for a clip: a Cutout's source clip, else the clip itself.</summary>
     private Layer SpeedTargetOf(Layer layer)
     {
         if (_vm is { } vm && vm.IsCutout(layer) && vm.ClipOf(layer) is { ParentClipId: { } parent } && vm.Document.FindClip(parent) is { } source && vm.ViewOf(source) is { } view)
@@ -148,7 +146,7 @@ public partial class EffectsPane
         return layer;
     }
 
-    /// <summary>The clips that run at a clip's speed with it (its streams' lanes, its Cutouts: MainViewModel.SetClipSpeed's family), as views.</summary>
+    /// <summary>Views of clips sharing the target's speed (stream lanes, Cutouts: MainViewModel.SetClipSpeed's family).</summary>
     private List<Layer> SpeedFamily(Layer target)
     {
         var family = new List<Layer>();
@@ -170,7 +168,7 @@ public partial class EffectsPane
         return family;
     }
 
-    // ----- The rows -----
+    // ----- Card rows -----
 
     private Grid LabelledRow(string label, out int next)
     {
@@ -183,14 +181,14 @@ public partial class EffectsPane
         return row;
     }
 
-    // Typing in a box (it has the keyboard; not the card writing it, nor a sideways drag) marks it typed.
+    // Marks a box as typed when its text changes with keyboard focus (not card updates or sideways drags).
     private void WatchTyping(TextBox box) => box.TextChanged += (_, _) =>
     {
         if (!_speedShowing && box.IsKeyboardFocusWithin)
             _typedBoxes.Add(box);
     };
 
-    // Whether a box being left writes what it holds: typed in, and still on the card (not one a rebuild has just taken away).
+    // On focus loss, commit only if typed and still in the card (not removed by a rebuild).
     private bool LeftTyped(TextBox box) => _typedBoxes.Remove(box) && SpeedPanel.IsAncestorOf(box);
 
     private TextBox ValueBox(string name, string usual, double min, double max, int decimals, double dragStep)
@@ -205,8 +203,8 @@ public partial class EffectsPane
         return box;
     }
 
-    // The speed: a log slider and its box. A drag (of either) shows what it would give and writes it when let go; a key on the slider
-    // or a value typed (Enter, or the box left) is written at once.
+    // Speed row: log slider plus box. Drags (either control) preview and commit on release; slider keys and typed values (Enter or focus
+    // loss) commit immediately.
     private Grid SpeedRow()
     {
         var row = LabelledRow("Speed (x)", out _);
@@ -235,7 +233,7 @@ public partial class EffectsPane
         };
         box.TextChanged += (_, _) =>
         {
-            // A box dragged sideways (NumericInput): shown as it goes, written when let go. Typing waits for Enter or for the box to be left.
+            // Sideways box drag (NumericInput) previews live and commits on release; typing waits for Enter or focus loss.
             if (_speedShowing || !_speedHeld || !TryReadSpeed(box.Text, out var speed))
                 return;
             Preview(speed);
@@ -256,7 +254,7 @@ public partial class EffectsPane
                 CommitSpeed(speed);
         };
 
-        // A double-click puts the box back to 1x (NumericInput's reset, which has handled the click by then): written at once.
+        // Double-click reset to 1x (NumericInput already handled it, hence handledEventsToo): commit immediately.
         box.AddHandler(Control.PreviewMouseDoubleClickEvent, new MouseButtonEventHandler((_, _) =>
         {
             _typedBoxes.Remove(box);
@@ -282,7 +280,7 @@ public partial class EffectsPane
         return pills;
     }
 
-    // How long the clip should be on the timeline: the speed follows (its media span over the length), within 0.1x to 16x.
+    // Target Duration: speed = media span / duration, clamped to 0.1x-16x.
     private Grid DurationRow()
     {
         var row = LabelledRow("Target Duration", out _);
@@ -321,7 +319,7 @@ public partial class EffectsPane
         return row;
     }
 
-    // Smooth Slow-Mo's engine (AppSettings.FrameInterpolationEngine): Auto is HandPeg's shader today; the vendor's hardware is shown, not offered.
+    // Interpolation engine (AppSettings.FrameInterpolationEngine): Auto currently means the HandPeg shader; vendor hardware is listed but disabled.
     private Grid EngineRow()
     {
         var row = LabelledRow("Interpolation", out _);
@@ -344,7 +342,7 @@ public partial class EffectsPane
         return row;
     }
 
-    // Pitch Shift, -12 to +12 semitones: the sound's Pitch and Tempo filter (its tempo left as it is), on the clip and its streams' lanes.
+    // Pitch Shift -12..+12 st via the Pitch and Tempo filter (tempo unchanged), applied to the clip and its stream lanes.
     private Grid PitchRow(Layer target)
     {
         var row = LabelledRow("Pitch Shift (st)", out _);
@@ -376,7 +374,7 @@ public partial class EffectsPane
                 slider.Value = Math.Round(Math.Max(-12, Math.Min(semitones, 12)));
         }
 
-        // (A sideways drag of the box writes as it goes; typing waits for Enter or for the box to be left.)
+        // Sideways drags apply live (no keyboard focus); typing waits for Enter or focus loss.
         box.TextChanged += (_, _) =>
         {
             if (!box.IsKeyboardFocusWithin)
@@ -408,7 +406,7 @@ public partial class EffectsPane
         return check;
     }
 
-    // ----- Writing -----
+    // ----- Commit -----
 
     private void SpeedHeld(bool held)
     {
@@ -425,8 +423,8 @@ public partial class EffectsPane
         {
             CommitSpeed(owed);
 
-            // 5.6A review: the thumb (or a track's RepeatButton) still holds the pointer here (PreviewMouseLeftButtonUp), so ShowSpeed left the
-            // slider where the drag had it; once it lets go, the slider shows what was written (the detent, or the old speed when refused).
+            // The thumb (or track RepeatButton) still holds capture here (PreviewMouseLeftButtonUp), so ShowSpeed skipped the slider; after
+            // release, resync it to the committed value (detent, or the old speed if refused).
             Dispatcher.BeginInvoke(() =>
             {
                 if (!_speedHeld)
@@ -435,14 +433,14 @@ public partial class EffectsPane
         }
     }
 
-    // A drag's speed, shown (the slider, the box, the length it would give) and owed until let go.
+    // Drag preview: show the speed (slider, box, resulting length) and hold it as owed until release.
     private void Preview(double speed)
     {
         _speedOwed = speed;
         ShowSpeed(speed);
     }
 
-    // The speed set on the clip (its family with it, ripple as the setting says): one undo step, the clip's own edit (no checkpoint first).
+    // Commits speed (with family, ripple per setting) as one Undo step via SetClipSpeed (no prior checkpoint).
     private void CommitSpeed(double speed)
     {
         _speedOwed = null;
@@ -456,8 +454,7 @@ public partial class EffectsPane
         ShowSpeed();
     }
 
-    // An option of the clip's look, set on it and on its family (a Cutout and its source clip are one moving picture; a video's streams' lanes
-    // are its sound), as one undo step.
+    // Sets a look option on the target and its family (Cutouts share the source picture; stream lanes are its audio) as one Undo step.
     private void SetOption(string label, Action<Layer> set)
     {
         if (_vm is not { } vm || _speedTarget is not { } target)
@@ -472,15 +469,15 @@ public partial class EffectsPane
         }
     }
 
-    // A Pitch Shift: paced with the pane's other writes (each write is a new sound program); a slider drag is one undo step.
+    // Pitch Shift: paced with other pane writes (each write rebuilds the audio program); a slider drag is one Undo step.
     private void PitchChanged(double semitones)
     {
         _drag.Follow();
         _writes.Queue(PitchWriteKey, () => WritePitch(semitones));
     }
 
-    // The semitones put into the Pitch and Tempo filter of the clip and of every sound of its family (each a copy of its own filters),
-    // after its undo step. The sound's own cards' copy (EffectsPane.Audio.cs) takes it too, so they never write it back.
+    // Writes semitones into the Pitch and Tempo filter of the target and each audio family member (cloned filters) after the Undo step.
+    // The audio cards' working copy (EffectsPane.Audio.cs) is updated too, so it never writes a stale value back.
     private void WritePitch(double semitones)
     {
         if (_vm is null || _speedTarget is not { } target)
@@ -507,16 +504,16 @@ public partial class EffectsPane
         }
     }
 
-    /// <summary>Semitones put into a sound's Pitch and Tempo filter, its tempo left as it is: on while either moves anything.</summary>
+    /// <summary>Sets PitchSemitones (tempo unchanged); PitchTempo is enabled while pitch or tempo differs from neutral.</summary>
     internal static void WithPitch(TrackAudioFilters filters, double semitones)
     {
         filters.PitchSemitones = Math.Round(Math.Max(-12, Math.Min(semitones, 12)));
         filters.PitchTempo = filters.PitchSemitones != 0 || Math.Abs(filters.Tempo - 1) > 1e-9;
     }
 
-    // ----- Showing -----
+    // ----- Display -----
 
-    // The card's controls from the clip (or from a drag's speed), nothing written while they are.
+    // Refreshes controls from the clip (or a drag preview speed) with writes suppressed.
     private void ShowSpeed(double? dragged = null)
     {
         if (_speedTarget is not { } target || _speedSlider is null)
@@ -525,17 +522,17 @@ public partial class EffectsPane
         _speedShowing = true;
         try
         {
-            // (Not under the pointer dragging the slider itself: its thumb stays where the pointer has it, the detent is taken when let go.)
+            // Skip the slider while it holds capture: the thumb follows the pointer; the detent applies on release.
             var speed = dragged ?? target.Speed;
             if (!_speedSlider.IsMouseCaptureWithin)
                 _speedSlider.Value = Math.Log2(Math.Max(Layer.SlowestSpeed, Math.Min(speed, Layer.FastestSpeed)));
-            // (A box being typed in keeps what is typed.)
+            // Boxes being typed in keep their text.
             if (_speedBox is { } box && (dragged is not null || !_typedBoxes.Contains(box)))
                 box.Text = speed.ToString("0.00", CultureInfo.InvariantCulture);
             foreach (var (pill, value) in _speedPillButtons)
                 pill.IsChecked = Math.Abs(speed - value) < 0.0005;
 
-            // The length it has (or would have at the dragged speed): the media it plays over the speed.
+            // Timeline length = media span / speed (current or dragged).
             if (_durationBox is { } duration && !_typedBoxes.Contains(duration))
             {
                 var span = _vm?.ClipOf(target) is { } clip ? clip.MediaEnd - clip.MediaOffset : target.Duration * target.Speed;
@@ -572,15 +569,14 @@ public partial class EffectsPane
     {
         switch (propertyName)
         {
-            // Its speed (an edit, Undo), its length, its options: the card shows them again (a drag in progress keeps its own speed).
+            // Speed, length or option changed (edit or Undo): refresh, unless a drag is in progress.
             case nameof(Layer.Speed) or nameof(Layer.ClipSpeed) or nameof(Layer.Duration) or nameof(Layer.MediaOffset)
                 or nameof(Layer.SmoothSlowMo) or nameof(Layer.KeepPitch) or nameof(Layer.SpectralAudio) or nameof(Layer.AudioFilters):
                 if (!_speedHeld && ReferenceEquals(_layer, _speedFor))
                     ShowSpeed();
                 break;
 
-            // The Opacity card comes when the clip's opacity or its keys first say something (set elsewhere: the timeline, the
-            // Keyframes pane): rebuilt only when that answer changes, never for a value moved.
+            // Opacity or keys changed elsewhere (timeline, Keyframes pane): rebuild only when OpacityShows flips, not on every value change.
             case nameof(Layer.Opacity) or Layer.KeysChanged:
                 if (_layer is { HasStyle: true, IsAdjustment: false } layer && OpacityShows(layer) != _opacityCardShown)
                     _rebuild.Request();
@@ -589,15 +585,15 @@ public partial class EffectsPane
         }
     }
 
-    // ----- The Opacity card -----
+    // ----- Opacity card -----
 
-    /// <summary>Whether a picture clip's Opacity card says something: below 100 %, keyed, or added or shown before this session.</summary>
+    /// <summary>True when the Opacity card is meaningful: below 100 %, keyed, or added/shown earlier this session.</summary>
     private static bool OpacityShows(Layer layer) =>
         layer.Opacity < 100 || layer.HasKeys(KeyProperty.Opacity) || (layer.ClipId != Guid.Empty && OpacityShownFor.Contains(layer.ClipId));
 
     private partial bool ShowsOpacityCard(Layer layer)
     {
-        // Shown once, it stays for the session: a drag back to 100 % never takes it away under the pointer.
+        // Sticky for the session so dragging back to 100 % never removes it under the pointer.
         var shows = OpacityShows(layer);
         if (shows && layer.ClipId != Guid.Empty)
             OpacityShownFor.Add(layer.ClipId);
@@ -616,9 +612,9 @@ public partial class EffectsPane
         Rebuild();
     }
 
-    // ----- Pure parts (the goldens' too) -----
+    // ----- Pure helpers (also used by goldens) -----
 
-    /// <summary>The speed a log slider's place stands for: 2 to its power, to the hundredth, resting on a usual speed within a detent of it.</summary>
+    /// <summary>Slider position to speed: 2^place rounded to 0.01, snapping to a pill speed within <see cref="PillDetent"/>.</summary>
     internal static double SpeedOfSlider(double place)
     {
         foreach (var pill in SpeedPills)
@@ -630,7 +626,7 @@ public partial class EffectsPane
         return Math.Round(Math.Max(Layer.SlowestSpeed, Math.Min(Math.Pow(2, place), Layer.FastestSpeed)), 2);
     }
 
-    /// <summary>A speed typed into the box: a number (an "x" after it allowed), within 0.1x to 16x; false for anything else.</summary>
+    /// <summary>Parses a typed speed (optional trailing "x"), clamped to 0.1x-16x; false if not a positive number.</summary>
     internal static bool TryReadSpeed(string text, out double speed)
     {
         var typed = text.Trim().TrimEnd('x', 'X').Trim();
@@ -644,7 +640,7 @@ public partial class EffectsPane
         return false;
     }
 
-    /// <summary>A length typed into Target Duration: a time in the format in use (TimeDisplay), or a number of seconds.</summary>
+    /// <summary>Parses Target Duration: the current TimeDisplay format, or plain seconds (optional "s").</summary>
     internal static bool TryReadDuration(string text, out double seconds)
     {
         if (TimeDisplay.TryParse(text, out seconds, out _) && seconds > 0)
@@ -657,20 +653,20 @@ public partial class EffectsPane
     }
 
     /// <summary>
-    /// The speed that makes a clip whose file stretch is <paramref name="mediaSpan"/> seconds last <paramref name="target"/> on the timeline:
-    /// their ratio, held to 0.1x to 16x and to the thousandth (as an edit sets it); NaN when either is no length.
+    /// Speed making <paramref name="mediaSpan"/> seconds of media last <paramref name="target"/> seconds: their ratio clamped to 0.1x-16x and
+    /// rounded to 0.001 (as edits store it); NaN when either is not a positive length.
     /// </summary>
     internal static double SpeedForDuration(double mediaSpan, double target) =>
         mediaSpan > 0 && target > 0 && double.IsFinite(mediaSpan) && double.IsFinite(target)
             ? Math.Round(Math.Max(Layer.SlowestSpeed, Math.Min(mediaSpan / target, Layer.FastestSpeed)), 3)
             : double.NaN;
 
-    /// <summary>A speed as a pill or a menu shows it: "0.25x", "1x", "16x".</summary>
+    /// <summary>Speed label for pills and menus ("0.25x", "1x", "16x").</summary>
     internal static string SpeedLabel(double speed) => speed.ToString("0.##", CultureInfo.InvariantCulture) + "x";
 
     /// <summary>
-    /// Why the vendor's optical-flow hardware is not offered (worked out on the interface's side, no device made): an NVIDIA card with its
-    /// optical-flow library is one HandPeg does not reach yet; anything else has none it can use. The cards are not listed for it.
+    /// Reason vendor optical flow is unavailable (UI-side check, no device created): NVIDIA with nvofapi64.dll is not wired up in this build;
+    /// other GPUs have no usable path. Cached once adapters are listed.
     /// </summary>
     internal static string VendorFlowReason()
     {

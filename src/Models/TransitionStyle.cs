@@ -3,14 +3,13 @@ using HandPegApp.Models.Effects;
 namespace HandPegApp.Models;
 
 /// <summary>
-/// How a clip's picture comes on over its fade in, or goes over its fade out (its sound fades the same way whatever this
-/// is). Every clip can fade on its own, over whatever is under it, so a transition between two clips on separate tracks
-/// is the upper one's fade over the lower. A direction is the way the edge of a wipe, or the picture of a slide, travels.
+/// Visual style of a clip's fade in/out (audio always fades linearly). Fades composite over whatever is below, so a cross-track
+/// transition is the upper clip's fade. Direction is the travel of a wipe edge or slide.
 /// </summary>
-/// <remarks>Saved by name in projects: new styles are added at the end, and none is renamed.</remarks>
+/// <remarks>Serialized by name: append new styles, never rename.</remarks>
 public enum TransitionStyle
 {
-    /// <summary>Its opacity goes from nothing to all (or back): the plain fade, and a cross dissolve over a clip under it.</summary>
+    /// <summary>Opacity ramp: plain fade, or cross dissolve over a clip below.</summary>
     Dissolve,
 
     WipeLeft,
@@ -32,7 +31,7 @@ public enum TransitionStyle
     /// <summary>The Thanos Snap: the picture breaks into embers on a wind (or gathers itself out of them).</summary>
     ParticleSnap,
 
-    /// <summary>Whips in from the right, smeared the way it goes (or away to the left): a camera whip (5.2.1).</summary>
+    /// <summary>Camera whip: enters from the right (exits left) with directional motion blur.</summary>
     WhipPan,
 
     /// <summary>Punches in from three times its size about its middle, streaked outward (or away into it).</summary>
@@ -41,7 +40,7 @@ public enum TransitionStyle
     /// <summary>Torn rows and split colours that settle as it comes on, blinking between it and what is under it.</summary>
     RgbGlitch,
 
-    /// <summary>A whole turn about its anchor, blurred along the turn, coming on as it starts (or going as it ends).</summary>
+    /// <summary>Full rotation about the anchor with rotational blur, appearing at the start (or vanishing at the end).</summary>
     Spin,
 }
 
@@ -85,10 +84,8 @@ public static class TransitionStyles
     public static bool IsSlide(TransitionStyle style) => style is TransitionStyle.SlideLeft or TransitionStyle.SlideRight or TransitionStyle.SlideUp or TransitionStyle.SlideDown;
 
     /// <summary>
-    /// The curve a fade of this style follows, as how much of the clip is there (0 to 1) against how far through the fade
-    /// the clock is: a dissolve evenly; a wipe easing in and out; a slide arriving gently (and leaving as gently as it
-    /// starts); a zoom with a little overshoot; the Thanos Snap evenly; a whip pan and a spin easing in and out, a zoom warp
-    /// landing gently, a glitch evenly. The same curve on the timeline and in the graph (EasingCurves).
+    /// Progress curve (visibility 0-1 vs. fade time): dissolve, Thanos Snap and glitch linear; wipe, whip pan and spin ease in-out;
+    /// slide and zoom warp ease out; zoom slight overshoot. Shared by Timeline and graph (EasingCurves).
     /// </summary>
     public static EasingType Easing(TransitionStyle style) => style switch
     {
@@ -99,7 +96,7 @@ public static class TransitionStyles
         _ => EasingType.EaseInOut,
     };
 
-    /// <summary>Its shader in the v5.0 compositor (ARCHITECTURE_CONTRACTS.md): one for each family, the direction in the packet.</summary>
+    /// <summary>Compositor shader slot: one per family, with direction passed in the packet.</summary>
     public static GpuShaderSlot GpuSlot(TransitionStyle style) => style switch
     {
         TransitionStyle.Zoom => GpuShaderSlot.TransitionZoom,
@@ -115,9 +112,8 @@ public static class TransitionStyles
     };
 
     /// <summary>
-    /// A fade of this style at a moment, as the v5.0 compositor takes it: P0 how much of the clip is there along the
-    /// style's curve (<see cref="Easing"/>, as the graph writes it), P1 and P2 the direction (<see cref="Direction"/>),
-    /// P3 how far through the fade the clock is (0 to 1), P4 1 for a fade in and 0 for a fade out.
+    /// Compositor packet: P0 eased progress (<see cref="Easing"/>), P1-P2 direction (<see cref="Direction"/>), P3 linear progress 0-1,
+    /// P4 1 for fade in, 0 for fade out.
     /// </summary>
     public static GpuEffectPacket GpuPacket(TransitionStyle style, double progress, bool fadingIn)
     {

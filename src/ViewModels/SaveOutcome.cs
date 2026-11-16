@@ -1,25 +1,24 @@
 namespace HandPegApp.ViewModels;
 
-/// <summary>What a project save did.</summary>
+/// <summary>Project save result.</summary>
 public enum SaveResult
 {
-    /// <summary>The project was written.</summary>
+    /// <summary>Project written.</summary>
     Saved,
 
-    /// <summary>Nothing was written by choice: the user kept another project's file, or the save was not possible yet (a write still under way).</summary>
+    /// <summary>Intentionally not written: another project's file was kept, or a prior write is still in progress.</summary>
     Declined,
 
-    /// <summary>Writing failed (the folder is read-only, the disk is full, the file is newer than this version writes).</summary>
+    /// <summary>Write failed (read-only folder, disk full, or file newer than this version's format).</summary>
     Failed,
 }
 
 /// <summary>
-/// A project save's result and the status line it showed. Callers branch on <see cref="Result"/>, never on the line's wording,
-/// which is user-facing text free to change (and to be localized).
+/// Save result plus its status line. Callers branch on <see cref="Result"/>, never on the user-facing (localizable) wording.
 /// </summary>
 public readonly record struct SaveOutcome(SaveResult Result, string Line)
 {
-    /// <summary>Whether the project was written.</summary>
+    /// <summary>Whether the project was saved.</summary>
     public bool IsSaved => Result == SaveResult.Saved;
 
     public override string ToString() => Line;

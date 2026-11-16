@@ -6,26 +6,23 @@ using HandPegApp.Compositor;
 
 namespace HandPegApp.Services;
 
-/// <summary>The frame cache's counters (<see cref="CompositorClient.CacheStats"/>): see <see cref="ControlBlock"/>'s Instant Seek part.</summary>
+/// <summary>Frame cache counters (<see cref="CompositorClient.CacheStats"/>; see the Instant Seek section of <see cref="ControlBlock"/>).</summary>
 public readonly record struct FrameCacheStats(
     long Hits, long Misses, long ApproximatePresents, long Bytes, long BudgetBytes, int Frames,
     float LastExactLatencyMs, float WorstExactLatencyMs, int BusyDecodeThreads, long PredictedHits, long Evictions, bool PresentedExact);
 
 /// <summary>
-/// HandPeg's side of the GPU compositor (Pass 5.0-Core, 5.0A): it owns the control plane (CompositorSharedMemory), starts
-/// the worker (HandPeg.exe --compositor-worker, through <see cref="WorkerProcess"/>: STARTF_FORCEOFFFEEDBACK, the
-/// kill-on-close job) with a standby beside it, and watches them from a thread of its own.
-/// <para>Scenes are written straight into the shared slot (<see cref="Scene"/> / <see cref="Layer"/>, then
-/// <see cref="Publish"/>): a few microseconds, no copy, no allocation, no waiting for the worker. One thread writes
-/// scenes (the writer's slot is that thread's alone); the supervisor never touches it.</para>
-/// <para>Self-healing: when the worker ends unasked (a crash, or a TDR: <see cref="CompositorProtocol.DeviceLostExitCode"/>)
-/// the standby takes over at once and draws the newest scene the triple buffer holds (published and not yet taken, or the
-/// one the fallen worker held: neither is the writer's), and <see cref="EngineRecovered"/> is raised once its first
-/// frame is shown (the title bar's "Preview engine recovered" badge). Never a dialog, never HandPeg's own fault.</para>
+/// Client side of the GPU compositor: owns the control plane (CompositorSharedMemory), launches the worker
+/// (HandPeg.exe --compositor-worker via <see cref="WorkerProcess"/>: STARTF_FORCEOFFFEEDBACK, kill-on-close job) plus a standby, and
+/// supervises them on a dedicated thread.
+/// <para>Scenes are written in place (<see cref="Scene"/> / <see cref="Layer"/>, then <see cref="Publish"/>): microseconds, no copy,
+/// no allocation, no waiting. A single thread owns the writer slot; the supervisor never touches it.</para>
+/// <para>Self-healing: on unexpected worker exit (crash or TDR, <see cref="CompositorProtocol.DeviceLostExitCode"/>) the standby takes
+/// over and renders the newest triple-buffer scene; <see cref="EngineRecovered"/> fires after its first frame (title-bar badge). No dialogs.</para>
 /// </summary>
 public sealed class CompositorClient : IDisposable
 {
-    /// <summary>Raised (on the supervisor's thread) after the engine came back from a crash or a lost device: the time it took, ms.</summary>
+    /// <summary>Raised on the supervisor thread after recovery from a crash or device loss, with the recovery time (ms).</summary>
     public static event Action<double>? EngineRecovered;
 
     private readonly CompositorSharedMemory _shared;
@@ -49,16 +46,14 @@ public sealed class CompositorClient : IDisposable
     private readonly bool _announcesRecovery;
 
     /// <summary>
-    /// Starts the compositor on the card at <paramref name="adapter"/> (DXGI's order; -1 the high-performance card).
-    /// With <paramref name="keepStandby"/> a second process waits to take over (the under-150-ms respawn).
+    /// Starts the compositor on DXGI adapter <paramref name="adapter"/> (-1 = high-performance). <paramref name="keepStandby"/> keeps a
+    /// second process ready for sub-150 ms takeover.
     /// </summary>
     /// <param name="announcesRecovery">
-    /// Raise <see cref="EngineRecovered"/> (the title bar's badge) after a recovery: the player's engine; an export's or a
-    /// filmstrip's worker recovers quietly.
+    /// Raise <see cref="EngineRecovered"/> after recovery (player only; export and filmstrip workers recover silently).
     /// </param>
     /// <param name="softwareDecode">
-    /// Decode on the processor even where the card could (Settings' hardware video decoding off: the player and its
-    /// filmstrips pass it; exports never do).
+    /// Force CPU decode (hardware decoding disabled; passed by the player and filmstrips, never by exports).
     /// </param>
     public CompositorClient(int adapter = -1, bool keepStandby = true, long frameCacheBudget = 0, int decodeThreads = 0, bool announcesRecovery = true, bool softwareDecode = false)
     {
@@ -88,7 +83,7 @@ public sealed class CompositorClient : IDisposable
 
     public CompositorWorkerState State => (CompositorWorkerState)Volatile.Read(ref _shared.Control.WorkerState);
 
-    /// <summary>How many times the engine has been brought back, and how long the last time took (ms, to its first frame).</summary>
+    /// <summary>Recovery count and last recovery time to first frame (ms).</summary>
     public int Recoveries { get; private set; }
 
     public double LastRecoveryMs { get; private set; }
@@ -103,9 +98,8 @@ public sealed class CompositorClient : IDisposable
         : string.Create(CultureInfo.InvariantCulture, $"{CompositorWorker.Argument} {BaseName} {_adapter} --standby {standby}")) + FfmpegArguments();
 
     /// <summary>
-    /// The FFmpeg and ffprobe HandPeg uses (DependencyUpdater: the settings' own, else the installed copy), for the streams
-    /// Media Foundation cannot decode (FfmpegVideoDecoder, 5.2-Arm64AndNpu): read again for every worker started, so one
-    /// installed or chosen since is the next worker's. Whether they are there is the worker's question, asked only when needed.
+    /// FFmpeg/ffprobe paths (DependencyUpdater: custom, else managed) for streams Media Foundation cannot decode (FfmpegVideoDecoder).
+    /// Re-read per worker launch so newly installed tools apply; existence is checked lazily by the worker.
     /// </summary>
     private static string FfmpegArguments()
     {
@@ -133,7 +127,7 @@ public sealed class CompositorClient : IDisposable
     /// <summary>Clears the scene being written (header and layers) to start a new one.</summary>
     public void ClearScene() => _shared.Scene(_shared.WriterSlot).Clear();
 
-    /// <summary>Hands the scene to the worker and wakes it; returns its sequence number (to wait for with <see cref="WaitForFrame"/>).</summary>
+    /// <summary>Publishes the scene and wakes the worker; returns its sequence number for <see cref="WaitForFrame"/>.</summary>
     public long Publish()
     {
         var sequence = Interlocked.Increment(ref _sequence);
@@ -144,8 +138,8 @@ public sealed class CompositorClient : IDisposable
     }
 
     /// <summary>
-    /// Waits until the frame of <paramref name="sequence"/> (or a later one) has been presented; false when the time ran out or
-    /// <paramref name="abort"/> was signalled (an export cancelled or failed: its render thread then stops in milliseconds).
+    /// Waits until <paramref name="sequence"/> or later is presented; false on timeout or when <paramref name="abort"/> is signalled
+    /// (export cancel/failure, so the render thread stops within ms).
     /// </summary>
     public bool WaitForFrame(long sequence, int milliseconds, WaitHandle? abort = null)
     {
@@ -168,9 +162,8 @@ public sealed class CompositorClient : IDisposable
     // ----- Instant Seek -----
 
     /// <summary>
-    /// Leaves up to <see cref="CompositorProtocol.MaxHints"/> moments the worker should decode ahead (the pointer's moment
-    /// over the timeline, where a scrub is heading, the next cut, the playhead), replacing the last ones, and wakes it. No
-    /// frame is drawn for it; cheap enough for every pointer move. One thread at a time (the one that writes scenes).
+    /// Replaces up to <see cref="CompositorProtocol.MaxHints"/> pre-decode hints (hover, scrub target, next cut, playhead) and wakes the
+    /// worker without rendering; cheap per pointer move. Scene-writer thread only.
     /// </summary>
     public void SetHints(ReadOnlySpan<GpuSeekHint> hints)
     {
@@ -184,8 +177,7 @@ public sealed class CompositorClient : IDisposable
     }
 
     /// <summary>
-    /// The most the frame cache may hold: 0 automatic (the hardware's ceiling, grown to on demand), -1 off, else bytes, which cap the
-    /// growth (AppSettings.GpuFrameCacheMb, 5.4D-TabPerf). Read by the worker on its next turn.
+    /// Frame cache cap: 0 automatic (grow to hardware ceiling), -1 disabled, else bytes (AppSettings.GpuFrameCacheMb). Applied next worker turn.
     /// </summary>
     public long FrameCacheBudget
     {
@@ -204,8 +196,8 @@ public sealed class CompositorClient : IDisposable
     private int _readbackGeneration;
 
     /// <summary>
-    /// Makes sure the readback section holds at least <paramref name="bytes"/> (a frame of BGRA8: width x height x 4): a
-    /// scene published with <see cref="FrameSceneHeader.FlagReadback"/> is then written into it by the worker.
+    /// Ensures the readback section holds at least <paramref name="bytes"/> (BGRA8: width x height x 4) for
+    /// <see cref="FrameSceneHeader.FlagReadback"/> scenes.
     /// </summary>
     public void EnsureReadback(long bytes)
     {
@@ -225,19 +217,17 @@ public sealed class CompositorClient : IDisposable
     internal const int ReadbackSliceMs = 20;
 
     /// <summary>
-    /// Waits up to <paramref name="milliseconds"/> for the frame of <paramref name="sequence"/> (published with
-    /// <see cref="FrameSceneHeader.FlagReadback"/>) to be read back, then copies it into <paramref name="into"/>: its BGRA8 rows
-    /// (width x height x 4), NV12's two planes with <see cref="FrameSceneHeader.FlagReadbackNv12"/>
-    /// (<see cref="CompositorProtocol.Nv12Bytes"/>), or P010's with <see cref="FrameSceneHeader.FlagReadbackP010"/> (<see cref="CompositorProtocol.P010Bytes"/>). False on a timeout, or when <paramref name="into"/> is too small.
+    /// Waits up to <paramref name="milliseconds"/> for the readback of <paramref name="sequence"/> and copies it into <paramref name="into"/>:
+    /// BGRA8, NV12 (<see cref="FrameSceneHeader.FlagReadbackNv12"/>, <see cref="CompositorProtocol.Nv12Bytes"/>) or P010
+    /// (<see cref="FrameSceneHeader.FlagReadbackP010"/>, <see cref="CompositorProtocol.P010Bytes"/>). False on timeout or a short buffer.
     /// </summary>
     public bool TryReadback(long sequence, Span<byte> into, out int width, out int height, int milliseconds) =>
         TryReadback(sequence, into, out width, out height, milliseconds, abort: null);
 
     /// <summary>
-    /// <see cref="TryReadback(long, Span{byte}, out int, out int, int)"/> that also gives up, false, as soon as
-    /// <paramref name="abort"/> is set: the player's stop event (GpuPreviewEngine's Export Frame and project thumbnail), so that a
-    /// pump told to stop leaves within a slice and is joined before this client's memory is let go (Pass 5.2D:
-    /// a 20 s capture wait outlived the 2 s join and read the control plane after it was unmapped).
+    /// <see cref="TryReadback(long, Span{byte}, out int, out int, int)"/> that returns false once <paramref name="abort"/> (the player's stop
+    /// event) is set, so a stopping pump exits within one slice and joins before the mapping is released (a long capture wait would
+    /// otherwise outlive the join and read unmapped memory).
     /// </summary>
     public bool TryReadback(long sequence, Span<byte> into, out int width, out int height, int milliseconds, WaitHandle? abort)
     {
@@ -249,7 +239,7 @@ public sealed class CompositorClient : IDisposable
             return false;
 
         (width, height) = (control.ReadbackWidth, control.ReadbackHeight);
-        // BGRA8 rows, P010's (two bytes a sample, 5.4B), or NV12's: the row's bytes say which.
+        // Row byte count identifies the format: BGRA8, P010 (2 bytes/sample) or NV12.
         var bytes = control.ReadbackRowBytes == width * 4 ? (long)width * height * 4
             : control.ReadbackRowBytes == width * 2 ? CompositorProtocol.P010Bytes(width, height) : CompositorProtocol.Nv12Bytes(width, height);
         if (bytes <= 0 || into.Length < bytes || _readbackView is not { } view || bytes > view.Capacity)
@@ -272,11 +262,9 @@ public sealed class CompositorClient : IDisposable
     }
 
     /// <summary>
-    /// Waits until <paramref name="counter"/> (a count the worker raises: <see cref="ControlBlock.ReadbackSequence"/>) reaches
-    /// <paramref name="target"/>, sleeping on <paramref name="signal"/> (the worker's frame event) a slice of at most
-    /// <see cref="ReadbackSliceMs"/> at a time. False when <paramref name="milliseconds"/> pass first, and false at once when
-    /// <paramref name="abort"/> is set: it is looked at before every slice and wakes the slice it comes in. Without an abort it
-    /// waits as it always did, with no allocation (the export's and the filmstrips' calls, every frame).
+    /// Waits for worker counter <paramref name="counter"/> (<see cref="ControlBlock.ReadbackSequence"/>) to reach <paramref name="target"/>,
+    /// sleeping on <paramref name="signal"/> in slices of at most <see cref="ReadbackSliceMs"/>. False on timeout, or immediately when
+    /// <paramref name="abort"/> is set (checked each slice and also waited on). Allocation-free (per-frame export/filmstrip path).
     /// </summary>
     internal static bool WaitForSequence(ref long counter, long target, WaitHandle signal, WaitHandle? abort, int milliseconds)
     {
@@ -299,10 +287,8 @@ public sealed class CompositorClient : IDisposable
     }
 
     /// <summary>
-    /// Empties Instant Seek's frame cache (Settings' Clear, a project closed): its video memory goes back at once and its budget is back at
-    /// the baseline. A tab put behind sends none (the TabPerf follow-up): its <see cref="TrimWorker"/> empties the cache where the card
-    /// wants it. A counted request (5.4D-TabPerf): a command left after it (a recovery's Redraw) cannot drop it.
-    /// Returns the request's number (<see cref="ControlBlock.ClearsDone"/> reaches it once served).
+    /// Clears the Instant Seek cache and resets its budget (Settings Clear, project close). Tab deactivation uses <see cref="TrimWorker"/>
+    /// instead. Counted request (survives later commands). Returns the request number (<see cref="ControlBlock.ClearsDone"/> reaches it).
     /// </summary>
     public int ClearFrameCache()
     {
@@ -312,14 +298,11 @@ public sealed class CompositorClient : IDisposable
     }
 
     /// <summary>
-    /// Has the worker give back what it holds (5.4D-TabPerf; a tab put behind, Settings' Clear): the cache's free list, its working
-    /// textures and the renderer's kept ones, the readback's staging, the driver's kept allocations, and its own heap; on unified memory or
-    /// a small card the cached frames too, which a big card keeps for the tab brought back (the TabPerf follow-up, the user's X1:
-    /// CompositorWorker.TrimEmptiesCache). Served between frames on the worker's next turn, but for handing the memory back to Windows
-    /// (the driver's Trim and the heap: CompositorWorker.GiveBack), which waits until nothing has been asked of the worker for a quarter of a
-    /// second and nothing plays, and is echoed then; a counted request, never lost to a later command. Returns the request's number for
-    /// <see cref="WaitForTrim"/>. 5.4.4: a scene published after it (a tab switch) keeps the working set and the driver's allocations for
-    /// the tab in front (the worker's idle trim gives them back once the player has rested).
+    /// Requests a worker memory trim (tab deactivation, Settings Clear): cache free list, working and renderer textures, readback staging,
+    /// driver allocations and heap; cached frames too on unified memory or small cards (CompositorWorker.TrimEmptiesCache). Served between
+    /// frames, except the OS give-back (driver Trim, heap; CompositorWorker.GiveBack), which waits for 250 ms idle with nothing playing.
+    /// Counted request; returns its number for <see cref="WaitForTrim"/>. A scene published afterwards keeps the working set for the
+    /// active tab (released later by the idle trim).
     /// </summary>
     public int TrimWorker()
     {
@@ -328,10 +311,10 @@ public sealed class CompositorClient : IDisposable
         return request;
     }
 
-    /// <summary>Waits up to <paramref name="milliseconds"/> until trim <paramref name="request"/> (from <see cref="TrimWorker"/>) is served: tests and tools.</summary>
+    /// <summary>Waits up to <paramref name="milliseconds"/> for trim <paramref name="request"/> (<see cref="TrimWorker"/>); tests and tools.</summary>
     public bool WaitForTrim(int request, int milliseconds) => WaitForCount(ref _shared.Control.TrimsDone, request, milliseconds);
 
-    /// <summary>Waits up to <paramref name="milliseconds"/> until clear <paramref name="request"/> (from <see cref="ClearFrameCache"/>) is served: tests and tools.</summary>
+    /// <summary>Waits up to <paramref name="milliseconds"/> for clear <paramref name="request"/> (<see cref="ClearFrameCache"/>); tests and tools.</summary>
     public bool WaitForClear(int request, int milliseconds) => WaitForCount(ref _shared.Control.ClearsDone, request, milliseconds);
 
     private bool WaitForCount(ref int done, int request, int milliseconds)
@@ -347,24 +330,23 @@ public sealed class CompositorClient : IDisposable
         return true;
     }
 
-    /// <summary>The worker's private bytes as it last published them (every 2 s and after a trim; 0 before its first): Settings' readout, tools.</summary>
+    /// <summary>Worker private bytes as last published (every 2 s and after trims; 0 initially).</summary>
     public long WorkerPrivateBytes => Volatile.Read(ref _shared.Control.WorkerPrivateBytes);
 
-    /// <summary>What the cache's free list holds (bytes): retired frames kept for reuse, which <see cref="FrameCacheStats.Bytes"/> leaves out.</summary>
+    /// <summary>Cache free-list bytes (excluded from <see cref="FrameCacheStats.Bytes"/>).</summary>
     public long CacheFreeBytes => Volatile.Read(ref _shared.Control.CacheFreeBytes);
 
-    /// <summary>The most the cache's budget may grow to now (bytes): the hardware's ceiling, or Settings' maximum when lower (5.4D-TabPerf).</summary>
+    /// <summary>Current budget ceiling (bytes): hardware ceiling or Settings maximum, whichever is lower.</summary>
     public long CacheMaximumBytes => Volatile.Read(ref _shared.Control.CacheMaximumBytes);
 
     /// <summary>The hardware's ceiling now (bytes): what Auto grows to at most.</summary>
     public long CacheCeilingBytes => Volatile.Read(ref _shared.Control.CacheCeilingBytes);
 
-    /// <summary>Whether the worker's card shares the PC's memory (5.4.4: ControlBlock.UnifiedMemory; false until the worker is Ready).</summary>
+    /// <summary>True for a unified-memory worker adapter (ControlBlock.UnifiedMemory); false until Ready.</summary>
     public bool UnifiedMemory => Volatile.Read(ref _shared.Control.UnifiedMemory) != 0;
 
     /// <summary>
-    /// How the worker keeps the sources of a tab put behind (5.4.4: ControlBlock.TabParkingRequest): 0 as always, 1 the player's (lean on
-    /// unified memory or on battery), 2 lean always (the golden tests).
+    /// Parked-tab source policy (ControlBlock.TabParkingRequest): 0 keep all, 1 player (lean on unified memory or battery), 2 always lean (goldens).
     /// </summary>
     public int TabParking
     {
@@ -391,8 +373,7 @@ public sealed class CompositorClient : IDisposable
     }
 
     /// <summary>
-    /// The decoders' counters as the worker last wrote them (tests, tools): opens, seeks, frames decoded, frames stretched
-    /// over a dropped frame, seeks made again after a late landing, moments with no frame.
+    /// Decoder counters (tests, tools): opens, seeks, frames decoded, back-filled drops, re-seeks after overshoot, uncovered times.
     /// </summary>
     public (int Opens, int Seeks, int Decoded, int Stretches, int LateLandings, int Missing) DecodeCounters
     {
@@ -414,9 +395,8 @@ public sealed class CompositorClient : IDisposable
     // ----- Sources and resources -----
 
     /// <summary>
-    /// Puts a video file in the source table at <paramref name="id"/> (0-63), with its I-frame times when known (seconds,
-    /// the file's own time, from MediaProbe's seek index): the worker opens a decoder for it when a layer first shows it.
-    /// <paramref name="streamIndex"/> counts video streams only (0 the first).
+    /// Registers a video in source-table slot <paramref name="id"/> (0-63) with optional I-frame times (file seconds, MediaProbe seek index);
+    /// the worker opens a decoder lazily. <paramref name="streamIndex"/> counts video streams only.
     /// </summary>
     public void SetSource(int id, string path, int streamIndex = 0, IReadOnlyList<double>? iFrames = null)
     {
@@ -438,9 +418,8 @@ public sealed class CompositorClient : IDisposable
             view.WriteArray(0, iFrames as double[] ?? [.. iFrames], 0, count);
         }
 
-        // A seqlock write: the generation is 0 while the fields change (Interlocked.Exchange is a full fence, so no field write is seen
-        // before it, also on ARM64), then the new generation is published after them (a release write). The worker reads the
-        // generation, the fields, a full fence, then the generation again, and takes the entry only when both reads agree.
+        // Seqlock write: set generation 0 (Interlocked.Exchange full fence, also on ARM64), write fields, then release-write the new
+        // generation. The worker reads generation, fields, fence, generation again, and accepts only when both reads match.
         Interlocked.Exchange(ref entry.Generation, 0);
         entry.Kind = (int)GpuSourceKind.Media;
         entry.StreamIndex = streamIndex;
@@ -460,9 +439,8 @@ public sealed class CompositorClient : IDisposable
     }
 
     /// <summary>
-    /// Hands a texture to the worker at <paramref name="id"/> (0-63): a mask or still (BGRA8, straight alpha), a LUT
-    /// (RGBA32F, size cubed, 2 to 256), or a curve (RGBA32F, 256 x 1). The pixels go into a section of their own, read once;
-    /// the section of the generation before is let go.
+    /// Uploads a texture to resource slot <paramref name="id"/> (0-63): mask/still (BGRA8, straight alpha), LUT (RGBA32F, N^3, N 2-256) or
+    /// curve (RGBA32F, 256 x 1). Pixels go into a new section read once; the previous generation's section is released.
     /// </summary>
     public void SetResource(int id, GpuResourceKind kind, int width, int height, int depth, ReadOnlySpan<byte> pixels)
     {
@@ -510,7 +488,7 @@ public sealed class CompositorClient : IDisposable
         _ => 0,
     };
 
-    /// <summary>Keeps the newest section of an entry; the one it replaces is let go (the worker never reads an old generation).</summary>
+    /// <summary>Stores the newest section and releases the replaced one (the worker never reads stale generations).</summary>
     private void KeepSection(string key, MemoryMappedFile? section)
     {
         MemoryMappedFile? old;
@@ -557,8 +535,8 @@ public sealed class CompositorClient : IDisposable
                     if (frames != framesSeen)
                         (framesSeen, failuresInARow) = (frames, 0);
 
-                    // Alive, but is it still turning? The worker beats on every turn of its loop and on every sample it
-                    // decodes; one that stood still for 10 s (15 s while it starts) is hung in a driver: ended and taken over.
+                    // Hang detection: the heartbeat advances per loop and per decoded sample; 10 s stall (15 s during startup) means a
+                    // driver hang, so kill and fail over.
                     var beat = Volatile.Read(ref _shared.Control.Heartbeat);
                     if (beat != lastBeat)
                         (lastBeat, beatSince) = (beat, Stopwatch.GetTimestamp());
@@ -615,7 +593,7 @@ public sealed class CompositorClient : IDisposable
                     }
                 }
 
-                // Closed while the worker was starting (Close waited on the gate): nothing more to do, and the control plane may be gone.
+                // Closed during worker startup (Close waited on the gate): stop; the control plane may already be gone.
                 if (_disposed)
                     return;
 
@@ -656,7 +634,7 @@ public sealed class CompositorClient : IDisposable
         }
     }
 
-    /// <summary>True once the supervisor stopped bringing the engine back: the player stops, says why and starts again (MainWindow.OnGpuFaulted).</summary>
+    /// <summary>True once the supervisor gives up respawning (MainWindow.OnGpuFaulted stops and restarts the player).</summary>
     public bool GaveUp => _gaveUp;
 
     private volatile bool _gaveUp;
@@ -667,7 +645,7 @@ public sealed class CompositorClient : IDisposable
         Volatile.Write(ref _shared.Control.WorkerState, (int)CompositorWorkerState.GaveUp);
     }
 
-    /// <summary>Waits until a frame is presented after the count <paramref name="framesBefore"/> (any scene: a recovery's redraw).</summary>
+    /// <summary>Waits until any frame is presented after count <paramref name="framesBefore"/> (e.g. a recovery redraw).</summary>
     private bool WaitForFramesAfter(int framesBefore, int milliseconds)
     {
         var clock = Stopwatch.StartNew();
@@ -684,10 +662,8 @@ public sealed class CompositorClient : IDisposable
     public void Dispose() => Close(keepMemory: false);
 
     /// <summary>
-    /// Ends the workers and lets go of the sections as <see cref="Dispose"/> does, but leaves the control plane, the readback
-    /// section and the events mapped and open: for an owner whose thread may still be inside a read or a wait on them
-    /// (GpuPreviewEngine's pump that did not stop within its join). Unmapped under that thread, its next read would be an access
-    /// violation, not an exception it could catch; kept, they go with the process. (Pass 5.2D)
+    /// Like <see cref="Dispose"/> (ends workers, releases sections) but keeps the control plane, readback section and events mapped for an
+    /// owner thread still blocked on them (a pump that missed its join); unmapping would cause an access violation. Leaked until process exit.
     /// </summary>
     public void DisposeKeepingMemory() => Close(keepMemory: true);
 
@@ -700,13 +676,13 @@ public sealed class CompositorClient : IDisposable
         _wake.Set();
         _stopping.Set();
 
-        // A supervisor that has not stopped (inside a slow CreateProcess) still reads the control plane and waits on the events after
-        // it: the processes and sections are ended below as always, but those are kept, as DisposeKeepingMemory keeps them.
+        // A supervisor still in a slow CreateProcess will touch the control plane and events afterwards: end processes and sections,
+        // but keep those mapped as DisposeKeepingMemory does.
         var supervisorStopped = ThreadStop.Join(_supervisor, 2000, "Compositor supervisor");
         keepMemory |= !supervisorStopped;
         lock (_gate)
         {
-            // The standby holds nothing: ended at once. The worker lets go of its device and textures first.
+            // Standby holds no resources: kill immediately. The worker releases its device and textures first.
             _standby?.Kill();
             _standby?.Dispose();
             _standby = null;

@@ -9,19 +9,17 @@ using System.Text.Json;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The crashes folder and what the two writers of reports share: HandPeg itself (<see cref="CrashReporter"/>) and its
-/// sentinel (<see cref="CrashSentinel"/>), which knows nothing of the settings or of <see cref="AppPaths"/> and is
-/// handed the folder. Nothing here loads WPF.
+/// Crash folder logic shared by <see cref="CrashReporter"/> and <see cref="CrashSentinel"/> (which receives the folder and never uses
+/// settings or <see cref="AppPaths"/>). WPF-free.
 /// </summary>
 public static class CrashReports
 {
-    /// <summary>How many reports are kept: the newest this many; older ones are deleted as each new one is written.</summary>
+    /// <summary>Number of newest reports retained; older ones are pruned on each write.</summary>
     public const int Kept = 50;
 
     /// <summary>
-    /// Writes a report into the folder, whole: to a temporary name first, then moved into place, so the folder never
-    /// holds half a report (HandPeg.CrashDesk watches it). Named by when and what: 20261024-153012-1a2b3c4d5e6f7a8b.hpcrash.
-    /// Returns the report's path.
+    /// Writes a report atomically (temp name, then move; HandPeg.CrashDesk watches the folder), named timestamp-signature
+    /// (yyyyMMdd-HHmmss-&lt;signature&gt;.hpcrash). Returns the path.
     /// </summary>
     public static string Write(CrashReport report, string folder)
     {
@@ -40,11 +38,10 @@ public static class CrashReports
         return path;
     }
 
-    // The format's own options, with the text written as it is: a report is meant to be opened and read by whoever
-    // has it, and "<file>.mkv" reads better than "<file>.mkv". (Any JSON reader reads both.)
+    // Serializer options with relaxed escaping so reports stay human-readable (any JSON reader accepts both forms).
     private static readonly JsonSerializerOptions WriteOptions = new(CrashReportJson.Options) { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
 
-    /// <summary>Deletes all but the newest <see cref="Kept"/> reports, and temporary files a writer that died left behind.</summary>
+    /// <summary>Keeps the newest <see cref="Kept"/> reports and deletes orphaned temp files.</summary>
     public static void Trim(string folder)
     {
         try
@@ -97,12 +94,12 @@ public static class CrashReports
         return deleted;
     }
 
-    // ----- Sending them (Pass 4.1B) -----
+    // ----- Upload -----
 
-    /// <summary>The file in the crashes folder that names, one per line, every report already sent: each is sent once.</summary>
+    /// <summary>Manifest of sent report names (one per line) ensuring each is sent once.</summary>
     public const string SentManifest = "sent.txt";
 
-    /// <summary>The most reports one pass sends: a folder that filled while offline is sent over a few starts, not in one burst.</summary>
+    /// <summary>Per-pass upload cap, spreading an offline backlog over several starts.</summary>
     public const int MaxSentPerPass = 20;
 
     private static readonly TimeSpan UploadTimeout = TimeSpan.FromSeconds(20);
@@ -110,8 +107,7 @@ public static class CrashReports
     private static HttpClient? _http;
 
     /// <summary>
-    /// Whether an endpoint may be sent to: an absolute https address, or http to this PC (a test server). Anything
-    /// else is refused, so a mistyped setting never sends a report in the clear.
+    /// True for an absolute https endpoint or http loopback (test server); anything else is refused so reports never go out in clear text.
     /// </summary>
     public static bool IsUsableEndpoint(string? endpoint, out Uri uri)
     {
@@ -122,7 +118,7 @@ public static class CrashReports
         return parsed.Scheme == Uri.UriSchemeHttps || (parsed.Scheme == Uri.UriSchemeHttp && parsed.IsLoopback);
     }
 
-    /// <summary>The reports in the folder not sent yet, oldest first (their file names begin with when they were written).</summary>
+    /// <summary>Unsent reports, oldest first (names start with the timestamp).</summary>
     public static List<string> Pending(string folder)
     {
         try
@@ -141,11 +137,9 @@ public static class CrashReports
     }
 
     /// <summary>
-    /// Sends the reports not sent yet, each once: read whole, checked to be a crash report (no other file in the folder
-    /// is ever sent), compressed with GZip and POSTed as JSON (Content-Encoding: gzip). A report the service answered
-    /// for (accepted, or refused for what it is) is written into <see cref="SentManifest"/>; when the service cannot be
-    /// reached, is busy or fails, the pass stops and the rest wait for the next start. Never throws, shows nothing.
-    /// Returns how many were sent.
+    /// Uploads unsent reports once each: validated as crash reports (no other file is ever sent), gzip-compressed JSON POST. Reports the
+    /// service answered (accepted or rejected) go into <see cref="SentManifest"/>; unreachable, busy or failing service stops the pass
+    /// until next start. Never throws or shows UI. Returns the sent count.
     /// </summary>
     public static async Task<int> UploadPendingAsync(string folder, string endpoint, CancellationToken token)
     {
@@ -247,7 +241,7 @@ public static class CrashReports
 
     // ----- What the computer and the program are -----
 
-    /// <summary>HandPeg's version as its releases are numbered ("4.1.0"): the informational version, without the "+commit" a build may add.</summary>
+    /// <summary>Release version (informational version without any "+commit" suffix).</summary>
     public static string AppVersion { get; } = (typeof(CrashReports).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
         ?? typeof(CrashReports).Assembly.GetName().Version?.ToString(3) ?? "0.0.0").Split('+')[0].Trim();
 
@@ -263,8 +257,8 @@ public static class CrashReports
     public static string RuntimeDescription() => RuntimeInformation.FrameworkDescription;
 
     /// <summary>
-    /// What an exception code is, for a report: "0xC0000005 EXCEPTION_ACCESS_VIOLATION". Codes not known here are the
-    /// number alone; an exit code that is not an NTSTATUS (a process ended from outside) says so.
+    /// Describes an exception code ("0xC0000005 EXCEPTION_ACCESS_VIOLATION"); unknown codes are numeric only, and non-NTSTATUS exit codes
+    /// (external termination) are labelled as such.
     /// </summary>
     public static string DescribeCode(uint code)
     {

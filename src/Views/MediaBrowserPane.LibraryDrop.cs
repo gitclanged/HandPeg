@@ -6,7 +6,7 @@ using static HandPegApp.Native.User32;
 
 namespace HandPegApp.Views;
 
-/// <summary>What of the Media pane is under a clip dragged from the Timeline (5.4.4): nothing that takes it, the Clip Library's button, or the Clip Library.</summary>
+/// <summary>Media pane drop zone under a Timeline clip drag: none, the Clip Library button, or the Clip Library itself.</summary>
 public enum LibraryDropZone
 {
     None,
@@ -14,10 +14,10 @@ public enum LibraryDropZone
     Library,
 }
 
-// ----- A clip dragged from the Timeline onto the Clip Library (5.4.4) -----
-// The window asks, at each move of a clip dragged out of the Timeline, what of this pane is under the pointer: the Clip Library while
-// it is shown (anywhere on the pane), its button in the title row while it is not (held there a moment, the window shows it). Nothing
-// while the pane is hidden behind another tab, in no window, covered by another window, or the New Project studio's picker.
+// ----- Timeline clip drag onto the Clip Library -----
+// On each move of a clip dragged out of the Timeline the window queries the zone under the pointer: the Clip Library (anywhere on the
+// pane) while shown, otherwise its title-row button (a dwell there makes the window show it). Returns none while the pane is a
+// background tab, windowless, covered by another window, or in New Project picker mode.
 public partial class MediaBrowserPane
 {
     private const uint RootAncestor = 2; // GA_ROOT
@@ -26,17 +26,17 @@ public partial class MediaBrowserPane
     [LibraryImport("user32.dll")]
     private static partial IntPtr GetAncestor(IntPtr window, uint flags);
 
-    /// <summary>Whether the pane shows the Clip Library now.</summary>
+    /// <summary>True while the pane shows the Clip Library.</summary>
     public bool ShowsClipLibrary => _libraryMode;
 
-    /// <summary>Shows the Clip Library (a clip held over its button); nothing for the New Project studio's picker.</summary>
+    /// <summary>Switches to the Clip Library (after a button dwell); no-op in picker mode.</summary>
     public void ShowClipLibrary()
     {
         if (!PickerMode && LibrarySide.IsChecked != true)
             LibrarySide.IsChecked = true;
     }
 
-    /// <summary>What of the pane is under a point of the screen (its real pixels): see <see cref="LibraryDropZone"/>.</summary>
+    /// <summary>Drop zone at a screen point in physical pixels (see <see cref="LibraryDropZone"/>).</summary>
     public LibraryDropZone LibraryDropZoneAt(Point screen)
     {
         if (PickerMode || !IsVisible || PresentationSource.FromVisual(this) is not HwndSource source || !IsTopWindowAt(screen, source))
@@ -48,7 +48,7 @@ public partial class MediaBrowserPane
         return onButton ? LibraryDropZone.Tab : LibraryDropZone.None;
     }
 
-    /// <summary>Where on the screen (real pixels) the Clip Library's button (<paramref name="tab"/>) or the pane is; empty while it is in no window.</summary>
+    /// <summary>Screen rect in physical pixels of the Clip Library button (<paramref name="tab"/>) or the whole pane; empty when windowless.</summary>
     public Rect LibraryDropRect(bool tab)
     {
         FrameworkElement element = tab ? LibrarySide : this;
@@ -57,7 +57,7 @@ public partial class MediaBrowserPane
         return new Rect(element.PointToScreen(new Point(0, 0)), element.PointToScreen(new Point(element.ActualWidth, element.ActualHeight)));
     }
 
-    // Whether a point of the screen is on an element that is shown (its own window's coordinates, through PointFromScreen).
+    // True when a screen point lies on a visible element (mapped via PointFromScreen into its window's coordinates).
     private static bool Inside(FrameworkElement element, Point screen)
     {
         if (!element.IsVisible || PresentationSource.FromVisual(element) is null)
@@ -66,8 +66,8 @@ public partial class MediaBrowserPane
         return at.X >= 0 && at.Y >= 0 && at.X < element.ActualWidth && at.Y < element.ActualHeight;
     }
 
-    // Whether the window Windows finds at the point (see-through, click-through windows such as the drop guide passed by) is the pane's
-    // own: another window over it (a side window, a dialog) takes nothing.
+    // True when the root window at the point (WindowFromPoint skips click-through windows such as the drop guide) is the pane's own;
+    // any other window on top (side window, dialog) blocks the drop.
     private static bool IsTopWindowAt(Point screen, HwndSource source)
     {
         var under = WindowFromPoint(new NativePoint { X = (int)Math.Floor(screen.X), Y = (int)Math.Floor(screen.Y) });

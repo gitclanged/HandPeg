@@ -2,25 +2,22 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Models;
 
-// The view model's timeline is a TimelineDocument (4.3C); the Sequence as stretches of files is Models/Timeline/SequenceSpans.
+// The view model's timeline is a TimelineDocument; file-span queries live in Models/Timeline/SequenceSpans.
 
 /// <summary>
-/// A clip that was deleted from the timeline and waits in the recycle bin (4.3C): the clip as it was, and the track it
-/// was on (its id, its kind, and where it was in the stacking order), so that it can go back there, or onto a new
-/// track of its kind at that place when its own has gone or has no room for it.
+/// Recycle bin entry: the deleted clip and its original track (id, kind, stacking index) for restoration there, or onto a new track of
+/// that kind at that index when the original is gone or full.
 /// </summary>
 public sealed record DeletedClip(TimelineClip Clip, Guid TrackId, TimelineTrackKind TrackKind, int TrackIndex)
 {
     /// <summary>
-    /// What went with it (4.4): its children that the delete took off the timeline too (and theirs), each kept the same way,
-    /// to go back with it; null for none, and so left out of the project file.
+    /// Descendant clips deleted with it (recursively), restored together; null (omitted) when none.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<DeletedClip>? Children { get; init; }
 
     /// <summary>
-    /// The track its track lay under (4.4, TimelineTrackModel.ParentTrackId), so that a new track made for it lies under the
-    /// same one again; null for none, and so left out of the project file.
+    /// Parent track id of the original track (TimelineTrackModel.ParentTrackId) for nesting a recreated track; null (omitted) when none.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public Guid? TrackParentId { get; init; }

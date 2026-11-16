@@ -5,113 +5,106 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Compositor;
 
-// ----- The 3D exploded layer stack (Pass 5.0-AudioAnd3D, 5.0D; full resolution in 5.0-Release) -----
-// FrameSceneHeader.ViewMode 1: every layer of the scene is a plane in perspective, at its place in the stack
-// (GpuLayerDescriptor.ZDepth x FrameSceneHeader.ExplodedZSpread), seen by ExplodedCamera (the maths HandPeg picks with).
-// Each plane's picture is the layer drawn alone, exactly as the flat path draws it (DrawLayer: its source, its effects, its
-// shadow and blurred background, its box, turn, opacity and transitions) onto a transparent canvas of its own, so a masked
-// HUD piece shows only what its mask keeps. The planes are laid back to front (premultiplied over, no depth buffer:
-// parallel planes are ordered by their distance from the camera along their normal), over a quiet backdrop and the
-// canvas's frame at the back. A layer with a mask or a key, and the clip selected in the editor
-// (GpuLayerDescriptor.FlagSelected), gets a neon outline round its silhouette. An adjustment layer has no picture of its
-// own: it is a pane of glass over its box. Blend modes are not mixed in this view (each plane shows its own picture).
-// The flat path (ViewMode 0) is untouched: RenderLayers branches here first.
+// ----- 3D exploded layer stack -----
+// FrameSceneHeader.ViewMode 1: each layer is a perspective plane at its stack position (GpuLayerDescriptor.ZDepth x
+// FrameSceneHeader.ExplodedZSpread), viewed through ExplodedCamera (shared with UI picking). Each plane's picture is the layer drawn
+// alone exactly as the flat path draws it (DrawLayer: source, effects, shadow, blur fill, box, rotation, opacity, transitions) onto
+// its own transparent canvas, so a masked HUD element shows only what its mask keeps. Planes are composited back to front
+// (premultiplied over, no depth buffer; parallel planes are sorted by distance along their normal) over a backdrop and the canvas
+// frame. Masked or keyed layers and the selected clip (GpuLayerDescriptor.FlagSelected) get a neon silhouette outline. Adjustment
+// layers render as a glass pane over their box. Blend modes are not applied in this view. The flat path (ViewMode 0) is untouched:
+// RenderLayers branches here first.
 //
-// Full resolution (5.0-Release, the user's directive 4): a plane's picture is drawn at its source's own pixels (the part
-// its crop keeps, a texel a source pixel, up to 4096 a side), never coarser than the flat player draws it, so the camera
-// brought close to any plane shows it sharp; but no finer than its own blurs, shadow and chokes can follow (a pass reaches
-// 64 texels: RadiusLimit), stepped down by quarter octaves. Only the part of the canvas the layer can reach is drawn (its
-// turned box and its shadow; the whole canvas for a blurred background or a slide), into the top left of one plane texture
-// kept from frame to frame (grown in steps, made smaller after a while oversized, let go once the view has been flat a
-// while; a blended layer's own two, stepped too). The planes and their working textures together are held to one budget
-// (PlaneBudgetBytes): over it, every plane's resolution above the fitted one steps down a quarter of an octave at a time,
-// and back up once there is room again. A layer drawn at its source's own pixels has working textures of its source's
-// size whatever its box does, so a box animated in size rents nothing new frame by frame.
+// Resolution: a plane is drawn at its source's native pixels (cropped region, one texel per source pixel, max 4096 per side), never
+// coarser than the flat player, so close-ups stay sharp; but no finer than its blurs, shadow and chokes can follow (a pass reaches 64
+// texels: RadiusLimit), stepped down in quarter octaves. Only the canvas region the layer can reach is drawn (rotated box plus shadow;
+// the whole canvas for blur fill or slides), into the top-left of one persistent plane texture (grown in steps, shrunk after staying
+// oversized, released when the view goes flat; blended layers have their own two, also stepped). Planes and working textures share one
+// budget (PlaneBudgetBytes): over it, every plane's resolution above fitted steps down a quarter octave at a time, and back up when
+// there is room. Native-resolution layers use source-sized working textures regardless of box size, so animated boxes allocate nothing
+// per frame.
 internal sealed unsafe partial class SceneRenderer
 {
-    // The 3D picture (the output's size), and the plane every layer is drawn into in turn (its top left part).
+    // 3D output picture (output size) and the shared plane texture each layer draws into (top-left region).
     private GpuTexture? _view3D;
     private GpuTexture? _planeTarget;
 
-    // Frames the plane texture has been more than twice the size needed; when the last frame was drawn in 3D (Stopwatch),
-    // and the texture pool's frame then (what it lent since is the flat path's).
+    // Frames the plane texture has been over twice the needed size; last 3D frame time (Stopwatch) and the texture pool's frame then
+    // (anything lent since belongs to the flat path).
     private int _planeTargetOversized;
     private long _explodedAt, _explodedFrame;
 
-    // The order the planes are drawn in, its keys, and each plane's layout (in that order): allocated once.
+    // Plane draw order, sort keys and per-plane layouts (in draw order): allocated once.
     private readonly int[] _planeOrder = new int[CompositorProtocol.MaxLayers];
     private readonly float[] _planeKeys = new float[CompositorProtocol.MaxLayers];
     private readonly PlaneLayout[] _planeLayouts = new PlaneLayout[CompositorProtocol.MaxLayers];
 
-    // How far the planes are stepped down to keep within the budget (0: their full resolution).
+    // Budget step-down level (0 = full resolution).
     private int _budgetStep;
 
-    // Each plane's picture kept from frame to frame (5.4.1-M2), by its layer's place in the scene: drawn again only when what it comes
-    // from changed (KeepPlane), so a paused 3D view the camera turns about, and a fast display's refreshes between a video's frames, only
-    // lay the planes. Kept while the budget has room for them (LayOutPlanes); the others are drawn into the plane texture as before.
+    // Per-layer cached plane pictures (by stack position), redrawn only when their inputs change (KeepPlane), so camera orbits while
+    // paused and high-refresh frames between video frames only composite. Cached while the budget allows (LayOutPlanes); the rest draw
+    // into the shared plane texture.
     private readonly KeptPlane[] _keptPlanes = new KeptPlane[CompositorProtocol.MaxLayers];
 
-    // The 60 fps governor (5.4.1-M2, Govern): the scale the planes are drawn at under the budget's, the frames before it may step again,
-    // the camera last seen and when it last moved (Stopwatch), and a 3D frame's rolling time on the card and on the processor (ms).
+    // 60 fps governor (Govern): scale below the budget's, frames until the next step, last camera and its last move time (Stopwatch), and
+    // rolling 3D frame time on GPU and CPU (ms).
     private int _motionStep, _motionHold;
     private (float Yaw, float Pitch, float Zoom, float Spread) _governedCamera;
     private long _cameraMovedAt;
     private float _explodedGpuMs, _explodedCpuMs;
 
-    /// <summary>The governor's scales, full resolution first: a step at a time down while frames are slow, back up while they are quick.</summary>
+    /// <summary>Governor scales, full resolution first: step down while frames are slow, back up while fast.</summary>
     private static readonly float[] MotionScales = [1f, 0.85f, 0.70f, 0.55f];
 
     /// <summary>
-    /// A frame slower than this (ms) steps the planes down, one quicker than the second steps them back up; frames between steps (the
-    /// rolling time catching up); how long after the camera's last move it counts as still (ms).
+    /// Step down above SlowFrameMs, back up below FastFrameMs; frames between steps (lets the rolling time settle); time since the last
+    /// camera move after which it counts as still (ms).
     /// </summary>
     private const float SlowFrameMs = 14.5f, FastFrameMs = 10f;
     private const int MotionHoldFrames = 10;
     private const double CameraStillMs = 120;
 
-    // The governor's clock: the card's time for each 3D frame (a disjoint query and two timestamps a frame), read a few frames late without waiting.
+    // Governor clock: GPU time per 3D frame (one disjoint query and two timestamps), read a few frames late without stalling.
     private const int ClockRing = 4;
     private readonly nint[] _clockQueries = new nint[ClockRing * 3];
     private readonly bool[] _clockPending = new bool[ClockRing];
     private int _clockNext;
 
-    /// <summary>The largest side of a plane's picture, in pixels.</summary>
+    /// <summary>Maximum plane picture side, in pixels.</summary>
     private const int MaxPlaneSide = 4096;
 
     /// <summary>
-    /// What the planes and their working textures may take of the card's memory together (RGBA16F: 8 bytes a texel): 512 MiB,
-    /// or on a card of 16 GB or more (it reports a little under) a sixteenth of its memory (5.1-Polish, the user's Q8: about 1 GiB
-    /// on 16 GB, 1.5 GiB on 24 GB).
+    /// VRAM budget for planes plus working textures (RGBA16F, 8 bytes per texel): 512 MiB, or 1/16 of dedicated VRAM on 16 GB+ GPUs
+    /// (which report slightly less; ~1 GiB on 16 GB, 1.5 GiB on 24 GB).
     /// </summary>
     private long PlaneBudgetBytes => _gpu.DedicatedVideoMemory >= 15L << 30 ? Math.Max(BasePlaneBudget, _gpu.DedicatedVideoMemory / 16) : BasePlaneBudget;
 
     private const long BasePlaneBudget = 512L << 20;
 
-    /// <summary>The plane texture grows in steps of this many texels a side (a box animated in size rarely needs a new one).</summary>
+    /// <summary>Plane texture growth step in texels per side (animated box sizes rarely need a new texture).</summary>
     private const int PlaneTargetStep = 256;
 
-    /// <summary>The budget's last step (each a quarter of an octave) before the fitted resolution.</summary>
+    /// <summary>Last budget step (quarter octave each) before the fitted resolution.</summary>
     private const int LastBudgetStep = 16;
 
     /// <summary>
-    /// How many frames the plane texture is kept oversized; how long the 3D textures are kept once the view is flat (seconds: none,
-    /// 5.4.2A, the user's rule: the first flat frame lets them go, so the 3D planes never sit in video memory during 2D editing; the
-    /// player draws the flat picture once more half a second after the way out, GpuPreviewEngine.Exploded.cs, so a paused player
-    /// whose last 3D frame landed on the flat camera lets them go too).
+    /// Frames the plane texture may stay oversized; seconds 3D textures are kept after the view goes flat (0: released on the first flat
+    /// frame so 3D planes never occupy VRAM during 2D editing; the player draws one extra flat frame 0.5 s after exiting,
+    /// GpuPreviewEngine.Exploded.cs, so a paused player whose last 3D frame was at the flat camera releases them too).
     /// </summary>
     private const int PlaneTargetPatience = 240;
     internal const double ExplodedTexturesPatience = 0;
 
-    // The outline's colours (straight RGB): neon cyan round a mask's silhouette, warm amber round the clip selected; how
-    // strong the amber is round another clip of the selected one's track.
+    // Outline colours (straight RGB): neon cyan for mask silhouettes, warm amber for the selected clip; amber strength for other clips on
+    // the selected clip's track.
     private static readonly Vector4 MaskOutline = new(0.05f, 0.9f, 1f, 0.8f), SelectedOutline = new(1f, 0.72f, 0.18f, 1f);
     private const float SelectedTrackStrength = 0.45f;
 
     /// <summary>
-    /// Where a plane's picture lies and how finely it is drawn: the part of the canvas it can reach (canvas pixels), its
-    /// layer's box size, its scale at its source's own pixels (texels a canvas pixel; 0: as fitted), the scale drawn at, its
-    /// first texel on the canvas's texel grid and its size in texels; whether its layer is blended, whether it has
-    /// nothing on the canvas (or is an adjustment layer's glass), and whether its picture is kept in a texture of its own (5.4.1-M2).
+    /// Plane placement and resolution: reachable canvas region (canvas pixels), layer box size, native-resolution scale (texels per canvas
+    /// pixel; 0 = fitted), drawn scale, first texel on the canvas texel grid and size in texels; whether blended, empty (or adjustment
+    /// glass), and cached in its own texture.
     /// </summary>
     private struct PlaneLayout
     {
@@ -122,8 +115,7 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// A plane's picture kept (5.4.1-M2): its texture, the layer as it was drawn (AsDrawn), what else the picture came from, and whether
-    /// a plane used it this frame (one not used is let go of).
+    /// Cached plane picture: texture, layer as drawn (AsDrawn), other inputs (stamp), and whether used this frame (unused ones are released).
     /// </summary>
     private struct KeptPlane
     {
@@ -134,9 +126,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// What a plane's picture comes from besides its layer: where it lies and how finely (PlaneLayout), the canvas, the decoded frame
-    /// drawn (a video's frame is shown for many refreshes), the resource table's version, and, for a layer whose picture moves with the
-    /// clock or the music (VariesWithClock), the moment and the audio's bands.
+    /// Plane picture inputs besides the layer: layout (PlaneLayout), canvas size, decoded frame drawn (a video frame spans many refreshes),
+    /// resource table version, and for clock- or audio-driven layers (VariesWithClock) the time and audio bands.
     /// </summary>
     private readonly record struct PlaneStamp(float Scale, int OriginX, int OriginY, int TexelsX, int TexelsY, int CanvasWidth, int CanvasHeight,
         int FrameSource, double FrameTime, nint FrameLuma, int Resources, double Moment, float Bass, float Mid, float High);
@@ -148,7 +139,7 @@ internal sealed unsafe partial class SceneRenderer
         var (canvasWidth, canvasHeight) = (camera.CanvasWidth, camera.CanvasHeight);
         _explodedAt = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        // The fitted resolution (the canvas as the flat player draws it at no zoom) is each plane's least.
+        // Fitted resolution (canvas as the flat player draws it at no zoom) is each plane's minimum.
         var fit = Math.Min(camera.Fit, (float)MaxPlaneSide / Math.Max(canvasWidth, canvasHeight));
         _letterbox = false;
         _time = header.PlayheadSeconds;
@@ -157,7 +148,7 @@ internal sealed unsafe partial class SceneRenderer
         _timer.BeginFrame(timing);
         _gpu.BindCommon();
 
-        // The governor's scale for this frame, and its clock round the frame's work (not while the passes are timed: their own disjoint query is open).
+        // Governor scale for this frame and its GPU clock around the work (skipped while pass timing has its own disjoint query open).
         Govern(header);
         var clocked = !timing && BeginExplodedClock();
 
@@ -172,12 +163,12 @@ internal sealed unsafe partial class SceneRenderer
         if (!raw)
             DrawBackdrop(amount, outputWidth, outputHeight);
 
-        // Back to front: the farthest from the camera along the planes' normal first; a tie keeps the stack's order (at no
-        // spread every plane is the same distance away, and the stack is drawn as the flat picture is).
+        // Back to front by distance along the plane normal; ties keep stack order (at zero spread all planes are equidistant and the
+        // stack draws like the flat picture).
         var count = SortPlanes(layers, camera);
         LayOutPlanes(layers, count, canvasWidth, canvasHeight, fit);
 
-        // The depth rails (5.2): never on the way into or out of the flat picture's first steps, nothing to see there.
+        // Depth rails: skipped near the flat picture (amount <= 0.01), where there is nothing to see.
         if (!raw && (header.Flags & FrameSceneHeader.FlagDepthRails) != 0 && amount > 0.01f)
             DrawDepthRails(layers, camera, amount, outputWidth, outputHeight);
         DrawCanvasFrame(layers, camera, header, amount, outputWidth, outputHeight);
@@ -195,9 +186,8 @@ internal sealed unsafe partial class SceneRenderer
                     continue;
                 }
 
-                // The layer alone, onto a clear plane of its own: the flat path's canvas is this plane while it draws. A tilted layer
-                // is drawn flat onto it, and its plane is tilted instead (5.2B, the user's Q4: TiltsInDepth). A kept plane (5.4.1-M2)
-                // is drawn only when what its picture comes from changed.
+                // Draw the layer alone onto its own cleared plane (temporarily the flat path's canvas). Tilted layers draw flat and the
+                // plane is tilted instead (TiltsInDepth). Cached planes redraw only when their inputs change.
                 var plane = _planeLayouts[n];
                 GpuTexture? target = null;
                 if (!plane.Empty)
@@ -217,13 +207,13 @@ internal sealed unsafe partial class SceneRenderer
                     }
                 }
 
-                // Whatever a pass of the layer's own left bound, the planes' passes start from the frame's common state (the
-                // outline reads the border sampler and the shared constants): nothing an effect does reaches the outline.
+                // Rebind common state regardless of what the layer's passes left bound (the outline reads the border sampler and shared
+                // constants), so no effect state leaks into the outline.
                 _gpu.BindCommon();
                 DrawPlane(target, plane, layer, camera, z, amount, outputWidth, outputHeight);
 
-                // Amber round the clip selected, fainter round another clip of its track playing while it is not (its plane
-                // never blinks off at a cut), else cyan round a mask's or a key's silhouette.
+                // Amber for the selected clip, fainter amber for another clip on its track playing meanwhile (so the outline never blinks
+                // off at a cut), else cyan for a masked or keyed silhouette.
                 var selected = (layer.Flags & GpuLayerDescriptor.FlagSelected) != 0;
                 var outline = selected ? SelectedOutline
                     : (layer.Flags & GpuLayerDescriptor.FlagSelectedTrack) != 0 ? SelectedOutline with { W = SelectedOutline.W * SelectedTrackStrength }
@@ -231,8 +221,7 @@ internal sealed unsafe partial class SceneRenderer
                 if (target is not null && outline.W > 0)
                     DrawOutline(target, plane, layer, camera, z, outline, amount, outputWidth, outputHeight);
 
-                // The layer selected (a click, or Ctrl + the wheel through the stack) also gets its box in the accent, so
-                // which one a drag will move is never in doubt (5.0-Verify, the user's bug 5).
+                // The selected layer (click, or Ctrl + wheel through the stack) also gets an accent box so the drag target is unambiguous.
                 if (selected)
                     DrawSelectedBox(layer, camera, z, amount, outputWidth, outputHeight);
                 _gpu.Textures.ReturnAll();
@@ -240,7 +229,7 @@ internal sealed unsafe partial class SceneRenderer
         }
         finally
         {
-            // The flat path's own canvas back, as it was (it is made again at its own size when it next draws).
+            // Restore the flat path's canvas (recreated at its own size on its next draw).
             (_canvas, _canvasCopy) = (canvas, canvasCopy);
         }
 
@@ -262,9 +251,9 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// Draws a layer alone into the top left of <paramref name="target"/>: as the flat path draws it on a canvas of the
-    /// plane's scale moved so the plane's first texel is the target's first (every pass of DrawLayer, its sizes, pixel
-    /// lanes, slides and blurred background, works as it does on the player's canvas).
+    /// Draws a layer alone into the top-left of <paramref name="target"/>, as the flat path would on a canvas at the plane's scale offset so
+    /// the plane's first texel is the target's first (all DrawLayer passes, sizes, pixel lanes, slides and blur fill behave as on the player
+    /// canvas).
     /// </summary>
     private void DrawAlone(in GpuLayerDescriptor layer, in PlaneLayout plane, GpuTexture target, int canvasWidth, int canvasHeight)
     {
@@ -276,29 +265,28 @@ internal sealed unsafe partial class SceneRenderer
         _pxScale1080 = canvasWidth * scale / 1080f;
         _pixelScale = scale;
 
-        // Cleared: the picture's part and a texel beyond it (as far as the planes' passes read), not the whole texture.
+        // Clear only the picture region plus one texel (as far as plane passes read), not the whole texture.
         var clear = default(PassConstants);
         clear.WholeUv();
         Draw("PSSolid", null, target.Rtv, Math.Min(plane.TexelsX + 1, target.Width), Math.Min(plane.TexelsY + 1, target.Height), ref clear, blend: false);
 
-        // A blended layer reads the canvas under it: a copy of its own plane, which is its own size (LayOutPlanes).
+        // Blended layers read the canvas beneath: a copy of their own exactly sized plane (LayOutPlanes).
         _canvas = target;
         _canvasCopy = plane.Blends ? _gpu.Textures.Rent(target.Width, target.Height) : null;
         DrawLayer(layer);
 
-        // A copy DrawLayer made itself (a blend Blends did not foresee) is no plane's size: never kept.
+        // A copy DrawLayer created itself (blend not predicted by Blends) is not plane-sized: dispose it.
         if (_canvasCopy is { Rented: false } made)
             made.Dispose();
         _canvasCopy = null;
     }
 
-    // ----- Planes kept from frame to frame (5.4.1-M2) -----
+    // ----- Cached planes -----
 
     /// <summary>
-    /// A kept plane's texture with its layer's picture in it: drawn again (DrawAlone) only when the layer as drawn (AsDrawn) or anything
-    /// else its picture comes from (PlaneStamp) changed since, or its texture had to be made anew. A blended plane's texture is its size
-    /// exactly (its canvas copy must be: Place); another's is used again while large enough and not much too large (the governor's smaller
-    /// scales are drawn into the one there is).
+    /// Returns a cached plane's texture with its picture, redrawn (DrawAlone) only when the layer as drawn (AsDrawn) or other inputs
+    /// (PlaneStamp) changed, or the texture was recreated. Blended planes use exactly sized textures (their canvas copy must match: Place);
+    /// others reuse theirs while large enough and not far too large (governor down-scales draw into the existing one).
     /// </summary>
     private GpuTexture KeepPlane(ref KeptPlane kept, in GpuLayerDescriptor layer, in PlaneLayout plane, int canvasWidth, int canvasHeight)
     {
@@ -327,9 +315,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// A layer as its plane's picture sees it: its place in depth and its outline's flags left out (they are not in its picture) and, unless
-    /// its picture moves with the clock, the moments its frames are found at (the frame found stands in PlaneStamp: a video's frame is
-    /// shown for many refreshes while its moment moves on).
+    /// The layer as relevant to its plane picture: depth and outline flags cleared (not part of the picture) and, unless clock-driven, media
+    /// times cleared (the resolved frame is in PlaneStamp instead, since a video frame spans many refreshes while its time advances).
     /// </summary>
     private static GpuLayerDescriptor AsDrawn(in GpuLayerDescriptor layer, bool clock)
     {
@@ -341,7 +328,7 @@ internal sealed unsafe partial class SceneRenderer
         return drawn;
     }
 
-    /// <summary>What else a plane's picture comes from: its layout, the canvas, the frame a video's layer shows (DrawSource is given the same: DecoderPool.Resolve), the resources, and the moment and the music for a layer that moves with them.</summary>
+    /// <summary>Builds the plane's other inputs: layout, canvas, the video frame shown (same as DrawSource gets: DecoderPool.Resolve), resource version, and time/audio for clock-driven layers.</summary>
     private PlaneStamp StampOf(in GpuLayerDescriptor layer, in PlaneLayout plane, int canvasWidth, int canvasHeight, bool clock)
     {
         var frame = layer.SourceKind == (int)GpuSourceKind.Media ? _decoders.Resolve(layer.SourceId, layer.MediaSeconds, layer.SourcePathHash, layer.ClipKey) : null;
@@ -351,11 +338,10 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// Whether a layer's picture changes with the moment or the music though nothing else about it does: a shutter (Motion Blur), or a
-    /// card whose shader reads the clock or the audio's bands or keeps a history (Film Grain, Matte Smooth over time, the GPU effect cards,
-    /// the particle and social-cut transitions, a slot unknown here). Such a plane is kept only while the moment holds still. The Color
-    /// Grade (slot 30) is static: its shader reads only its packets and tables (their ids in the descriptor, their contents in
-    /// the stamp's resource version), so a graded plane is kept as an ungraded one is. Pure, for the golden tests.
+    /// True when a layer's picture varies with time or audio alone: a shutter (Motion Blur), or an effect whose shader reads the clock,
+    /// audio bands or history (Film Grain, temporal Matte Smooth, game-engine effects, particle and social-cut transitions, unknown slots).
+    /// Such planes are cached only while time stands still. Color Grade (slot 30) is static (reads only packets and tables, tracked via the
+    /// stamp's resource version), so graded planes cache like ungraded ones. Pure; used by goldens.
     /// </summary>
     internal static bool VariesWithClock(in GpuLayerDescriptor layer)
     {
@@ -374,11 +360,11 @@ internal sealed unsafe partial class SceneRenderer
         return false;
     }
 
-    /// <summary>Two layers byte for byte the same.</summary>
+    /// <summary>Byte-wise equality of two layer descriptors.</summary>
     private static bool Same(in GpuLayerDescriptor a, in GpuLayerDescriptor b) =>
         MemoryMarshal.AsBytes(new ReadOnlySpan<GpuLayerDescriptor>(in a)).SequenceEqual(MemoryMarshal.AsBytes(new ReadOnlySpan<GpuLayerDescriptor>(in b)));
 
-    /// <summary>Kept planes no layer used this frame let go of (their layer gone, or no longer kept); the rest marked afresh for the next.</summary>
+    /// <summary>Releases cached planes unused this frame (layer gone or no longer cached) and resets usage marks for the next frame.</summary>
     private void SweepKeptPlanes()
     {
         for (var i = 0; i < _keptPlanes.Length; i++)
@@ -394,13 +380,12 @@ internal sealed unsafe partial class SceneRenderer
         }
     }
 
-    // ----- The 60 fps governor (5.4.1-M2) -----
+    // ----- 60 fps governor -----
 
     /// <summary>
-    /// The 3D view starts at its planes' full resolution and keeps it, unless the camera moves while the video plays and a frame takes longer
-    /// than <see cref="SlowFrameMs"/> (rolling, on the card or the processor, whichever is longer): then the planes are drawn a step coarser
-    /// (<see cref="MotionScales"/>, into the textures there are), a step finer again once frames take under <see cref="FastFrameMs"/>, and
-    /// at full resolution the moment the camera or the video holds still.
+    /// Keeps full plane resolution unless the camera moves during playback and the rolling frame time (max of GPU and CPU) exceeds
+    /// <see cref="SlowFrameMs"/>: then planes draw one <see cref="MotionScales"/> step coarser (into existing textures), one step finer
+    /// again below <see cref="FastFrameMs"/>, and back to full resolution as soon as the camera or playback stops.
     /// </summary>
     private void Govern(in FrameSceneHeader header)
     {
@@ -431,7 +416,7 @@ internal sealed unsafe partial class SceneRenderer
 
     private static float Rolling(float rolling, float ms) => rolling <= 0 ? ms : rolling + (ms - rolling) * 0.25f;
 
-    /// <summary>The clock started round a 3D frame's work; false while the ring's next entry is still being read (the card far behind: this frame is not timed).</summary>
+    /// <summary>Starts the GPU clock around a 3D frame; false while the ring's next entry is still pending (GPU far behind: frame untimed).</summary>
     private bool BeginExplodedClock()
     {
         var at = _clockNext * 3;
@@ -458,7 +443,7 @@ internal sealed unsafe partial class SceneRenderer
         _clockNext = (_clockNext + 1) % ClockRing;
     }
 
-    /// <summary>The frames the card has finished since, into the rolling time; one not finished yet is left for a later frame (never waited for).</summary>
+    /// <summary>Folds completed GPU frame timings into the rolling time; unfinished ones are left for later (never waited on).</summary>
     private void ReadExplodedClock()
     {
         var context = _gpu.Context;
@@ -480,11 +465,11 @@ internal sealed unsafe partial class SceneRenderer
         }
     }
 
-    // ----- How finely each plane is drawn -----
+    // ----- Plane resolution -----
 
     /// <summary>
-    /// Each plane's part of the canvas and its scale (into <see cref="_planeLayouts"/>, in drawing order), held to the
-    /// budget, and the plane texture made large enough for the largest of them.
+    /// Computes each plane's canvas region and scale (into <see cref="_planeLayouts"/>, draw order) within the budget, and sizes the plane
+    /// texture for the largest.
     /// </summary>
     private void LayOutPlanes(ReadOnlySpan<GpuLayerDescriptor> layers, int count, int canvasWidth, int canvasHeight, float fit)
     {
@@ -503,16 +488,15 @@ internal sealed unsafe partial class SceneRenderer
             (plane.BoxW, plane.BoxH) = (MathF.Abs(layer.Width), MathF.Abs(layer.Height));
             plane.Empty = !(plane.W > 0 && plane.H > 0);
 
-            // WARP draws on the processor, and a blurred background is a blur: both at the fitted resolution, as always. No
-            // finer than its own radii allow (a blur, a shadow, a choke held at the 64 texels a pass reaches would be less
-            // than the flat picture's).
+            // WARP (CPU rendering) and blur fill draw at fitted resolution. Otherwise no finer than the layer's radii allow (a blur,
+            // shadow or choke clamped at the 64-texel pass reach would look weaker than in the flat picture).
             plane.Full = _gpu.IsWarp || (layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0 || plane.Empty ? 0 : FullScaleOf(layer);
             if (plane.Full > fit)
                 plane.Full = WithinRadii(plane.Full, RadiusLimit(layer, canvasWidth), fit);
             plane.Blends = !plane.Empty && Blends(layer);
         }
 
-        // Within the budget: down a step while over it, back up one once that fits with a fifth to spare.
+        // Budget: step down while over it; step back up when the finer step fits with 20 % headroom.
         var step = Math.Clamp(_budgetStep, 0, LastBudgetStep + 1);
         while (step <= LastBudgetStep && BytesAt(count, StepFactor(step), fit) > PlaneBudgetBytes)
             step++;
@@ -520,9 +504,8 @@ internal sealed unsafe partial class SceneRenderer
             step--;
         _budgetStep = step;
 
-        // At the governor's scale under the budget's (5.4.1-M2: its smaller planes fit in the textures there are). A plane is kept in a
-        // texture of its own while what the budget leaves has room for it (a blended plane's own is counted in the budget already); the
-        // plane texture is as large as the largest of the others.
+        // Apply the governor scale below the budget scale (smaller planes fit existing textures). A plane gets its own cached texture
+        // while the remaining budget has room (blended planes are already counted); the shared plane texture fits the largest of the rest.
         var factor = StepFactor(step);
         var motion = MotionScales[_motionStep];
         var spare = PlaneBudgetBytes - BytesAt(count, factor, fit);
@@ -544,10 +527,10 @@ internal sealed unsafe partial class SceneRenderer
         EnsurePlaneTarget(largestX, largestY);
     }
 
-    /// <summary>The share of a plane's resolution above the fitted one a budget step keeps: a quarter of an octave less a step; none past the last.</summary>
+    /// <summary>Fraction of above-fitted resolution kept at a budget step: 2^(-step/4); 0 past the last step.</summary>
     private static float StepFactor(int step) => step > LastBudgetStep ? 0 : MathF.Pow(2, -step / 4f);
 
-    /// <summary>A plane's scale at a budget step: the fitted one and that share of what its source's own pixels add; within the largest side.</summary>
+    /// <summary>Plane scale at a budget step: fitted plus that fraction of the native-resolution excess, capped by the max side.</summary>
     private static float ScaleAt(in PlaneLayout plane, float factor, float fit)
     {
         var scale = plane.Full > fit ? fit + (plane.Full - fit) * factor : fit;
@@ -555,11 +538,10 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// A plane's texels at a scale: on the canvas's texel grid (a box moved by a fraction keeps its picture's texels), at
-    /// least 2 x 2. A blended plane's are taken up to the plane texture's steps: its two textures are its size exactly (its
-    /// canvas copy must be), and the pool keeps only sizes it is asked for again, so a region or a scale that changes from
-    /// frame to frame (a zoom, a turn, a slide over the edge) rents a few sizes, never a new pair a frame. The margin is
-    /// cleared with the rest and lies outside the layer's reach: nothing is drawn or read there.
+    /// Plane texels at a scale, aligned to the canvas texel grid (sub-pixel box moves keep texels stable), at least 2 x 2. Blended planes
+    /// round up to plane texture steps: their two textures must match exactly (canvas copy) and the pool keeps only reused sizes, so
+    /// per-frame region or scale changes (zoom, rotation, slide off edge) rent a few sizes instead of a new pair every frame. The margin is
+    /// cleared and lies outside the layer's reach.
     /// </summary>
     private static void Place(ref PlaneLayout plane, float scale)
     {
@@ -572,12 +554,12 @@ internal sealed unsafe partial class SceneRenderer
             (plane.TexelsX, plane.TexelsY) = (Stepped(plane.TexelsX), Stepped(plane.TexelsY));
     }
 
-    /// <summary>Texels taken up to the plane texture's next step (<see cref="PlaneTargetStep"/>), within the largest side.</summary>
+    /// <summary>Rounds texels up to the next <see cref="PlaneTargetStep"/>, capped at the max side.</summary>
     private static int Stepped(int texels) => Math.Min((texels + PlaneTargetStep - 1) / PlaneTargetStep * PlaneTargetStep, MaxPlaneSide);
 
     /// <summary>
-    /// What the planes take at a budget step: the plane texture (as large as the largest plane), each blended plane's own
-    /// two (it and its copy), and two working textures of each layer's box (what an effect ping-pongs between).
+    /// VRAM bytes at a budget step: the shared plane texture (largest plane), two per blended plane (plane and copy), and two box-sized
+    /// working textures per layer (effect ping-pong).
     /// </summary>
     private long BytesAt(int count, float factor, float fit)
     {
@@ -600,14 +582,14 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The plane texture, at least as large as the largest plane of the frame: grown in steps (as large as it was each way,
-    /// or as needed), made smaller once it has been more than twice the size needed for a while.
+    /// Ensures the shared plane texture fits the frame's largest plane: grown in steps (keeping the larger previous side), shrunk after
+    /// staying over twice the needed size for <see cref="PlaneTargetPatience"/> frames.
     /// </summary>
     private void EnsurePlaneTarget(int neededX, int neededY)
     {
         if (neededX <= 0 || neededY <= 0)
         {
-            // No plane needs it (every one kept in its own, 5.4.1-M2): let go of after a while.
+            // Unused (every plane cached in its own texture): release after the patience period.
             if (_planeTarget is not null && ++_planeTargetOversized >= PlaneTargetPatience)
             {
                 _planeTarget.Dispose();
@@ -622,7 +604,7 @@ internal sealed unsafe partial class SceneRenderer
         {
             if (target.Width >= neededX && target.Height >= neededY)
             {
-                // (Never made smaller while the governor draws the planes coarser: they are back to full size in a moment.)
+                // Never shrink while the governor is down-scaling: planes return to full size shortly.
                 var oversized = _motionStep == 0 && (long)target.Width * target.Height > 2L * width * height;
                 _planeTargetOversized = oversized ? _planeTargetOversized + 1 : 0;
                 if (_planeTargetOversized < PlaneTargetPatience)
@@ -641,9 +623,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The part of the canvas a layer can draw on (canvas pixels): its box as turned, with room for its shadow, within the
-    /// canvas; the whole canvas for a blurred background, and while a slide, a zoom or a spin transition carries the box; empty
-    /// when it is wholly off the canvas.
+    /// Canvas region a layer can draw into (canvas pixels): rotated box plus shadow/rim/shutter reach, clipped to the canvas; the whole
+    /// canvas for blur fill or during slide, zoom or spin transitions; empty when fully off-canvas.
     /// </summary>
     private static (float X, float Y, float W, float H) RegionOf(in GpuLayerDescriptor layer, int canvasWidth, int canvasHeight)
     {
@@ -663,7 +644,7 @@ internal sealed unsafe partial class SceneRenderer
                 reach = Math.Max(reach, Math.Max(packet.P3, 0) / 2 + Math.Max(packet.P4, 0) * 1.5f + 2);
         }
 
-        // What its shutter sweeps (5.1-GpuFx).
+        // Add the area swept by the shutter.
         if ((layer.Flags & GpuLayerDescriptor.FlagShutterPlace) != 0)
             reach += MathF.Abs(layer.ShutterToX - layer.ShutterFromX) + MathF.Abs(layer.ShutterToY - layer.ShutterFromY) + MathF.Abs(layer.ShutterToWidth - layer.ShutterFromWidth);
 
@@ -681,9 +662,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// A layer's scale at its source's own pixels: texels a canvas pixel for one source pixel a texel, across or down
-    /// (whichever is finer) of the part its crop keeps; 1 (the canvas's own pixels) for a colour, a pattern, or a source with
-    /// nothing decoded yet.
+    /// Native-resolution scale: texels per canvas pixel so one source pixel maps to one texel (finer of horizontal and vertical, over the
+    /// cropped region); 1 for solids, patterns, or sources with nothing decoded yet.
     /// </summary>
     private float FullScaleOf(in GpuLayerDescriptor layer)
     {
@@ -695,8 +675,8 @@ internal sealed unsafe partial class SceneRenderer
         switch ((GpuSourceKind)layer.SourceKind)
         {
             case GpuSourceKind.Media:
-                // The frame the layer draws: DrawSource resolves it again next, which asks for nothing more (a second
-                // resolve of a moment in a frame is a repeat; its pins are let go together at the frame's end).
+                // The frame the layer will draw: DrawSource resolves it again, which adds no demand (repeat resolves within a frame are
+                // deduplicated; pins are released together at frame end).
                 if (_decoders.Resolve(layer.SourceId, layer.MediaSeconds, layer.SourcePathHash, layer.ClipKey) is { LumaSrv: not 0 } frame)
                     (width, height) = (frame.Width, frame.Height);
                 break;
@@ -712,13 +692,12 @@ internal sealed unsafe partial class SceneRenderer
         return Math.Max((uv.Z - uv.X) * width / boxWidth, (uv.W - uv.Y) * height / boxHeight);
     }
 
-    /// <summary>The most texels a pass's radius reaches (Effects.hlsl MaxRadius; Blur holds its boxes to it too).</summary>
+    /// <summary>Maximum per-pass radius in texels (Effects.hlsl MaxRadius; Blur clamps its boxes to it too).</summary>
     private const float MostPassRadius = 64;
 
     /// <summary>
-    /// The finest scale a layer's radii leave room for: its widest radius in texels a canvas pixel (a Blur card's box as
-    /// RunEffect works it out, its shadow's softness, a key's choke and smooth, a Matte Choke, a Matte Smooth over space, a blur
-    /// dissolve's blur) within <see cref="MostPassRadius"/>; no limit for a layer with none.
+    /// Finest scale the layer's radii allow: <see cref="MostPassRadius"/> divided by its widest radius in canvas pixels (Blur box as
+    /// RunEffect computes it, shadow softness, key choke/smooth, Matte Choke, spatial Matte Smooth, blur dissolve); unlimited when none.
     /// </summary>
     private static float RadiusLimit(in GpuLayerDescriptor layer, int canvasWidth)
     {
@@ -731,7 +710,7 @@ internal sealed unsafe partial class SceneRenderer
             {
                 case GpuShaderSlot.BoxBlur when packet.P0 >= 0.05f:
                     {
-                        // The boxes at 16 times the canvas's pixels, a sixteenth of them: their texels a canvas pixel, finely.
+                        // Compute boxes at 16x canvas resolution, then divide by 16 for sub-pixel precision.
                         var passes = packet.P1 >= 1 ? (int)MathF.Round(Math.Clamp(packet.P1, 1, 4)) : 2;
                         var (across, down) = EffectRegistry.BlurSizes(Math.Clamp(packet.P0, 0, 50), packet.P2 > 0 ? packet.P2 : 1, passes, canvasWidth * 16, int.MaxValue, int.MaxValue);
                         widest = Math.Max(widest, Math.Max(across, down) / 16f);
@@ -760,9 +739,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// A plane's scale at its source's own pixels held to its radii's limit: stepped down a quarter of an octave at a time
-    /// until it is within it (a working texture then keeps its size while the box animates, as at the source's own pixels),
-    /// never below the fitted one.
+    /// Clamps a native-resolution scale to the radius limit in quarter-octave steps (so working textures keep their size while the box
+    /// animates), never below fitted.
     /// </summary>
     private static float WithinRadii(float full, float limit, float fit)
     {
@@ -772,7 +750,7 @@ internal sealed unsafe partial class SceneRenderer
         return Math.Max(full * MathF.Pow(2, -steps / 4), fit);
     }
 
-    /// <summary>Whether DrawLayer lays a layer on with a blend mode or as Frosted Glass (it then reads a copy of the canvas under it, of the canvas's own size), as it decides it.</summary>
+    /// <summary>True when DrawLayer composites with a blend mode or Frosted Glass (reading a canvas-sized copy of what is beneath), matching its logic.</summary>
     private static bool Blends(in GpuLayerDescriptor layer)
     {
         if ((layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0)
@@ -791,9 +769,9 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The 3D view's textures let go at the first flat frame (the flat path asks at every frame it draws; 5.4.2A, before it a
-    /// minute after): its own, its planes kept per layer (KeptPlane), and the pool's working textures nothing has used since its
-    /// last frame (full-resolution planes' sizes, which the pool would otherwise keep until 240 more frames are drawn: never, while paused).
+    /// Releases 3D textures on the first flat frame (called by every flat draw): its own, per-layer cached planes (KeptPlane), and pool
+    /// working textures unused since the last 3D frame (native-resolution sizes the pool would otherwise keep for 240 more frames, i.e.
+    /// forever while paused).
     /// </summary>
     private void ForgetExplodedTextures()
     {
@@ -806,9 +784,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The shown layers in the order to draw them (into <see cref="_planeOrder"/>): farthest first by
-    /// <see cref="ExplodedCamera.DistanceTo"/>, ties in the stack's order. An insertion sort: at most 64, nearly always in
-    /// order already.
+    /// Sorts visible layers into draw order (<see cref="_planeOrder"/>): farthest first by <see cref="ExplodedCamera.DistanceTo"/>, ties
+    /// in stack order. Insertion sort: at most 64 items, nearly always already ordered.
     /// </summary>
     private int SortPlanes(ReadOnlySpan<GpuLayerDescriptor> layers, in ExplodedCamera camera)
     {
@@ -835,7 +812,7 @@ internal sealed unsafe partial class SceneRenderer
         return count;
     }
 
-    /// <summary>Whether a layer is cut by a mask or a key (its silhouette is what the outline follows).</summary>
+    /// <summary>True when a layer is masked or keyed (the outline follows its silhouette).</summary>
     private static bool HasMatte(in GpuLayerDescriptor layer)
     {
         if (layer.MaskResourceId >= 0)
@@ -850,7 +827,7 @@ internal sealed unsafe partial class SceneRenderer
         return false;
     }
 
-    // ----- What is drawn -----
+    // ----- Drawing -----
 
     private void DrawBackdrop(float amount, int outputWidth, int outputHeight)
     {
@@ -862,9 +839,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The depth rails (5.2): four hairlines running back through the stack from the canvas's corners, so how deep the stack
-    /// goes reads at a glance. Four quads; nothing is read back and no plane is drawn twice (the 5.1 Studio Stage's mirror
-    /// floor, reflections and gathered light are gone: Pass 5.2-HotfixAndDeBloat).
+    /// Depth rails: four hairlines from the canvas corners running back through the stack to show its depth at a glance. Four quads;
+    /// no readback and no plane drawn twice (no reflections or lighting passes).
     /// </summary>
     private void DrawDepthRails(ReadOnlySpan<GpuLayerDescriptor> layers, in ExplodedCamera camera, float amount, int outputWidth, int outputHeight)
     {
@@ -896,9 +872,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The canvas's frame, half a place behind the bottom of the stack (or the lowest plane, when one is lower: a layer
-    /// lifted through it): the sequence's background colour (what the flat picture shows where nothing covers it), dimmed
-    /// and edged as the view comes out of the flat picture, with its thirds.
+    /// Canvas frame half a step behind the stack bottom (or the lowest plane if lower): the sequence background colour, dimmed and edged
+    /// as the view leaves the flat picture, with rule-of-thirds guides.
     /// </summary>
     private void DrawCanvasFrame(ReadOnlySpan<GpuLayerDescriptor> layers, in ExplodedCamera camera, in FrameSceneHeader header, float amount, int outputWidth, int outputHeight)
     {
@@ -923,9 +898,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// A layer's plane: the canvas at its depth with its picture (the top left of <paramref name="target"/>, mapped back
-    /// onto its part of the canvas; none for an empty plane), and a hairline round the canvas (by how far the view is out of
-    /// the flat picture).
+    /// Draws a layer's plane: the canvas at its depth with its picture (top-left of <paramref name="target"/> mapped back onto its canvas
+    /// region; none when empty) and a canvas hairline scaled by the exploded amount.
     /// </summary>
     private void DrawPlane(GpuTexture? target, in PlaneLayout plane, in GpuLayerDescriptor layer, in ExplodedCamera camera, float z, float amount, int outputWidth, int outputHeight)
     {
@@ -953,8 +927,8 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The neon outline round a plane's silhouette: on its picture's part of the canvas grown by 2 % of the canvas's width
-    /// each way, so the glow has room outside it (and only there: the rest of the canvas has no edge to show).
+    /// Neon silhouette outline over the picture region grown by 2 % of canvas width on each side, giving the glow room only where edges
+    /// exist.
     /// </summary>
     private void DrawOutline(GpuTexture target, in PlaneLayout plane, in GpuLayerDescriptor layer, in ExplodedCamera camera, float z, Vector4 color, float amount,
         int outputWidth, int outputHeight)
@@ -976,7 +950,7 @@ internal sealed unsafe partial class SceneRenderer
         Plane("PSExplodedOutline", target, ref constants, outputWidth, outputHeight);
     }
 
-    /// <summary>An adjustment layer: a pane of glass over its box (it has no picture of its own), tinted and edged.</summary>
+    /// <summary>Adjustment layer as a tinted, edged glass pane over its box (no picture of its own).</summary>
     private void DrawGlass(in GpuLayerDescriptor layer, in ExplodedCamera camera, float z, float amount, int outputWidth, int outputHeight)
     {
         var constants = default(PassConstants);
@@ -990,7 +964,7 @@ internal sealed unsafe partial class SceneRenderer
         Plane("PSExplodedFrame", null, ref constants, outputWidth, outputHeight);
     }
 
-    /// <summary>The selected layer's box on its plane: an accent frame two and a half pixels wide over a faint tint of it.</summary>
+    /// <summary>Selected layer box on its plane: a 2.5 px accent frame over a faint accent tint.</summary>
     private void DrawSelectedBox(in GpuLayerDescriptor layer, in ExplodedCamera camera, float z, float amount, int outputWidth, int outputHeight)
     {
         var constants = default(PassConstants);
@@ -1004,15 +978,14 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// Whether a layer's plane is turned out of the stack (5.2B, the user's Q4): a tilted layer (its Pitch and Yaw, GpuLayerDescriptor.TiltX
-    /// and TiltY) is drawn flat onto its plane, and the plane is tilted about the layer's anchor as its box is in the flat picture, seen by the
-    /// 3D view's own camera. A blurred background covers the frame whatever its clip does, so a layer that draws one keeps its picture's flat
-    /// perspective on an upright plane, as before.
+    /// True when a layer's plane tilts out of the stack: tilted layers (Pitch/Yaw, GpuLayerDescriptor.TiltX/TiltY) draw flat onto their
+    /// plane and the plane is tilted about the layer anchor, viewed by the 3D camera. Blur fill covers the frame regardless, so such layers
+    /// keep flat perspective on an upright plane.
     /// </summary>
     internal static bool TiltsInDepth(in GpuLayerDescriptor layer) =>
         (layer.TiltX != 0 || layer.TiltY != 0) && (layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) == 0 && layer.BlurFillRadius <= 0;
 
-    /// <summary>A part of the canvas (canvas pixels) at a plane's depth: upright, or turned with its layer's plane about the layer's anchor.</summary>
+    /// <summary>Matrix for a canvas region (canvas pixels) at a plane's depth: upright, or tilted with the layer's plane about its anchor.</summary>
     private static System.Numerics.Matrix4x4 OnPlane(in ExplodedCamera camera, in GpuLayerDescriptor layer, float x, float y, float w, float h, float z)
     {
         if (!TiltsInDepth(layer) || w == 0 || h == 0)
@@ -1022,12 +995,12 @@ internal sealed unsafe partial class SceneRenderer
         return camera.PlaneMatrix(x, y, w, h, 0, (pivotX - x) / w, (pivotY - y) / h, z, layer.TiltX, layer.TiltY);
     }
 
-    /// <summary>A layer's own box on its plane, turned about its anchor, and tilted with the plane when that is (<see cref="TiltsInDepth"/>).</summary>
+    /// <summary>Matrix for the layer's box on its plane, rotated about its anchor and tilted with the plane when applicable (<see cref="TiltsInDepth"/>).</summary>
     private static System.Numerics.Matrix4x4 BoxOnPlane(in ExplodedCamera camera, in GpuLayerDescriptor layer, float z) => TiltsInDepth(layer)
         ? camera.PlaneMatrix(layer.X, layer.Y, layer.Width, layer.Height, layer.Rotation, layer.AnchorX, layer.AnchorY, z, layer.TiltX, layer.TiltY)
         : camera.PlaneMatrix(layer.X, layer.Y, layer.Width, layer.Height, layer.Rotation, layer.AnchorX, layer.AnchorY, z);
 
-    /// <summary>A quad placed in perspective (VSExploded) over the 3D picture, premultiplied over; the input in t0.</summary>
+    /// <summary>Draws a perspective quad (VSExploded) over the 3D picture, premultiplied over; input in t0.</summary>
     private void Plane(string shader, GpuTexture? input, ref PassConstants constants, int outputWidth, int outputHeight)
     {
         if (input is not null)
@@ -1037,7 +1010,7 @@ internal sealed unsafe partial class SceneRenderer
         Submit("VSExploded", shader, input?.Srv ?? 0, 0, 0, _view3D!.Rtv, outputWidth, outputHeight, ref constants, blend: true, vertices: 4, clipToFrame: false);
     }
 
-    /// <summary>System.Numerics' matrix as the constant buffer's (the same sixteen floats, row by row).</summary>
+    /// <summary>Converts a System.Numerics matrix to the constant-buffer layout (same 16 floats, row-major).</summary>
     private static Matrix4 Matrix(in System.Numerics.Matrix4x4 m) => new()
     {
         M11 = m.M11, M12 = m.M12, M13 = m.M13, M14 = m.M14,
@@ -1046,7 +1019,7 @@ internal sealed unsafe partial class SceneRenderer
         M41 = m.M41, M42 = m.M42, M43 = m.M43, M44 = m.M44,
     };
 
-    /// <summary>The 3D path's own textures (SceneRenderer.Dispose, and a while after the view went flat).</summary>
+    /// <summary>Releases all 3D-path resources (SceneRenderer.Dispose, and ForgetExplodedTextures on the first flat frame).</summary>
     private void DisposeExploded()
     {
         ReleaseExplodedTextures();
@@ -1058,9 +1031,9 @@ internal sealed unsafe partial class SceneRenderer
     }
 
     /// <summary>
-    /// The 3D view's picture and plane let go of (the worker's trim: SceneRenderer.ReleaseIdleTextures): both are made again at the next
-    /// 3D frame (RenderExploded, EnsurePlaneTarget), at the sizes it needs. The budget step stays: its way up and down holds back a fifth
-    /// (LayOutPlanes), so starting it again from 0 could draw the planes a step finer than the frame before.
+    /// Releases the 3D picture, plane texture and cached planes (worker trim: SceneRenderer.ReleaseIdleTextures); recreated at needed sizes
+    /// on the next 3D frame (RenderExploded, EnsurePlaneTarget). The budget step is kept: its 20 % hysteresis (LayOutPlanes) means resetting
+    /// to 0 could draw planes a step finer than the previous frame.
     /// </summary>
     private void ReleaseExplodedTextures()
     {
@@ -1076,7 +1049,7 @@ internal sealed unsafe partial class SceneRenderer
         }
     }
 
-    /// <summary>The planes kept in textures of their own (the goldens: IdleTexturesForTests).</summary>
+    /// <summary>Number of planes cached in their own textures (goldens: IdleTexturesForTests).</summary>
     private int KeptPlaneTextures()
     {
         var count = 0;

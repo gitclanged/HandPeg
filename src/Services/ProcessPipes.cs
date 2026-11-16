@@ -12,8 +12,7 @@ internal static class ProcessPipes
     private static readonly ConcurrentDictionary<int, byte> RunningProcesses = new();
 
     /// <summary>
-    /// Pipe target that splits on both CR and LF, so progress lines that a tool
-    /// rewrites in place with a bare carriage return still arrive one at a time.
+    /// Pipe target splitting on CR and LF so in-place progress lines (bare CR) arrive individually.
     /// </summary>
     public static PipeTarget Lines(Action<string> onLine) => PipeTarget.Create(async (stream, cancellationToken) =>
     {
@@ -44,8 +43,7 @@ internal static class ProcessPipes
     });
 
     /// <summary>
-    /// Runs a tool so that cancelling it, or closing the application, takes down the whole process tree.
-    /// That matters for yt-dlp, which starts ffmpeg itself: killing only the parent would leave the child running.
+    /// Runs a tool so cancel or app exit kills the whole process tree (yt-dlp spawns ffmpeg, which would otherwise survive).
     /// </summary>
     public static async Task<CommandResult> RunAsync(Command command, CancellationToken cancellationToken)
     {
@@ -70,8 +68,7 @@ internal static class ProcessPipes
     }
 
     /// <summary>
-    /// <see cref="RunAsync"/> for an FFmpeg that decodes for background work (5.4.2A): it waits for one of <see cref="WorkScheduler.ToolGate"/>'s
-    /// places first, so at most two run at once.
+    /// <see cref="RunAsync"/> for background FFmpeg decodes, gated by <see cref="WorkScheduler.ToolGate"/> (max two concurrent).
     /// </summary>
     public static async Task<CommandResult> RunGatedAsync(Command command, CancellationToken cancellationToken)
     {
@@ -87,8 +84,7 @@ internal static class ProcessPipes
     }
 
     /// <summary>
-    /// Runs a tool to its end and returns what it wrote, with the run disposed of as soon as it is over.
-    /// Every short run whose output is read (ffprobe, the encoder tests) goes through here.
+    /// Runs a tool to completion and returns buffered output, disposing immediately (ffprobe, encoder probes).
     /// </summary>
     public static async Task<CliWrap.Buffered.BufferedCommandResult> RunBufferedAsync(Command command, CancellationToken cancellationToken, Encoding? encoding = null)
     {
@@ -98,15 +94,14 @@ internal static class ProcessPipes
     }
 
     /// <summary>
-    /// Puts a tool just started into the job for the work it was started for (see WorkScheduler, JobObjects): it then
-    /// keeps off the reserved processors, runs at its lane's priority, and dies with HandPeg whatever way HandPeg ends.
+    /// Assigns a started tool to its work lane's job (WorkScheduler, JobObjects): avoids reserved cores, uses the lane priority, and dies
+    /// with HandPeg however it exits.
     /// </summary>
     private static void IntoJob(int processId) =>
         JobObjects.Assign(processId, WorkScheduler.CurrentProcessClass, AppSettings.Current.BackgroundEfficiencyMode);
 
     /// <summary>
-    /// Adds a process started some other way (the voiceover recorder) to those that are stopped when the application
-    /// closes. It goes into the foreground job: never lowered, but gone with HandPeg.
+    /// Registers an externally started process (voiceover recorder) for shutdown, in the foreground job (normal priority, dies with HandPeg).
     /// </summary>
     public static void Track(int processId)
     {
@@ -117,10 +112,9 @@ internal static class ProcessPipes
     public static void Untrack(int processId) => RunningProcesses.TryRemove(processId, out _);
 
     /// <summary>
-    /// Takes in a tool started with <see cref="Process.Start(ProcessStartInfo)"/> by synchronous code (the bundle's VOD trims, the Clip
-    /// Library's audio cut): into the job of the work it runs for (so it dies with HandPeg however HandPeg ends, and keeps to its lane's
-    /// processors and priority), into the list <see cref="KillAll"/> ends at close, and noted with the scheduler. Disposing the result
-    /// lets it go again once it has exited.
+    /// Adopts a tool started via <see cref="Process.Start(ProcessStartInfo)"/> in synchronous code (bundle VOD trims, Clip Library audio
+    /// cuts): assigns its lane job (affinity, priority, dies with HandPeg), registers it for <see cref="KillAll"/> and with the scheduler.
+    /// Dispose after exit to release it.
     /// </summary>
     public static IDisposable Adopt(int processId)
     {

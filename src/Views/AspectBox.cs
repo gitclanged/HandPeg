@@ -4,8 +4,8 @@ using System.Windows.Controls;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// Holds its child at a fixed shape: as wide as it is given, and <see cref="Ratio"/> of that high. The media browser's
-/// tiles are stretched to fill their columns (5.3.1), and their pictures keep 16:9 at whatever width that gives them.
+/// Fixed-aspect decorator: takes the available width and sets height to width x <see cref="Ratio"/>. Media Browser tiles stretch to
+/// fill their columns while their pictures keep 16:9 at the resulting width.
 /// </summary>
 public sealed class AspectBox : Decorator
 {
@@ -13,7 +13,7 @@ public sealed class AspectBox : Decorator
         nameof(Ratio), typeof(double), typeof(AspectBox),
         new FrameworkPropertyMetadata(9.0 / 16, FrameworkPropertyMetadataOptions.AffectsMeasure), ratio => ratio is double r && r > 0);
 
-    /// <summary>Height over width.</summary>
+    /// <summary>Height / width ratio (default 9/16).</summary>
     public double Ratio
     {
         get => (double)GetValue(RatioProperty);
@@ -22,7 +22,7 @@ public sealed class AspectBox : Decorator
 
     protected override Size MeasureOverride(Size constraint)
     {
-        // Given no width (measured on its own), it falls back to what its child wants.
+        // Unconstrained width: fall back to the child's desired size.
         if (double.IsInfinity(constraint.Width))
         {
             Child?.Measure(constraint);

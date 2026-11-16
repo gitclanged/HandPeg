@@ -5,14 +5,13 @@ using HandPegApp.Models;
 
 namespace HandPegApp;
 
-// ----- The arrow keys on the Canvas and the player (5.1-TrackEqualityAndVram, the user's directive) -----
-// With the Canvas or the player under the pointer, or a Canvas box holding the keyboard, the arrow keys move what is selected. A press is
-// exactly one pixel of the output (ten with Shift), however quick. Held, it waits a moment, then gathers speed up to a limit: a smooth
-// glide on the frame's clock, not the keyboard's repeat, whose rate is the system's. One step of Undo for a run of nudges.
+// ----- Arrow-key nudging on the Canvas and player -----
+// With the pointer over the Canvas or player, or a Canvas box focused, arrow keys move the selection. A tap moves exactly one output pixel
+// (ten with Shift). Holding waits briefly, then accelerates to a cap: a smooth glide on a frame-rate timer rather than the system key
+// repeat rate. A run of nudges is one Undo step.
 public partial class MainWindow
 {
-    // How long a key is down before it counts as held; how fast it starts and how fast it gets, in pixels of the output a second; how
-    // long the ramp takes, and how much Shift multiplies it all.
+    // Hold delay (s), start and max glide speed (output px/s), ramp duration (s), and Shift speed multiplier.
     private const double NudgeHoldSeconds = 0.28, NudgeLeastSpeed = 40, NudgeMostSpeed = 640, NudgeRampSeconds = 1.1, NudgeShift = 3;
 
     private readonly HashSet<Key> _nudgeKeys = [];
@@ -21,7 +20,7 @@ public partial class MainWindow
     private double _nudgeCarryX, _nudgeCarryY;
     private LayoutNudge? _nudgeBox;
 
-    /// <summary>An arrow key for what is selected: true when it was taken (the repeats of one held as well).</summary>
+    /// <summary>Handles an arrow key for the selection; returns true when consumed (including repeats of a held key).</summary>
     private bool TakeNudge(Key key, IInputElement? focused, bool isRepeat)
     {
         if (isRepeat)
@@ -53,7 +52,7 @@ public partial class MainWindow
 
     private void NudgeTimer_Tick(object? sender, EventArgs e)
     {
-        // The keyboard is asked, not told: a key let go while another window had it would otherwise glide on for ever.
+        // Poll key state rather than rely on KeyUp: a release while another window has focus would otherwise glide forever.
         _nudgeKeys.RemoveWhere(k => !Keyboard.IsKeyDown(k));
         if (_nudgeKeys.Count == 0 || !IsActive)
         {
@@ -68,7 +67,7 @@ public partial class MainWindow
         if (held <= 0)
             return;
 
-        // Eased in: fine control at first, and only then the long move.
+        // Quadratic ease-in: fine control first, then faster long moves.
         var through = Math.Clamp(held / NudgeRampSeconds, 0, 1);
         var speed = (NudgeLeastSpeed + (NudgeMostSpeed - NudgeLeastSpeed) * through * through) * (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? NudgeShift : 1);
         var (x, y) = (0.0, 0.0);
@@ -91,12 +90,12 @@ public partial class MainWindow
         _nudgeBox = null;
     }
 
-    // Whether the pointer is over a surface that arranges layers, with something chosen on it to move.
+    // True when the pointer is over a layout surface (Canvas or player) and there is something to move.
     private bool NudgeHasTargets() =>
         (LayoutCanvas.IsMouseOver || (PlayerLayoutCanvas.Visibility == Visibility.Visible && (PlayerOverlay.IsMouseOver || VideoView.IsMouseOver) && !_playerOutlineHidden))
         && NudgeTargets().Count > 0;
 
-    // What moves: every clip selected together, else the clip selected. The picture must have a place of its own to move.
+    // Nudge targets: the group selection, else the single selection; only positionable visual clips (or captions).
     private List<Layer> NudgeTargets()
     {
         var chosen = _viewModel.SelectedClips.Count > 0 ? _viewModel.SelectedClips.ToList() : _selectedClip is Layer one ? [one] : [];
@@ -123,7 +122,7 @@ public partial class MainWindow
 
         foreach (var layer in targets)
         {
-            // Whole pixels, exactly: no snapping to the guides.
+            // Exact whole-pixel moves; no guide snapping.
             var (least, most) = layer.IsCaptions ? (0.0, 1.0) : (-2.0, 2.0);
             layer.PositionX = Math.Clamp(layer.PositionX + deltaX / frameWidth, least, most);
             layer.PositionY = Math.Clamp(layer.PositionY + deltaY / frameHeight, least, most);

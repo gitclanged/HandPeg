@@ -5,11 +5,11 @@
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
     <!--
-        Pass 5.5A: every unsaved project tab in one dialog, as HandPeg closes (or as Close Other Tabs closes two or more unsaved tabs): one
-        row per tab (an inspector card: its name, its project file or "Never saved", a box to save it under a name when it was never saved),
-        all checked. Save is offered only while a row is checked and every checked row never saved has a name. Cancel, Esc and the title
-        bar's close all stay. The buttons' words are set by the code (SaveTabsOnExitDialog.Labels), one set for each purpose. The 5.5A
-        addenda: as HandPeg closes, every tab holding work is listed, a saved one shown as saved with nothing to tick (TabExitRow.Saved).
+        Combined unsaved-tabs dialog on exit (or when Close Other Tabs closes two or more unsaved tabs).
+        One inspector-card row per tab (name, project file or "Never saved", name box for never-saved tabs), all checked.
+        Save is enabled only while a row is checked and every checked never-saved row has a name.
+        Cancel, Esc and title bar close abort. Button labels come from SaveTabsOnExitDialog.Labels per purpose.
+        On exit, every tab with work is listed; saved tabs show as saved with no checkbox (TabExitRow.Saved).
     -->
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="Visible" />
@@ -31,8 +31,8 @@
                                         <TextBlock Text="{Binding Detail}" Foreground="{DynamicResource MutedTextBrush}" FontSize="11" TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
                                 </CheckBox>
-                                <!-- The 5.5A addenda: a saved tab, listed so closing shows every tab it drops, with nothing to tick: a vector tick where the
-                                     box would be, its name and project file, and Saved at the right. -->
+                                <!-- Saved tab row (listed so exit shows every tab it closes): vector tick in place of the checkbox, name and
+                                     project file, "Saved" at the right. -->
                                 <Grid x:Name="SavedRow" Visibility="{Binding Saved, Converter={StaticResource Visible}}" AutomationProperties.Name="{Binding SavedName}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="18" />

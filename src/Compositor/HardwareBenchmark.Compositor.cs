@@ -7,23 +7,22 @@ using HandPegApp.Services;
 
 namespace HandPegApp.Compositor;
 
-// ----- The compositor stage of the hardware benchmark -----
+// ----- Compositor stage of the hardware benchmark -----
 //
-// The all-slots frame of the compositor-parity golden's Timing scene, re-created here so that the benchmark's figure is the very one the
-// field numbers come from (measured on v5.6.0: a Radeon RX 7900 XTX 0.551 ms, a GeForce GTX 1070 2.842 ms, a Snapdragon X Elite's Adreno 5.088 ms): 1920 x 1080, every shader slot of 5.5 on
-// test-pattern layers (a full-frame layer with the colour, matte, mask and blur passes, a smaller one with its blur fill, shadow, blend
-// and two transitions, four more with one social cut each), a LUT, a mask and a curve handed over as the golden hands them. A real
-// SceneRenderer in this process on the card's own device: 90 frames that raise its clocks (a mobile GPU idles low), then four timed by
-// GPU timestamps (PassTimer), the best kept. No clip and no FFmpeg are needed, so it runs on a fresh install too. Keep the scene as it
-// is: the tier anchors (PerformanceTiers.CompositorLadder) were measured on it.
+// Recreates the compositor-parity golden's all-slots Timing scene so the benchmark figure matches field measurements (RX 7900 XTX
+// 0.551 ms, GTX 1070 2.842 ms, Snapdragon X Elite Adreno 5.088 ms): 1920x1080, every shader slot on test-pattern layers (one full-frame
+// layer with colour, matte, mask and blur passes; one smaller with blur fill, shadow, blend and two transitions; four with one social cut
+// each) plus a LUT, mask and curve. Runs a real SceneRenderer on the adapter's device: 90 clock-up frames (mobile GPUs idle low), then 4
+// timed by GPU timestamps (PassTimer), best kept. Needs no clip or FFmpeg. Do not change the scene: the tier anchors
+// (PerformanceTiers.CompositorLadder) were measured on it.
 public static unsafe partial class HardwareBenchmark
 {
-    /// <summary>The scene's size, and the frames drawn before any is timed (the golden's ClockUpFrames) and timed after them.</summary>
+    /// <summary>Scene size, clock-up frames before timing (the golden's ClockUpFrames), and timed frames.</summary>
     internal const int CompositorWidth = 1920, CompositorHeight = 1080, CompositorClockUpFrames = 90, CompositorTimedFrames = 4;
 
     /// <summary>
-    /// The cards the compositor stage times: the compositor's and the Export card the measurements point to, and any card named on the
-    /// command line (--adapters: the roles chosen in Settings), first listings that work only. Never a card no role holds (D-01).
+    /// Adapters to time: the recommended Compositor and Export adapters plus any named via --adapters (roles chosen in Settings), first
+    /// working listings only. Never an adapter that holds no role.
     /// </summary>
     internal static List<HardwareBenchmarkAdapter> CompositorTargets(HardwareBenchmarkResult result, IReadOnlySet<int> chosen)
     {
@@ -38,15 +37,15 @@ public static unsafe partial class HardwareBenchmark
                 targets.Add(card);
         }
 
-        // Roles naming no card (every one Auto): the card Auto lands on, the first listing with the most video memory.
+        // All roles Auto: time the adapter Auto resolves to, the first listing with the most VRAM.
         if (targets.Count == 0 && working.OrderByDescending(a => a.DedicatedVideoMemoryMb).ThenBy(a => a.Index).FirstOrDefault() is { } auto)
             targets.Add(auto);
         return targets;
     }
 
     /// <summary>
-    /// Times each target's all-slots frame into its <see cref="HardwareBenchmarkAdapter.CompositorMs"/>, reporting "compositor" lines from
-    /// <paramref name="from"/> to <paramref name="to"/> of the run. A card it cannot time keeps 0 (and no note: its other measurements stand).
+    /// Times each target's all-slots frame into <see cref="HardwareBenchmarkAdapter.CompositorMs"/>, reporting "compositor" progress
+    /// from <paramref name="from"/> to <paramref name="to"/>. Failures leave 0 without a note (other measurements stand).
     /// </summary>
     private static void TimeCompositors(HardwareBenchmarkResult result, List<HardwareBenchmarkAdapter> targets, double from, double to)
     {
@@ -69,7 +68,7 @@ public static unsafe partial class HardwareBenchmark
         }
     }
 
-    /// <summary>The all-slots frame on one card, GPU ms: the best of <see cref="CompositorTimedFrames"/> after the clock-up; 0 when no frame was timed.</summary>
+    /// <summary>All-slots frame GPU time on one adapter, ms: best of <see cref="CompositorTimedFrames"/> after clock-up; 0 when none was timed.</summary>
     internal static double TimeCompositor(int adapterIndex)
     {
         const int w = CompositorWidth, h = CompositorHeight;
@@ -90,7 +89,7 @@ public static unsafe partial class HardwareBenchmark
             {
                 renderer.Render(header, layers, output.Rtv, w, h, raw: false);
 
-                // Every frame's timestamps are waited for, as the worker does under FlagWaitForTimings (its queries are reused next frame).
+                // Wait for every frame's timestamps, as the worker does under FlagWaitForTimings (queries are reused next frame).
                 if (renderer.Timer.Collect() && round > CompositorClockUpFrames && renderer.Timer.FrameMs > 0)
                     best = Math.Min(best, renderer.Timer.FrameMs);
             }
@@ -104,7 +103,7 @@ public static unsafe partial class HardwareBenchmark
         }
     }
 
-    /// <summary>The compositor-parity golden's Timing scene (keep them the same): its header, its six layers written into <paramref name="layers"/>.</summary>
+    /// <summary>The compositor-parity golden's Timing scene (keep identical): returns the header and writes six layers into <paramref name="layers"/>.</summary>
     internal static FrameSceneHeader TimingScene(GpuLayerDescriptor[] layers)
     {
         Array.Clear(layers);
@@ -128,7 +127,7 @@ public static unsafe partial class HardwareBenchmark
         b.Effects[b.EffectCount++] = new(GpuShaderSlot.TransitionWipe, 0.6f, 1, 0, 0.6f, 1, 0, 0, 0);
         b.Effects[b.EffectCount++] = new(GpuShaderSlot.TransitionBlurDissolve, 0.7f, 0, 0, 0.7f, 1, 0, 0, 0);
 
-        // The social cuts, one a layer.
+        // One social cut per layer.
         var place = 2;
         foreach (var cut in new[] { GpuShaderSlot.TransitionWhipPan, GpuShaderSlot.TransitionZoomWarp, GpuShaderSlot.TransitionRgbGlitch, GpuShaderSlot.TransitionSpin })
         {
@@ -143,7 +142,7 @@ public static unsafe partial class HardwareBenchmark
         };
     }
 
-    // A test-pattern layer as the golden's harness makes one (Layer()): placed, centred anchor, opaque, nothing handed over, uncropped.
+    // Test-pattern layer as the golden harness builds it (Layer()): placed, centred anchor, opaque, no resources, uncropped.
     private static ref GpuLayerDescriptor Layer(GpuLayerDescriptor[] layers, int index, int pattern, float x, float y, float width, float height)
     {
         ref var layer = ref layers[index];
@@ -158,9 +157,8 @@ public static unsafe partial class HardwareBenchmark
     }
 
     /// <summary>
-    /// The golden's three textures handed over as the client hands them (CompositorClient.SetResource: a section of their own, the entry's
-    /// generation written last): the LUT at 0 (17 cubed), the mask at 1 (64 x 36), the curve at 2 (256 x 1). The sections are the
-    /// caller's to dispose after the frames.
+    /// Uploads the golden's three textures the way CompositorClient.SetResource does (one section each, generation written last): LUT at
+    /// 0 (17^3), mask at 1 (64x36), curve at 2 (256x1). The caller disposes the sections after rendering.
     /// </summary>
     private static List<MemoryMappedFile> HandOverResources(CompositorSharedMemory shared)
     {

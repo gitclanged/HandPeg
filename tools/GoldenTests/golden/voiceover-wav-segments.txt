@@ -1,0 +1,6 @@
+# The Voiceover's WAV segments: read back as written, sizes kept current while recording, joined natively (a different rate or channel count converted).
+ok: a segment reads back as written: 48 kHz stereo, every sample
+ok: its header is 16-bit PCM with the RIFF and data sizes of the file
+ok: while still recording, the header counts the audio written up to its last two-second mark
+ok: two segments of one format are joined sample for sample, in order
+ok: a 44.1 kHz mono segment joined after a 48 kHz stereo one becomes 48 kHz stereo of its own length, the same in both channels

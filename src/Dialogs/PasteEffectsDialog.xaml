@@ -4,7 +4,7 @@
         Title="Paste Some Effects" Width="380" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-    <!-- The effects copied with Copy Effects, each with a box (all ticked), and where they go: this clip or every clip on its track (4.1.1-B). -->
+    <!-- Copied effects with checkboxes (all checked) and target scope: this clip or every clip on its track. -->
     <StackPanel Margin="16">
         <TextBlock x:Name="IntroText" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10" />
         <ScrollViewer MaxHeight="320" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Focusable="False">

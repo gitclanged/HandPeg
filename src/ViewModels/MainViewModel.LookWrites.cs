@@ -1,44 +1,44 @@
 namespace HandPegApp.ViewModels;
 
 /// <summary>
-/// How much a change touches, ordered by breadth (a merge of several takes the widest). Announced with every
-/// <see cref="MainViewModel.TimelineChanged"/> and <see cref="MainViewModel.PreviewStateInvalidated"/> as
-/// <see cref="MainViewModel.LastChange"/>, so each listener rebuilds only what the change can reach.
+/// Change breadth, ordered (merges take the widest). Published as <see cref="MainViewModel.LastChange"/> with every
+/// <see cref="MainViewModel.TimelineChanged"/> and <see cref="MainViewModel.PreviewStateInvalidated"/> so listeners rebuild only what
+/// can be affected.
 /// </summary>
 public enum PreviewChange
 {
-    /// <summary>Pixels or sound only: an effect parameter's value, text or keyframes (not its switch or range). The scene plan and the
-    /// audio program are rebuilt; the Timeline's rows, the Projected Output and the proxies are not (nothing they show can change).</summary>
+    /// <summary>Pixels/audio only: effect parameter values, text or keyframes (not switch or range). Rebuilds the scene plan and audio
+    /// program; Timeline rows, Projected Output and proxies are untouched.</summary>
     Look,
 
-    /// <summary>A clip changed in a way its Timeline row can show (keys, name, switches, a card added, removed, switched or re-ranged).</summary>
+    /// <summary>Clip change visible on its Timeline row (keys, name, switches, card add/remove/toggle/range).</summary>
     Rows,
 
-    /// <summary>Anything else (an edit, a setting, a document put in place): everything is rebuilt.</summary>
+    /// <summary>Everything else (edits, settings, document swap): full rebuild.</summary>
     Output,
 }
 
 /// <summary>
-/// Look-only invalidation (<see cref="PreviewChange.Look"/>) and look-write batches: a 30 Hz Color Studio or Effects drag writes several
-/// values per flush (a colour wheel's R, G and B); each raised a TimelineChanged fan-out and a full GenerateCommand. Inside
-/// <see cref="BatchLookWrites"/> those announcements wait and run once, with the widest change seen, when the outermost batch ends.
-/// Keyframes are still recorded per write (unlike <c>DeferCommand</c>, under which RecordKey refuses to key).
+/// Look-only invalidation (<see cref="PreviewChange.Look"/>) and look-write batching: 30 Hz Color Studio/Effects drags write several
+/// values per flush (wheel R, G, B), each otherwise fanning out TimelineChanged and a full GenerateCommand. Inside
+/// <see cref="BatchLookWrites"/> those coalesce into one announcement with the widest change when the outermost batch ends. Keyframes
+/// still record per write (unlike <c>DeferCommand</c>, where RecordKey refuses).
 /// </summary>
 public partial class MainViewModel
 {
     private readonly LookWriteBatch _lookWrites = new();
 
-    /// <summary>The breadth of the change being announced now; <see cref="PreviewChange.Output"/> outside a look-only announcement.</summary>
+    /// <summary>Breadth of the current announcement; <see cref="PreviewChange.Output"/> outside look-only announcements.</summary>
     public PreviewChange LastChange => _lookWrites.Announcing;
 
-    /// <summary>Opens a batch of look writes: TimelineChanged and the command wait for the outermost batch to end, then run once.</summary>
+    /// <summary>Opens a look-write batch; TimelineChanged and command regeneration run once when the outermost batch ends.</summary>
     internal LookWriteBatch.Scope BatchLookWrites()
     {
         _lookWrites.Depth++;
         return new LookWriteBatch.Scope(this);
     }
 
-    /// <summary>Raises <see cref="TimelineChanged"/> announcing <paramref name="change"/> (<see cref="LastChange"/> while it runs).</summary>
+    /// <summary>Raises <see cref="TimelineChanged"/> with <paramref name="change"/> exposed as <see cref="LastChange"/> during dispatch.</summary>
     private void RaiseTimelineChanged(PreviewChange change = PreviewChange.Output)
     {
         var outer = _lookWrites.Announcing;
@@ -53,7 +53,7 @@ public partial class MainViewModel
         }
     }
 
-    // A layer's change announced (OnLayerChanged): now, or at the end of the open batch. True when it waits for the batch.
+    // Announces a layer change (OnLayerChanged) now or defers to the open batch; true when deferred.
     private bool DeferToLookBatch(PreviewChange change, bool command)
     {
         if (_lookWrites.Depth == 0)
@@ -63,7 +63,7 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>The state of the open look-write batches (one object, not loose view-model fields).</summary>
+    /// <summary>Open look-write batch state (grouped object instead of loose VM fields).</summary>
     internal sealed class LookWriteBatch
     {
         public int Depth;
@@ -71,7 +71,7 @@ public partial class MainViewModel
         public bool CommandPending;
         public PreviewChange Announcing = PreviewChange.Output;
 
-        /// <summary>Ends a batch; the outermost runs what its writes owe, once.</summary>
+        /// <summary>Ends a batch; the outermost flushes deferred work once.</summary>
         internal readonly struct Scope(MainViewModel owner) : IDisposable
         {
             public void Dispose()

@@ -5,37 +5,32 @@ using Microsoft.Win32;
 
 namespace HandPegApp.Services;
 
-// ----- Project previews in Windows Explorer (Pass 5.2D, AppSettings.ShowExplorerThumbnails) -----
-// HandPeg's thumbnail handler (src\ShellThumbnails: a native COM library, compiled ahead of time by NativeAOT since Pass 5.3-Stage2 and
-// published beside HandPeg into shell\) shows the thumbnail a save baked into a .hproj or .hpb as the file's preview in Explorer. It needs
-// no .NET (the user's answer: 5.3-Stage1's .NET COM host needed the PC's own, and so showed nothing on a PC whose only .NET was HandPeg's),
-// so it is registered wherever HandPeg is installed and the setting is on. It is registered for this user alone, under
-// HKCU\Software\Classes (no administrator): its class (CLSID\{HandlerClsid}\InprocServer32 naming the DLL, Apartment) and each
-// extension's ShellEx\{IThumbnailProvider} naming that class. Explorer's thumbnail surrogate keeps the handler loaded (a NativeAOT library
-// never unloads), so it is registered from a copy of its own under the data folder (shell\<its content's hash>\), never from the installed
-// folder an update replaces; older copies (5.3-Stage1's COM host among them) are deleted once nothing holds them. Only what differs is
-// written, and Explorer is told only when something changed. Nothing of it in a self-contained or portable copy (which leaves nothing on
-// the PC), nor while HANDPEG_DATA_DIR is set (tests), nor from a copy running emulated (the handler would not be the machine's own).
+// ----- Explorer project previews (AppSettings.ShowExplorerThumbnails) -----
+// The thumbnail handler (src\ShellThumbnails: a NativeAOT COM DLL published into shell\) shows the thumbnail baked into a .hproj/.hpb.
+// It needs no system .NET, so it is registered wherever HandPeg is installed and the setting is on. Per-user under HKCU\Software\Classes
+// (no admin): CLSID\{HandlerClsid}\InprocServer32 (Apartment) plus each extension's ShellEx\{IThumbnailProvider}. Explorer's surrogate
+// never unloads a NativeAOT DLL, so registration points at a content-hashed copy under the data folder (shell\<hash>\), never the
+// installed folder updates replace; stale copies are deleted once unlocked. Only changed values are written, and Explorer is notified
+// only on change. Skipped for self-contained/portable copies, when HANDPEG_DATA_DIR is set (tests), and under emulation.
 //
-// Double-click opens them (Pass 5.2-Release, the user's directive): .hproj and .hpb, and only these (never a media extension), name a
-// ProgID of HandPeg's (HandPeg.Project, HandPeg.Bundle) whose DefaultIcon is HandPeg.exe's own and whose shell\open\command starts it
-// with the file, and list it in their OpenWithProgids. Written by an installed copy alone (Velopack's: its current\HandPeg.exe keeps its
-// path through updates; never a build's folder), whatever the previews' setting; an extension another program claims keeps it (HandPeg
-// is then only in its Open With list). The uninstaller takes both out.
+// Double-click association: .hproj and .hpb only (never media extensions) map to ProgIDs HandPeg.Project / HandPeg.Bundle (DefaultIcon
+// HandPeg.exe, shell\open\command) and OpenWithProgids. Written only by a Velopack install (current\HandPeg.exe is update-stable),
+// regardless of the preview setting; extensions claimed by another program keep their default (HandPeg appears in Open With only).
+// The uninstaller removes both.
 
-/// <summary>Registers (or takes out) HandPeg's Explorer thumbnail handler and open command for .hproj and .hpb files, for this user.</summary>
+/// <summary>Per-user registration and removal of the Explorer thumbnail handler and open command for .hproj and .hpb.</summary>
 public static partial class ExplorerThumbnails
 {
     /// <summary>The handler's class: HandPeg.ShellThumbnails' ProjectThumbnailProvider (the same GUID).</summary>
     public const string HandlerClsid = "{de4a57e8-2ca1-4db5-a7e2-af1299207a9e}";
 
-    /// <summary>IThumbnailProvider's interface: the key under an extension's ShellEx that names its thumbnail handler.</summary>
+    /// <summary>IThumbnailProvider IID: the ShellEx subkey naming an extension's thumbnail handler.</summary>
     public const string ThumbnailProviderKey = "{e357fccd-a995-4576-b01f-234630154e96}";
 
     /// <summary>What the handler's class is called in the registry.</summary>
     public const string HandlerName = "HandPeg Project Previews";
 
-    /// <summary>The handler's folder beside HandPeg.exe (HandPegApp.csproj copies it there), and the folder its copies go in under the data folder.</summary>
+    /// <summary>Handler folder name beside HandPeg.exe (copied by HandPegApp.csproj) and under the data folder.</summary>
     public const string ShellFolder = "shell";
 
     /// <summary>The handler, a native DLL (its own COM server): what InprocServer32 names.</summary>
@@ -55,7 +50,7 @@ public static partial class ExplorerThumbnails
 
     private const string ClassesPath = @"Software\Classes";
 
-    // SHChangeNotify: file associations changed (Explorer drops what it knew of the handlers); the items given as ID lists (none).
+    // SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST): Explorer flushes cached handler associations.
     private const int AssociationsChanged = 0x08000000;
     private const uint IdListItems = 0;
 
@@ -63,8 +58,8 @@ public static partial class ExplorerThumbnails
     private static readonly object Gate = new();
 
     /// <summary>
-    /// Registers the handler, or takes it out, as AppSettings.ShowExplorerThumbnails says when it runs: on the Idle work lane, off the
-    /// window's thread. Never throws and never waits; nothing at all for a self-contained or portable copy, or with HANDPEG_DATA_DIR set.
+    /// Applies AppSettings.ShowExplorerThumbnails on the Idle lane, off the UI thread. Never throws or blocks; no-op for self-contained or
+    /// portable copies or with HANDPEG_DATA_DIR set.
     /// </summary>
     public static void ApplyLater()
     {
@@ -80,9 +75,8 @@ public static partial class ExplorerThumbnails
     }
 
     /// <summary>
-    /// Takes the handler and the open command out (HandPeg uninstalled: its Velopack hook): the registry alone, nothing of the settings
-    /// or of WPF read. Only what is HandPeg's goes (an extension's handler that names another class stays, and so does another program's
-    /// claim on an extension). Never throws.
+    /// Uninstall hook (Velopack): removes the handler and open command from the registry only (no settings or WPF access). Entries owned
+    /// by other programs are kept. Never throws.
     /// </summary>
     public static void Unregister()
     {
@@ -94,11 +88,11 @@ public static partial class ExplorerThumbnails
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException or ObjectDisposedException)
         {
-            // Left as it is: Explorer then finds no handler where it points (the folder went with HandPeg) and shows the files' icons.
+            // Ignore: with the folder gone, Explorer finds no handler and falls back to file icons.
         }
     }
 
-    /// <summary>Whether this copy registers anything: an installed one (or a build of one), with its data in the usual places.</summary>
+    /// <summary>True when this copy may register: installed (or an installable build) with default data locations.</summary>
     private static bool Applies =>
         !AppPaths.IsSelfContained && !AppPaths.IsPortable && string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(AppPaths.DataFolderVariable));
 
@@ -133,8 +127,7 @@ public static partial class ExplorerThumbnails
 
     private static void Install()
     {
-        // Explorer's surrogate runs at the machine's own processor: a copy running emulated (x64 on an ARM64 PC) would point it at a
-        // handler it cannot load.
+        // Explorer's surrogate runs native; an emulated copy (x64 on ARM64) would register a handler it cannot load.
         if (RuntimeInformation.ProcessArchitecture != RuntimeInformation.OSArchitecture)
         {
             AppLog.Write($"Explorer project previews: not registered, as this HandPeg runs emulated ({RuntimeInformation.ProcessArchitecture} on {RuntimeInformation.OSArchitecture}).");
@@ -169,9 +162,8 @@ public static partial class ExplorerThumbnails
     }
 
     /// <summary>
-    /// The handler's files beside the program (shell\) copied into a folder of their own under the data folder, named by their content
-    /// (a copy already there is used as it is); null when the program has none beside it (a Debug build, or a Release build made without
-    /// the C++ build tools NativeAOT links with), said in the log.
+    /// Copies shell\ into a content-hashed folder under the data folder (reusing an existing copy); null, logged, when absent (Debug, or a
+    /// Release built without the C++ tools NativeAOT needs).
     /// </summary>
     private static string? CopyHandler()
     {
@@ -205,7 +197,7 @@ public static partial class ExplorerThumbnails
         return to;
     }
 
-    /// <summary>The handler's copies under the data folder but <paramref name="except"/>, deleted as far as they can be (one Explorer still holds goes another time).</summary>
+    /// <summary>Best-effort deletion of handler copies except <paramref name="except"/> (locked copies are retried later).</summary>
     private static void DeleteCopies(string? except)
     {
         var root = Path.Combine(AppPaths.DataRoot, ShellFolder);
@@ -229,9 +221,8 @@ public static partial class ExplorerThumbnails
     }
 
     /// <summary>
-    /// Writes the handler's keys under <paramref name="classesRoot"/> (HKCU\Software\Classes, or a test's own key), naming the handler's DLL
-    /// in <paramref name="handlerFolder"/>: only the values that differ (a registration of an older copy, 5.3-Stage1's COM host among them, is
-    /// written over). Whether anything was written.
+    /// Writes handler keys under <paramref name="classesRoot"/> (HKCU\Software\Classes or a test key) for the DLL in
+    /// <paramref name="handlerFolder"/>, only where values differ (older registrations are overwritten). Returns true if anything changed.
     /// </summary>
     internal static bool Register(RegistryKey classesRoot, string handlerFolder)
     {
@@ -245,8 +236,8 @@ public static partial class ExplorerThumbnails
     }
 
     /// <summary>
-    /// Takes the handler's keys out from under <paramref name="classesRoot"/>: its class, and each extension's thumbnail handler that names
-    /// it (with the ShellEx and extension keys left empty by that; another class named there stays). Whether anything was taken out.
+    /// Removes the handler class and extension entries naming it under <paramref name="classesRoot"/> (plus keys left empty); other
+    /// classes are kept. Returns true if anything was removed.
     /// </summary>
     internal static bool Unregister(RegistryKey classesRoot)
     {
@@ -278,7 +269,7 @@ public static partial class ExplorerThumbnails
         return true;
     }
 
-    /// <summary>This copy's HandPeg.exe when it is an installed one (Velopack's, not its portable copy); null for a build or anything else.</summary>
+    /// <summary>HandPeg.exe path for a Velopack install (not portable); null otherwise.</summary>
     private static string? InstalledExe()
     {
         if (!Velopack.Locators.VelopackLocator.IsCurrentSet || Velopack.Locators.VelopackLocator.Current is not { } locator
@@ -288,9 +279,8 @@ public static partial class ExplorerThumbnails
     }
 
     /// <summary>
-    /// Writes the open command under <paramref name="classesRoot"/> (HKCU\Software\Classes, or a test's own key): HandPeg's ProgIDs naming
-    /// <paramref name="exe"/>, each extension's OpenWithProgids, and the extension's default where it names nothing or HandPeg's own. Only
-    /// the values that differ. Whether anything was written.
+    /// Writes the open command under <paramref name="classesRoot"/>: ProgIDs targeting <paramref name="exe"/>, OpenWithProgids, and the
+    /// extension default when unset or already HandPeg's. Only differing values. Returns true if anything changed.
     /// </summary>
     internal static bool Associate(RegistryKey classesRoot, string exe)
     {
@@ -314,8 +304,8 @@ public static partial class ExplorerThumbnails
     }
 
     /// <summary>
-    /// Takes the open command out from under <paramref name="classesRoot"/>: HandPeg's ProgIDs, their entries in the OpenWithProgids, and an
-    /// extension's default that names them (another program's stays; keys left empty by it go). Whether anything was taken out.
+    /// Removes HandPeg ProgIDs, their OpenWithProgids entries and extension defaults naming them (others kept; emptied keys deleted).
+    /// Returns true if anything was removed.
     /// </summary>
     internal static bool Dissociate(RegistryKey classesRoot)
     {

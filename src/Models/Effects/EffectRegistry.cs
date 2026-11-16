@@ -3,8 +3,8 @@ using System.Runtime.InteropServices;
 namespace HandPegApp.Models.Effects;
 
 /// <summary>
-/// Where in a clip's chain an effect works. Effects move freely inside their zone and never between zones: a key or a
-/// mask after the colour, the composite after the matte, and the motion last of all (the keyframe compiler's, unchanged).
+/// Processing zone in a clip's chain. Effects reorder within a zone but never across zones (keys/masks after colour, composite after
+/// matte, motion last).
 /// </summary>
 public enum EffectZone
 {
@@ -24,7 +24,7 @@ public enum EffectZone
     Transform,
 }
 
-/// <summary>What an effect costs Live Preview: green barely shows, amber is felt on large frames, red slows scrubbing.</summary>
+/// <summary>Preview cost class: green negligible, amber noticeable at large frames, red slows scrubbing.</summary>
 public enum EffectCost
 {
     Green,
@@ -46,8 +46,7 @@ public enum ParamKind
 }
 
 /// <summary>
-/// How a value can be animated: along its keyframes (Expression and Command alike, which named FFmpeg's two ways until its
-/// filter strings went: the compositor reads the value at every frame either way), or not at all.
+/// Animation support: keyframed (Expression and Command are legacy names, both evaluated per frame by the compositor) or static.
 /// </summary>
 public enum ParamAnimation
 {
@@ -57,10 +56,9 @@ public enum ParamAnimation
 }
 
 /// <summary>
-/// The v5.0 compositor's shader for an effect or a transition (HandPeg.Compositor.exe, see ARCHITECTURE_CONTRACTS.md): the
-/// id a <see cref="GpuEffectPacket"/> names its pixel shader by.
+/// Compositor pixel shader id referenced by a <see cref="GpuEffectPacket"/> for an effect or transition.
 /// </summary>
-/// <remarks>A contract with the compositor: the numbers are fixed, new slots are added at the end, and none is renumbered.</remarks>
+/// <remarks>Compositor contract: values are fixed, new slots append, nothing is renumbered.</remarks>
 public enum GpuShaderSlot
 {
     /// <summary>Nothing to draw: an effect without a shader, switched off, or outside its stretch of the clip.</summary>
@@ -80,7 +78,7 @@ public enum GpuShaderSlot
     FilmGrain = 9,
     ChromaKey = 10,
 
-    /// <summary>Reserved: the Chroma Key packet carries its despill (its fourth lane), run as this pass after the key.</summary>
+    /// <summary>Reserved: despill pass after Chroma Key, driven by the key packet's fourth lane.</summary>
     Despill = 11,
     MatteChoke = 12,
     MatteSmooth = 13,
@@ -93,7 +91,7 @@ public enum GpuShaderSlot
     BoxBlur = 20,
     Sharpen = 21,
 
-    // Pass 5.1-GpuFx: drawn by the compositor alone (EffectDefinition.GpuOnly; Motion.hlsl, Light.hlsl, Vfx.hlsl).
+    // GPU-only effects (EffectDefinition.GpuOnly; Motion.hlsl, Light.hlsl, Vfx.hlsl).
 
     /// <summary>Optical flow between frames, and sub-frames of the layer's own moves: a real shutter.</summary>
     MotionBlur = 22,
@@ -101,10 +99,10 @@ public enum GpuShaderSlot
     /// <summary>A dual-Kawase glow in linear light, its halo tinted as film's halation is.</summary>
     HalationGlow = 23,
 
-    /// <summary>A variant in the last lane: 0 the Neon Rim Light (from a distance field of the layer's shape), 1 Frosted Glass (the canvas under it, blurred).</summary>
+    /// <summary>Variant in the last lane: 0 Neon Rim Light (distance field of layer shape), 1 Frosted Glass (blurred backdrop).</summary>
     RimGlass = 24,
 
-    /// <summary>A variant in the last lane: 0 the Impact Shockwave (a ripple and a camera shake), 1 the Anamorphic Lens (streaks, barrel and colour fringe).</summary>
+    /// <summary>Variant in the last lane: 0 Impact Shockwave (ripple and shake), 1 Anamorphic Lens (streaks, barrel, fringe).</summary>
     ShockwaveLens = 25,
 
     /// <summary>A raymarched fireball through a baked 3D noise (two packets).</summary>
@@ -116,12 +114,12 @@ public enum GpuShaderSlot
     /// <summary>Anime impact and speed lines (two packets).</summary>
     AnimeLines = 28,
 
-    /// <summary>A variant in the last lane of the second packet: 0 the Energy Shield, 1 the Saber Glow (two packets).</summary>
+    /// <summary>Variant in the second packet's last lane: 0 Energy Shield, 1 Saber Glow.</summary>
     EnergyField = 29,
 
     /// <summary>
-    /// 5.6.0: the Color Grade card of the Color Studio (EffectRegistry.ColorStudio): white balance and exposure in linear light, lift / gamma /
-    /// gain, contrast, saturation and vibrance (ColorGradeMath.Apply is its reference), then its curves (Aux) and its LUT (lerped by its mix); two packets.
+    /// Color Studio grade (EffectRegistry.ColorStudio): linear-light white balance and exposure, lift/gamma/gain, contrast, saturation,
+    /// vibrance (reference: ColorGradeMath.Apply), then curves (Aux) and a mix-weighted LUT. Two packets.
     /// </summary>
     ColorStudio = 30,
 
@@ -135,7 +133,7 @@ public enum GpuShaderSlot
     /// <summary>The Thanos Snap (ParticleSnap.hlsl): the picture breaks into embers on a wind.</summary>
     TransitionParticleSnap = 69,
 
-    // The social cuts (SocialCuts.hlsl, 5.2.1): one pass each over the picture.
+    // Social cut effects (SocialCuts.hlsl): one pass each.
     TransitionWhipPan = 70,
     TransitionZoomWarp = 71,
     TransitionRgbGlitch = 72,
@@ -143,9 +141,8 @@ public enum GpuShaderSlot
 }
 
 /// <summary>
-/// One effect's values at one moment, as the v5.0 compositor's shared-memory control plane takes them: a shader and
-/// eight lanes, blittable (36 bytes) into an HLSL cbuffer. The lanes are the definition's parameters in their order
-/// (<see cref="EffectParam.GpuLanes"/>); an effect with more than eight is several packets in a row with the same slot.
+/// Effect values at one time for the compositor control plane: shader slot plus eight float lanes, blittable (36 bytes) into an HLSL
+/// cbuffer. Lanes follow parameter order (<see cref="EffectParam.GpuLanes"/>); more than eight spill into consecutive packets of the same slot.
 /// </summary>
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 public readonly record struct GpuEffectPacket(GpuShaderSlot Slot, float P0, float P1, float P2, float P3, float P4, float P5, float P6, float P7)
@@ -155,10 +152,9 @@ public readonly record struct GpuEffectPacket(GpuShaderSlot Slot, float P0, floa
     public const int SizeInBytes = sizeof(int) + Lanes * sizeof(float);
 
     /// <summary>
-    /// The last lane of an Audio Reactive Pulse's own packet (5.2B, <see cref="EffectDefinition.GpuPulsePacket"/>): a value no packet of
-    /// its slots has there otherwise (the Glow's Mix is 0 or more, the Impact Shockwave's and the Neon Rim's variant lane 0, the Anamorphic
-    /// Lens's 1 and its second packet's last lane 0, the Frosted Glass's 1), so the compositor takes a packet after a card as that card's
-    /// pulse only when it carries it, and two cards of one slot side by side are each drawn.
+    /// Sentinel in the last lane of an Audio Reactive Pulse packet (<see cref="EffectDefinition.GpuPulsePacket"/>), chosen to differ from
+    /// every legitimate last-lane value of those slots, so the compositor pairs a following packet with its card only when marked and
+    /// adjacent same-slot cards still render separately.
     /// </summary>
     public const float PulseMarker = -1;
 
@@ -174,15 +170,15 @@ public readonly record struct GpuEffectPacket(GpuShaderSlot Slot, float P0, floa
     }
 }
 
-/// <param name="Key">The name the value is kept under.</param>
-/// <param name="Step">The slider's step, which also gives the value box its decimals.</param>
+/// <param name="Key">Storage key.</param>
+/// <param name="Step">Slider step; also determines the value box's decimals.</param>
 public sealed record EffectParam(
     string Key, string Label, ParamKind Kind = ParamKind.Number, double Min = 0, double Max = 1, double Default = 0,
     double Step = 0.01, string Unit = "", ParamAnimation Animation = ParamAnimation.None)
 {
     /// <summary>
-    /// A property of the layer that holds this value, for the effects whose settings were the layer's before stacks
-    /// (the key, the mask, the edges, the shadow): Layer Properties, the layout pane and the mask tools keep using them.
+    /// Bound Layer property for effects whose settings predate stacks (key, mask, edges, shadow); Layer Properties, layout pane and mask
+    /// tools still use it.
     /// </summary>
     public string? Bind
     {
@@ -193,7 +189,7 @@ public sealed record EffectParam(
     private readonly string? _bind;
     private readonly LayerBinding? _binding;
 
-    /// <summary>How the bound property is read and written, found once from <see cref="Bind"/>; null when it is not bound.</summary>
+    /// <summary>Cached accessor for <see cref="Bind"/>; null when unbound.</summary>
     public LayerBinding? Binding => _binding;
 
     /// <summary>For a choice: the values, as FFmpeg names them, each with what the card shows.</summary>
@@ -204,48 +200,45 @@ public sealed record EffectParam(
     public string Tip { get; init; } = "";
 
     /// <summary>
-    /// The value a card the user adds starts with (Add Effect, a track's Add Effect menu; 5.0-Release, the user's Q1): visible
-    /// at once. Null: <see cref="Default"/>, which stays what a value missing from a saved card reads as (mostly "changes nothing").
+    /// Initial value for a newly added card so its effect is immediately visible. Null uses <see cref="Default"/>, which is also the
+    /// value for missing saved data (usually neutral).
     /// </summary>
     public double? Starting { get; init; }
 
     /// <summary>The words a card the user adds starts with (a choice's value); null: <see cref="TextDefault"/>.</summary>
     public string? StartingText { get; init; }
 
-    /// <summary>A deeper control: the Effects pane shows it in the card's folded Advanced section, under the main ones (5.0-Release).</summary>
+    /// <summary>Shown in the card's collapsed Advanced section.</summary>
     public bool IsAdvanced { get; init; }
 
     /// <summary>
-    /// Edited only in the Color Studio (5.6.0: the Color Grade card's wheels and curves): the Effects pane's card leaves it out and shows that it
-    /// is in use instead.
+    /// Edited only in the Color Studio (wheels, curves); the Effects pane card hides it and shows an in-use indicator.
     /// </summary>
     public bool StudioOnly { get; init; }
 
     /// <summary>
-    /// What a number's lane in a <see cref="GpuEffectPacket"/> is multiplied by (5.1.0): the card shows one unit, the
-    /// shader takes another (the Vignette's degrees as radians). 1 for the most, whose shader takes the card's own value.
+    /// UI-to-shader unit scale for the lane (e.g. Vignette degrees to radians); 1 when units match.
     /// </summary>
     public double GpuScale { get; init; } = 1;
 
     /// <summary>
-    /// Its lane is how far through it the card is, not the value (5.1-GpuFx: an effect that runs by itself, its value how many seconds it takes): the seconds
-    /// since its clip began (or its Range did) over the value, unclamped, so a shader knows before and after as well.
+    /// Lane carries progress, not the value: seconds since clip (or Range) start divided by the value (a duration), unclamped so shaders
+    /// see before/after.
     /// </summary>
     public bool GpuProgress { get; init; }
 
     public int Decimals => Step >= 1 ? 0 : Step >= 0.1 ? 1 : Step >= 0.01 ? 2 : 3;
 
     /// <summary>
-    /// A value as every editor stores it: rounded to the step (whole steps of 1 and more; otherwise one decimal finer than the box shows)
-    /// and held to the range. The Effects pane and the Color Studio both write through this, so a value is the same from either.
+    /// Canonical stored value: rounded to the step (integers for steps >= 1, else one decimal finer than displayed) and clamped. Used by
+    /// both the Effects pane and the Color Studio so values agree.
     /// </summary>
     public double Quantize(double value) =>
         Math.Clamp(Step >= 1 ? Math.Round(value / Step) * Step : Math.Round(value, Decimals + 1), Min, Max);
 
     /// <summary>
-    /// How many lanes of a <see cref="GpuEffectPacket"/> it takes: a number, a switch or a choice (its index in
-    /// <see cref="Choices"/>) one, a colour three (red, green, blue from 0 to 1); a file, a text or a button none (the
-    /// compositor loads those as textures of its own).
+    /// Packet lanes used: number, switch or choice index (<see cref="Choices"/>) = 1; colour = 3 (RGB 0-1); file, text, button = 0
+    /// (delivered as textures).
     /// </summary>
     public int GpuLanes => Kind switch
     {
@@ -256,68 +249,63 @@ public sealed record EffectParam(
 }
 
 /// <summary>
-/// One effect: what it is called and where it goes, its parameters, what it costs, and the compositor's shader that draws it.
-/// Built-in effects are written as plugins will be (declarative parameters, a cost class, a shader slot). No effect becomes an
-/// FFmpeg filter any more (5.2-Arm64AndNpu: the filter-string compilers went with the graph builder).
+/// Effect definition: name, zone, parameters, cost class and compositor shader slot. Built-ins use the same declarative shape as future
+/// plugins. Effects never compile to FFmpeg filters.
 /// </summary>
 public sealed record EffectDefinition(
     string Type, string Name, string Category, EffectZone Zone, IReadOnlyList<EffectParam> Params, EffectCost Cost)
 {
     public string Description { get; init; } = "";
 
-    /// <summary>Moves pixels (a flip): a still's transparency, set aside while its colour is worked on, is moved with it.</summary>
+    /// <summary>Geometric effect (e.g. flip): alpha is transformed along with colour.</summary>
     public bool Geometric { get; init; }
 
-    /// <summary>Its filters work on the transparency alone (as a grey picture), between the layer's split and alphamerge.</summary>
+    /// <summary>Operates on alpha only (as greyscale).</summary>
     public bool AlphaOnly { get; init; }
 
     /// <summary>
-    /// The layer property that switches a bound effect on (ChromaKey, CustomMask, Shadow; "Edges" for corners or a
-    /// feather). The card comes when the switch goes on, wherever it was switched; removing the card switches it off.
+    /// Layer property enabling a bound effect (ChromaKey, CustomMask, Shadow; "Edges" for corners/feather). Enabling adds the card;
+    /// removing the card disables it.
     /// </summary>
     public string? Feature { get; init; }
 
-    /// <summary>Not a card in the stack: a fixed row of the pane (the opacity, which the keyframe system animates).</summary>
+    /// <summary>Fixed pane row rather than a stack card (opacity, animated by keyframes).</summary>
     public bool Pinned { get; init; }
 
     public bool Reorderable => Zone is EffectZone.Look or EffectZone.KeyAndMatte;
 
-    /// <summary>Whether it can go on the Sequence Output or an adjustment layer: the colour effects, not keys, mattes or composites.</summary>
+    /// <summary>Allowed on Sequence Output and adjustment layers (colour effects; not keys, mattes, composites).</summary>
     public bool ForWholePicture => Zone == EffectZone.Look;
 
-    /// <summary>Its shader in the v5.0 compositor; <see cref="GpuShaderSlot.None"/> for an effect that has none yet.</summary>
+    /// <summary>Compositor shader slot; <see cref="GpuShaderSlot.None"/> when unimplemented.</summary>
     public GpuShaderSlot GpuSlot { get; init; }
 
-    /// <summary>What tells apart two effects of one slot (5.1-GpuFx): sent in the last lane of its last packet, which its parameters leave free.</summary>
+    /// <summary>Variant id distinguishing effects sharing a slot, sent in the last packet's free last lane.</summary>
     public int GpuVariant { get; init; }
 
     /// <summary>
-    /// Where its variant is sent instead (5.2), a lane counted across its packets that its parameters' lanes go round: the Anamorphic
-    /// Lens keeps it in its first packet's last lane, where the Impact Shockwave's slot looks for it, and sends its Rotation in a second
-    /// packet. Null: the last lane of its last packet.
+    /// Alternate global lane index for the variant, skipped by parameter lanes (Anamorphic Lens uses packet 0's last lane, as the shared
+    /// slot expects, and moves Rotation to packet 1). Null: last lane of the last packet.
     /// </summary>
     public int? GpuVariantLane { get; init; }
 
     /// <summary>
-    /// Its Audio Reactive Pulse's own packet (5.2B), counted from 0, or null for none: sent only while the pulse is in use
-    /// (<see cref="EffectRegistry.PulseInUse"/>), so a card at 0 is sent as it was before the pulse (one packet: its passes and the layer's
-    /// sixteen as they were), and marked in its last lane (<see cref="GpuEffectPacket.PulseMarker"/>), so the compositor pairs it with its
-    /// card and never two cards of one slot side by side. The Glow's, the Neon Rim's and the Impact Shockwave's; the Anime Lines' pulse
-    /// is in lanes of the second packet it always sends.
+    /// Zero-based index of the Audio Reactive Pulse packet, or null. Sent only while the pulse is active (<see cref="EffectRegistry.PulseInUse"/>),
+    /// so inactive cards keep their packet count, and marked with <see cref="GpuEffectPacket.PulseMarker"/> for unambiguous pairing. Used by
+    /// Glow, Neon Rim and Impact Shockwave; Anime Lines carries its pulse in its always-present second packet.
     /// </summary>
     public int? GpuPulsePacket { get; init; }
 
     /// <summary>
-    /// Drawn by the compositor alone, with no FFmpeg filter to fall back on (the roadmap's Law 4): an export FFmpeg has to make leaves it out, and says so
-    /// (<c>GpuExport.LeftOutByFfmpeg</c>).
+    /// GPU-only effect with no FFmpeg equivalent (Law 4); reported as omitted if a non-GPU path is used (<c>GpuExport.LeftOutByFfmpeg</c>).
     /// </summary>
     public bool GpuOnly { get; init; }
 
-    /// <summary>A clip takes one card of it (5.1-GpuFx: what is drawn as the layer is laid on).</summary>
+    /// <summary>At most one card per clip (applied at composite time).</summary>
     public bool Once { get; init; }
 
-    /// <summary>The lanes its parameters take, in their order (<see cref="EffectParam.GpuLanes"/>).</summary>
-    /// <remarks>Counted by index: it is asked for on every packet, and an enumerator of the list would be a new object each time.</remarks>
+    /// <summary>Total parameter lanes in order (<see cref="EffectParam.GpuLanes"/>).</summary>
+    /// <remarks>Indexed loop: evaluated per packet, avoiding enumerator allocation.</remarks>
     public int GpuLaneCount
     {
         get
@@ -338,9 +326,8 @@ public sealed record EffectDefinition(
     public bool HasAdvanced => Params.Any(p => p.IsAdvanced);
 
     /// <summary>
-    /// A new effect as the user adds it: each value with a starting value (<see cref="EffectParam.Starting"/>,
-    /// <see cref="EffectParam.StartingText"/>) written into it, so that it shows at once. A value bound to the clip is the
-    /// clip's, and is left alone.
+    /// Creates a user-added instance with starting values (<see cref="EffectParam.Starting"/>, <see cref="EffectParam.StartingText"/>) so it
+    /// is visible immediately; clip-bound values are left untouched.
     /// </summary>
     public EffectInstance NewEffect()
     {
@@ -360,7 +347,7 @@ public sealed record EffectDefinition(
 }
 
 /// <summary>
-/// Every effect HandPeg knows, by type. v5 plugins register here too (declarative templates; see V4_AUDIT_REPORT.md 4.4).
+/// Registry of all effect definitions by type; plugins register declarative templates here.
 /// </summary>
 public static partial class EffectRegistry
 {
@@ -372,7 +359,7 @@ public static partial class EffectRegistry
         Opacity = "builtin.composite.opacity", Shadow = "builtin.composite.shadow", BlendMode = "builtin.composite.blend",
         BackgroundBlur = "builtin.background.blur";
 
-    /// <summary>The Brightness &amp; Contrast card's channel balance (5.6.0: the colour sliders' converted, PSColorGrade's P4 and).</summary>
+    /// <summary>Brightness &amp; Contrast channel-balance keys (converted colour sliders; PSColorGrade P4/P5).</summary>
     public const string GradeBalanceBlue = "balance_cb", GradeBalanceRed = "balance_cr";
 
     private static readonly Dictionary<string, EffectDefinition> Definitions = new(StringComparer.Ordinal);
@@ -380,7 +367,7 @@ public static partial class EffectRegistry
     /// <summary>In the order the Add Effect menu lists them.</summary>
     public static IReadOnlyList<EffectDefinition> All => [.. Definitions.Values];
 
-    /// <summary>The categories, in the order the Add Effect menus list them (the Effects pane's, a track's); any other after them.</summary>
+    /// <summary>Category order in Add Effect menus; unlisted categories follow.</summary>
     private static readonly string[] Categories = ["Color", "Detail", "Blur", "Look", "3D VFX", "Transform", "Key", "Matte", "Composite"];
 
     /// <summary>Where a category comes in the Add Effect menus.</summary>
@@ -411,9 +398,8 @@ public static partial class EffectRegistry
             GpuSlot = GpuShaderSlot.Denoise, Description = "Smooths grain and compression noise, between frames as well as within them.",
         });
 
-        // 5.6.0: "Brightness & Contrast" (the Color Studio's card is the Color Grade now; the type is unchanged, so projects keep it). Its last
-        // two lanes are the colour sliders' channel balance as PSColorGrade takes it (P4, P5: the Cb and Cr planes' gammas, 0 for none), written only
-        // by the Color tab's Convert so a converted grade draws exactly as it did; not shown on the card (StudioOnly), 0 on every other card.
+        // "Brightness & Contrast" (type id unchanged for project compatibility). Last two lanes are Cb/Cr gamma balance for PSColorGrade
+        // (P4, P5; 0 = none), written only by the Color tab's Convert so converted grades render identically; hidden (StudioOnly).
         Register(new(Grade, "Brightness & Contrast", "Color", EffectZone.Look,
             [
                 new("contrast", "Contrast", Min: 0, Max: 2, Default: 1, Animation: ParamAnimation.Expression) { Starting = 1.1 },
@@ -491,7 +477,7 @@ public static partial class EffectRegistry
             GpuSlot = GpuShaderSlot.BoxBlur, Description = "Softens the picture (a box blur run twice, or as many times as its Passes).",
         });
 
-        // An unsharp mask (5.1-Polish, the user's Q3): its Strength on the card, its Radius and Threshold in the Advanced fold.
+        // Unsharp mask: Strength on the card; Radius and Threshold under Advanced.
         Register(new(Sharpen, "Sharpen", "Detail", EffectZone.Look,
             [
                 new("strength", "Strength", Min: 0, Max: 1) { Starting = 0.6, Tip = "How much of the detail is added back: 1 adds twice the difference between the picture and its blur." },
@@ -506,7 +492,7 @@ public static partial class EffectRegistry
 
         Register(new(Vignette, "Vignette", "Look", EffectZone.Look,
             [
-                // In degrees on the card (5.1-Polish, the user's Q5); FFmpeg's vignette and PSVignette take radians (GpuScale).
+                // Degrees in the UI; PSVignette takes radians (GpuScale).
                 new("angle", "Strength", Min: 10, Max: 90, Default: 25, Step: 1, Unit: "°", Animation: ParamAnimation.Expression)
                     { GpuScale = Math.PI / 180, Tip = "The lens angle, in degrees: larger darkens more of the corners." },
                 new("round", "Roundness", Min: 0, Max: 100, Default: 100, Step: 1, Unit: "%")
@@ -570,9 +556,9 @@ public static partial class EffectRegistry
             GpuSlot = GpuShaderSlot.CornerFeather, Feature = "Edges", Description = "Rounds the corners, and lets the outline fade out.",
         });
 
-        // ----- The blur fill's own (5.0-Release) -----
-        // Not an effect of a clip: the pinned first row of the blur fill's stack in the Effects pane, its values the sequence's
-        // (MainViewModel.BlurRadius, BackgroundZoom, BlurPasses, BackgroundDim), drawn by DrawBlurFill and the builder's [bg].
+        // ----- Blur fill settings card -----
+        // Pinned first row of the blur-fill stack (not a clip effect); values are Sequence-level (MainViewModel.BlurRadius, BackgroundZoom,
+        // BlurPasses, BackgroundDim), rendered by DrawBlurFill.
         Register(new(BackgroundBlur, "Blur Fill", "Blur", EffectZone.Look,
             [
                 new("radius", "Blur Radius", Min: 0, Max: BackgroundMostRadius, Default: 20, Step: 0.5, Unit: "px")
@@ -599,7 +585,7 @@ public static partial class EffectRegistry
                 new("distance", "Distance", Min: 0, Max: 100, Default: LayerState.DefaultShadowDistance, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowDistance) },
                 new("angle", "Angle", Min: 0, Max: 360, Default: LayerState.DefaultShadowAngle, Step: 1, Unit: "\u00B0") { Bind = nameof(Layer.ShadowAngle), IsAdvanced = true },
                 new("softness", "Softness", Min: 0, Max: 50, Default: LayerState.DefaultShadowSoftness, Step: 1, Unit: "px") { Bind = nameof(Layer.ShadowSoftness), IsAdvanced = true },
-                // Above the fold with the Distance (5.1-Polish, the user's Q4); Angle, Softness and Color in the Advanced fold.
+                // Distance on the card; Angle, Softness and Color under Advanced.
                 new("opacity", "Shadow Opacity", Min: 0, Max: 1, Default: 0.5) { Bind = nameof(Layer.ShadowOpacity) },
                 new("color", "Shadow Color", ParamKind.Color) { Bind = nameof(Layer.ShadowColor), TextDefault = "#000000", IsAdvanced = true },
             ], EffectCost.Amber)
@@ -613,7 +599,7 @@ public static partial class EffectRegistry
                 new("mode", "Mode", ParamKind.Choice)
                 {
                     TextDefault = "normal", StartingText = "overlay",
-                    // Append-only (the GPU packet carries the index): Soft Light, Hard Light and Difference came with 5.0-Core.
+                    // Append-only: the GPU packet carries the index.
                     Choices = [("normal", "Normal"), ("multiply", "Multiply"), ("screen", "Screen"), ("addition", "Add"), ("overlay", "Overlay"),
                         ("softlight", "Soft Light"), ("hardlight", "Hard Light"), ("difference", "Difference")],
                 },
@@ -626,18 +612,17 @@ public static partial class EffectRegistry
         RegisterColorStudio();
     }
 
-    // ----- Blur (5.0-Release: its Advanced values) -----
-    // The sizes the compositor's PSBoxBlur and PSSharpen are drawn at (SceneRenderer): worked out here, from the card's values in
-    // pixels of a 1080-wide frame, so the host and the goldens' reference agree on them to the pixel.
+    // ----- Blur kernel sizing -----
+    // PSBoxBlur/PSSharpen sizes (SceneRenderer) derived here from card values in 1080-wide-frame pixels, so host and golden reference
+    // agree to the pixel.
 
-    /// <summary>The blur fill's widest blur, in pixels of the frame (5.0-Release: from 0, sharp, continuously).</summary>
+    /// <summary>Maximum blur-fill radius in frame pixels (continuous from 0).</summary>
     public const double BackgroundMostRadius = 64;
 
     /// <summary>
-    /// A blur's boxes, across and down, in pixels of the picture: so many passes of a box are as wide as a Gaussian of half the
-    /// radius (in pixels of a 1080-wide frame, scaled to <paramref name="frameWidth"/>): p r (r + 1) / 3 = sigma squared. Above
-    /// 1, <paramref name="ratio"/> narrows the box down (the radius divided by it); below 1 the box across. Each is at least 1
-    /// and held to what the colour planes of a picture this size allow (0 when it is too small for any).
+    /// Horizontal and vertical box radii (picture pixels) whose multi-pass box approximates a Gaussian with sigma = radius / 2:
+    /// p r (r + 1) / 3 = sigma^2, radius scaled from 1080 to <paramref name="frameWidth"/>. <paramref name="ratio"/> above 1 narrows the
+    /// vertical box, below 1 the horizontal. Each at least 1 and clamped to the chroma plane size (0 if too small).
     /// </summary>
     public static (int Across, int Down) BlurSizes(double radius, double ratio, int passes, int frameWidth, int width, int height)
     {
@@ -649,18 +634,17 @@ public static partial class EffectRegistry
         return (Box(sigma * Math.Min(1, ratio)), Box(sigma * Math.Min(1, 1 / ratio)));
     }
 
-    // ----- Sharpen (5.1-Polish, the user's Q3: an unsharp mask) -----
+    // ----- Sharpen (unsharp mask) -----
 
-    /// <summary>Sharpen's widest Radius on the card, and the one it starts with (unsharp's own 5 x 5 square on a 1080-wide frame).</summary>
+    /// <summary>Maximum and initial Sharpen radius (initial = 5 x 5 unsharp at 1080 wide).</summary>
     public const double SharpenMostRadius = 8, SharpenDefaultRadius = 2;
 
-    /// <summary>What the difference is multiplied by at Strength 1 (unsharp's amount; 0.6, the card's start, is 1.2).</summary>
+    /// <summary>Unsharp amount at Strength 1 (the initial 0.6 gives 1.2).</summary>
     public const double SharpenAmount = 2;
 
     /// <summary>
-    /// Sharpen's box radius in pixels of the picture: its Radius (in pixels of a 1080-wide frame, at most
-    /// <see cref="SharpenMostRadius"/>) scaled to <paramref name="frameWidth"/>, at least 1, and held to unsharp's widest square
-    /// (23: a radius of 11) and to what a picture this size allows (0 when it is too small for any).
+    /// Sharpen box radius in picture pixels: Radius (1080-wide units, max <see cref="SharpenMostRadius"/>) scaled to
+    /// <paramref name="frameWidth"/>, min 1, capped at 11 (23 x 23) and by the picture size (0 if too small).
     /// </summary>
     public static int SharpenBox(double radius, int frameWidth, int width, int height)
     {

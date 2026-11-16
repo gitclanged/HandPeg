@@ -8,20 +8,19 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// Markers: named moments of the sequence, put down while watching (M), to come back to (Shift+M, Ctrl+Shift+M) and,
-// when asked for, to become the output's chapters.
+// Markers: named Sequence times added during playback (M), navigable (Shift+M, Ctrl+Shift+M) and optionally exported as chapters.
 public partial class MainViewModel
 {
-    /// <summary>The markers, in the order they come on the sequence.</summary>
+    /// <summary>Markers in Sequence time order.</summary>
     public ObservableCollection<TimelineMarker> Markers { get; } = [];
 
-    /// <summary>The export's chapters begin at the markers (the ones in what is kept), named after them.</summary>
+    /// <summary>Export chapters at markers within the output, titled by marker name.</summary>
     [ObservableProperty] private bool _chaptersAtMarkers;
 
-    /// <summary>Raised when a marker was added, moved, renamed or removed: the timelines draw them again.</summary>
+    /// <summary>Raised on marker add/move/rename/remove so timelines redraw.</summary>
     public event Action? MarkersChanged;
 
-    /// <summary>Puts a marker at a moment of the sequence (the playhead, when none is given), named in turn.</summary>
+    /// <summary>Adds an auto-named marker at a time (default: playhead).</summary>
     public TimelineMarker? AddMarker(double? seconds = null)
     {
         if (!HasSource)
@@ -55,10 +54,10 @@ public partial class MainViewModel
         Log($"Deleted {marker.Name}");
     }
 
-    /// <summary>Renames a marker. Typing a name is many changes; one step of Undo is taken for the first of them (see <see cref="RenameMarkerStarted"/>).</summary>
+    /// <summary>Renames a marker per keystroke; the single undo step is taken at the first (<see cref="RenameMarkerStarted"/>).</summary>
     public void RenameMarker(TimelineMarker marker, string name)
     {
-        // By its moment: each keystroke replaces the marker with one of the new name.
+        // Keyed by time: each keystroke replaces the marker with a renamed copy.
         var index = Markers.ToList().FindIndex(m => Math.Abs(m.Seconds - marker.Seconds) < 1e-6);
         if (index < 0 || string.IsNullOrWhiteSpace(name))
             return;
@@ -67,10 +66,10 @@ public partial class MainViewModel
         NotifyMarkersChanged();
     }
 
-    /// <summary>A rename is about to begin: the markers as they are go on the Undo stack.</summary>
+    /// <summary>Pushes the current markers to Undo before a rename begins.</summary>
     public void RenameMarkerStarted(TimelineMarker marker) => Checkpoint($"rename {marker.Name}");
 
-    /// <summary>Removes every marker.</summary>
+    /// <summary>Removes all markers.</summary>
     public void ClearMarkers()
     {
         if (Markers.Count == 0)
@@ -80,12 +79,12 @@ public partial class MainViewModel
         SetMarkers([]);
     }
 
-    /// <summary>The first marker after a moment, or the last one before it; null when there is none that way.</summary>
+    /// <summary>Next marker after a time, or previous before it; null when none.</summary>
     public TimelineMarker? MarkerFrom(double seconds, bool forward) => forward
         ? Markers.FirstOrDefault(m => m.Seconds > seconds + 0.01)
         : Markers.LastOrDefault(m => m.Seconds < seconds - 0.01);
 
-    /// <summary>Moves the playhead to the next marker, or the one before.</summary>
+    /// <summary>Jumps the playhead to the next or previous marker.</summary>
     public void GoToMarker(bool forward)
     {
         if (MarkerFrom(PositionMs / 1000, forward) is { } marker)
@@ -99,7 +98,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Puts markers in place of the ones there are, in their order on the sequence.</summary>
+    /// <summary>Replaces all markers, sorted by time.</summary>
     private void SetMarkers(IEnumerable<TimelineMarker>? markers)
     {
         Markers.Clear();
@@ -114,7 +113,7 @@ public partial class MainViewModel
         GenerateCommand();
     }
 
-    /// <summary>A value as FFmpeg's metadata file reads it: =, ;, # and backslash escaped, on one line.</summary>
+    /// <summary>Escapes a value for FFMETADATA (=, ;, #, backslash) on a single line.</summary>
     private static string EscapeMetadata(string value)
     {
         var escaped = new System.Text.StringBuilder(value.Length + 8);
@@ -129,12 +128,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The chapters of the output: one at every edge of a clip on any video track (Chapters at Cut Points: where 4.2.0's
-    /// kept segments began, now that cuts are split points; 4.3D: every track alike, edges within half a second of each
-    /// other one chapter), and one at each marker (Chapters at Markers), all in the timeline's time, which is the
-    /// output's; a marker where a clip begins names that chapter. A Copy export through the cuts list (one file's clips end to
-    /// end, SequenceSpans.CopyCutOf, <paramref name="throughCuts"/>) has them on its own clock, at its clips: a marker in a gap
-    /// has none.
+    /// Output chapters in timeline (= output) time: one per video-track clip edge (Chapters at Cut Points; all tracks, edges within
+    /// 0.5 s merged) and one per marker (Chapters at Markers); a marker on a clip start names that chapter. Copy exports via the cuts
+    /// list (SequenceSpans.CopyCutOf, <paramref name="throughCuts"/>) use the list's concatenated clock; markers in gaps are dropped.
     /// </summary>
     private List<(double Start, string Title)> BuildChapters(bool throughCuts = false)
     {
@@ -158,8 +154,8 @@ public partial class MainViewModel
 
         if (ChaptersAtCuts)
         {
-            // Through the cuts list only the copied file's clips are there; otherwise every video track's edges, in order. Up to
-            // the output's end (5.4A: the last picture's, SequenceSpans.ProgramSeconds; an audio tail past it is not exported).
+            // Cuts list: only the copied file's clips; otherwise all video-track edges in order. Bounded by the output end (last
+            // picture, SequenceSpans.ProgramSeconds; trailing audio is not exported).
             var length = SequenceSpans.ProgramSeconds(Document);
             var edges = throughCuts
                 ? clips.Select(c => c.Start)
@@ -180,7 +176,7 @@ public partial class MainViewModel
 
         if (ChaptersAtMarkers)
         {
-            // A marker past the output's end (5.4A: on an audio tail that is not exported) starts no chapter.
+            // Markers past the output end (on unexported trailing audio) start no chapter.
             var length = SequenceSpans.ProgramSeconds(Document);
             foreach (var marker in Markers)
             {
@@ -197,21 +193,20 @@ public partial class MainViewModel
 
         chapters.Sort((a, b) => a.Start.CompareTo(b.Start));
 
-        // Before the first marker there is still a beginning to name.
+        // Insert a "Start" chapter at 0 when the first chapter begins later than 0.5 s.
         if (chapters.Count > 0 && chapters[0].Start > 0.5)
             chapters.Insert(0, (0, "Start"));
         return chapters;
     }
 
-    // ----- YouTube description timestamps and SponsorBlock (Pass 4.2B-2) -----
+    // ----- YouTube description timestamps and SponsorBlock -----
 
-    /// <summary>The SponsorBlock choices of the Chapters group, as AppSettings.SponsorBlockMode stores them.</summary>
+    /// <summary>Chapters-group SponsorBlock options, as stored in AppSettings.SponsorBlockMode.</summary>
     public IReadOnlyList<KeyValuePair<string, string>> SponsorBlockModes => AppSettings.SponsorBlockModes;
 
     /// <summary>
-    /// What the next download does with SponsorBlock (an app setting, shown in the Chapters group and in Settings >
-    /// Downloads). Choosing to cut or mark with no category ticked ticks the usual three (sponsor, self-promotion,
-    /// interaction reminders), so the one click does something; each stays a box of its own in Settings.
+    /// SponsorBlock mode for the next download (app setting; Chapters group and Settings > Downloads). Choosing cut/mark with no
+    /// categories enables the default three (sponsor, self-promotion, interaction reminders); each remains a separate Settings box.
     /// </summary>
     public string SponsorBlockMode
     {
@@ -238,11 +233,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The output's chapters as a YouTube description lists them ("00:00 Intro", "01:24 Gameplay", h:mm:ss past an
-    /// hour), copied to the clipboard: every marker, at its time on the timeline (which is the output's; clip
-    /// speeds are in the sequence's time already), and, with SponsorBlock kept as chapters, the main video's own
-    /// chapters (the SponsorBlock ones among them) where they land. Always opens with 00:00, "Intro" when nothing is
-    /// there; two lines on the same second keep the marker's.
+    /// Copies YouTube description timestamps ("00:00 Intro", "01:24 Gameplay", h:mm:ss past an hour): all markers in timeline (= output)
+    /// time, plus mapped source chapters (incl. SponsorBlock) when kept as chapters. Always starts at 00:00 ("Intro" if empty); on a
+    /// same-second collision the marker wins.
     /// </summary>
     [RelayCommand]
     private void CopyYouTubeTimestamps()
@@ -296,19 +289,19 @@ public partial class MainViewModel
             : $"Copied {lines.Count} chapter timestamps to clipboard (YouTube shows chapters from 3 on: put markers with M)";
     }
 
-    /// <summary>mm:ss, or h:mm:ss from an hour on, as YouTube reads them.</summary>
+    /// <summary>YouTube timestamp: mm:ss, or h:mm:ss from one hour.</summary>
     private static string YouTubeTime(int seconds) => seconds >= 3600
         ? string.Create(CultureInfo.InvariantCulture, $"{seconds / 3600}:{seconds / 60 % 60:00}:{seconds % 60:00}")
         : string.Create(CultureInfo.InvariantCulture, $"{seconds / 60:00}:{seconds % 60:00}");
 
-    /// <summary>A chapter title as yt-dlp writes a SponsorBlock one ("[SponsorBlock]: Sponsor"), without its prefix.</summary>
+    /// <summary>Strips yt-dlp's SponsorBlock title prefix ("[SponsorBlock]: Sponsor" -> "Sponsor").</summary>
     private static string YouTubeChapterTitle(string title)
     {
         const string prefix = "[SponsorBlock]:";
         return title.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? title[prefix.Length..].Trim() : title;
     }
 
-    /// <summary>Where a moment of the file last opened is on the sequence: in the first shown clip of its picture that holds it (SequenceSpans), or null when none does.</summary>
+    /// <summary>Maps a source time of the last opened file to Sequence time via the first visible clip containing it (SequenceSpans); null if none.</summary>
     private double? SequenceTimeOfOpenedFile(double fileSeconds)
     {
         foreach (var span in SequenceSpans.SpansOf(Document, OpenedFile))

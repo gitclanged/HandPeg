@@ -5,55 +5,48 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Templates on clips (5.1-DogfoodPolish, the user's rule) -----
-// A template (a Game Preset's place, look, blur fill and Cutouts) belongs to one base clip: never to a track or a media file. Its
-// Cutouts are children of that clip (ParentClipId) over that clip's span, so they split, trim, move and go with it, and any clip can have
-// one of its own: the 1st, 2nd or Nth video on the timeline. A clip dropped or dragged onto a template's track takes the template of the
-// clip it landed by, with a set of Cutouts of its own.
+// ----- Templates on clips -----
+// A template (Game Preset placement, look, blur fill, Cutouts) belongs to one base clip, never a track or media file. Its Cutouts are
+// children (ParentClipId) spanning the clip, so they split, trim, move and delete with it; any clip may have its own. A clip
+// dropped onto a template's track inherits the neighbouring clip's template with its own Cutouts.
 //
-// A Cutout cut from the picture (a Game Preset file's LayerKind.Video entry, saved as a part of "the video") is a VideoFile clip of its
-// clip's own file, on its clock (5.2-AuditB: every clip reads its own file), cut to the same part of the picture by its crop and shaped
-// by the same mask. A Game Preset or a preset goes on the selected video clips, or with none selected on every top-level video clip
-// (TemplateTargets); chosen before any clip, on the next file opened (PlaceOpenedFile).
+// A picture Cutout (a Game Preset LayerKind.Video entry) becomes a VideoFile clip of the base clip's file on its clock, cropped to the
+// same region and shaped by the same mask. Presets apply to TemplateTargets (selected videos, else all top-level videos); with no
+// clip, to the next opened file (PlaceOpenedFile).
 public partial class MainViewModel
 {
-    /// <summary>What a template puts on a clip: its look (null leaves the clip's), its place on the frame, its blur fill, and its Cutouts (and other children), lowest first.</summary>
-    /// <param name="Width">The clip's width as a fraction of the frame's.</param>
-    /// <param name="MiddleX">Where its middle is, as a fraction of the frame's width.</param>
-    /// <param name="MiddleY">Where its middle is, as a fraction of the frame's height.</param>
+    /// <summary>Template payload: look (null keeps the clip's), frame placement, blur fill and children (Cutouts etc.), lowest first.</summary>
+    /// <param name="Width">Clip width as a fraction of frame width.</param>
+    /// <param name="MiddleX">Centre X as a fraction of frame width.</param>
+    /// <param name="MiddleY">Centre Y as a fraction of frame height.</param>
     private sealed record ClipTemplate(LayerState? Look, double Width, double MiddleX, double MiddleY, bool BlurFilled, IReadOnlyList<TemplatePiece> Pieces);
 
-    /// <param name="Under">It lies under the base clip's track.</param>
-    /// <param name="Offset">Where it starts after the base clip's start, seconds.</param>
-    /// <param name="Length">How long it is, seconds; 0 for the base clip's whole length.</param>
-    /// <param name="FollowsBase">It plays the base clip's file on the base clip's clock (a Cutout cut from a clip of a file).</param>
+    /// <param name="Under">Placed below the base clip's track.</param>
+    /// <param name="Offset">Start offset from the base clip start (s).</param>
+    /// <param name="Length">Duration (s); 0 = the base clip's full length.</param>
+    /// <param name="FollowsBase">Plays the base clip's file on its clock (a file Cutout).</param>
     private sealed record TemplatePiece(LayerState State, bool Under, double Offset, double Length, bool FollowsBase);
 
-    /// <summary>What was selected on the Timeline, for a preset chosen from its list (the window's; nothing while nothing is selected).</summary>
+    /// <summary>Window-provided Timeline selection for preset targeting (empty when nothing is selected).</summary>
     public Func<IReadOnlyList<Layer>>? TimelineSelection { get; set; }
 
-    /// <summary>
-    /// The clips of a template's pictures: what lies over a clip as its child and is drawn, not the sound of its stream lanes. 5.5A: only
-    /// its pieces (<see cref="IsPiece"/>), never a clip tethered to it.
-    /// </summary>
+    /// <summary>A clip's visual template pieces (<see cref="IsPiece"/>): drawn children, excluding stream-lane audio and tethered clips.</summary>
     private List<(TimelineTrackModel Track, TimelineClip Clip)> TemplateChildrenOf(TimelineClip clip) =>
         Document.ChildrenOf(clip).Where(c => c.Track.Kind is not (TimelineTrackKind.Audio or TimelineTrackKind.Subtitle) && IsPiece(c.Clip)).ToList();
 
     /// <summary>
-    /// Whether a child is one of its parent's template pieces (Pass 5.5A, the Tethered mark): every child is, wherever it lies, but one the
-    /// Timeline's drag tethered to it (<see cref="TimelineClip.Tethered"/>). A tethered child follows its parent in time, but no Game Preset,
-    /// Track Preset or Cutouts put on the parent deletes, copies or moves it, and a preset chosen with it selected goes on it, never on the
-    /// clip it hangs from. Where a lane lies never decides it: a tether nested under its parent's track, or a piece moved off its lane, stays
-    /// what it is.
+    /// Whether a child is a template piece: every child except Timeline-tethered ones (<see cref="TimelineClip.Tethered"/>). Tethered
+    /// children follow the parent in time but are never deleted, copied or moved by presets/Cutouts on it, and a preset chosen with
+    /// one selected targets the tethered clip itself. Lane position never changes the classification.
     /// </summary>
     private static bool IsPiece(TimelineClip child) => !child.Tethered;
 
-    /// <summary>Whether a clip can be a template's base: a video from a file.</summary>
+    /// <summary>Whether a clip can be a template base (a file video).</summary>
     private static bool CanBaseTemplate(TimelineClip clip) => clip.ContentKind == LayerKind.VideoFile;
 
     /// <summary>
-    /// The clips a preset goes on for a selection: each selected video, or for a selected Cutout (a template's piece, wherever it lies) the
-    /// clip it is cut from. Nothing else (a sound, a caption, a picture tethered to a clip: 5.5A) and no clip twice.
+    /// Preset targets for a selection: selected videos, and for selected Cutouts (template pieces) their base clip; excludes audio,
+    /// captions and tethered pictures; deduplicated.
     /// </summary>
     public IReadOnlyList<Layer> GamePresetTargets(IEnumerable<Layer> selected)
     {
@@ -77,9 +70,8 @@ public partial class MainViewModel
         : null;
 
     /// <summary>
-    /// A layout as a template (5.2-AuditB: a style's or a preset's): its layers the pieces (those it lays under its video under the clip's
-    /// track), its saved video look (MainLayer) the clip's look, and its legacy Center values (a width about the frame's middle, moved by
-    /// the offsets) the clip's place.
+    /// Converts a style/preset layout to a template: layers become pieces (below-video ones under the clip's track), MainLayer becomes
+    /// the clip look, and legacy Center values (centred width plus offsets) become the placement.
     /// </summary>
     private static ClipTemplate TemplateOf(IReadOnlyList<LayerState>? saved, int? videoIndex, LayerState? look, double zoom, double offsetX, double offsetY, bool blurFilled)
     {
@@ -96,10 +88,10 @@ public partial class MainViewModel
         return new ClipTemplate(look, width, 0.5 + Math.Clamp(offsetX, -100, 100) / 100, 0.5 + Math.Clamp(offsetY, -100, 100) / 100, blurFilled, pieces);
     }
 
-    // How narrow and how wide a template makes its clip, as fractions of the frame's width (what the old Center zoom reached).
+    // Template clip width bounds as frame-width fractions (the legacy Center zoom range).
     private const double SmallestTemplateWidth = 0.1, LargestTemplateWidth = 4;
 
-    /// <summary>The template a clip has: what a clip that lands by it takes; null for a clip with no pieces.</summary>
+    /// <summary>A clip's template (inherited by clips landing beside it); null without pieces.</summary>
     private ClipTemplate? TemplateFrom(TimelineClip source)
     {
         if (ViewOf(source) is not { } view || Document.TrackOf(source) is not { } track || TemplateChildrenOf(source) is not { Count: > 0 } children)
@@ -119,11 +111,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A Cutout of the picture (a cut-out of "the video", as a Game Preset file saves it) as a Cutout of a clip of a file: that file, on
-    /// that clip's clock from where the Cutout starts, silent, cut by its crop to the same part of the picture and to the box the Cutout
-    /// has now on that picture. A crop leaves at least <see cref="Layer.LargestCropTotal"/>'s remainder of a picture: a Cutout narrower
-    /// than that is cut wider about its middle and its box made as much larger, and its mask, cut the same, still shapes it. Null when
-    /// its crop leaves nothing of the picture: no clip of the old kind is ever made (a project holding one is converted as it is opened, LegacyMainVideo).
+    /// Converts a generic picture Cutout (Game Preset "video" cut-out) into a silent file Cutout of the base clip's file on its clock,
+    /// cropped to the same region and box. Crops below <see cref="Layer.LargestCropTotal"/>'s minimum remainder are widened about the
+    /// centre with the box enlarged to match (the mask still shapes it). Null when the crop leaves nothing; legacy kinds are never created.
     /// </summary>
     private LayerState? FileCutoutOf(LayerState piece, Layer target, TimelineClip clip, double start)
     {
@@ -157,8 +147,7 @@ public partial class MainViewModel
         return OnClockOf(state, target, clip, start);
     }
 
-    // A Cutout reads its clip's file at its clip's moment where the Cutout starts (5.2-AuditB: from its own start, at its clip's speed),
-    // and is never heard: the clip's own sound is that file's.
+    // A Cutout reads its clip's file from its own start at the clip's speed, and is always muted (the clip carries the audio).
     private static LayerState OnClockOf(LayerState state, Layer target, TimelineClip clip, double start)
     {
         (state.ImagePath, state.ImageWidth, state.ImageHeight, state.MediaDuration) = (clip.SourcePath ?? target.ImagePath, target.ImageWidth, target.ImageHeight, target.MediaDuration);
@@ -167,8 +156,7 @@ public partial class MainViewModel
         return state;
     }
 
-    // What a template's child is on this clip, starting at a moment of it. A cut-out of "the video" is a Cutout of the clip's file, so
-    // only a clip of a file's picture takes one (5.2-Arm64AndNpu): on any other (a sound, a picture) it is left out, never kept as the old kind.
+    // Instantiates a template child on this clip at a time. Picture cut-outs require a file video clip; on other kinds they are omitted.
     private LayerState? StateFor(TemplatePiece piece, Layer target, TimelineClip clip, double start)
     {
         if (piece.State.Kind == LayerKind.Video)
@@ -178,7 +166,7 @@ public partial class MainViewModel
         return piece.FollowsBase ? OnClockOf(state, target, clip, start) : state;
     }
 
-    /// <summary>A Sub-Lane of the clip's Cutouts with room for this one (the same Cutout of an earlier clip's, so a template's lanes are kept in one stack), or a new one.</summary>
+    /// <summary>A Cutout Sub-Lane with room (preferring the lane of the same piece on earlier clips to keep one stack), or a new lane.</summary>
     private TimelineTrackModel LaneFor(ITimelineTransaction edit, TimelineTrackModel track, Layer view, double start, double end, bool under, ref int above)
     {
         var kind = TimelineTrackModel.KindFor(view.Kind);
@@ -195,8 +183,7 @@ public partial class MainViewModel
         return made;
     }
 
-    // The clip's Cutouts, made anew: those it had go first (one template to a clip); or, not replacing them, more Cutouts beside them
-    // (a region added, a mask's Cutouts).
+    // Recreates the clip's Cutouts (replacing existing: one template per clip), or appends (added region, mask Cutouts).
     private void SpawnCutouts(ITimelineTransaction edit, TimelineClip clip, ClipTemplate template, bool replace = true)
     {
         if (Document.TrackOf(clip) is not { } track || ViewOf(clip) is not { } target)
@@ -235,8 +222,8 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Puts a template on one clip: its look, place and blur fill, then its Cutouts over the clip's span. No undo step of its own: the caller's.</summary>
-    /// <param name="swap">It takes the place of the clip's preset (a Track Preset Node, 5.2A): a blur fill the template does not have goes too.</param>
+    /// <summary>Applies a template to one clip (look, placement, blur fill, then Cutouts over its span). No undo step (caller's).</summary>
+    /// <param name="swap">Replaces the clip's preset (Track Preset Node), also removing blur fill the template lacks.</param>
     private void PutTemplateOn(Guid clipId, ClipTemplate template, string label, bool swap = false)
     {
         if (Document.FindClip(clipId) is not { } clip || Document.TrackOf(clip) is not { } track || ViewOf(clip) is not { } view)
@@ -245,7 +232,7 @@ public partial class MainViewModel
         if (template.Look is { } look)
             TakeLook(view, clip, track, look);
 
-        // Its own shape, in the template's middle: a file of another shape keeps its picture whole.
+        // Keep the clip's own aspect, centred on the template's centre, so other-aspect files are not distorted.
         var placing = _placingViews;
         _placingViews = true;
         try
@@ -272,11 +259,10 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts a Game Preset's or a preset's layout on the clips it goes on (<see cref="TemplateTargets"/>: the selected video clips, or every
-    /// top-level one), each taking its place, look and blur fill and Cutouts of its own over its own span; with no clip to go on, keeps
-    /// it for the next file opened (PlaceOpenedFile). No undo step of its own: the caller's.
+    /// Applies a layout to <see cref="TemplateTargets"/>, each getting placement, look, blur fill and own Cutouts; with no targets it is
+    /// pended for the next opened file (PlaceOpenedFile). No undo step (caller's).
     /// </summary>
-    /// <returns>How many clips it went on.</returns>
+    /// <returns>Number of clips updated.</returns>
     private int PutTemplate(ClipTemplate template, string label)
     {
         var targets = TemplateTargets().Select(v => v.ClipId).Where(id => id != Guid.Empty).ToList();
@@ -289,11 +275,10 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A saved Game Preset on these clips alone (the Timeline's list with clips selected, a clip's menu): each takes its place, look and blur
-    /// fill, and Cutouts of its own over its own span; nothing else on the timeline changes. The sequence's colour filters and captions stay
-    /// as they are (they are not a clip's); a preset's blur settings are the one blur the sequence has. One step of Undo.
+    /// Applies a saved Game Preset to the given clips only (Timeline list with selection, clip menu). Sequence colour filters and
+    /// captions are untouched; the preset's blur settings become the Sequence blur. One undo step.
     /// </summary>
-    /// <returns>Whether it was put on any clip.</returns>
+    /// <returns>Whether any clip was updated.</returns>
     public bool ApplyGamePreset(IEnumerable<Layer> clips, string name)
     {
         var targets = GamePresetTargets(clips).Select(c => c.ClipId).ToList();
@@ -329,7 +314,7 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>The clip nearest a moment on a track with a template of its own to give, itself left out; null when no clip there has one.</summary>
+    /// <summary>Nearest other clip on a track that has a template to give; null when none.</summary>
     private TimelineClip? TemplateClipOn(TimelineTrackModel? track, double at, TimelineClip? except = null)
     {
         if (track is null)
@@ -350,18 +335,18 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A clip that landed on a track with a template takes it: the place and look of the clip it landed by, and its own set of that clip's
-    /// pieces over its own span. Nothing for a clip with pieces of its own, or a track with none to give. Part of the step that put it there.
+    /// Gives a clip landing on a template track the neighbour's placement, look and its own copy of the pieces. No-op if it has pieces
+    /// or the track has none to give. Part of the placing step.
     /// </summary>
-    /// <param name="droppedOn">The row it was dropped on, whose track it may not have ended up on (no room: a track of its own above it).</param>
-    /// <param name="at">The moment it was dropped at.</param>
-    /// <param name="hadPreset">The Game Preset of the track it came from (a move from one track to another): a node of the same preset is not put on it again.</param>
+    /// <param name="droppedOn">Drop row (the clip may have landed on a new track above it).</param>
+    /// <param name="at">Drop time.</param>
+    /// <param name="hadPreset">Source track's Game Preset on a track move; the same preset node is not re-applied.</param>
     public void InheritTemplate(Layer clip, Layer? droppedOn, double at, string? hadPreset = null)
     {
         if (ClipOf(clip) is not { } model || !CanBaseTemplate(model) || model.ParentClipId is not null || IsCutout(model))
             return;
 
-        // A Track Preset Node (5.2A): the track's Game Preset in place of whatever the clip had, its Cutouts swapped for the preset's.
+        // Track Preset Node: replace the clip's preset and Cutouts with the track's.
         if ((NodeOf(Document.TrackOf(model)) ?? NodeOf(TrackOfRow(droppedOn))) is { } node)
         {
             if (string.Equals(node, hadPreset, StringComparison.OrdinalIgnoreCase) || PresetTemplate(node, out var style) is not { } preset)
@@ -390,24 +375,22 @@ public partial class MainViewModel
         }
     }
 
-    // ----- Track Preset Nodes (5.2A, the user's directive) -----
-    // A picture track can carry a Game Preset of its own (TimelineTrackModel.PresetNodeName): every top-level video clip that comes onto it,
-    // dropped or dragged from another track, takes that preset's place, look, blur fill and Cutouts in place of what it had, in the step that
-    // brought it there (InheritTemplate), so a clip moved from one node's track to another's swaps its preset and Cutouts in one step of Undo.
-    // Set on a track, the preset goes on the clips the track holds then too; cleared, they keep what they have. The rule above (a template is
-    // one base clip's) still holds: the node only says which template a clip arriving there is given.
+    // ----- Track Preset Nodes -----
+    // A picture track may carry a Game Preset (TimelineTrackModel.PresetNodeName): top-level videos arriving there take its placement,
+    // look, blur fill and Cutouts in the arriving step (InheritTemplate), so moving between node tracks swaps presets in one undo step.
+    // Setting a node applies it to current clips; clearing leaves them as-is. Templates remain per base clip; the node only selects one.
 
-    /// <summary>The Game Preset a track gives its clips: its node's, on a picture track of its own; null for none.</summary>
+    /// <summary>A track's node Game Preset (top-level picture tracks only); null for none.</summary>
     private static string? NodeOf(TimelineTrackModel? track) =>
         track is { Kind: TimelineTrackKind.Video or TimelineTrackKind.Switch, ParentTrackId: null, PresetNodeName: { Length: > 0 } name } ? name : null;
 
-    /// <summary>The Game Preset a row's track gives its clips (5.2A), or null for none.</summary>
+    /// <summary>The row track's node Game Preset, or null.</summary>
     public string? TrackPresetOf(Layer? row) => NodeOf(TrackOfRow(row));
 
-    /// <summary>Whether a row's track can carry a Game Preset: a picture track of its own, not a Sub-Lane of another's.</summary>
+    /// <summary>Whether a row's track can carry a node: a top-level picture track, not a Sub-Lane.</summary>
     public bool CanHaveTrackPreset(Layer? row) => row is { IsCaptions: false, IsBackground: false } && TrackOfRow(row) is { Kind: TimelineTrackKind.Video or TimelineTrackKind.Switch, ParentTrackId: null };
 
-    /// <summary>A saved Game Preset as a template, read from the Styles folder; null (the reason in the status bar) when it has no layout.</summary>
+    /// <summary>Loads a Game Preset from the Styles folder as a template; null (reason in the status bar) if it has no layout.</summary>
     private ClipTemplate? PresetTemplate(string name, out StylePreset? style)
     {
         style = ReadStyle(Path.Combine(AppPaths.Styles, name + StyleFile.Extension));
@@ -420,8 +403,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Gives a track a Game Preset (a Track Preset Node, 5.2A), which goes on every video clip on it now, each with Cutouts of its own, in
-    /// place of what each had; null takes the node away and leaves the clips as they are. One step of Undo.
+    /// Sets a track's Track Preset Node, applying it (with per-clip Cutouts) to its current videos; null clears the node and leaves
+    /// clips unchanged. One undo step.
     /// </summary>
     /// <returns>Whether the node changed.</returns>
     public bool SetTrackPreset(Layer row, string? name)
@@ -452,8 +435,7 @@ public partial class MainViewModel
         var targets = template is null ? [] : track.Clips.Where(c => CanBaseTemplate(c) && c.ParentClipId is null && !IsCutout(c)).Select(c => c.Id).ToList();
         if (style is not null && template is not null)
         {
-            // As a Game Preset chosen for clips does (ApplyGamePreset): its masks unpacked, the frame's shape (only where the Sequence is the
-            // preset's to shape: PresetMayShapeFrame, 5.2B) and the sequence's one blur.
+            // As ApplyGamePreset: unpack masks, set frame shape (only when PresetMayShapeFrame allows) and the Sequence blur.
             _activeStyle = style;
             ExtractMasks(style);
             if (style.Layout?.Vertical is { } vertical && vertical != UseVerticalResolution && PresetMayShapeFrame(track, name!))
@@ -475,10 +457,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether a Track Preset set on a track may turn the Sequence's frame to the preset's shape (5.2B, the user's Q2): never while another
-    /// track already gives its clips a different preset (the frame is that one's, or the user's, then); otherwise when no other track holds a
-    /// clip (the Sequence is this track's, or empty: any other track counts, a music track's sound as much as another's pictures; this track's
-    /// own Sub-Lanes do not), or the frame is still the default 16:9 and no other track has a preset at all. The rest of the preset goes on as ever.
+    /// Whether a Track Preset may reshape the Sequence frame: never if another track has a different preset; otherwise if no other
+    /// track holds clips (audio counts; this track's Sub-Lanes do not), or the frame is still default 16:9 with no other presets.
+    /// The rest of the preset applies regardless.
     /// </summary>
     private bool PresetMayShapeFrame(TimelineTrackModel track, string name)
     {

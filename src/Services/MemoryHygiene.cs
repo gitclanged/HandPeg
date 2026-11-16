@@ -6,23 +6,17 @@ using HandPegApp.Compositor;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Giving the computer's memory back after a tab is closed or put behind (Pass 5.4D-TabPerf): one blocking, compacting full
-/// collection of the managed heap (the large-object heap included), deferred until the editor is quiet (nothing playing,
-/// scrubbing or switching tabs), since such a collection stops every managed thread for its length.
+/// Reclaims memory after a tab closes or is backgrounded: one blocking, compacting full GC (including LOH), deferred until the editor
+/// is quiet (no play, scrub or tab switch) because it suspends all managed threads.
 ///
-/// Asks made within 2 s of each other are one (the last of them starts the wait). The editor is then asked whether it is quiet,
-/// on the thread that set <see cref="IsQuiet"/> (the window's: what it reads belongs to it); when it is, the collection runs there
-/// and then, in the same turn (the 5.4D-TabPerf review: a collection started later on the pool let a Play queued behind the answer
-/// start first, and the collection then stopped the audio feeder it had just started; a blocking collection stops every managed
-/// thread anyway, so running it on the window's thread costs nothing more, and no Play can start while it runs). Only what follows
-/// it, the finalizers it found and the log line, goes to the pool. When the editor is not quiet, it is asked again every 2 s, for
-/// 2 minutes after the last ask at most, and then let go. Nothing of this exists until the first ask (Law 1), and nothing runs
-/// between asks.
+/// Requests within 2 s coalesce (the last restarts the wait). Quietness is checked on the thread that set <see cref="IsQuiet"/> (the UI
+/// thread), and the GC runs there in the same turn: running it later on the pool let a queued Play start first and then stalled its
+/// audio feeder; a blocking GC suspends every thread anyway, and no Play can start meanwhile. Finalizers and the log line go to the
+/// pool. When busy, rechecks every 2 s for up to 2 minutes after the last request, then gives up. Lazily created (Law 1); idle between
+/// requests.
 ///
-/// The collection's cost was measured on the XPS 13 (5.4D-TabPerf): a forced compacting collection there gave back 0 to 80 MB
-/// of the main process's 1.2 to 1.4 GB, most of which is native memory, not the managed heap's. It is kept for what it does
-/// give back after a tab's last references go (its Sequence, its undo history, its pictures' native memory, through their
-/// finalizers), never for a promise of more.
+/// Measured gain is modest (0-80 MB of a 1.2-1.4 GB process, mostly native memory); it exists to release a closed tab's Sequence, undo
+/// history and finalizer-held native bitmaps, nothing more.
 /// </summary>
 public static class MemoryHygiene
 {
@@ -30,9 +24,8 @@ public static class MemoryHygiene
     private static SynchronizationContext? _quietThread;
 
     /// <summary>
-    /// Set by the main window: true while nothing plays, scrubs, records or switches tabs. It is called on the thread that set it
-    /// (through that thread's SynchronizationContext: the window's dispatcher), or, when that thread had none, on the pool.
-    /// Null (no window) is never quiet.
+    /// Set by MainWindow: true when nothing plays, scrubs, records or switches tabs. Invoked via the setter thread's
+    /// SynchronizationContext (the UI dispatcher), else on the pool. Null (no window) is never quiet.
     /// </summary>
     public static Func<bool>? IsQuiet
     {
@@ -44,8 +37,7 @@ public static class MemoryHygiene
         }
     }
 
-    // The waits (the goldens run them shorter): asks closer than Settle are one; a busy editor is asked again every RecheckEvery, until
-    // GiveUpAfter past the last ask.
+    // Timings (shortened by goldens): requests within Settle coalesce; busy rechecks every RecheckEvery until GiveUpAfter.
     internal static TimeSpan Settle { get; set; } = TimeSpan.FromSeconds(2);
     internal static TimeSpan RecheckEvery { get; set; } = TimeSpan.FromSeconds(2);
     internal static TimeSpan GiveUpAfter { get; set; } = TimeSpan.FromMinutes(2);
@@ -61,7 +53,7 @@ public static class MemoryHygiene
     /// <summary>How many waits were released after <see cref="GiveUpAfter"/> without a quiet moment.</summary>
     internal static int GivenUp { get; private set; }
 
-    /// <summary>The managed thread the last collection ran on (the goldens: the one that said the editor was quiet).</summary>
+    /// <summary>Managed thread id of the last collection (goldens verify it is the quiet-check thread).</summary>
     internal static int CollectedOn { get; private set; }
 
     /// <summary>Whether a collection is running now (its finalizers and log line included).</summary>
@@ -82,9 +74,8 @@ public static class MemoryHygiene
     private static bool _collecting, _compactHeap;
 
     /// <summary>
-    /// Asks for one compacting collection once the editor is quiet; asks made close together are one. With
-    /// <paramref name="compactProcessHeap"/> (any of the merged asks) the process heap's free blocks are also coalesced and decommitted
-    /// after the finalizers ran (HeapCompact: the native side's freed pictures and start-up allocations).
+    /// Requests one compacting GC when quiet (coalesced). With <paramref name="compactProcessHeap"/> (from any merged request), also runs
+    /// HeapCompact after finalizers to decommit freed native blocks.
     /// </summary>
     public static void RequestCompactOnce(string reason, bool compactProcessHeap = false)
     {
@@ -143,8 +134,8 @@ public static class MemoryHygiene
             thread.Post(static _ => Decide(), null);
     }
 
-    // On the thread that set IsQuiet: collect now, right here, if the editor is quiet; ask again later if not, or give up. The
-    // readings the log line compares are taken first: a few counters (no process list), so the collection follows the answer at once.
+    // On the IsQuiet thread: collect now if quiet, else reschedule or give up. Cheap counter readings for the log are taken first so
+    // the GC immediately follows the answer.
     private static void Decide()
     {
         var before = (Private: CompositorWorker.PrivateBytes(), Heap: GC.GetTotalMemory(forceFullCollection: false), Paused: GC.GetTotalPauseDuration());
@@ -195,11 +186,9 @@ public static class MemoryHygiene
     }
 
     /// <summary>
-    /// The collection itself, on the thread that just said the editor is quiet (in the same turn): blocking (a background collection
-    /// never compacts), compacting, the large-object heap too (CompactOnce: the next blocking full collection only). Forced, not
-    /// Aggressive: Aggressive would hand back the youngest generation's budget too (64 MB, HandPegApp.csproj), and the next allocations
-    /// would fault it back in. The finalizers it finds run on the pool (a finalizer that waits for the window's thread would wait for
-    /// ever there), before the second reading, so the native memory they free (pictures, sections) counts in what it gave back.
+    /// Runs the GC on the quiet-check thread in the same turn: blocking (background GCs never compact), compacting, LOH included
+    /// (CompactOnce). Forced, not Aggressive (which would release the 64 MB gen0 budget from HandPegApp.csproj, only to fault it back).
+    /// Finalizers run on the pool (avoiding UI-thread deadlock) before the second reading so freed native memory is counted.
     /// </summary>
     private static void Compact(string reason, bool compactHeap, (long Private, long Heap, TimeSpan Paused) before)
     {

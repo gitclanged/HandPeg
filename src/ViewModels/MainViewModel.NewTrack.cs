@@ -3,31 +3,25 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.ViewModels;
 
-// ----- A clip onto a new track of its own (5.4A, the user's directive) -----
-// A clip dragged to the seam above or below a picture track (UnifiedTimelineControl's insertion bar), moved by Alt+Up / Alt+Down, or
-// by the clip menu's Move to New Track Above / Below, goes onto a new top-level picture track at that place, in one step of Undo. Its
-// family comes with it: the stream sounds and Cutouts it has on its old track's Sub-Lanes go onto lanes under its new track (the same
-// lanes for several clips moved together), so they are drawn, heard and stacked with it; a lone clip's lanes, which follow it by
-// themselves (TimelineTransaction.FollowTrack), are gathered beside it. A new track goes past the whole family of the track it is
-// put beside (its Cutout lanes too), so nothing comes between a track and its Cutouts. Only top-level picture clips move this way:
-// never a sound, a Cutout or a stream (a child), a clip on a locked track, nor one on a Sub-Lane.
+// ----- Move clip to a new track -----
+// Seam drag (UnifiedTimelineControl insertion bar), Alt+Up/Down, or Move to New Track Above/Below puts a clip on a new top-level picture
+// track in one undo step. Its family (stream audio and Cutouts on old-track Sub-Lanes) moves to lanes under the new track (shared
+// for multi-clip moves); a lone clip's self-following lanes (TimelineTransaction.FollowTrack) are gathered beside it. New tracks go
+// past the neighbour's whole family so nothing separates a track from its Cutouts. Only unlocked top-level picture clips qualify.
 public partial class MainViewModel
 {
-    /// <summary>A top-level picture track: a Video or Switch track that lies under no other.</summary>
+    /// <summary>Whether a track is a top-level (unnested) Video or Switch track.</summary>
     private static bool IsTopPicture(TimelineTrackModel? track) =>
         track is { Kind: TimelineTrackKind.Video or TimelineTrackKind.Switch, ParentTrackId: null };
 
-    /// <summary>The track a clip would leave for a new one: its own, when it is a top-level picture clip on an unlocked top-level picture track; else null.</summary>
+    /// <summary>Source track for a move-to-new-track (unlocked top-level picture track of a top-level picture clip); else null.</summary>
     private TimelineTrackModel? NewTrackSource(TimelineClip? model) =>
         model is { ParentClipId: null } && model.ContentKind != LayerKind.Audio && Document.TrackOf(model) is { IsLocked: false } track && IsTopPicture(track) ? track : null;
 
-    /// <summary>The top-level picture tracks, bottom first: the order of the seams a new track can go into.</summary>
+    /// <summary>Top-level picture tracks bottom-first (defines insertion seams).</summary>
     private List<TimelineTrackModel> TopPictureTracks() => Document.Tracks.Where(IsTopPicture).ToList();
 
-    /// <summary>
-    /// Where a track's family lies in the stacking order: the lowest and highest index of the track and the picture lanes that lie under
-    /// it (its Cutouts, at any depth; the sound lanes, kept at the end of the tracks, are not counted).
-    /// </summary>
+    /// <summary>Min/max stack index of a track and its nested picture lanes (audio lanes, kept at the end, excluded).</summary>
     private (int Low, int High) FamilySpan(TimelineTrackModel track)
     {
         var at = Document.Tracks.IndexOf(track);
@@ -44,7 +38,7 @@ public partial class MainViewModel
         return (low, high);
     }
 
-    /// <summary>The index a new track goes in to lie just above (past its whole family) or just below (under its whole family) a track.</summary>
+    /// <summary>Insertion index just above or below a track's whole family.</summary>
     private int NewTrackIndex(TimelineTrackModel beside, bool above)
     {
         var (low, high) = FamilySpan(beside);
@@ -52,16 +46,15 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether a clip can go onto a new track above or below <paramref name="besideRow"/>'s track (a drag to a seam): a top-level picture
-    /// clip on an unlocked top-level picture track, beside a top-level picture track, where that changes something: a clip alone on its
-    /// track goes nowhere new at either seam of its own track.
+    /// Whether a seam drag beside <paramref name="besideRow"/>'s track is valid: an eligible clip, a top-level picture neighbour, and an
+    /// actual change (a lone clip at its own track's seams is a no-op).
     /// </summary>
     public bool CanMoveClipToNewTrack(Layer clip, Layer besideRow, bool above, double start)
     {
         if (ClipOf(clip) is not { } model || NewTrackSource(model) is not { } source || TrackOfRow(besideRow) is not { } beside || !IsTopPicture(beside) || !double.IsFinite(start))
             return false;
 
-        // A seam is known by how many top-level picture tracks lie under it; a lone clip's own track touches two of them.
+        // Seams are indexed by the count of top-level picture tracks below; a lone clip's own track touches two.
         if (source.Clips.Count == 1)
         {
             var roots = TopPictureTracks();
@@ -74,9 +67,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Moves a clip onto a new track just above or just below <paramref name="besideRow"/>'s track (past its Cutout lanes), beginning at
-    /// <paramref name="start"/>, its family with it (its stream sounds and Cutouts onto lanes under the new track). A track it leaves empty
-    /// goes. One step of Undo.
+    /// Moves a clip (and family) to a new track above/below <paramref name="besideRow"/>'s track family at <paramref name="start"/>;
+    /// an emptied source track is removed. One undo step.
     /// </summary>
     public bool MoveClipToNewTrack(Layer clip, Layer besideRow, bool above, double start)
     {
@@ -97,19 +89,16 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>Whether <see cref="MoveClipsToNewTrack"/> has a clip to move: one of them a top-level picture clip on an unlocked top-level picture track.</summary>
+    /// <summary>Whether <see cref="MoveClipsToNewTrack"/> has at least one eligible clip.</summary>
     public bool CanMoveClipsToNewTrack(IReadOnlyList<Layer> views) =>
         CopyRoots(views.Where(CanGroup)).Any(c => NewTrackSource(c) is not null);
 
     /// <summary>
-    /// Moves clips (the selection: Alt+Up / Alt+Down, the clip menu's Move to New Track Above / Below) up or down one track, in one step of
-    /// Undo, each with its family, the selection kept. The clips of one track move together onto one new track just above (past its
-    /// Cutout lanes) or just below it; with <paramref name="ontoNeighbour"/> (the keys) onto the next top-level picture track that way
-    /// instead, when it is unlocked, takes them and is free for them. Clips that are all their track holds would go nowhere on a new
-    /// track beside their own: they go onto a new track past the next track that way (they visibly move one level), and at the top or
-    /// bottom of the stack nowhere (said in the status bar).
+    /// Moves selected clips up/down one track with their families in one undo step, keeping the selection. Per source track, clips go to
+    /// one new track above/below its family, or with <paramref name="ontoNeighbour"/> onto the next unlocked, compatible, free neighbour.
+    /// Clips filling their whole track move past the next track instead; at the stack edge nothing moves (status message).
     /// </summary>
-    /// <param name="ontoNeighbour">Onto the next track that way where it is free (the keys); false always makes a new track (the menu).</param>
+    /// <param name="ontoNeighbour">Prefer the next track when free (keys); false always creates a new track (menu).</param>
     public bool MoveClipsToNewTrack(IReadOnlyList<Layer> views, bool above, bool ontoNeighbour = false)
     {
         var roots = CopyRoots(views.Where(CanGroup)).Where(c => NewTrackSource(c) is not null).ToList();
@@ -120,8 +109,7 @@ public partial class MainViewModel
         }
 
         var where = above ? "above" : "below";
-        // One track's clips together, the tracks taken from the far end of the way they go (the top first going up), so each new track
-        // goes in beside a track no earlier one has moved.
+        // Group by track and process from the far end of the move direction so each insertion targets an unmoved neighbour.
         var groups = roots.GroupBy(c => Document.TrackOf(c)!).OrderBy(g => (above ? -1 : 1) * Document.Tracks.IndexOf(g.Key)).ToList();
         var (moved, edge) = (0, 0);
         var label = roots.Count == 1 ? $"move {ViewOf(roots[0])?.Name ?? "a clip"} to a track {where}" : $"move {roots.Count} clips to a track {where}";
@@ -161,7 +149,7 @@ public partial class MainViewModel
                     continue;
                 }
 
-                // A new track beside its own, or for clips that are all their track holds, past the next track that way.
+                // New track beside the source, or past the next track when the clips fill their source track.
                 var beside = lone ? neighbour! : source;
                 var template = beside.Kind == TimelineTrackKind.Video ? beside : source;
                 TimelineTrackModel? made = null;
@@ -203,8 +191,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A clip moved onto a new track inserted at <paramref name="index"/> (of <paramref name="template"/>'s kind), beginning at
-    /// <paramref name="start"/>, its family re-laned under it (<see cref="Relane"/>). Returns the new track.
+    /// Inserts a track of <paramref name="template"/>'s kind at <paramref name="index"/>, moves the clip to <paramref name="start"/> on it and
+    /// relanes its family (<see cref="Relane"/>). Returns the new track.
     /// </summary>
     private TimelineTrackModel OntoNewTrack(ITimelineTransaction edit, TimelineClip clip, TimelineTrackModel source, TimelineTrackModel template, int index, double start,
         Dictionary<Guid, TimelineTrackModel> lanes)
@@ -216,15 +204,14 @@ public partial class MainViewModel
         return made;
     }
 
-    /// <summary>The picture lanes (Cutouts) that lie under a track now: those of them that follow a lone clip to its new track are gathered beside it.</summary>
+    /// <summary>Current picture lanes (Cutouts) under a track; those following a lone clip are regrouped beside its new track.</summary>
     private List<TimelineTrackModel> PictureLanesOf(TimelineTrackModel track) =>
         Document.ChildTracksOf(track).Where(t => t.Kind is not (TimelineTrackKind.Audio or TimelineTrackKind.Subtitle)).ToList();
 
     /// <summary>
-    /// After a clip moved from <paramref name="from"/> to <paramref name="to"/> (5.4A): the lanes that followed it by themselves (its old
-    /// track's picture lanes, <paramref name="followed"/>, now under its new track: it was alone on its old one) are put beside its new track,
-    /// those over the old track over it and those under under it; then each of its family still on a lane of the old track goes onto a lane
-    /// under the new one (<see cref="LaneUnder"/>), at its time. Part of the step that moved the clip.
+    /// After moving a clip from <paramref name="from"/> to <paramref name="to"/>: repositions self-following lanes (<paramref name="followed"/>)
+    /// beside the new track preserving above/below sides, then moves remaining family clips from old lanes to lanes under the new track
+    /// (<see cref="LaneUnder"/>). Part of the move step.
     /// </summary>
     private void Relane(ITimelineTransaction edit, TimelineClip clip, TimelineTrackModel from, TimelineTrackModel to, List<TimelineTrackModel> followed,
         Dictionary<Guid, TimelineTrackModel> lanes)
@@ -232,8 +219,7 @@ public partial class MainViewModel
         if (ReferenceEquals(from, to) || !Document.Tracks.Contains(from))
             return;
 
-        // The lanes that followed: over the old track, stacked just over the new one in their order; under it, just under it. Pass 5.5A
-        // review: both sides are told apart before either moves (a lane put over the new track lower down was then taken for one under).
+        // Classify followed lanes as above/below before moving any (moving first misclassified lanes placed lower down).
         var (over, under) = (0, 0);
         var placed = followed.Where(l => l.ParentTrackId == to.Id && !l.IsLocked).ToList();
         var oldAt = Document.Tracks.IndexOf(from);
@@ -251,7 +237,7 @@ public partial class MainViewModel
             edit.MoveTrack(lane, (Document.Tracks.IndexOf(lane) < parent ? parent - 1 : parent) - under++);
         }
 
-        // Its family still on the old track's lanes (every depth, in the order of the tracks).
+        // Family clips still on old-track lanes (all depths, track order).
         var kin = new List<(TimelineTrackModel Lane, TimelineClip Clip)>();
         var parents = new Queue<TimelineClip>([clip]);
         var seen = new HashSet<Guid> { clip.Id };
@@ -276,10 +262,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The lane a clip of a moved family goes on under its new parent track (5.4A; as a pasted family's, PasteLane): one already made for
-    /// its old lane in this move; for a stream's sound, the new track's lane of that stream place (StreamLaneOf); for a Cutout, a lane of
-    /// the new track's holding the same Cutout of another clip; else a new lane of its kind, named as its old one (a sound lane at the end
-    /// with the other sounds, its stream place kept; a picture lane just over the new track's family, or just under it as its old lay).
+    /// Target lane under the new parent for a moved family clip (as PasteLane): a lane already mapped in this move; stream audio's
+    /// ordinal lane (StreamLaneOf); a lane holding the same Cutout of another clip; else a new same-kind lane named like the old one
+    /// (audio at the end with its ordinal; picture just above or below the family, matching its old side).
     /// </summary>
     private TimelineTrackModel LaneUnder(ITimelineTransaction edit, TimelineClip child, TimelineTrackModel oldLane, TimelineTrackModel from, TimelineTrackModel parent,
         Dictionary<Guid, TimelineTrackModel> made)

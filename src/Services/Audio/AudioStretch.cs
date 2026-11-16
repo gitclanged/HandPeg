@@ -4,23 +4,22 @@ using System.Runtime.InteropServices;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- Rate and time: the resampler and the time stretch (Pass 5.0-AudioAnd3D, 5.0C) -----
+// ----- Resampling and time stretch -----
 //
-// A voice's sound goes from its file's rate to the device's through a polyphase windowed-sinc resampler (64 taps, a Kaiser
-// window, 512 phases with the two nearest blended), and is played faster or slower without its pitch changing by WSOLA
-// (a Hann overlap-add whose every frame is moved, within 10 ms, to where it best continues the frame before). Both pull
-// what they need from the stage before them and never wait: told nothing more is there yet, they give what they have.
+// Voices resample from the file rate to the device rate through a polyphase windowed-sinc resampler (64 taps, Kaiser window, 512 phases,
+// adjacent phases blended) and change tempo without changing pitch via WSOLA (Hann overlap-add, each frame shifted within 10 ms to best
+// continue the previous). Both pull from the previous stage and never block: when upstream has nothing yet they return what they have.
 
-/// <summary>Planar stereo, pulled.</summary>
+/// <summary>Pull-based planar stereo source.</summary>
 internal interface IStereoSource
 {
-    /// <summary>Fills as much of the spans as it can now (both the same length): fewer only when what it reads from has nothing more yet.</summary>
+    /// <summary>Fills as much of both equal-length spans as possible now; returns fewer only when upstream has nothing more yet.</summary>
     int Read(Span<float> left, Span<float> right);
 }
 
 /// <summary>
-/// Any ratio, read from its source at <see cref="Step"/> input samples per output sample, from a fractional start. With a
-/// step of exactly 1 and a whole start it copies, so a file at the device's rate comes out sample for sample.
+/// Arbitrary-ratio resampler reading <see cref="Step"/> input samples per output sample from a fractional start. A step of exactly 1 with
+/// an integer start copies, so device-rate files pass through bit-exact.
 /// </summary>
 internal sealed class PolyphaseResampler : IStereoSource
 {
@@ -29,7 +28,7 @@ internal sealed class PolyphaseResampler : IStereoSource
     private const int Phases = 512;
     private const int Capacity = 16384;
 
-    // The tables by cutoff (in thousandths of the input rate): a few ever exist (44.1 to 48, 48 to 48 shifted, 96 to 48).
+    // Kernel tables keyed by cutoff in thousandths of the input rate; only a few ever exist (44.1->48, 48->48 shifted, 96->48).
     private static readonly ConcurrentDictionary<int, float[]> Tables = new();
 
     private readonly float[] _left = new float[Capacity], _right = new float[Capacity];
@@ -44,9 +43,8 @@ internal sealed class PolyphaseResampler : IStereoSource
     public double Step => _step;
 
     /// <summary>
-    /// Starts reading <paramref name="source"/> afresh: the first output sample is the source's sample
-    /// <paramref name="start"/> (fractional; the source's first sample is 0). What is before start less half the
-    /// kernel is read and dropped.
+    /// Restarts on <paramref name="source"/>: the first output sample is source sample <paramref name="start"/> (fractional; the source's
+    /// first sample is 0). Input before start minus half the kernel is read and discarded.
     /// </summary>
     public void Reset(IStereoSource source, double step, double start)
     {
@@ -59,7 +57,7 @@ internal sealed class PolyphaseResampler : IStereoSource
             return;
         }
 
-        // The kernel reaches half its width back: what lies before the source's first sample is silence.
+        // The kernel reaches half its width back; positions before the source's first sample are silence.
         var first = (long)Math.Floor(start) - HalfTaps + 1;
         if (first >= 0)
         {
@@ -146,7 +144,7 @@ internal sealed class PolyphaseResampler : IStereoSource
         return (sumL, sumR);
     }
 
-    // What lies before the start is read and dropped (a little: the caller seeks to just before it).
+    // Reads and discards input before the start (little: callers seek to just before it).
     private bool Skipped()
     {
         while (_skip > 0)
@@ -161,7 +159,7 @@ internal sealed class PolyphaseResampler : IStereoSource
         return true;
     }
 
-    // More of the source, after what is kept of the old (the kernel's reach back from where reading is).
+    // Reads more input after compacting to what the kernel still reaches back to.
     private bool Refill()
     {
         var keep = Math.Max((int)Math.Floor(_position) - HalfTaps + 1, 0);
@@ -186,9 +184,8 @@ internal sealed class PolyphaseResampler : IStereoSource
     }
 
     /// <summary>
-    /// Phases + 1 rows of the kernel (the last for blending past the last phase): row p holds the weights of the 64 samples
-    /// around a point p / Phases past a sample, a Kaiser-windowed sinc (beta 9, about -90 dB) at the cutoff, each row
-    /// summing to 1 so that no phase changes the level.
+    /// Kernel table of Phases + 1 rows (the last for blending past the final phase): row p holds the 64 tap weights for a point p / Phases
+    /// past a sample, a Kaiser-windowed sinc (beta 9, ~-90 dB) at the cutoff, each row normalized to sum 1 so no phase changes the level.
     /// </summary>
     private static float[] Build(int thousandths)
     {
@@ -237,20 +234,17 @@ internal sealed class PolyphaseResampler : IStereoSource
 }
 
 /// <summary>
-/// WSOLA: the sound at <see cref="Tempo"/> times its speed, its pitch kept. Frames of 40 ms, Hann windows overlapping by
-/// half; each frame is read from where the nominal time puts it, moved within 10 ms to where its first half best matches
-/// what the frame before would have gone on with (searched on the two channels' sum at half the rate, then refined to the
-/// sample). Output sample j is the input around sample j x tempo: the frames' middles are placed on that line, so the time
-/// never drifts (the moves only wander about it).
-/// The match is the squared difference measured against both sides' power, 1 - |c - t|^2 / (|c|^2 + |t|^2) = 2 c.t / (|c|^2 +
-/// |t|^2): unlike a correlation normalized by the candidate alone, it tells loud from quiet. After a sound stops, the frame
-/// that goes on with silence is read from silence, never from the sound's end again: a burst at half speed is heard once.
+/// WSOLA time stretch at <see cref="Tempo"/> with pitch preserved. 40 ms Hann frames at 50 % overlap; each frame is read at its nominal
+/// time, shifted within 10 ms to where its first half best matches the previous frame's natural continuation (coarse search on the channel
+/// sum at half rate, then refined to the sample). Output sample j maps to input around j x tempo with frame centres on that line, so timing
+/// never drifts. Match score 2 c.t / (|c|^2 + |t|^2) (= 1 - |c - t|^2 / (|c|^2 + |t|^2)) distinguishes loud from quiet, unlike a correlation
+/// normalized by the candidate alone. After a sound stops, silence continues from silence, so a burst at half speed is heard once.
 /// </summary>
 internal sealed class WsolaStretcher : IStereoSource
 {
     private const int Capacity = 1 << 17;
 
-    // What keeps the match defined where both sides are digital silence (they then match perfectly).
+    // Keeps the match defined when both sides are digital silence (they then match perfectly).
     private const double Silence = 1e-9;
 
     private IStereoSource? _source;
@@ -312,7 +306,7 @@ internal sealed class WsolaStretcher : IStereoSource
         return produced;
     }
 
-    // After the ready half is read: the accumulator moves on by a hop.
+    // After the ready half is read, slide the accumulator by one hop.
     private void Shift()
     {
         _accL.AsSpan(_hop).CopyTo(_accL);
@@ -324,10 +318,12 @@ internal sealed class WsolaStretcher : IStereoSource
 
     private bool NextFrame()
     {
-        // Frame k's middle (output k * hop + hop) is on the input's tempo line.
+        // Frame k's centre (output k * hop + hop) lies on the input tempo line.
         var nominal = (long)Math.Round((_frame * _hop + _hop) * Tempo - _hop);
         var lowest = _previous < 0 ? Math.Max(nominal, 0) : Math.Max(nominal - _search, 0);
-        var highest = _previous < 0 ? lowest : nominal + _search;
+        // At slow tempos the first frames' centres fall before the input's start, so the
+        // window can end below zero; it is then the one candidate at the start.
+        var highest = _previous < 0 ? lowest : Math.Max(nominal + _search, lowest);
         var needed = Math.Max(highest + _window, _previous + _hop + _hop);
         if (!Have(needed))
             return false;
@@ -345,9 +341,12 @@ internal sealed class WsolaStretcher : IStereoSource
         return true;
     }
 
-    // The move of the frame that best continues the one before.
+    // Input offset of the frame that best continues the previous one.
     private long Best(long nominal, long lowest, long highest)
     {
+        if (highest <= lowest)
+            return lowest;
+
         var templateAt = (int)(_previous + _hop - _inBase);
         var half = _hop / 2;
         var templateEnergy = 0.0;
@@ -377,7 +376,7 @@ internal sealed class WsolaStretcher : IStereoSource
                 (bestScore, best) = (score, lowest + 2 * c);
         }
 
-        // To the sample: either side of the coarse best, at the full rate.
+        // Refine to the sample around the coarse best, at full rate.
         var refined = best;
         var refinedScore = double.NegativeInfinity;
         for (var d = -1; d <= 1; d++)
@@ -418,7 +417,7 @@ internal sealed class WsolaStretcher : IStereoSource
         return (d, e);
     }
 
-    // Whether the input reaches the absolute sample index (exclusive), reading more as far as the source has it.
+    // True when the input reaches the absolute sample index (exclusive), reading more from the source as needed.
     private bool Have(long end)
     {
         while (_inBase + _inCount < end)
@@ -434,7 +433,7 @@ internal sealed class WsolaStretcher : IStereoSource
         return true;
     }
 
-    // What no later frame can reach is let go.
+    // Releases input no later frame can reach.
     private void Drop(long before)
     {
         var drop = (int)Math.Min(before - _inBase, _inCount);

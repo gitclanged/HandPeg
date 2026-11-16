@@ -10,22 +10,19 @@ using HandPegApp.Services.Audio;
 
 namespace HandPegApp;
 
-// ----- The master meter and fader (Pass 5.2B, the Studio Audio Suite) -----
-// What the Sequence's mix measures as the sound engine plays it (after its master gain, before the monitor volume: what an export gets),
-// and the Sequence's master fader. Everything is drawn in one OnRender from frozen brushes made once and from text laid out once per
-// character (a monospaced face, so a readout is its characters side by side): a redraw allocates nothing. Nothing polls while the
-// player is paused: AudioMeterFeed reads the engine's meter about thirty times a second while it plays, and a couple of seconds after,
-// so the bars fall and the holds run out; then the meter rests until the next play.
+// ----- Master meter and fader -----
+// Meters the Sequence mix as played (post master gain, pre monitor volume: what an export gets) and hosts the master fader. Single
+// OnRender from frozen brushes and per-character cached glyphs (monospaced, so readouts are glyphs side by side): redraws allocate nothing.
+// No polling while paused: AudioMeterFeed reads the engine meter ~30 Hz during playback and ~2 s after, so bars fall and holds expire.
 
 /// <summary>
-/// The one reader of the sound engine's meter for every <see cref="AudioMeterControl"/> on screen (Pass 5.2B). The engine's meter is read
-/// and reset in one go (WasapiAudioEngine.Meter), so two meters reading it each would see half the peaks: the feed reads it once a tick
-/// and hands the reading to each meter shown. Its timer runs only while the player plays (and <see cref="TrailingTicks"/> after), never
-/// on CompositionTarget.Rendering, and never while no meter is shown.
+/// Single reader of the engine meter for all visible <see cref="AudioMeterControl"/>s. WasapiAudioEngine.Meter reads and resets
+/// atomically, so independent readers would split the peaks; the feed reads once per tick and fans out. The DispatcherTimer runs only
+/// during playback (plus <see cref="TrailingTicks"/>), never on CompositionTarget.Rendering, and never with no meter attached.
 /// </summary>
 public sealed class AudioMeterFeed
 {
-    // About thirty readings a second; and after the player stops, two seconds more (the bars fall, the peak holds run out).
+    // ~30 Hz readings; 60 trailing ticks (~2 s) after stop so bars fall and peak holds expire.
     private const double TickMs = 33;
     private const int TrailingTicks = 60;
 
@@ -36,14 +33,14 @@ public sealed class AudioMeterFeed
     private int _trailing;
     private long _lastTick;
 
-    /// <param name="read">The engine's meter now (read and reset), or null while there is no engine.</param>
+    /// <param name="read">Reads and resets the engine meter; null when no engine exists.</param>
     public AudioMeterFeed(Func<AudioMeterReading?> read)
     {
         _read = read;
         _timer.Tick += Tick;
     }
 
-    /// <summary>Whether the player is playing: the readings start at once, and stop a couple of seconds after it pauses.</summary>
+    /// <summary>Player state: readings start immediately and stop ~2 s after pause.</summary>
     public bool Playing
     {
         get => _playing;
@@ -87,7 +84,7 @@ public sealed class AudioMeterFeed
         var seconds = Math.Clamp((now - _lastTick) / (double)Stopwatch.Frequency, 0, 0.25);
         _lastTick = now;
 
-        // Read once for every meter (the read resets the engine's peaks).
+        // Single read shared by all meters (reading resets the engine peaks).
         var reading = _read() ?? default;
         if (!_playing && --_trailing <= 0)
         {
@@ -103,35 +100,33 @@ public sealed class AudioMeterFeed
 }
 
 /// <summary>
-/// The Sequence's master meter (Pass 5.2B): the stereo peak bars with the RMS inside each, a peak-hold tick on each (held 1.5 s), a clip
-/// light (lit by a sample or true peak at 0 dBFS, until it is clicked), a loudness bar (momentary LUFS, its short-term level as a tick)
-/// with the usual targets of -14 and -16 LUFS marked, the momentary, short-term and integrated LUFS and the true-peak hold in numbers;
-/// and the master fader (-40 to +12 dB): dragged (Shift: finely), the wheel 0.5 dB a notch (Shift: 0.1), a double-click back to 0 dB.
-/// Upright or across (<see cref="Orientation"/>). Its readings come from an <see cref="AudioMeterFeed"/>; <see cref="GainDb"/> is bound
-/// to the Sequence's master gain, a drag or a burst of wheel notches told as one gesture (<see cref="GainChangeStarted"/> and
-/// <see cref="GainChangeEnded"/>: the host makes it one step of Undo).
+/// Sequence master meter: stereo peak bars with inner RMS, 1.5 s peak-hold ticks, a latched clip light (sample or true peak >= 0 dBFS,
+/// click to clear), a loudness bar (momentary LUFS with short-term tick, -14 and -16 LUFS targets), M/S/I LUFS and true-peak readouts,
+/// and the master fader (-40..+12 dB: drag, Shift fine; wheel 0.5 dB/notch, Shift 0.1; double-click 0 dB). Vertical or horizontal
+/// (<see cref="Orientation"/>). Fed by <see cref="AudioMeterFeed"/>; <see cref="GainDb"/> binds to master gain, with drags and wheel bursts
+/// bracketed by <see cref="GainChangeStarted"/>/<see cref="GainChangeEnded"/> so the host records one Undo step.
 /// </summary>
 public sealed class AudioMeterControl : FrameworkElement
 {
-    /// <summary>The fader's range, dB.</summary>
+    /// <summary>Fader range in dB.</summary>
     public const double GainLeast = -40, GainMost = 12;
 
-    // The bars' scale (dBFS, and LUFS on the loudness bar): linear in dB from the floor to a little over full scale.
+    // Bar scale (dBFS; LUFS on the loudness bar), linear in dB from floor to slightly over full scale.
     private const double FloorDb = -60, CeilingDb = 6;
 
-    // How fast the bars and the holds fall (dB a second), how long a peak is held, and the loudness targets marked.
+    // Fall rate (dB/s), peak hold time, and marked loudness targets.
     private const double FallPerSecond = 24, HoldSeconds = 1.5;
     private const double StreamingTarget = -14, BroadcastTarget = -16;
 
-    // How far apart a burst of wheel notches may come and still be one gesture, and how often a drag writes the gain (as the Effects
-    // pane's sliders: each write is an edit of the Sequence).
+    // Max gap between wheel notches in one gesture, and the drag write interval (~30 Hz, like Effects pane sliders; each write edits
+    // the Sequence).
     private static readonly TimeSpan WheelGesture = TimeSpan.FromMilliseconds(600);
     private static readonly TimeSpan DragWrite = TimeSpan.FromMilliseconds(33);
 
-    // The marks of the scale, in dB.
+    // Scale tick marks in dB.
     private static readonly double[] ScaleMarks = [6, 0, -6, -12, -18, -24, -36, -48, -60];
 
-    // ----- Made once -----
+    // ----- Static resources -----
 
     private static readonly Brush Green = Solid(255, 0x4C, 0xC0, 0x5A), Yellow = Solid(255, 0xE6, 0xC8, 0x3C), Orange = Solid(255, 0xF0, 0x8A, 0x30), Red = Solid(255, 0xE5, 0x3E, 0x3E);
     private static readonly Brush GreenDim = Solid(120, 0x4C, 0xC0, 0x5A), YellowDim = Solid(120, 0xE6, 0xC8, 0x3C), OrangeDim = Solid(120, 0xF0, 0x8A, 0x30), RedDim = Solid(130, 0xE5, 0x3E, 0x3E);
@@ -156,7 +151,7 @@ public sealed class AudioMeterControl : FrameworkElement
         return pen;
     }
 
-    // ----- Its properties -----
+    // ----- Properties -----
 
     public static readonly DependencyProperty OrientationProperty = DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(AudioMeterControl),
         new FrameworkPropertyMetadata(Orientation.Vertical, FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsRender));
@@ -164,30 +159,30 @@ public sealed class AudioMeterControl : FrameworkElement
     public static readonly DependencyProperty GainDbProperty = DependencyProperty.Register(nameof(GainDb), typeof(double), typeof(AudioMeterControl),
         new FrameworkPropertyMetadata(0.0, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault | FrameworkPropertyMetadataOptions.AffectsRender));
 
-    /// <summary>Upright (the level rising up the control) or across (rising to the right).</summary>
+    /// <summary>Vertical (level rises upward) or horizontal (level rises rightward).</summary>
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty);
         set => SetValue(OrientationProperty, value);
     }
 
-    /// <summary>The master fader, dB (-40 to +12): bound to the Sequence's master gain.</summary>
+    /// <summary>Master fader in dB (-40..+12), bound to the Sequence master gain.</summary>
     public double GainDb
     {
         get => (double)GetValue(GainDbProperty);
         set => SetValue(GainDbProperty, value);
     }
 
-    /// <summary>A gesture on the fader began (a drag, the first of a burst of wheel notches): what it sets until it ends is one step.</summary>
+    /// <summary>Fader gesture start (drag or first wheel notch of a burst); changes until the end form one Undo step.</summary>
     public event Action? GainChangeStarted;
 
-    /// <summary>The gesture ended (the drag let go or taken away, the wheel at rest).</summary>
+    /// <summary>Fader gesture end (drag released or capture lost, wheel idle).</summary>
     public event Action? GainChangeEnded;
 
     private AudioMeterFeed? _feed;
     private bool _attached;
 
-    /// <summary>Where its readings come from (shared by every meter shown); null for none (the bars rest).</summary>
+    /// <summary>Shared reading source; null leaves the bars at rest.</summary>
     public AudioMeterFeed? Feed
     {
         get => _feed;
@@ -204,7 +199,7 @@ public sealed class AudioMeterControl : FrameworkElement
         }
     }
 
-    // ----- What it shows: the readings with their ballistics -----
+    // ----- Readings and ballistics -----
 
     private double _peakLeft = FloorDb, _peakRight = FloorDb, _rmsLeft = FloorDb, _rmsRight = FloorDb;
     private double _holdLeft = FloorDb, _holdRight = FloorDb;
@@ -243,7 +238,7 @@ public sealed class AudioMeterControl : FrameworkElement
 
     private bool _loaded;
 
-    // Takes readings only while it is on screen (a meter in a tab not shown costs nothing).
+    // Attached to the feed only while loaded and visible (hidden tabs cost nothing).
     private void FollowShown()
     {
         var wanted = _feed is not null && _loaded && IsVisible;
@@ -257,7 +252,7 @@ public sealed class AudioMeterControl : FrameworkElement
             _feed?.Detach(this);
     }
 
-    /// <summary>A reading from the feed, <paramref name="seconds"/> after the last: the bars rise to it at once and fall at 24 dB a second.</summary>
+    /// <summary>Applies a feed reading <paramref name="seconds"/> after the last: instant attack, 24 dB/s release.</summary>
     internal void Take(in AudioMeterReading reading, double seconds)
     {
         var fall = FallPerSecond * seconds;
@@ -278,7 +273,7 @@ public sealed class AudioMeterControl : FrameworkElement
         InvalidateVisual();
     }
 
-    /// <summary>The player stopped a while ago: the bars and holds at rest (the numbers stay, the last the Sequence measured).</summary>
+    /// <summary>After the trailing period: resets bars and holds; numeric readouts keep their last values.</summary>
     internal void Rest()
     {
         _peakLeft = _peakRight = _rmsLeft = _rmsRight = _holdLeft = _holdRight = FloorDb;
@@ -302,7 +297,7 @@ public sealed class AudioMeterControl : FrameworkElement
         }
     }
 
-    // ----- The theme's look -----
+    // ----- Theme -----
 
     private Brush _inset = Solid(255, 0x1E, 0x1E, 0x1E), _text = Brushes.Gainsboro, _muted = Brushes.Gray;
 
@@ -322,7 +317,7 @@ public sealed class AudioMeterControl : FrameworkElement
 
     private Brush Look(string key, Brush fallback) => TryFindResource(key) is Brush brush ? (Brush)brush.GetCurrentValueAsFrozen() : fallback;
 
-    // ----- The words: each character laid out once (per DPI and theme), a readout drawn as its characters side by side -----
+    // ----- Text: per-character glyph cache (per DPI and theme); readouts drawn glyph by glyph -----
 
     private readonly FormattedText?[] _glyphs = new FormattedText?[128];
     private double _glyphDpi = -1;
@@ -347,7 +342,7 @@ public sealed class AudioMeterControl : FrameworkElement
         return _glyphs[c] ??= new FormattedText(c.ToString(), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Mono, TextSize, char.IsAsciiLetter(c) ? _muted : _text, pixelsPerDip);
     }
 
-    /// <summary>Draws characters from <paramref name="x"/> (or ending there, <paramref name="rightAligned"/>); the x after them.</summary>
+    /// <summary>Draws text starting (or, <paramref name="rightAligned"/>, ending) at <paramref name="x"/>; returns the x after it.</summary>
     private double DrawChars(DrawingContext drawing, ReadOnlySpan<char> text, double x, double y, double pixelsPerDip, bool rightAligned = false)
     {
         if (rightAligned)
@@ -362,7 +357,7 @@ public sealed class AudioMeterControl : FrameworkElement
         return x;
     }
 
-    // A value as its characters, into the room given: "--" for silence (or nothing measured yet).
+    // Formats a value into the span; "--" for silence or no measurement.
     private static ReadOnlySpan<char> Number(Span<char> room, double value, bool signed)
     {
         if (!double.IsFinite(value) || value < -99.9)
@@ -374,15 +369,15 @@ public sealed class AudioMeterControl : FrameworkElement
         return value.TryFormat(room, out var written, signed ? "+0.0;-0.0;0.0" : "0.0", CultureInfo.InvariantCulture) ? room[..written] : room[..0];
     }
 
-    // ----- Laying it out -----
-    // The level runs along the control (up it, or to the right); across it lie the scale, the two bars, the loudness bar and the fader.
-    // Everything is placed by arithmetic as it is drawn, and found again so as it is pressed.
+    // ----- Layout -----
+    // The level axis runs along the control (up, or rightward); across it sit the scale, two bars, loudness bar and fader. All placement
+    // is arithmetic, reused for hit-testing.
 
     private bool Upright => Orientation == Orientation.Vertical;
 
     private const double Pad = 3, ScaleRoom = 24, ScaleRoomAcross = 12, ClipRoom = 8, Gap = 1, LoudnessGap = 4, LoudnessWidth = 7, FaderGap = 6, FaderWidth = 16;
 
-    // The level's span along the control (top or left, bottom or right), and where each part lies across it.
+    // Level axis extent and each part's cross-axis span.
     private double _levelFrom, _levelTo;
     private double _leftFrom, _leftTo, _rightFrom, _rightTo, _loudFrom, _loudTo, _faderFrom, _faderTo, _scaleAt;
     private Rect _clipBox, _readouts;
@@ -391,9 +386,8 @@ public sealed class AudioMeterControl : FrameworkElement
     {
         if (Upright)
         {
-            // Across (x): the scale's numbers, the two bars, the loudness bar, the fader. Along (y): the clip light over the bars, the
-            // readouts under everything.
-            // In a pane wider than it needs, it stands in the middle of it.
+            // x: scale labels, two bars, loudness bar, fader. y: clip light above the bars, readouts below everything.
+            // Centred horizontally in wider panes.
             var bar = Math.Clamp((size.Width - 2 * Pad - ScaleRoom - Gap - LoudnessGap - LoudnessWidth - FaderGap - FaderWidth) / 2, 4, 12);
             var content = 2 * Pad + ScaleRoom + 2 * bar + Gap + LoudnessGap + LoudnessWidth + FaderGap + FaderWidth;
             var left = Math.Max((size.Width - content) / 2, 0);
@@ -411,8 +405,7 @@ public sealed class AudioMeterControl : FrameworkElement
         }
         else
         {
-            // Along (x): the bars, the clip light at their end, the readouts. Across (y): the two bars, the loudness bar, the scale's
-            // numbers, the fader.
+            // x: bars, clip light at their end, readouts. y: two bars, loudness bar, scale labels, fader.
             var readoutWidth = 24 * _advance + 4;
             var bar = Math.Clamp((size.Height - 2 * Pad - Gap - LoudnessGap - LoudnessWidth - ScaleRoomAcross - FaderGap - FaderWidth) / 2, 4, 10);
             (_leftFrom, _leftTo) = (Pad, Pad + bar);
@@ -426,14 +419,14 @@ public sealed class AudioMeterControl : FrameworkElement
         }
     }
 
-    // A fraction of the scale (0 at the floor) as a place along the control.
+    // Scale fraction (0 = floor) to position along the level axis.
     private double Along(double fraction) => Upright ? _levelTo - fraction * (_levelTo - _levelFrom) : _levelFrom + fraction * (_levelTo - _levelFrom);
 
     private static double LevelFraction(double db) => Math.Clamp((db - FloorDb) / (CeilingDb - FloorDb), 0, 1);
 
     private static double GainFraction(double db) => Math.Clamp((db - GainLeast) / (GainMost - GainLeast), 0, 1);
 
-    // The stretch between two fractions of the scale, across from one place to another.
+    // Rect spanning two scale fractions along the axis and [from, to] across it.
     private Rect Stretch(double from, double to, double fractionFrom, double fractionTo)
     {
         var (a, b) = (Along(fractionFrom), Along(fractionTo));
@@ -448,7 +441,7 @@ public sealed class AudioMeterControl : FrameworkElement
         return new Size(Math.Min(wanted.Width, availableSize.Width), Math.Min(wanted.Height, availableSize.Height));
     }
 
-    // ----- Drawing -----
+    // ----- Rendering -----
 
     protected override void OnRender(DrawingContext drawing)
     {
@@ -460,10 +453,10 @@ public sealed class AudioMeterControl : FrameworkElement
         PrepareGlyphs(dpi);
         Lay(size);
 
-        // The whole of it takes the pointer (the fader's wheel, the clip light).
+        // Transparent fill so the whole control hit-tests (fader wheel, clip light).
         drawing.DrawRectangle(Brushes.Transparent, null, new Rect(size));
 
-        // The scale's numbers, beside (or under) the bars.
+        // Scale labels beside (vertical) or under (horizontal) the bars.
         Span<char> room = stackalloc char[16];
         foreach (var mark in ScaleMarks)
         {
@@ -476,12 +469,12 @@ public sealed class AudioMeterControl : FrameworkElement
                 DrawChars(drawing, text, at - text.Length * _advance / 2, _scaleAt, dpi);
         }
 
-        // The two sides: each a track, its peak (dim) and its RMS inside it (full), coloured by zone, and its held peak's tick.
+        // L/R: track, dim peak, inset full-colour RMS (zone coloured), and peak-hold tick.
         DrawSide(drawing, _leftFrom, _leftTo, _peakLeft, _rmsLeft, _holdLeft);
         DrawSide(drawing, _rightFrom, _rightTo, _peakRight, _rmsRight, _holdRight);
         drawing.DrawRectangle(_clipped ? Red : ClipOff, null, _clipBox);
 
-        // The loudness bar: momentary LUFS, the short-term a tick, the two targets marked across it.
+        // Loudness bar: momentary LUFS fill, short-term tick, and the two target marks.
         drawing.DrawRectangle(_inset, null, Stretch(_loudFrom, _loudTo, 0, 1));
         if (double.IsFinite(_momentary))
             drawing.DrawRectangle(Loudness, null, Stretch(_loudFrom, _loudTo, 0, LevelFraction(_momentary)));
@@ -490,7 +483,7 @@ public sealed class AudioMeterControl : FrameworkElement
         drawing.DrawRectangle(StreamingTick, null, Tick(_loudFrom - 2, _loudTo + 2, LevelFraction(StreamingTarget), 1));
         drawing.DrawRectangle(BroadcastTick, null, Tick(_loudFrom - 2, _loudTo + 2, LevelFraction(BroadcastTarget), 1));
 
-        // The fader: its track, a notch at 0 dB, its thumb.
+        // Fader: track, 0 dB notch, thumb.
         var middle = (_faderFrom + _faderTo) / 2;
         drawing.DrawRectangle(FaderTrack, null, Stretch(middle - 1.5, middle + 1.5, 0, 1));
         drawing.DrawRectangle(Notch, null, Tick(_faderFrom + 2, _faderTo - 2, GainFraction(0), 1));
@@ -500,7 +493,7 @@ public sealed class AudioMeterControl : FrameworkElement
         DrawReadouts(drawing, room, dpi);
     }
 
-    // A side's bar.
+    // One channel's bar.
     private void DrawSide(DrawingContext drawing, double from, double to, double peak, double rms, double hold)
     {
         drawing.DrawRectangle(_inset, null, Stretch(from, to, 0, 1));
@@ -511,7 +504,7 @@ public sealed class AudioMeterControl : FrameworkElement
             drawing.DrawRectangle(ZoneOf(hold, dim: false), null, Tick(from, to, LevelFraction(hold), 2));
     }
 
-    // A level drawn up to where it is, in the zones it passes: green to -18 dB, yellow to -6, orange to 0, red over it.
+    // Fills a level through its zones: green to -18 dB, yellow to -6, orange to 0, red above.
     private void DrawZones(DrawingContext drawing, double from, double to, double db, bool dim)
     {
         if (db <= FloorDb + 0.01 || to <= from)
@@ -537,14 +530,14 @@ public sealed class AudioMeterControl : FrameworkElement
 
     private static Brush ZoneOf(double db, bool dim) => db < -18 ? (dim ? GreenDim : Green) : db < -6 ? (dim ? YellowDim : Yellow) : db < 0 ? (dim ? OrangeDim : Orange) : dim ? RedDim : Red;
 
-    // A thin mark across from one place to another, at a fraction of the scale, so many pixels thick along it.
+    // Thin cross-axis mark at a scale fraction, spanning [from, to], with the given thickness along the axis.
     private Rect Tick(double from, double to, double fraction, double thickness)
     {
         var at = Along(fraction);
         return Upright ? new Rect(from, at - thickness / 2, Math.Max(to - from, 0), thickness) : new Rect(at - thickness / 2, from, thickness, Math.Max(to - from, 0));
     }
 
-    // The numbers: M, S (and I where there is room), TP, the fader's gain.
+    // Numeric readouts: M, S (I when room allows), TP, and fader gain.
     private void DrawReadouts(DrawingContext drawing, Span<char> room, double dpi)
     {
         var (x, y) = (_readouts.Left, _readouts.Top);
@@ -560,7 +553,7 @@ public sealed class AudioMeterControl : FrameworkElement
             return;
         }
 
-        // Across: three columns of two lines (M and S, I and TP, the gain).
+        // Horizontal: three columns (M/S, I/TP, gain).
         var column = 8 * _advance;
         Line(drawing, "M", Number(room, _momentary, signed: false), x, x + column - _advance, y, dpi);
         Line(drawing, "S", Number(room, _shortTerm, signed: false), x, x + column - _advance, y + _lineHeight, dpi);
@@ -575,10 +568,9 @@ public sealed class AudioMeterControl : FrameworkElement
         DrawChars(drawing, value, valueRight, y, dpi, rightAligned: true);
     }
 
-    // ----- The fader and the clip light under the pointer -----
+    // ----- Fader and clip light input -----
 
-    // A drag of the fader: where it began along the control, the gain then, and the gain it has come to (shown at once, written at most
-    // thirty times a second); whether a burst of wheel notches is under way.
+    // Fader drag: start position and gain, current gain (shown immediately, written at most ~30 Hz), pending write; wheel-burst flag.
     private (double From, double Gain)? _drag;
     private double _dragGain;
     private double? _pendingGain;
@@ -596,7 +588,7 @@ public sealed class AudioMeterControl : FrameworkElement
         AcrossOf(point) >= _faderFrom - 4 && AcrossOf(point) <= _faderTo + 4
         && AlongOf(point) >= Math.Min(_levelFrom, _levelTo) - 8 && AlongOf(point) <= Math.Max(_levelFrom, _levelTo) + 8;
 
-    // The gain at a place along the fader.
+    // Gain at a position along the fader axis.
     private double GainAt(double along)
     {
         var length = Math.Max(Math.Abs(_levelTo - _levelFrom), 1);
@@ -613,7 +605,7 @@ public sealed class AudioMeterControl : FrameworkElement
         Lay(RenderSize);
         if (Rect.Inflate(_clipBox, 3, 3).Contains(point))
         {
-            // The clip light cleared, and with it the holds.
+            // Clear the clip light and reset holds.
             _clipped = false;
             (_holdLeft, _holdRight, _truePeakHold) = (_peakLeft, _peakRight, float.NegativeInfinity);
             InvalidateVisual();
@@ -627,7 +619,7 @@ public sealed class AudioMeterControl : FrameworkElement
         e.Handled = true;
         if (e.ClickCount == 2)
         {
-            // Back to 0 dB: one step of its own.
+            // Double-click resets to 0 dB as its own Undo step.
             EndDrag();
             GainDb = 0;
             return;
@@ -636,7 +628,7 @@ public sealed class AudioMeterControl : FrameworkElement
         if (!CaptureMouse())
             return;
 
-        // On the thumb, it is taken where it is; elsewhere on the track it jumps to the pointer first.
+        // Grabbing the thumb keeps its value; pressing the track jumps to the pointer first.
         var thumb = Tick(_faderFrom, _faderTo, GainFraction(GainDb), 8);
         var start = Rect.Inflate(thumb, 2, 2).Contains(point) ? GainDb : Rounded(GainAt(AlongOf(point)));
         GainChangeStarted?.Invoke();
@@ -652,7 +644,7 @@ public sealed class AudioMeterControl : FrameworkElement
         if (_drag is not { } drag || !IsMouseCaptured)
             return;
 
-        // Along the control by so many pixels: the gain by as much of the fader's range (a tenth of it with Shift).
+        // Relative drag: pixel delta maps to fader range (1/10 with Shift).
         var length = Math.Max(Math.Abs(_levelTo - _levelFrom), 1);
         var moved = AlongOf(e.GetPosition(this)) - drag.From;
         var perPixel = (GainMost - GainLeast) / length * (Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0.1 : 1);
@@ -683,7 +675,7 @@ public sealed class AudioMeterControl : FrameworkElement
         EndDrag();
     }
 
-    // A dragged gain written now, or (written less than a thirtieth of a second ago) when that time is up.
+    // Throttled write: immediate, or deferred to the next DragWrite tick if one ran within the last ~33 ms.
     private void WriteDragged(double gain)
     {
         if (_dragFlush.IsEnabled)
@@ -707,7 +699,7 @@ public sealed class AudioMeterControl : FrameworkElement
         }
     }
 
-    // The drag let go (or taken away): its last gain written, the gesture told as ended.
+    // Drag end (release or capture loss): flush the final gain and raise GainChangeEnded.
     private void EndDrag()
     {
         if (_drag is null)
@@ -727,7 +719,7 @@ public sealed class AudioMeterControl : FrameworkElement
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         base.OnMouseWheel(e);
-        // Over the fader only: a wheel turned over the rest of it scrolls whatever it lies in, as ever.
+        // Handle the wheel only near the fader; elsewhere it bubbles to the containing scroller.
         Lay(RenderSize);
         var point = e.GetPosition(this);
         if (_drag is not null || e.Delta == 0 || AcrossOf(point) < _faderFrom - 10 || AcrossOf(point) > _faderTo + 10)
@@ -746,7 +738,7 @@ public sealed class AudioMeterControl : FrameworkElement
         _wheelRest.Start();
     }
 
-    // The wheel at rest a moment: its burst of notches is one gesture.
+    // Wheel idle: ends the burst gesture.
     private void EndWheel()
     {
         _wheelRest.Stop();

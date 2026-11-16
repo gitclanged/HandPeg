@@ -6,12 +6,12 @@ using HandPegApp.ViewModels;
 namespace HandPegApp;
 
 /// <summary>
-/// Paste Attributes (Ctrl+Alt+V, 5.2A): a box for each part of the copied clip's look, ticked as they were the last time (transform, crop,
-/// opacity and effects at first), and Paste gives the selected clips the ticked parts in one step of Undo (MainViewModel.PasteAttributes).
+/// Paste Attributes (Ctrl+Alt+V): checkbox per look part of the copied clip, remembering last choices (initially transform, crop,
+/// opacity, effects); Paste applies checked parts to the selection in one undo step (MainViewModel.PasteAttributes).
 /// </summary>
 public partial class PasteAttributesDialog : Window
 {
-    // The parts ticked the last time this session: what the boxes start as.
+    // Last checked parts this session (initial checkbox state).
     private static MainViewModel.ClipAttributes _last =
         MainViewModel.ClipAttributes.Transform | MainViewModel.ClipAttributes.Crop | MainViewModel.ClipAttributes.Opacity | MainViewModel.ClipAttributes.Effects;
 
@@ -38,7 +38,7 @@ public partial class PasteAttributesDialog : Window
         SourceInitialized += (_, _) => ThemeManager.ApplyTitleBar(this);
     }
 
-    /// <summary>The parts ticked.</summary>
+    /// <summary>Checked parts.</summary>
     public MainViewModel.ClipAttributes Chosen => _boxes.Where(b => b.Box.IsChecked == true).Aggregate(MainViewModel.ClipAttributes.None, (all, b) => all | b.Part);
 
     private void UpdatePasteButton() => PasteButton.IsEnabled = Chosen != MainViewModel.ClipAttributes.None;

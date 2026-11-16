@@ -1,15 +1,13 @@
 namespace HandPegApp.Services;
 
-// ----- The OBS side-by-side unpacker (Pass 5.2C) -----
+// ----- OBS side-by-side unpacker -----
 //
-// A streamer's recording that holds two pictures side by side on one double-wide canvas (OBS's 3840 x 1080 or 5120 x 1440: the
-// gameplay on the left, the facecam on the right, each a 16:9 picture) is one clip of one file. Unpacked, the clip shows its left
-// half (cropped to it) and a Cutout of the same file on the same clock shows its right half, so the two stay in step through every
-// split, trim and move (the Cutout is the clip's child). Where they go depends on the Sequence's shape: on a wide frame the gameplay
-// fills it and the facecam is a corner picture; on a tall frame (9:16) the facecam is a band across the top and the gameplay fills
-// the rest, each cut at its sides to the place it fills, never stretched.
+// Splits a double-wide recording (e.g. 3840 x 1080 or 5120 x 1440: gameplay left, facecam right, both 16:9) into the clip cropped to
+// its left half plus a child Cutout of the right half on the same clock, so both follow every split, trim and move. Wide Sequences:
+// gameplay fills the frame, facecam as a corner inset. Tall (9:16): facecam band on top, gameplay fills the rest; side-cropped, never
+// stretched.
 
-/// <summary>One half of the canvas as placed: its crop (fractions of the whole picture) and its box (fractions of the frame; its height follows from the crop).</summary>
+/// <summary>Placed half: crop (picture fractions) and box (frame fractions; height derived from the crop).</summary>
 public readonly record struct UnpackedPart(double CropLeft, double CropTop, double CropRight, double CropBottom, double X, double Y, double Width);
 
 /// <summary>Where the two halves go: the gameplay (the clip itself) and the facecam (its Cutout).</summary>
@@ -17,18 +15,18 @@ public readonly record struct UnpackedCanvas(UnpackedPart Gameplay, UnpackedPart
 
 public static class ObsUnpacker
 {
-    /// <summary>The least width over height of a picture taken for two side by side (two 16:9 pictures are 3.56; one 21:9 picture is 2.33).</summary>
+    /// <summary>Minimum aspect treated as side-by-side (two 16:9 = 3.56; a single 21:9 = 2.33).</summary>
     public const double SideBySideAspect = 3.0;
 
-    /// <summary>The facecam's width as a fraction of a wide frame's, and its margin from the frame's right and bottom edges (of the frame's width).</summary>
+    /// <summary>Wide-frame facecam width and right/bottom margin, as fractions of frame width.</summary>
     public const double CornerWidth = 0.3, CornerMargin = 0.025;
 
-    /// <summary>Whether a picture of this size is two pictures side by side (<see cref="SideBySideAspect"/> or wider).</summary>
+    /// <summary>True when the aspect is at least <see cref="SideBySideAspect"/>.</summary>
     public static bool IsSideBySide(int width, int height) => width > 0 && height > 0 && (double)width / height >= SideBySideAspect - 1e-9;
 
     /// <summary>
-    /// Where the halves of a side-by-side picture (<paramref name="pictureWidth"/> x <paramref name="pictureHeight"/>) go on a frame of
-    /// <paramref name="frameWidth"/> x <paramref name="frameHeight"/> (see the top of this file).
+    /// Layout of both halves of a <paramref name="pictureWidth"/> x <paramref name="pictureHeight"/> picture on a
+    /// <paramref name="frameWidth"/> x <paramref name="frameHeight"/> frame.
     /// </summary>
     public static UnpackedCanvas Layout(int pictureWidth, int pictureHeight, int frameWidth, int frameHeight)
     {
@@ -43,8 +41,7 @@ public static class ObsUnpacker
             return new UnpackedCanvas(gameplay, facecam);
         }
 
-        // Tall: the facecam a band across the top, as tall as its own shape makes it at the frame's width (at most 40 % of the frame), cut at
-        // its sides to that band; the gameplay fills the rest, cut at its sides to it.
+        // Tall: facecam band on top at full width (its natural height, max 40 %), gameplay below; both side-cropped to fit.
         var band = Math.Min(frame / half, 0.4);
         var face = Fill(0.5, half, frame / band, 0, 0, 1);
         var game = Fill(0, half, frame / (1 - band), 0, band, 1);
@@ -52,9 +49,8 @@ public static class ObsUnpacker
     }
 
     /// <summary>
-    /// One half (its left edge at <paramref name="from"/> of the whole picture, <paramref name="half"/> its width over height) cut about its
-    /// middle to <paramref name="shape"/> (width over height), at its sides when it is wider, top and bottom when it is taller; boxed at
-    /// (<paramref name="x"/>, <paramref name="y"/>) and <paramref name="width"/> of the frame.
+    /// Centre-crops a half (left edge <paramref name="from"/>, aspect <paramref name="half"/>) to aspect <paramref name="shape"/> and places
+    /// it at (<paramref name="x"/>, <paramref name="y"/>) with <paramref name="width"/> (frame fractions).
     /// </summary>
     private static UnpackedPart Fill(double from, double half, double shape, double x, double y, double width)
     {

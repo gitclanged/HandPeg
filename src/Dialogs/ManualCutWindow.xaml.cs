@@ -5,7 +5,7 @@ using HandPegApp.Models;
 
 namespace HandPegApp;
 
-/// <summary>What Split / Trim by Exact Timecode is asked to do at its time.</summary>
+/// <summary>Split / Trim by Exact Timecode action.</summary>
 public enum TimecodeEdit
 {
     Split,
@@ -14,9 +14,9 @@ public enum TimecodeEdit
 }
 
 /// <summary>
-/// Split / Trim by Exact Timecode (a timeline row's right-click menu): a time typed as HH:MM:SS:FF (or HH:MM:SS.mmm) on
-/// the sequence's clock, with the I-frames of the clip's file either side of it offered as links; then a split there, or
-/// the clip's start or end trimmed to it. The caller carries the edit out (<see cref="Edit"/> at <see cref="Seconds"/>).
+/// Split / Trim by Exact Timecode (row context menu): accepts HH:MM:SS:FF or HH:MM:SS.mmm in Sequence time, offers adjacent I-frames of
+/// the clip's file as links, then splits or trims start/end there. The caller performs the edit (<see cref="Edit"/> at
+/// <see cref="Seconds"/>).
 /// </summary>
 public partial class ManualCutWindow : Window
 {
@@ -25,12 +25,12 @@ public partial class ManualCutWindow : Window
     private readonly double _frameRate;
     private readonly IReadOnlyList<double> _iFrames;
 
-    /// <param name="clipName">The clip's name, for the window's first line.</param>
-    /// <param name="start">Where the clip starts on the sequence, in seconds.</param>
-    /// <param name="end">Where it ends on the sequence (at or before <paramref name="start"/>: it runs to the end).</param>
-    /// <param name="frameRate">Its file's frame rate, for frame timecodes and half a frame of slack.</param>
-    /// <param name="iFrames">Its file's I-frames already placed on the sequence's clock, ascending; empty when unknown.</param>
-    /// <param name="at">The time to start from: the playhead.</param>
+    /// <param name="clipName">Clip name for the header line.</param>
+    /// <param name="start">Clip start, Sequence seconds.</param>
+    /// <param name="end">Clip end, Sequence seconds (&lt;= <paramref name="start"/> means open-ended).</param>
+    /// <param name="frameRate">File frame rate, for frame timecodes and half-frame tolerance.</param>
+    /// <param name="iFrames">File I-frames in Sequence time, ascending; empty when unknown.</param>
+    /// <param name="at">Initial time (playhead).</param>
     public ManualCutWindow(string clipName, double start, double end, double frameRate, IReadOnlyList<double> iFrames, double at)
     {
         _iFrames = iFrames;
@@ -42,7 +42,7 @@ public partial class ManualCutWindow : Window
             ? $"{clipName}: {TimeDisplay.Format(start)} to {TimeDisplay.Format(end)}"
             : $"{clipName}: from {TimeDisplay.Format(start)}";
 
-        // The dialog follows the time format chosen in the settings.
+        // Use the time format from Settings.
         FormatText.Text = (TimeDisplay.UseFrames
             ? $"Times are on the timeline, as HH:MM:SS:FF; FF is the frame within the second: 00 to {Timecode.MaxFrame(_frameRate):00} "
               + $"at {_frameRate.ToString("0.###", CultureInfo.InvariantCulture)} fps."
@@ -56,13 +56,13 @@ public partial class ManualCutWindow : Window
 
     public TimecodeEdit Edit { get; private set; }
 
-    /// <summary>The time chosen, in seconds on the sequence.</summary>
+    /// <summary>Chosen time, Sequence seconds.</summary>
     public double Seconds { get; private set; }
 
-    /// <summary>Shows the I-frames either side of the time being typed.</summary>
+    /// <summary>Updates the adjacent I-frame suggestions for the typed time.</summary>
     private void TimeBox_TextChanged(object sender, TextChangedEventArgs e)
     {
-        // Text is set while the window is still being built, before the frame rate is known.
+        // TextChanged fires during construction, before the frame rate is set.
         if (_frameRate <= 0)
             return;
 
@@ -70,7 +70,7 @@ public partial class ManualCutWindow : Window
         double? ceiling = null;
         if (_iFrames.Count > 0 && TimeDisplay.TryParse(TimeBox.Text, out var seconds, out _))
         {
-            // Half a frame of slack: a timecode cannot name an I-frame's timestamp more exactly than that.
+            // Half-frame tolerance: timecode resolution cannot address an I-frame more precisely.
             var tolerance = 0.5 / _frameRate;
             for (var i = _iFrames.Count - 1; i >= 0 && floor is null; i--)
                 if (_iFrames[i] <= seconds + tolerance)
@@ -79,7 +79,7 @@ public partial class ManualCutWindow : Window
                 if (_iFrames[i] >= seconds - tolerance)
                     ceiling = _iFrames[i];
 
-            // The time is itself an I-frame: one suggestion says it all.
+            // The time is an I-frame: show a single suggestion.
             if (floor is not null && ceiling is not null && Math.Abs(floor.Value - ceiling.Value) < tolerance)
                 ceiling = null;
         }
@@ -105,7 +105,7 @@ public partial class ManualCutWindow : Window
             return;
         }
 
-        // Strictly inside the clip: a split or a trim at either end would leave nothing.
+        // Must be strictly inside the clip; an edit at either end would be empty.
         var slack = 0.5 / _frameRate;
         if (seconds <= _start + slack || (_end > _start && seconds >= _end - slack))
         {

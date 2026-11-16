@@ -5,15 +5,14 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.Services;
 
-// ----- The Playback & A/V Sync Test (Pass 5.5.2-Release, the user's Q2) -----
+// ----- Playback & A/V Sync Test -----
 //
-// Optional, from the first-run window's second screen and Settings > Export & Hardware > GPU & NPU Roles (PlaybackSyncCard): a sequence
-// of HandPeg's own (a title sweeping across black, no media file) played on screen by a GPU engine of its own (GpuPreviewEngine with
-// player: false) on a real, visible swap chain, so DXGI's frame statistics report when each frame was really shown, through the steps
-// tools\AvSync's session takes: a play from paused, 2x, then 1x again. Every frame's A/V against the sound's clock (PlaybackSyncSampler)
-// and the gaps between them are measured; the result is kept in AppSettings.LastPlaybackSyncTest. Under 20 seconds.
+// Optional (first-run second screen; Settings > Export & Hardware > GPU & NPU Roles, PlaybackSyncCard). Plays a synthetic sequence (a
+// title sweeping over black, no media) with a dedicated GpuPreviewEngine (player: false) on a visible swap chain so DXGI frame
+// statistics give true present times, following tools\AvSync's steps: play from pause, 2x, then 1x. Measures per-frame A/V against the
+// audio clock (PlaybackSyncSampler) and frame gaps; stores AppSettings.LastPlaybackSyncTest. Under 20 s.
 
-/// <summary>One step of the test: its frames, their A/V (ms, positive the picture ahead), the frames dropped, and whether it passed.</summary>
+/// <summary>One test step: frame count, A/V (ms, positive = video ahead), drops, and pass state.</summary>
 public sealed class PlaybackSyncStep
 {
     public string Name { get; set; } = "";
@@ -26,10 +25,10 @@ public sealed class PlaybackSyncStep
 
     public int Dropped { get; set; }
 
-    /// <summary>Frames shown <see cref="PlaybackSyncTest.ToleranceMs"/> or more from the sound (a frame a refresh late: a hitch).</summary>
+    /// <summary>Frames off by at least <see cref="PlaybackSyncTest.ToleranceMs"/> (e.g. one refresh late: a hitch).</summary>
     public int Off { get; set; }
 
-    /// <summary>Its median within <see cref="PlaybackSyncTest.ToleranceMs"/> of the sound and no more than one frame in twenty off (and enough frames to say).</summary>
+    /// <summary>Median within <see cref="PlaybackSyncTest.ToleranceMs"/>, at most 1 in 20 frames off, with enough samples.</summary>
     public bool InSync { get; set; }
 
     /// <summary>No more than one frame in a hundred a hitch (dropped or off).</summary>
@@ -49,10 +48,10 @@ public sealed class PlaybackSyncResult
     /// <summary>The display's refresh rate as DWM gave it (0 not known).</summary>
     public double RefreshHz { get; set; }
 
-    /// <summary>The measured time from the pump's turn to the frame on the screen (GpuViewport.DisplayLeadSeconds), ms; null not measured.</summary>
+    /// <summary>Measured pump-to-display latency (GpuViewport.DisplayLeadSeconds), ms; null if unmeasured.</summary>
     public double? DisplayLeadMs { get; set; }
 
-    /// <summary>Whether the swap chain reported when its frames were shown (DXGI frame statistics), rather than DWM's grid being assumed.</summary>
+    /// <summary>True when DXGI frame statistics provided present times (rather than assuming the DWM grid).</summary>
     public bool FrameStatistics { get; set; }
 
     /// <summary>The sound device the clock was read from ("" none: the processor's counter).</summary>
@@ -75,15 +74,14 @@ public static class PlaybackSyncTest
     /// <summary>No frame may be this far from the sound, ms (tools\AvSync's --tolerance).</summary>
     public const double ToleranceMs = 15;
 
-    /// <summary>The test sequence's length and rate, where it starts playing, and how long each step is measured (from 0.4 s after it).</summary>
+    /// <summary>Test sequence length, rate, start position and per-step measurement window (starting 0.4 s in).</summary>
     internal const double SequenceSeconds = 24, Fps = 30, StartAt = 1, MeasureSeconds = 4, Settle = 0.4;
 
     // The steps' names and rates, in order.
     internal static readonly (string Name, double Rate)[] StepPlan = [("Play", 1), ("2x", 2), ("1x", 1)];
 
     /// <summary>
-    /// The sequence played: 1280x720 at 30 fps, black, a title sweeping from side to side once a second (its position keyed), no file of any
-    /// kind and no sound. Its frames change every frame, so each one presented is a new frame.
+    /// Test sequence: 1280x720 at 30 fps, black with a keyframed title sweeping once per second, no files or audio; every frame differs.
     /// </summary>
     public static SequenceExportState TestSequence()
     {
@@ -115,8 +113,8 @@ public static class PlaybackSyncTest
     }
 
     /// <summary>
-    /// Runs the test on <paramref name="surface"/> (a visible native window of its size; UI thread, which it pumps while it waits). Returns the
-    /// result (with <see cref="PlaybackSyncResult.Error"/> set when the player could not start); throws OperationCanceledException on Cancel.
+    /// Runs on <paramref name="surface"/> (visible native window; UI thread, pumped while waiting). Returns the result
+    /// (<see cref="PlaybackSyncResult.Error"/> if the player failed to start); throws OperationCanceledException on cancel.
     /// </summary>
     public static async Task<PlaybackSyncResult> RunAsync(nint surface, IProgress<PlaybackSyncProgress>? progress, CancellationToken token)
     {
@@ -218,19 +216,16 @@ public static class PlaybackSyncTest
     private static string Now() => DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
 
     /// <summary>
-    /// How many of the sequence's frames one new frame on the screen may move on by at a rate (pure): one, or more when the display cannot
-    /// show every frame (2x of 30 fps on a 50 Hz display moves two at times: 40 ms of the sequence a refresh).
+    /// Max sequence frames one displayed frame may advance at a rate (pure): one, or more when the display cannot show every frame
+    /// (2x of 30 fps at 50 Hz advances 40 ms per refresh).
     /// </summary>
     internal static int AllowedStep(double refreshMs, double rate) =>
         Math.Max(1, (int)Math.Ceiling(Math.Abs(rate) * Math.Max(refreshMs, 0) / 1000 * Fps - 1e-6));
 
     /// <summary>
-    /// A step from its frames (pure, for the golden test): their A/V (ms) and every new frame's moment in the sequence (seconds, in the order
-    /// shown). The median and the worst A/V (largest either way), and the frames off (<see cref="ToleranceMs"/> or more either way); a move
-    /// between two frames of more than <paramref name="allowed"/> of the sequence's frames skipped the ones between, dropped. The display's
-    /// timing plays no part in the dropped (a frame shown a refresh late is off instead). In sync is the median within the tolerance with no
-    /// more than one frame in twenty off; smooth, no more than one frame in a hundred a hitch (dropped or off): a single frame a refresh late
-    /// on a busy computer is a hitch, not a picture out of sync.
+    /// Builds a step from per-frame A/V (ms) and sequence times in display order (pure, golden-tested): median and worst |A/V|, frames off
+    /// (&gt;= <see cref="ToleranceMs"/>), and drops (advances beyond <paramref name="allowed"/> frames; display lateness counts as off, not
+    /// dropped). In sync: median within tolerance and at most 1 in 20 off. Smooth: at most 1 in 100 hitches (dropped or off).
     /// </summary>
     internal static PlaybackSyncStep Step(string name, IReadOnlyList<double> offsetsMs, IReadOnlyList<double> moments, int allowed)
     {
@@ -256,8 +251,7 @@ public static class PlaybackSyncTest
     }
 
     /// <summary>
-    /// The result in a few words (the card's line; pure): "In sync · worst 1.9 ms · 0 dropped · 60 Hz" (with a hitch, "In sync · 2 hitches · 60 Hz"),
-    /// or what failed first.
+    /// Card summary line (pure): "In sync · worst 1.9 ms · 0 dropped · 60 Hz", "In sync · 2 hitches · 60 Hz", or the first failure.
     /// </summary>
     public static string Summary(PlaybackSyncResult result)
     {

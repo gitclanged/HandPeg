@@ -9,18 +9,17 @@ using HandPegApp.Models;
 namespace HandPegApp;
 
 /// <summary>
-/// Two habits of editing software, added to ordinary controls from XAML:
+/// Attached NLE input behaviours for standard controls, set from XAML:
 ///
-///   Default    double-clicking a slider or a number box puts it back to this value;
-///   DragStep   a number box can be dragged sideways to change its value, this much per pixel.
+///   Default    value restored by double-clicking a slider or number box;
+///   DragStep   value change per pixel when a number box is dragged horizontally.
 ///
-/// A number box that is not being typed in is a drag handle: press and move to adjust (Shift for a tenth
-/// of the speed, Ctrl for ten times), or click without moving to start typing. Once it has the keyboard
-/// it behaves like any text box, so text can still be selected with the mouse.
+/// An unfocused number box acts as a drag handle: press and move to adjust (Shift = 0.1x, Ctrl = 10x), or click
+/// without moving to start typing. Once focused it behaves as a normal text box, including mouse selection.
 /// </summary>
 public static class NumericInput
 {
-    // Movement below this is a click, not a drag.
+    // Pointer travel (DIPs) below which a press counts as a click.
     private const double DragThreshold = 3;
 
     public static readonly DependencyProperty DefaultProperty = DependencyProperty.RegisterAttached(
@@ -35,7 +34,7 @@ public static class NumericInput
     public static readonly DependencyProperty MaximumProperty = DependencyProperty.RegisterAttached(
         "Maximum", typeof(double), typeof(NumericInput), new PropertyMetadata(double.PositiveInfinity));
 
-    /// <summary>Digits after the decimal point that a dragged value is rounded to and written with.</summary>
+    /// <summary>Decimal places used to round and format dragged values.</summary>
     public static readonly DependencyProperty DecimalsProperty = DependencyProperty.RegisterAttached(
         "Decimals", typeof(int), typeof(NumericInput), new PropertyMetadata(0));
 
@@ -68,18 +67,17 @@ public static class NumericInput
 
     // ----- Double-click reset -----
 
-    // Every slider and every number box in the application is put back by a double-click, with nothing to be
-    // set on the control for it. What it goes back to is looked for in three places: the style preset in use
-    // (when the settings say so, and it has a value for what the control is bound to), then the Default set
-    // on the control, then what a new object of the kind it is bound to starts out with.
+    // Application-wide: every slider and hooked number box resets on double-click with no per-control setup. Reset value
+    // resolution order: the active style preset (when enabled in settings and it covers the bound property), the control's
+    // Default, then the bound property's value on a freshly constructed model object.
 
-    /// <summary>Asks for the style preset's value for a property of an object; set by the main window. Null when there is none.</summary>
+    /// <summary>Style preset lookup for (source, property), installed by the main window; returns null when not covered.</summary>
     public static Func<object?, string?, double?>? ResetValue { get; set; }
 
     private static bool _resetRegistered;
     private static readonly Dictionary<Type, object?> FreshObjects = [];
 
-    /// <summary>Starts listening for double-clicks on sliders and number boxes, application-wide. Called once, at start-up.</summary>
+    /// <summary>Registers application-wide double-click handlers for sliders and text boxes. Idempotent; called at start-up.</summary>
     public static void RegisterDoubleClickReset()
     {
         if (_resetRegistered)
@@ -96,7 +94,7 @@ public static class NumericInput
             HookTextBox(box);
     }
 
-    /// <summary>The value a control goes back to, or null when nothing says what that is.</summary>
+    /// <summary>Resolves a control's reset value, or null when no source defines one.</summary>
     private static double? FindReset(FrameworkElement control, DependencyProperty bound)
     {
         var binding = System.Windows.Data.BindingOperations.GetBindingExpression(control, bound);
@@ -108,7 +106,7 @@ public static class NumericInput
         if (source is null || property is null)
             return null;
 
-        // What a new one of these starts with. Only for kinds that can simply be made; made once, and kept.
+        // Fresh-instance default: only for parameterless HandPegApp.Models types; one cached instance per type.
         var type = source.GetType();
         if (!FreshObjects.TryGetValue(type, out var fresh))
         {
@@ -134,7 +132,7 @@ public static class NumericInput
 
     private static void Slider_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        // Not the timeline: a double-click there is two clicks on a moment, not a wish to go back to the start.
+        // Skip TimelineSlider: a double-click there is two seeks, not a reset.
         if (sender is not Slider slider || e.ChangedButton != MouseButton.Left || slider.Name == "TimelineSlider" || FindReset(slider, RangeBase.ValueProperty) is not { } value)
             return;
 
@@ -144,7 +142,7 @@ public static class NumericInput
 
     private static void TextBox_DoubleClick(object sender, MouseButtonEventArgs e)
     {
-        // Only the boxes that hold a number (the ones that are dragged to adjust); in any other a double-click selects a word.
+        // Only hooked number boxes; in other text boxes a double-click keeps its word-select behaviour.
         if (sender is not TextBox box || e.ChangedButton != MouseButton.Left || !(bool)box.GetValue(IsHookedProperty) || FindReset(box, TextBox.TextProperty) is not { } value)
             return;
 
@@ -185,7 +183,7 @@ public static class NumericInput
         }
     }
 
-    /// <summary>Enter commits what was typed, for boxes whose value is otherwise only taken when they lose the keyboard.</summary>
+    /// <summary>Hooks Enter to push typed text to the source (for LostFocus-bound boxes) and marks the box as a number box.</summary>
     private static void HookTextBox(TextBox box)
     {
         if ((bool)box.GetValue(IsHookedProperty))
@@ -202,7 +200,7 @@ public static class NumericInput
         };
     }
 
-    // The sideways arrow says "drag me"; the text cursor comes back while the box is being typed in.
+    // SizeWE cursor signals draggable; IBeam while focused for typing.
     private static void UpdateCursor(TextBox box) => box.Cursor = box.IsKeyboardFocusWithin ? Cursors.IBeam : Cursors.SizeWE;
 
     private static void TextBox_FocusChanged(object sender, KeyboardFocusChangedEventArgs e) => UpdateCursor((TextBox)sender);
@@ -211,8 +209,8 @@ public static class NumericInput
     {
         var box = (TextBox)sender;
 
-        // Being typed in: the mouse places the caret and selects text as usual. A box without a number in
-        // it (a blank size, say) has nothing to adjust, so a click there simply starts typing too.
+        // Focused: normal caret placement and selection. Non-numeric text (e.g. a blank size) has nothing to drag, so the
+        // click just starts typing.
         if (box.IsKeyboardFocusWithin || !box.IsEnabled
             || !double.TryParse(box.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
         {
@@ -238,16 +236,15 @@ public static class NumericInput
             TellHeld(box, true);
         state.IsDragging = true;
 
-        // The few pixels it took to recognise the drag are not counted, so the value starts moving from
-        // where it was instead of jumping by that much.
+        // Subtract the threshold travel so the value starts from its origin instead of jumping.
         distance -= Math.Sign(distance) * Math.Min(DragThreshold, Math.Abs(distance));
 
         var speed = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 0.1
             : Keyboard.Modifiers.HasFlag(ModifierKeys.Control) ? 10
             : 1;
 
-        // Always worked out from where the drag began, never added to step by step: the value then follows
-        // the pointer exactly, comes back to where it was when the pointer does, and loses nothing to rounding.
+        // Absolute from the drag origin (not incremental): the value tracks the pointer exactly, returns when the pointer does, and
+        // accumulates no rounding error.
         var decimals = Math.Clamp(GetDecimals(box), 0, 6);
         var value = Math.Round(state.StartValue + distance * GetDragStep(box) * speed, decimals, MidpointRounding.AwayFromZero);
         value = Math.Clamp(value, GetMinimum(box), GetMaximum(box));
@@ -263,7 +260,7 @@ public static class NumericInput
         EndDrag(box);
         e.Handled = true;
 
-        // Pressed and released in place: that was a click, and a click means "let me type".
+        // Click without drag: focus and select all for typing.
         if (!state.IsDragging)
         {
             box.Focus();
@@ -286,24 +283,24 @@ public static class NumericInput
             box.ReleaseMouseCapture();
     }
 
-    // A drag under way, ended: told as let go (once: the state is cleared right after).
+    // Reports release for an active drag (once: callers clear the state immediately after).
     private static void LetGo(TextBox box)
     {
         if (box.GetValue(DragStateProperty) is DragState { IsDragging: true })
             TellHeld(box, false);
     }
 
-    // ----- Held by the pointer (5.0-Verify) -----
+    // ----- Pointer hold tracking -----
 
     /// <summary>
-    /// A number box began to be dragged (true) or was let go (false), in any window: for what is shown only while a value is
-    /// held (the player's edge loupe, the user's bug 6). Typing a value, or a click that starts typing, is no hold.
+    /// Raised when any number box starts (true) or stops (false) a pointer drag, in any window; drives hold-only UI such as the player's
+    /// edge loupe. Typing, or a click that starts typing, is not a hold.
     /// </summary>
     public static event Action<TextBox, bool>? DragHeld;
 
     /// <summary>
-    /// Says when a slider or a number box starts being adjusted with the pointer (a slider pressed anywhere on it, a number
-    /// box dragged past the few pixels that make a drag) and when it is let go, or loses the pointer. A key nudge is no hold.
+    /// Reports pointer holds on a slider (any press) or number box (drag past the threshold): true on start, false on release or
+    /// capture loss. Keyboard nudges are not holds.
     /// </summary>
     public static void WatchHold(Control control, Action<bool> held)
     {
@@ -318,12 +315,11 @@ public static class NumericInput
         control.LostMouseCapture += (_, _) => held(false);
     }
 
-    // ----- The clip edge a control shapes -----
+    // ----- Clip edge tuning -----
 
     /// <summary>
-    /// The clip edge a slider or number box shapes (a feather, a mask, a chroma key), set in XAML on each control bound to such a value.
-    /// The control is watched from then on (<see cref="WatchHold"/>): while the pointer holds it, <see cref="EdgeHeld"/> tells the window,
-    /// which magnifies that edge of the clip that is the control's DataContext. None (the default) watches nothing.
+    /// Clip edge a slider or number box shapes (feather, mask, chroma key), set in XAML. Setting it hooks <see cref="WatchHold"/>: while
+    /// held, <see cref="EdgeHeld"/> lets the window magnify that edge of the DataContext clip. None (default) hooks nothing.
     /// </summary>
     public static readonly DependencyProperty EdgeKindProperty = DependencyProperty.RegisterAttached(
         "EdgeKind", typeof(EdgeTuningKind), typeof(NumericInput), new PropertyMetadata(EdgeTuningKind.None, OnEdgeKindChanged));
@@ -331,10 +327,10 @@ public static class NumericInput
     public static EdgeTuningKind GetEdgeKind(DependencyObject element) => (EdgeTuningKind)element.GetValue(EdgeKindProperty);
     public static void SetEdgeKind(DependencyObject element, EdgeTuningKind value) => element.SetValue(EdgeKindProperty, value);
 
-    /// <summary>A control with an <see cref="EdgeKindProperty"/> began (true) or stopped (false) being held by the pointer, in any window.</summary>
+    /// <summary>Raised when a control with an <see cref="EdgeKindProperty"/> starts (true) or stops (false) a pointer hold, in any window.</summary>
     public static event Action<FrameworkElement, EdgeTuningKind, bool>? EdgeHeld;
 
-    // Watched once, when its first kind is set (a later kind is read as the hold begins).
+    // Hooked once on the first non-None kind; later kind changes are read when a hold begins.
     private static void OnEdgeKindChanged(DependencyObject element, DependencyPropertyChangedEventArgs e)
     {
         if (element is Control control && e.OldValue is EdgeTuningKind.None && e.NewValue is not EdgeTuningKind.None)
@@ -347,7 +343,7 @@ public static class NumericInput
         DragHeld?.Invoke(box, held);
     }
 
-    /// <summary>Writes a value into the box and on to whatever it is bound to, whenever that binding normally updates.</summary>
+    /// <summary>Sets the box text and pushes it to the binding source immediately.</summary>
     private static void SetText(TextBox box, string text)
     {
         box.Text = text;

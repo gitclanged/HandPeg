@@ -2,28 +2,25 @@ using System.Diagnostics;
 
 namespace HandPegApp.Services;
 
-// ----- Dynamic Preview Scaling (Pass 5.4.3, 5.4.4) -----
-// The player draws at the viewport's own pixels. With Settings' Dynamic Preview Scaling on (AppSettings.DynamicPreviewScaling), a frame
-// drawn while playing or scrubbing may be drawn smaller and stretched over the viewport by the worker's final pass
-// (FrameSceneHeader.PreviewScale, SceneRenderer.DrawScale). The steps (StepScale): 0 whole; 1 "1:1 DIP" (5.4.4), the viewport's pixels
-// over Windows' scale of the monitor the player is on (GpuViewport.MonitorScale: a quarter of them at 200 %), never more than
-// ShortSideCap pixels on the picture's short side nor more than the Sequence's own pixels (DipScale); 2 and 3 three quarters and half of
-// step 1. A run starts at step 1 on battery, or on a card that shares the PC's memory while more than one project tab is open, else
-// whole (StartStep); a second tab or the charger pulled mid-run takes it there at once. Three slow frames of a tumbling StepWindow step
-// it down (Counted, NextStep: a step that would change nothing is passed over); it never steps up while it runs. Paused (at once), and
-// CrispAfter after the last scrub move, the frame is drawn whole again and the next run starts afresh. Pump thread only.
+// ----- Dynamic Preview Scaling -----
+// The player renders at viewport pixels. With AppSettings.DynamicPreviewScaling, play/scrub frames may render smaller and be upscaled
+// by the worker's final pass (FrameSceneHeader.PreviewScale, SceneRenderer.DrawScale). Steps (StepScale): 0 full; 1 "1:1 DIP" (viewport
+// pixels / GpuViewport.MonitorScale, capped by ShortSideCap and Sequence pixels: DipScale); 2 and 3 are 3/4 and 1/2 of step 1. Runs
+// start at step 1 on battery or unified memory with multiple tabs, else full (StartStep), switching immediately if that changes
+// mid-run. Three slow frames in a tumbling StepWindow step down (Counted, NextStep, skipping no-op steps); never steps up mid-run.
+// Pausing (immediately) or CrispAfter past the last scrub restores full resolution and resets the run. Pump thread only.
 public sealed partial class GpuPreviewEngine
 {
-    /// <summary>A frame that took longer than this to draw (the worker's acquire, draw and flush, ms) counts as one dropped.</summary>
+    /// <summary>Worker draw time (acquire, draw, flush; ms) above which a frame counts as slow.</summary>
     public const double SlowDrawMs = 12.0;
 
     /// <summary>How long after the last scrub move the paused picture is drawn whole again (seconds).</summary>
     public const double CrispAfter = 0.080;
 
-    /// <summary>The most pixels step 1 keeps on the picture's short side (5.4.4: a 9:16 Sequence at most 720 x 1280).</summary>
+    /// <summary>Step 1 short-side pixel cap (e.g. a 9:16 Sequence at most 720 x 1280).</summary>
     internal const int ShortSideCap = 720;
 
-    /// <summary>How many frames a window of the count is, how many slow ones in it step the scale down, and the deepest step.</summary>
+    /// <summary>Window length, slow-frame threshold per window, and deepest step.</summary>
     internal const int StepWindow = 30, SlowToStep = 3, DeepestStep = 3;
 
     /// <summary>The smallest a frame is drawn, as a fraction of the viewport's pixels each way.</summary>
@@ -39,12 +36,12 @@ public sealed partial class GpuPreviewEngine
     private bool _scaleActive, _lateOwed;
     private float _lastScale = 1;
 
-    // What the run's steps are measured against (the viewport, the Sequence, the monitor's scale), and what the run did, for its log line.
+    // Run reference sizes (viewport, Sequence, monitor scale) and run statistics for the log line.
     private (int ViewWidth, int ViewHeight, int CanvasWidth, int CanvasHeight, double MonitorScale) _scaleFor;
     private int _runStart, _runDeepest, _runFrames, _runSlow;
     private bool _runPlayed;
 
-    // The last Seek that followed another within ScrubbingFor (a drag's move, not a click): Stopwatch ticks, written by Seek.
+    // Stopwatch ticks of the last Seek within ScrubbingFor of the previous one (a drag, not a click); written by Seek.
     private long _scrubMovedTicks;
 
     // On battery, asked again every few seconds (GetSystemPowerStatus is cheap, but not every frame).
@@ -65,7 +62,7 @@ public sealed partial class GpuPreviewEngine
         if (now - _batteryTicks > 5 * Stopwatch.Frequency)
             (_onBattery, _batteryTicks) = (PowerStatus.OnBattery, now);
 
-        // Asked every frame (5.4.4): the monitor's scale can change under a fullscreen player, the tabs and the charger mid-run.
+        // Re-evaluated every frame: monitor scale, tab count and power source can change mid-run.
         _scaleFor = (width, height, canvasWidth, canvasHeight, _viewport.MonitorScale);
         var start = StartStep(_onBattery, UnifiedMemory, ProjectTabs.OpenCount);
         if (!_scaleActive)
@@ -87,9 +84,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// Counts the worker's newest frame (once): slow when it took more than SlowDrawMs, or <paramref name="late"/> (it did not arrive by
-    /// its refresh); enough slow ones in a window step the scale down. A late frame is counted as it is late, not again as it arrives
-    /// (5.4.4). Pump thread.
+    /// Counts the newest worker frame once: slow if over SlowDrawMs or <paramref name="late"/> (missed its refresh); enough slow frames per
+    /// window step down. Late frames count when late, not again on arrival. Pump thread.
     /// </summary>
     private void CountFrame(bool late)
     {
@@ -130,8 +126,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// A run of scaled frames over (paused, the scrub over, the setting turned off): the next one starts afresh. A run that played logs one
-    /// line (5.4.4): its frames, the slow ones, the step it started at and the deepest it reached. Pump thread.
+    /// Ends a scaling run (pause, scrub end, setting off) and resets state; played runs log frames, slow frames, start and deepest step.
+    /// Pump thread.
     /// </summary>
     private void EndScaledRun()
     {
@@ -146,18 +142,17 @@ public sealed partial class GpuPreviewEngine
             $"Dynamic Preview Scaling: a play of {_runFrames} frames, {_runSlow} slow; step {_runStart} ({StepScale(_runStart, width, height, canvasWidth, canvasHeight, monitorScale):0.00}) at the start, step {_runDeepest} ({StepScale(_runDeepest, width, height, canvasWidth, canvasHeight, monitorScale):0.00}) at the deepest; {width} x {height} pixels, monitor scale {monitorScale:0.##}, {ProjectTabs.OpenCount} tab(s){(UnifiedMemory ? ", shared memory" : "")}{(_onBattery ? ", on battery" : "")}"));
     }
 
-    /// <summary>Whether the paused picture was last drawn smaller and the scrub is over: it is drawn whole again. Pump thread.</summary>
+    /// <summary>True when a paused frame was drawn scaled and the scrub ended, so it must be redrawn full. Pump thread.</summary>
     private bool CrispOwed() => !_playing && _lastScale < 1 && Stopwatch.GetElapsedTime(Volatile.Read(ref _scrubMovedTicks)).TotalSeconds >= CrispAfter;
 
-    // ----- The rules, pure (the golden test dynamic-preview-scaling checks them) -----
+    // ----- Pure rules (golden dynamic-preview-scaling) -----
 
-    /// <summary>The step a run starts at (5.4.4): 1 ("1:1 DIP") on battery, or on a card that shares the PC's memory with more than one tab open; else 0 (whole).</summary>
+    /// <summary>Starting step: 1 ("1:1 DIP") on battery or unified memory with multiple tabs, else 0 (full).</summary>
     internal static int StartStep(bool onBattery, bool unifiedMemory, int openTabs) => onBattery || (unifiedMemory && openTabs > 1) ? 1 : 0;
 
     /// <summary>
-    /// Step 1 as a fraction of the viewport's pixels each way (5.4.4): the smallest of 1, one over Windows' monitor scale (the viewport's
-    /// size in DIPs at that scale), <see cref="ShortSideCap"/> over the short side of the picture as it is letterboxed in the viewport, and
-    /// the Sequence's own pixels (a viewport larger than the Sequence never draws more than it has).
+    /// Step 1 per-axis fraction of viewport pixels: min of 1, 1 / monitor scale, <see cref="ShortSideCap"/> / letterboxed short side, and
+    /// Sequence pixels / viewport (never exceeding the Sequence resolution).
     /// </summary>
     internal static double DipScale(int viewWidth, int viewHeight, int canvasWidth, int canvasHeight, double monitorScale)
     {
@@ -172,7 +167,7 @@ public sealed partial class GpuPreviewEngine
         return Math.Min(Math.Min(dip, capped), own);
     }
 
-    /// <summary>A step's scale (0 whole; 1 <see cref="DipScale"/>; 2 three quarters of it; 3 half), never under <see cref="LeastScale"/> nor over 1.</summary>
+    /// <summary>Step scale (0 full; 1 <see cref="DipScale"/>; 2 = 3/4 of it; 3 = 1/2), clamped to [<see cref="LeastScale"/>, 1].</summary>
     internal static float StepScale(int step, int viewWidth, int viewHeight, int canvasWidth, int canvasHeight, double monitorScale)
     {
         if (step <= 0)
@@ -187,7 +182,7 @@ public sealed partial class GpuPreviewEngine
         return (float)Math.Max(LeastScale, Math.Min(scale, 1));
     }
 
-    /// <summary>The next step down from <paramref name="step"/> that draws fewer pixels (a step that would change nothing is passed over); the step itself when none does.</summary>
+    /// <summary>Next lower step that actually reduces pixels (skipping no-ops); <paramref name="step"/> itself if none.</summary>
     internal static int NextStep(int step, int viewWidth, int viewHeight, int canvasWidth, int canvasHeight, double monitorScale)
     {
         var scale = StepScale(step, viewWidth, viewHeight, canvasWidth, canvasHeight, monitorScale);
@@ -201,8 +196,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// One frame counted in the tumbling window: the frames and slow frames after it, and whether the scale steps down now (<see cref="SlowToStep"/>
-    /// slow ones, and <paramref name="settled"/>: the last step long enough ago). A step, or a full window, starts the count again.
+    /// Tumbling-window update: returns new frame and slow counts and whether to step down (<see cref="SlowToStep"/> slow frames and
+    /// <paramref name="settled"/>). A step or a full window resets the counts.
     /// </summary>
     internal static (int Frames, int Slow, bool Step) Counted(int frames, int slow, bool slowFrame, bool settled)
     {

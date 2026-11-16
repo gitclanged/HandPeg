@@ -5,7 +5,7 @@ using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.Services;
 
-/// <summary>A layer as the 3D exploded view last drew it: what picking and the label badges read (canvas pixels, its place in the stack).</summary>
+/// <summary>Last-drawn 3D plane for picking and labels (canvas pixels, stack slot).</summary>
 public struct ExplodedPlane
 {
     public long ClipKey;
@@ -15,28 +15,28 @@ public struct ExplodedPlane
 
     public float X, Y, Width, Height, Rotation, AnchorX, AnchorY;
 
-    /// <summary>Its place in the stack as drawn (a fraction while it is lifted along the stack, <see cref="GpuPreviewEngine.LiftLayer"/>).</summary>
+    /// <summary>Drawn stack slot (fractional while lifted, <see cref="GpuPreviewEngine.LiftLayer"/>).</summary>
     public float ZDepth;
 
     public int Flags;
 
     /// <summary>
-    /// Its Pitch and Yaw (degrees) as the 3D view turns its plane out of the stack about its anchor (5.2C, the user's Q4: picked and resized
-    /// on that plane, ExplodedCamera.HitBox); 0 for a plane drawn upright (SceneRenderer.TiltsInDepth: a blurred background keeps it so).
+    /// Plane pitch and yaw (degrees) about the anchor, used for picking/resizing (ExplodedCamera.HitBox); 0 for upright planes
+    /// (SceneRenderer.TiltsInDepth; blur backgrounds stay upright).
     /// </summary>
     public float TiltX, TiltY;
 
     public readonly bool Tilted => TiltX != 0 || TiltY != 0;
 
-    /// <summary>Only a blurred background (a whole-frame blur under its video's family): a plane of its own, picked as the Background Blur.</summary>
+    /// <summary>Blur-fill-only plane (full-frame blur under its video), picked as Background Blur.</summary>
     public readonly bool BlurFillOnly => (Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0;
 
     public readonly bool Adjustment => (Flags & GpuLayerDescriptor.FlagAdjustment) != 0;
 }
 
 /// <summary>
-/// The 3D exploded scene the player last drew: its camera and its planes (<see cref="GpuPreviewEngine.TryGetExplodedScene"/>).
-/// The UI thread keeps one and has it filled again when a newer one was drawn; nothing is allocated after it is made.
+/// Last drawn 3D scene (camera and planes) via <see cref="GpuPreviewEngine.TryGetExplodedScene"/>. The UI thread reuses one instance;
+/// refills are allocation-free.
 /// </summary>
 public sealed class ExplodedScene
 {
@@ -46,7 +46,7 @@ public sealed class ExplodedScene
     /// <summary>Raised with every scene drawn in 3D (0: none yet).</summary>
     public long Version { get; private set; }
 
-    /// <summary>The plan the scene was evaluated from (its <see cref="GpuScenePlan.LayerInfoAt"/> names the planes), and the moment.</summary>
+    /// <summary>Source plan (<see cref="GpuScenePlan.LayerInfoAt"/> names planes) and evaluation time.</summary>
     public GpuScenePlan Plan { get; private set; } = GpuScenePlan.Empty;
     public double Seconds { get; private set; }
 
@@ -62,7 +62,7 @@ public sealed class ExplodedScene
     public float Zoom { get; private set; }
     public float Spread { get; private set; }
 
-    /// <summary>The camera it was drawn with: the worker's own maths, so a point picked here is the plane drawn there.</summary>
+    /// <summary>Camera used for rendering (same math as the worker, so picking matches the drawn planes).</summary>
     public ExplodedCamera Camera => ExplodedCamera.Create(CanvasWidth, CanvasHeight, OutputWidth, OutputHeight, Yaw, Pitch, Zoom, Spread, LayerCount);
 
     internal void Take(in FrameSceneHeader header, ReadOnlySpan<GpuLayerDescriptor> layers, GpuScenePlan plan, long version)
@@ -99,32 +99,27 @@ public sealed class ExplodedScene
     }
 }
 
-// ----- The 3D exploded layer stack's camera (Pass 5.0-AudioAnd3D, 5.0D) -----
-// What the user asks for (on, the turn, the distance, the spacing) is the camera's target; the camera drawn follows it on
-// the pump's thread, frame by frame. The way in, the way out and Reset are a transition of a fixed length (5.3-Stage3, the
-// user's bug: on the Snapdragon the way in leapt on its first frame and crawled through its second half): 240 ms along a
-// cubic ease in and out (EasingCurves.CubicInOut) from where the camera was to where the target is at each step, each step
-// advancing it at most one 60 Hz refresh, so a cold first frame (the card waking, the planes made) never leaps; it is
-// interrupted by another at any moment (out during the way in starts from where the camera is). The user's own moves (an
-// orbit, the wheel, the spacing) are chased exponentially. While it moves, or while the user orbits it, the paused player is
-// drawn every refresh (CameraMoving). The flat picture and the 3D view meet at yaw 0, pitch 0, zoom 1 and no spread
-// (ExplodedCamera): the way in starts there and the way out ends there, where the scenes become flat again. Each scene
-// drawn in 3D is kept (ExplodedScene) for the UI thread's picking and labels.
+// ----- 3D Exploded View camera -----
+// User input (enable, orbit, distance, spacing) sets a target; the drawn camera follows on the pump thread. Enter, exit and Reset are
+// fixed 240 ms CubicInOut transitions (EasingCurves.CubicInOut) toward the moving target, each step capped at one 60 Hz refresh so a
+// cold first frame never jumps; transitions are interruptible from the current pose. Direct user moves (orbit, wheel, spacing) use an
+// exponential chase. While moving or orbiting, the paused player redraws every refresh (CameraMoving). Flat and 3D coincide at yaw 0,
+// pitch 0, zoom 1, no spread (ExplodedCamera). Each 3D scene is kept (ExplodedScene) for UI-thread picking and labels.
 public sealed partial class GpuPreviewEngine
 {
-    /// <summary>The 3D view's starting turn (degrees: from the right and from above), distance (times the fitted one) and spacing.</summary>
+    /// <summary>Default pose: yaw/pitch (degrees), distance (x fitted) and spacing.</summary>
     public const double DefaultYaw = 30, DefaultPitch = 16, DefaultZoom = 1.85, DefaultSpacing = 0.16;
 
     /// <summary>How far apart the planes may be set, as fractions of the canvas's larger side.</summary>
     public const double MinSpacing = 0.02, MaxSpacing = 0.6;
 
-    // The camera's time constant while it chases the user's own moves, seconds: 95 % of the way in three of them.
+    // Exponential chase time constant (s); 95 % converged after three.
     private const double CameraSettle = 0.085;
 
-    /// <summary>How long the way in, the way out and Reset take, seconds (5.3-Stage3).</summary>
+    /// <summary>Enter/exit/Reset transition duration (s).</summary>
     public const double CameraTransitionSeconds = 0.24;
 
-    /// <summary>The most one step of the camera advances it, seconds: one refresh at 60 Hz, so a slow frame never makes it leap.</summary>
+    /// <summary>Max time advance per camera step (one 60 Hz refresh) so slow frames never cause jumps.</summary>
     public const double MaxCameraStep = 1 / 60.0;
 
     private readonly object _camera = new();
@@ -135,12 +130,11 @@ public sealed partial class GpuPreviewEngine
     private double _drawnYaw, _drawnPitch, _drawnZoom = 1, _drawnSpacing;
     private long _cameraTicks;
 
-    // A transition under way (the way in, out, or Reset): the camera it left from, and how far through it the steps have taken
-    // it (seconds; null: none).
+    // Active transition: starting pose and elapsed seconds (null when none).
     private CameraPose _transitionFrom;
     private double? _transitionClock;
 
-    /// <summary>A pose of the 3D view's camera: its turn (degrees), its distance (times the fitted one) and the planes' spacing.</summary>
+    /// <summary>3D camera pose: yaw/pitch (degrees), distance (x fitted), plane spacing.</summary>
     internal readonly record struct CameraPose(double Yaw, double Pitch, double Zoom, double Spacing)
     {
         /// <summary>The flat picture: where the way in starts and the way out ends.</summary>
@@ -156,10 +150,9 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// One step of the camera (pure: the engine's, and the goldens' exploded-3d-transition-pacing): <paramref name="elapsed"/> seconds
-    /// since the last step, held to <see cref="MaxCameraStep"/>. In a transition, the cubic ease in and out from where it left to the
-    /// target as it is now, landing exactly on it once <see cref="CameraTransitionSeconds"/> of steps have passed (the clock then
-    /// null); otherwise an exponential chase of the target, landing on it once near.
+    /// One camera step (pure; exploded-3d-transition-pacing golden) of <paramref name="elapsed"/> s clamped to <see cref="MaxCameraStep"/>.
+    /// In a transition: CubicInOut from start to current target, landing exactly after <see cref="CameraTransitionSeconds"/> (clock reset to
+    /// null); otherwise exponential chase, snapping when close.
     /// </summary>
     internal static CameraPose StepPose(CameraPose drawn, CameraPose target, double elapsed, CameraPose from, ref double? clock)
     {
@@ -196,8 +189,7 @@ public sealed partial class GpuPreviewEngine
     // Whether the scenes are 3D now (from the toggle on until the way out has settled): the only thing a flat scene reads.
     private volatile bool _drawingExploded;
 
-    // When the scenes became flat again (Stopwatch; 0 once the flat picture was drawn again for the worker to let go of the
-    // 3D textures: it does so only as it draws, a while after the last 3D frame). The pump's own.
+    // Stopwatch time when scenes returned to flat; 0 after the follow-up flat redraw that lets the worker release 3D textures. Pump-owned.
     private long _flatSince;
     private volatile bool _orbiting;
     private long _selectedClipKey;
@@ -218,10 +210,10 @@ public sealed partial class GpuPreviewEngine
         }
     }
 
-    /// <summary>Whether the player draws the 3D view now: from the toggle on until the way back to the flat picture has settled.</summary>
+    /// <summary>True from enabling 3D until the exit transition has settled.</summary>
     public bool IsDrawingExploded => _drawingExploded;
 
-    /// <summary>Into the 3D exploded view (from the flat picture, the camera swinging out) or back out of it; interruptible either way.</summary>
+    /// <summary>Enters or exits 3D view with an animated, interruptible transition.</summary>
     public void SetExploded(bool on)
     {
         lock (_camera)
@@ -231,7 +223,7 @@ public sealed partial class GpuPreviewEngine
             _wantExploded = on;
             if (on && !_drawingExploded)
             {
-                // From the flat picture: the drawn camera starts where the 2D view is, and the last time's scene is no one's.
+                // From flat: start at the 2D-equivalent pose and discard the previous 3D scene.
                 Drawn = CameraPose.Flat;
                 _cameraTicks = 0;
                 _lastExploded.Reset();
@@ -248,8 +240,7 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// Where the camera is going (5.4D: a project tab put behind keeps it in its header): its turn, distance and spacing as the user
-    /// left them, whether the view is on or not (the flat picture's pose is the way out's end, never this).
+    /// Target pose (stored in tab headers on deactivation): orbit, distance and spacing as last set, regardless of view state (never the flat exit pose).
     /// </summary>
     internal CameraPose TargetPose
     {
@@ -261,9 +252,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// Into the 3D view or out of it at once, with no way in or out (5.4D: a project tab put behind, or one brought back to the front as it
-    /// was left): the camera drawn is where it is going from the next scene on. Into it at <paramref name="pose"/> (held to the camera's
-    /// limits as an orbit, the wheel and the spacing are; the view's start when null or not a number).
+    /// Enters/exits 3D instantly without transition (tab deactivation/activation); the next scene uses the target pose. Uses
+    /// <paramref name="pose"/> clamped to limits (default pose when null or NaN).
     /// </summary>
     internal void SetExplodedInstant(bool on, CameraPose? pose = null)
     {
@@ -291,7 +281,7 @@ public sealed partial class GpuPreviewEngine
         Invalidate();
     }
 
-    /// <summary>A pose held to what the camera can do: the turns short of edge on, the distance and the spacing within theirs, the view's start for what is not a number.</summary>
+    /// <summary>Clamps a pose: angles short of edge-on, distance and spacing to range, NaN components to defaults.</summary>
     internal static CameraPose HeldToLimits(CameraPose pose)
     {
         static double Held(double value, double fallback, double low, double high) =>
@@ -303,7 +293,7 @@ public sealed partial class GpuPreviewEngine
             Held(pose.Spacing, DefaultSpacing, MinSpacing, MaxSpacing));
     }
 
-    /// <summary>Turns the camera by so many degrees (positive yaw: towards the right; positive pitch: up), held short of edge on.</summary>
+    /// <summary>Orbits by degrees (positive yaw right, positive pitch up), clamped short of edge-on.</summary>
     public void Orbit(double yawDegrees, double pitchDegrees)
     {
         lock (_camera)
@@ -325,7 +315,7 @@ public sealed partial class GpuPreviewEngine
         Invalidate();
     }
 
-    /// <summary>How far apart the planes are, as a fraction of the canvas's larger side (<see cref="MinSpacing"/> to <see cref="MaxSpacing"/>).</summary>
+    /// <summary>Plane spacing as a fraction of the canvas's larger side (<see cref="MinSpacing"/>..<see cref="MaxSpacing"/>).</summary>
     public double ZSpacing
     {
         get
@@ -343,7 +333,7 @@ public sealed partial class GpuPreviewEngine
         }
     }
 
-    /// <summary>The camera's turn and distance as they start (the spacing is kept): 240 ms back there, as the way in.</summary>
+    /// <summary>Resets orbit and distance to defaults (spacing kept) with the 240 ms transition.</summary>
     public void ResetCamera()
     {
         lock (_camera)
@@ -357,8 +347,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// The camera's turn and distance set to <paramref name="pose"/>, held to its limits (5.4.1-M1: the front tab's last 3D angle when the
-    /// view is turned on again by hand; the spacing stays the panel's): 240 ms there when the view is up, as a reset is.
+    /// Sets orbit and distance from <paramref name="pose"/> (clamped; spacing unchanged), e.g. restoring the active tab's last 3D angle;
+    /// animates over 240 ms when the view is on.
     /// </summary>
     internal void SetCamera(CameraPose pose)
     {
@@ -373,14 +363,14 @@ public sealed partial class GpuPreviewEngine
         Invalidate();
     }
 
-    /// <summary>While the user holds an orbit (a drag), the paused player is drawn every refresh even once the camera has caught up.</summary>
+    /// <summary>True during an orbit drag; forces paused redraws every refresh even after the camera catches up.</summary>
     public void SetOrbiting(bool held)
     {
         _orbiting = held;
         Invalidate();
     }
 
-    /// <summary>The clip selected in the editor (<see cref="GpuHash.Of"/> its id; 0 none): outlined in the 3D view.</summary>
+    /// <summary>Selected clip key (<see cref="GpuHash.Of"/> its id; 0 none), outlined in 3D.</summary>
     public long SelectedClipKey
     {
         get => Interlocked.Read(ref _selectedClipKey);
@@ -392,8 +382,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// A layer lifted along the stack while it is dragged in depth (its clip's key; 0 puts it back): drawn so many places
-    /// nearer (positive) or farther, a preview only, until the drag ends and its track is moved.
+    /// Depth-drag preview: draws the clip's layer offset by a number of slots (positive = nearer) until the drag commits the track move;
+    /// key 0 clears it.
     /// </summary>
     public void LiftLayer(long clipKey, double places)
     {
@@ -403,8 +393,7 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// Copies the last scene drawn in 3D into <paramref name="into"/> when it is newer than the one it holds (UI thread: its
-    /// picking and labels). False when there is nothing newer.
+    /// Copies the last 3D scene into <paramref name="into"/> if newer (UI thread, for picking and labels); false otherwise.
     /// </summary>
     public bool TryGetExplodedScene(ExplodedScene into)
     {
@@ -421,8 +410,7 @@ public sealed partial class GpuPreviewEngine
     {
         if (!_drawingExploded)
         {
-            // Out of the 3D view half a second (5.4.2A): the flat picture once more, so that the worker lets go of the 3D view's textures (up
-            // to some hundreds of MB its Instant Seek cache would otherwise make room for) while the player stays paused too.
+            // 0.5 s after leaving 3D, redraw flat so the worker releases 3D plane textures (hundreds of MB) even while paused.
             if (_flatSince != 0 && Stopwatch.GetElapsedTime(_flatSince).TotalSeconds > SceneRenderer.ExplodedTexturesPatience + 0.5)
             {
                 _flatSince = 0;
@@ -437,7 +425,7 @@ public sealed partial class GpuPreviewEngine
         {
             if (width < 8 || height < 8)
             {
-                // Nothing to draw on (the player hidden): the camera is where it is going at once, the flat picture included.
+                // No surface (hidden player): snap the camera to its target (including the flat pose).
                 (Drawn, _transitionClock) = (Target, null);
                 if (!_wantExploded)
                     (_drawingExploded, _flatSince) = (false, Stopwatch.GetTimestamp());
@@ -447,7 +435,7 @@ public sealed partial class GpuPreviewEngine
             moving = _orbiting || !Settled();
         }
 
-        // While the camera turns, glides or is dragged, background work waits (5.4.1-M2): the worker's frames come first.
+        // Hold background work while the camera moves so worker frames take priority.
         if (moving)
             WorkScheduler.HoldBackground(CameraHold);
     }
@@ -479,8 +467,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// A scene of <paramref name="plan"/> drawn in 3D with the camera at <paramref name="pose"/>, not stepped and not kept for picking
-    /// (5.4D: a project tab's still as it was shown, GpuPreviewEngine.CaptureThumbnail; the pump's thread).
+    /// Writes a 3D scene of <paramref name="plan"/> at fixed <paramref name="pose"/> without stepping or keeping it (tab still capture,
+    /// GpuPreviewEngine.CaptureThumbnail; pump thread).
     /// </summary>
     private void WriteCameraAt(ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers, CameraPose pose, GpuScenePlan plan)
     {
@@ -488,7 +476,7 @@ public sealed partial class GpuPreviewEngine
             WriteStack(ref header, layers, pose, plan);
     }
 
-    /// <summary>The 3D view's camera and each layer's place, outline and lift written into a scene (under _camera).</summary>
+    /// <summary>Writes the 3D camera and per-layer slot, outline and lift into a scene (under _camera).</summary>
     private void WriteStack(ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers, CameraPose pose, GpuScenePlan plan)
     {
         header.ViewMode = 1;
@@ -498,11 +486,8 @@ public sealed partial class GpuPreviewEngine
         header.CameraZoom = (float)pose.Zoom;
         header.ExplodedZSpread = (float)(pose.Spacing * Math.Max(Math.Max(header.CanvasWidth, header.CanvasHeight), 1));
 
-        // Each layer at its track's place in the plan's stack, which is as deep as the plan whatever is on now (5.0-Release:
-        // a caption between its cues, or a layer waiting for its texture, no longer moves the planes above it or the
-        // camera's middle). The clip selected is outlined, and another clip of its track playing while it is not more
-        // faintly, so the selected layer's plane never blinks off at its cuts; a layer dragged in depth is drawn where
-        // the drag has it.
+        // Each layer at its track's slot in the full plan depth (stable when layers come and go). Selected clip outlined; other clips on
+        // its track outlined faintly so the plane never blinks at cuts; depth-dragged layer drawn at its drag offset.
         var count = Math.Clamp(header.ActiveLayerCount, 0, layers.Length);
         header.ExplodedDepth = plan.PlaceLayers(layers, count);
         var selected = Interlocked.Read(ref _selectedClipKey);
@@ -512,7 +497,7 @@ public sealed partial class GpuPreviewEngine
             ref var layer = ref layers[k];
             if ((layer.Flags & GpuLayerDescriptor.FlagBlurFillOnly) != 0)
             {
-                // A blur fill's own plane (5.2.0's re-cut): outlined while the Background Blur is selected.
+                // Blur-fill plane: outlined while Background Blur is selected.
                 if (selected == GpuScenePlan.BlurFillKey)
                     layer.Flags |= GpuLayerDescriptor.FlagSelected;
             }
@@ -530,8 +515,7 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// The camera a still as it is shown is drawn with (5.4D): where it is going while the 3D view is asked for (a way in
-    /// under way is drawn as it will land); null for the flat picture.
+    /// Camera for an as-displayed still: the target pose while 3D is requested (transitions rendered at their end); null when flat.
     /// </summary>
     private CameraPose? ShownPose()
     {
@@ -540,9 +524,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// The drawn camera one frame on (under _camera): by the time since the last step, at most one 60 Hz refresh; the first step
-    /// after the camera stood still counts as one refresh, so a move never starts with a leap. Lands exactly on the target, so the
-    /// way out ends on the flat picture itself.
+    /// Advances the drawn camera one frame (under _camera) by elapsed time capped at one 60 Hz refresh (first step after rest counts as one
+    /// refresh, so moves never jump). Lands exactly on target so exit ends on the flat pose.
     /// </summary>
     private void StepCamera()
     {

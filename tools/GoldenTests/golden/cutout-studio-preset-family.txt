@@ -1,0 +1,13 @@
+# The Cutout Studio opens on the picked clip's base video with all its Cutouts (an older preset's bitmap-masked pieces traced to outlines), its preset's name, and a still on frame 0.
+ok: three Cutouts with a bitmap mask and no outlines (which the Studio once left out)
+ok: nothing picked, a Cutout picked or its video picked: the Studio's base is the video
+ok: each piece opens with the bitmap's islands inside its crop traced to outlines (the Killfeed's two, one each for the others)
+ok: the preset's name is the pieces' shared prefix ("Overwatch:" or a first word), none without one
+ok: the heat lamp's still target is the same whichever of them is picked
+ok: nothing picked: the three pieces under their names, and the preset's name filled in
+ok: nothing picked: frame 0 shows the cached backdrop, not a black view
+ok: a Cutout picked: the three pieces under their names, and the preset's name filled in
+ok: a Cutout picked: frame 0 shows the prewarmed still, not a black view
+ok: on a Cutout from its menu: the three pieces under their names, and the preset's name filled in
+ok: on a Cutout from its menu: Apply to This Clip keeps its own two outlines, not its siblings'; Apply to All Cutouts takes all four
+ok: added to the timeline again, the three pieces take the place of the old ones

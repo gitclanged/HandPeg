@@ -7,9 +7,9 @@
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
     </UserControl.Resources>
     <!--
-        The Render Queue (5.4C, a dock pane; the HandPeg Queue window until then): the batch of encodes, bound to the main window's
-        view model, so it and the Export tab stay in step. Start, Pause and Clear Completed in its title row; a job's Edit loads it
-        back into the window.
+        Render Queue dock pane: the encode batch, bound to the main window's view model so it stays in sync with the Export
+        tab. Start, Pause and Clear Completed sit in the title row; a job's Edit loads it back into the main
+        window.
     -->
     <DockPanel>
         <docking:PaneTitleRow DockPanel.Dock="Top" Margin="0,0,0,8">
@@ -58,7 +58,7 @@
                             <ProgressBar x:Name="progress" Height="6" Margin="0,3,0,0" Minimum="0" Maximum="100"
                                          Value="{Binding Progress}" Visibility="Collapsed" />
                         </StackPanel>
-                        <!-- Pending jobs only: loads the job back into the main window -->
+                        <!-- Pending jobs only: loads the job back into the main window. -->
                         <Button Grid.Column="4" Content="Edit" Padding="10,2" Margin="0,0,6,0"
                                 Visibility="{Binding IsPending, Converter={StaticResource BoolToVisibility}}"
                                 Command="{Binding DataContext.EditQueueJobCommand, RelativeSource={RelativeSource AncestorType=ListBox}}"
@@ -72,7 +72,7 @@
                         <DataTrigger Binding="{Binding Status}" Value="Encoding">
                             <Setter TargetName="progress" Property="Visibility" Value="Visible" />
                         </DataTrigger>
-                        <!-- The step before the encode, for a job whose captions are made when it runs -->
+                        <!-- Pre-encode step status, for jobs that generate captions at run time. -->
                         <DataTrigger Binding="{Binding Status}" Value="Transcribing">
                             <Setter TargetName="progress" Property="Visibility" Value="Visible" />
                         </DataTrigger>

@@ -18,28 +18,25 @@ using Microsoft.Win32;
 
 namespace HandPegApp;
 
-// ----- Tracks, continued: a track's right-click menu (FillTrackMenu, FillLayerMenu) and everything it lists -----
+// ----- Track context menus (FillTrackMenu, FillLayerMenu) and their items -----
 public partial class MainWindow
 {
-    // ----- Right-click on a track -----
-    // One menu for every row of the timeline (4.4): the UnifiedTimelineControl asks for it (MenuRequested) with the row, the
-    // block pressed (or a fade handle, or the header), and FillTrackMenu fills it with what can be done as things are now.
-    // Names follow one scheme: Title Case; "..." only where a window asks for more; the key bound to an action shown beside
-    // it (KeybindManager), never in its name; Delete for content, Remove for an attribute, Clear for a collection, Restore
-    // to bring something back.
+    // ----- Track context menu -----
+    // One menu for every timeline row: UnifiedTimelineControl.MenuRequested supplies row, pressed block (or fade handle, or header) and
+    // FillTrackMenu adds the currently valid actions. Naming: Title Case; "..." only when a dialog follows; shortcuts shown beside items
+    // (KeybindManager), never in names; Delete = content, Remove = attribute, Clear = collection, Restore = bring back.
 
     /// <summary>
-    /// Fills a timeline row's right-click menu: what can be done to the track as a whole (its filters, its place, its mask,
-    /// its look, its sound), and to the clip that was clicked (split, trim, fades, speed, delete). A fade handle's menu is that
-    /// fade's alone. The items are added after any the menu has already.
+    /// Appends a timeline row's context-menu items: track-level (filters, position, mask, look, audio) and clip-level (split, trim, fades,
+    /// speed, delete). A fade handle gets only that fade's menu.
     /// </summary>
-    /// <param name="rowData">The row's Data: a track's row (a Layer: a video, picture or sound track, the caption row, the blur fill's settings row); null for the space below the rows.</param>
-    /// <param name="clicked">The pressed block's Clip (a Layer, a LayerSound, a SubtitleRef), or null.</param>
-    /// <param name="fade">The fade handle pressed, when one was: its block's clip, and whether it is the fade in.</param>
-    /// <param name="onHeader">The row's header was right-clicked, not its time: the menu is about the track (and the clip selected on it).</param>
+    /// <param name="rowData">Row Data (a Layer for video, image or audio tracks, the caption row or blur fill row); null below the rows.</param>
+    /// <param name="clicked">Pressed block's Clip (Layer, LayerSound, SubtitleRef), or null.</param>
+    /// <param name="fade">Pressed fade handle: its clip and whether it is the fade in.</param>
+    /// <param name="onHeader">The header was right-clicked: the menu targets the track (and its selected clip).</param>
     internal void FillTrackMenu(ItemsControl menu, object? rowData, object? clicked, (object Clip, bool In)? fade, bool onHeader)
     {
-        // A right-click on a fade handle: that fade's menu, and nothing else.
+        // Fade handle: only that fade's menu.
         if (!onHeader && fade is { } pressed && FadeMenuItems(pressed.Clip, pressed.In) is { Count: > 0 } fadeItems)
         {
             foreach (var item in fadeItems)
@@ -64,14 +61,13 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A track row's menu (a Layer: a video, picture or sound track, the caption row, the blur fill's settings row), in the
-    /// order of an edit (5.1-DogfoodPolish, the user's overhaul): Cut &amp; Edit first and flat, then one submenu for each thing a clip has
-    /// (its transform, its Game Preset, its effects, its sound, its time), the Smart Tools flat again, and what is the track's last.
+    /// Track row menu (Layer: video, image or audio track, caption row, blur fill row) in edit order: flat Cut &amp; Edit, then one submenu
+    /// per clip aspect (transform, Game Preset, effects, audio, time), flat Smart Tools, and track-level items last.
     /// </summary>
-    /// <param name="onHeader">Its header was right-clicked: what is the track's (its Track Preset, 5.2A) comes first, not in the Track submenu.</param>
+    /// <param name="onHeader">Header right-click: track items (Track Preset) come first instead of in the Track submenu.</param>
     private void FillLayerMenu(ItemsControl menu, Layer layer, object? clicked, bool onHeader = false)
     {
-        // The clip the menu is about: the one clicked, else the one selected on this track, else the track's first.
+        // Target clip: the clicked one, else the selected one on this track, else the track's first.
         var clips = _viewModel.GetTrackClips(layer);
         var clip = (clicked ?? _selectedClip) switch
         {
@@ -90,7 +86,7 @@ public partial class MainWindow
                 menu.Items.Add(submenu);
         }
 
-        // One of clips selected together (5.0): what is done to all of them comes first, each one step of Undo.
+        // Multi-selection member: group actions first, each one Undo step.
         if (GroupHolds && _viewModel.IsInClipGroup(clip))
         {
             AddGroupItems(menu);
@@ -99,8 +95,7 @@ public partial class MainWindow
 
         var at = _viewModel.PositionMs / 1000;
 
-        // An empty track has nothing to set but its Track Preset (5.2A: set before anything is dropped onto it): it can only leave the
-        // mini-stack it is in, or be deleted.
+        // Empty track: only Track Preset (settable before any drop), leaving its mini-stack, or delete.
         if (layer.IsEmptyTrack)
         {
             AddTrackPresetItems(menu, layer, flat: false);
@@ -111,7 +106,7 @@ public partial class MainWindow
             return;
         }
 
-        // The header's menu is the track's: its Track Preset first (5.2A).
+        // Header menu targets the track: Track Preset first.
         if (onHeader && _viewModel.CanHaveTrackPreset(layer))
         {
             AddTrackPresetItems(menu, layer, flat: false);
@@ -119,8 +114,8 @@ public partial class MainWindow
             Separate();
         }
 
-        // A sound's name, typed in place at the top of its menu (one step of Undo, taken at the first keystroke). On a stream's
-        // Sub-Lane it is the lane's name, and so the title of the output track the lane goes to (5.2-Arm64AndNpu, the user's call).
+        // Inline audio name box at the top (one Undo step from the first keystroke). On a stream Sub-Lane it names the lane, which is
+        // also the output track title.
         if (layer.IsAudio)
         {
             if (_viewModel.StreamLaneName(layer) is { } laneName)
@@ -130,7 +125,7 @@ public partial class MainWindow
             Separate();
         }
 
-        // The caption row: the captions' own menu (making, editing, styling, placing, importing and deleting them).
+        // Caption row: captions menu (generate, edit, style, position, import, delete).
         if (layer.IsCaptions)
         {
             FillCaptionMenu(menu, null);
@@ -154,7 +149,7 @@ public partial class MainWindow
                 Add("Delete", () => _viewModel.RemoveTrack(layer), gesture: "edit.delete");
         }
 
-        // The clipboard (5.2A): on this clip, or the clips selected with it.
+        // Clipboard: this clip, or the multi-selection.
         if (_viewModel.CanGroup(clip))
         {
             Add("Copy", () => { SelectWithGroup(clip); CopySelectedClips(); }, gesture: "edit.copy");
@@ -162,7 +157,7 @@ public partial class MainWindow
             Add("Duplicate", () => { SelectWithGroup(clip); DuplicateSelectedClips(); }, gesture: "edit.duplicate",
                 tip: "A copy of this clip (or the clips selected with it), with its Cutouts, right after it on the same track where there is room.");
 
-            // Onto a track of its own (5.4A): one click, its stream sounds and Cutouts with it, one step of Undo.
+            // Move to its own track with its stream audio and Cutouts, one Undo step.
             if (!clip.IsAudio)
             {
                 var movable = _viewModel.CanMoveClipsToNewTrack([clip]);
@@ -181,7 +176,7 @@ public partial class MainWindow
         if (editable)
             Add("Duplicate Track", () => _viewModel.DuplicateLayer(layer), tip: "A copy of this whole track, every clip on it, on a new track just above, moved a little on the frame.");
 
-        // A sound on a shared lane, or on any Audio track (5.2): onto a lane of its own under its video's track, or a track of its own.
+        // Audio on a shared lane or Audio track: move to its own lane under its video's track, or to its own track.
         if (layer.IsAudio && _viewModel.ClipOf(clip) is not null)
         {
             if (_viewModel.ParentRowOf(layer) is { } videoRow && _viewModel.CanMoveSoundUnder(clip, videoRow))
@@ -191,8 +186,8 @@ public partial class MainWindow
                 tip: "Takes this sound onto an Audio track of its own, at the same time; it still follows its video clip until it is unlocked from it.");
         }
 
-        // Silences Split & Mark folded out at its cuts (4.3D): each put back where it was, what follows sliding on; and
-        // (4.4 BugHunt) each stretch put back over the clip folded out again, what follows sliding back.
+        // Restore Folded Silence at this clip's seams (later content slides out), and Hide again for unfolded ranges over it (content
+        // slides back).
         if (layer.HasTiming)
         {
             foreach (var fold in _viewModel.FoldsAt(clip))
@@ -212,7 +207,7 @@ public partial class MainWindow
                 Add(string.Create(CultureInfo.InvariantCulture, $"Restore All {folds} Folded Silences"), () => AnimatedFoldChange(_viewModel.UnfoldAll));
         }
 
-        // Its own switches (5.2), as on its block: On/Off for this clip alone, and a child's Lock to its parent clip.
+        // Block switches as menu items: On/Off for this clip only, and a child's Lock to its parent.
         if (_viewModel.ClipOf(clip) is not null && !layer.IsCaptions)
         {
             var on = _viewModel.IsClipOn(clip);
@@ -232,7 +227,7 @@ public partial class MainWindow
         if (clip is { HasPlacement: true, IsCaptions: false } && _viewModel.ClipOf(clip) is not null)
             menu.Items.Add(TransformMenu(clip, clips.Count));
 
-        // ----- Cutout & Mask Studio (5.2: on every video clip, right on its menu and first in the submenu) -----
+        // ----- Cutout & Mask Studio (every video clip: top-level item and first in the submenu) -----
         var isVideoClip = clip.IsVideoFile;
         const string StudioTip = "The Cutout Studio on this clip: trace its shape or a game's HUD by hand on a still, zoomed in to the very pixels; "
                                  + "cut this clip to it, add the Cutouts to it, or save them as a Game Preset.";
@@ -305,11 +300,10 @@ public partial class MainWindow
         {
             AddSeparator(effects);
 
-            // Its own fades, over whatever is under it (the handles at its top corners), and a crossfade with a clip on
-            // another track that it overlaps.
+            // Its fades (over lower layers; handles at its top corners) and crossfades with overlapping clips on other tracks.
             AddFadeSubmenus(effects, clip);
 
-            // The cuts it shares with the clips before and after it on its track: a crossfade across either.
+            // Crossfades across its shared cuts with the previous and next clips on its track.
             var transition = AppSettings.Current.DefaultTransitionSeconds;
             if (_viewModel.ClipBefore(clip) is { } previous)
             {
@@ -337,8 +331,8 @@ public partial class MainWindow
         Keep(effects);
 
         // ----- Audio & Voice -----
-        // How loud the clip is, the track's filters, the clip's link to its picture (J and L cuts, slips), and what the track's sound
-        // does when someone is speaking. (None of it on a video-only child, 5.0-Release: a blur fill, a HUD Cutout or one cut by a mask.)
+        // Clip gain, track filters, A/V link (J/L cuts, slips) and ducking. Omitted for video-only children (blur fill, HUD Cutout,
+        // mask-cut piece).
         var audio = new MenuItem { Header = "Audio & Voice" };
         var linkable = !clip.IsAudio && _viewModel.ClipOf(clip) is { HasSound: true };
         if (!layer.IsVideoOnlyChild && !clip.IsVideoOnlyChild && (layer.CarriesSound || clip.CarriesSound || linkable))
@@ -353,8 +347,8 @@ public partial class MainWindow
                 AddDuckingItems(audio, layer, layer.AutoDuck, layer.IsVoice);
         }
 
-        // The beats of the clip's sound (5.2B): found in the background, kept with the clip (one step of Undo); dragged clips snap to them and
-        // the beat grid draws them on the clip (both on the Snap button's menu).
+        // Beat detection: runs in the background and stores beats on the clip (one Undo step); drags snap to them and the beat grid draws
+        // them (both toggled in the Snap button's menu).
         if (!layer.IsVideoOnlyChild && !clip.IsVideoOnlyChild && _viewModel.ClipOf(clip) is { HasSound: true })
         {
             AddSeparator(audio);
@@ -364,8 +358,7 @@ public partial class MainWindow
                 AddTrackItem(audio, "Clear Audio Beats", () => _viewModel.ClearClipBeats(clip), true, "Takes this clip's beats away. One step of Undo.");
         }
 
-        // A stream's lane: the output track its stream place goes to (5.2-AuditB: what each output audio track is made as, by its
-        // place), kept or left out of the export.
+        // Stream lane: include or exclude its output audio track (output tracks are defined by stream index) in the export.
         if (layer.IsAudio && _viewModel.OutputTrackOf(layer) is { } output)
         {
             AddSeparator(audio);
@@ -380,7 +373,7 @@ public partial class MainWindow
             audio.Items.Add(dropped);
         }
 
-        // Every video track is equal (the user's directive): all of its sound on lanes of their own.
+        // Any video track can split all its audio onto separate lanes (no primary-track privilege).
         if (editable && clip.IsVideoFile && _viewModel.CanUnpackStreams(clip))
         {
             AddTrackItem(audio, "Unpack Audio Streams", () => _ = _viewModel.UnpackAudioStreamsAsync(clip), true,
@@ -392,8 +385,8 @@ public partial class MainWindow
         // ----- Speed & Time -----
         var time = new MenuItem { Header = "Speed & Time" };
 
-        // How fast the clip runs: a few usual speeds, the one it has ticked (up to 16x, Pass 5.6A). Anything between is typed into its
-        // Speed box or set on the Effects pane's Speed & Time card; what follows ripples as the card's Ripple Timeline says.
+        // Common speeds (up to 16x) with the current one ticked; other values via the Speed box or the Effects pane's Speed & Time card.
+        // Rippling follows that card's Ripple Timeline setting.
         if (clip.HasSpeed)
         {
             var speeds = new MenuItem { Header = string.Create(CultureInfo.InvariantCulture, $"Clip Speed ({clip.Speed:0.##}x)") };
@@ -425,8 +418,8 @@ public partial class MainWindow
                 clip.IsAudio ? "Plays the sound from the start of the sequence to its end." : "Shows the clip from the start of the sequence to its end.");
         }
 
-        // A proxy of the clip's file, on demand (5.0D, see ProxyCache), offered only where it helps (5.0-Verify, the user's Q6):
-        // a long-GOP video layer the preview cannot decode fast, a clip that has it on, or Shift held as the menu opens.
+        // On-demand proxy (ProxyCache), offered only when useful: a long-GOP video too slow to decode, a clip already using one, or Shift
+        // held while opening the menu.
         if (clip.IsVideoFile && _viewModel.OptimizeIsUseful(clip, Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)))
         {
             AddSeparator(time);
@@ -444,12 +437,12 @@ public partial class MainWindow
         Separate();
 
         // ----- Smart Tools -----
-        // The Personal Clip Library (5.2C): the clip's span kept across projects, a lossless copy.
+        // Personal Clip Library: lossless copy of the clip's span, available across projects.
         if (_viewModel.CanSaveToClipLibrary(clip))
             Add("Save Clip to Personal Clip Library...", () => SaveToClipLibrary(clip), true,
                 "Keeps this clip's span (its picture and every sound of its file, a lossless copy: nothing encoded again) in your own library, Documents\\HandPeg\\Clips, with a title, tags and the focal point of a Ping-to-Mark highlight inside it. The Media pane's Clip Library lists it, to search, scrub and drag into any project.");
 
-        // A double-wide recording (5.2C): the gameplay and the facecam as two clips in step, placed for the Sequence's shape.
+        // Side-by-side recording split: gameplay and facecam as two synced clips laid out for the Sequence aspect.
         if (editable && _viewModel.CanUnpackSideBySide(clip))
             Add("Unpack OBS Side-by-Side Canvas (Gameplay + Facecam)", () => _viewModel.UnpackSideBySide(clip), true,
                 "This recording is two pictures side by side on one canvas. The clip keeps the left half (the gameplay), cut to it and placed for the Sequence's shape, and a Cutout of the same file above it shows the right half (the facecam): a corner picture on a wide frame, a band across the top of a tall one. The two stay in step through every split, trim and move. One step of Undo.");
@@ -460,8 +453,7 @@ public partial class MainWindow
 
         if (editable)
         {
-            // What its sound is listened to for: the captions (a clip with sound through its own file, a video through its
-            // streams on Sub-Lanes) and the silences.
+            // Audio analysis targets: captions (own audio, or a video's stream Sub-Lanes) and silence detection.
             if (clip.CarriesSound)
             {
                 Add("Generate Auto-Captions...", () => GenerateCaptionsFrom(clip), _viewModel.HasSource);
@@ -473,10 +465,9 @@ public partial class MainWindow
                 AddCaptionsSubmenu(menu, clip, null);
             }
 
-            // Remove Dead Air on every track of video or sound (4.3E). A clip with sound of its own is listened to and cut
-            // itself; a video whose streams are on Sub-Lanes listens to its first (or the sound marked as the voice) and cuts its
-            // file's clips on every unlocked track, their Cutouts among them; a Cutout of a video has no sound
-            // of its own to listen to.
+            // Remove Dead Air on any video or audio track. Clips with their own audio analyse and cut themselves; a video with stream
+            // Sub-Lanes analyses its first (or voice-marked) stream and cuts its file's clips on every unlocked track, Cutouts included;
+            // a Cutout has no audio of its own.
             if (clip.CarriesSound)
             {
                 Add("Remove Dead Air...", () => RunDeadAir(clip), _viewModel.HasSource,
@@ -495,7 +486,7 @@ public partial class MainWindow
 
         Separate();
 
-        // ----- What is the track's -----
+        // ----- Track-level items -----
         var track = new MenuItem { Header = "Track" };
         if (!onHeader)
         {
@@ -522,8 +513,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Transform, Sizing &amp; Position: every number of where a clip sits, typed in place, and the one-click placements. The same values the
-    /// Timeline's inspector strip and the Canvas set; each change one step of Undo, this clip's alone.
+    /// Transform, Sizing &amp; Position submenu: inline numeric fields and one-click placements, bound to the same values as the inspector
+    /// strip and Canvas; each change is one Undo step for this clip only.
     /// </summary>
     private MenuItem TransformMenu(Layer clip, int clipsOnTrack)
     {
@@ -545,7 +536,7 @@ public partial class MainWindow
         Number("Position Y %", () => clip.PositionYPercent, v => clip.PositionYPercent = v);
         if (clip.HasFilters)
         {
-            // Yaw / Pitch / Roll (5.2A, true 3D): the Roll is the Rotation; the tilts turn the picture out of the frame, seen in perspective.
+            // Yaw/Pitch/Roll: Roll is Rotation; the tilts rotate out of the frame plane in perspective.
             Number("Rotation (Roll) \u00B0", () => clip.Rotation, v => clip.Rotation = v);
             Number("Tilt X (Pitch) \u00B0", () => clip.TiltX, v => clip.TiltX = Layer.Tilt(v));
             Number("Tilt Y (Yaw) \u00B0", () => clip.TiltY, v => clip.TiltY = Layer.Tilt(v));
@@ -559,8 +550,8 @@ public partial class MainWindow
         Edge("Top %", () => clip.CropTopPercent, v => clip.CropTopPercent = v);
         Edge("Bottom %", () => clip.CropBottomPercent, v => clip.CropBottomPercent = v);
 
-        // Interactive Crop and Reset Crop (5.4B: from the Video tab's crop cross, which the Export tab no longer has): this clip's.
-        // The tick shows the mode itself, whichever clip it was started on, so any clip's menu turns it off (as does Esc).
+        // Interactive Crop and Reset Crop for this clip. The check reflects the global mode (whichever clip started it), so any clip's
+        // menu can turn it off (as does Esc).
         AddSeparator(crop);
         if (clip.IsFile)
         {
@@ -596,7 +587,7 @@ public partial class MainWindow
         return menu;
     }
 
-    /// <summary>A number typed in a menu: taken on Enter or when the box is left, as one step of Undo; the menu stays open for the next.</summary>
+    /// <summary>Inline numeric menu field: commits on Enter or focus loss as one Undo step; the menu stays open.</summary>
     private void AddNumberRow(ItemsControl menu, string label, Func<double> read, Action<double> write, string step)
     {
         static string Shown(double value) => value.ToString("0.##", CultureInfo.InvariantCulture);
@@ -634,7 +625,7 @@ public partial class MainWindow
         menu.Items.Add(new MenuItem { Header = line, StaysOpenOnClick = true });
     }
 
-    /// <summary>Apply Game Preset: every saved preset, put on this clip alone (or the clips selected with it), each with Cutouts of its own over its own span.</summary>
+    /// <summary>Apply Game Preset submenu: applies to this clip (or the multi-selection), each clip getting its own Cutouts over its span.</summary>
     private MenuItem GamePresetMenu(Layer clip)
     {
         _viewModel.RefreshStylePresets();
@@ -652,7 +643,7 @@ public partial class MainWindow
         return menu;
     }
 
-    /// <summary>Saving a Game Preset and moving one to or from a .hpstyle file (5.4C: on the menus since the Timeline's "..." went).</summary>
+    /// <summary>Save Game Preset, and import/export .hpstyle files.</summary>
     private MenuItem ManageGamePresetsItem()
     {
         var item = new MenuItem
@@ -665,8 +656,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A track's Game Preset (5.2A, a Track Preset Node): every saved preset, the track's own ticked, then Clear Track Preset. Flat (the
-    /// header badge's list), or as a Set Track Preset submenu and the clear beside it (the track's right-click menu). Each one step of Undo.
+    /// Track Preset items: every saved preset (current one ticked) then Clear Track Preset; flat for the header badge, or as a Set Track
+    /// Preset submenu plus Clear in the context menu. Each is one Undo step.
     /// </summary>
     private void AddTrackPresetItems(ItemsControl menu, Layer layer, bool flat)
     {
@@ -704,14 +695,14 @@ public partial class MainWindow
             tip: "This track gives no Game Preset to what comes onto it; its clips keep the presets they have.");
     }
 
-    /// <summary>A clip's effects in the Effects pane: it is selected, and the pane shown.</summary>
+    /// <summary>Selects the clip and shows the Effects pane.</summary>
     private void ShowInEffectsPane(Layer clip)
     {
         SelectForMenu(clip);
         _viewModel.ShowEffectsPane = true;
     }
 
-    /// <summary>The blur fill's settings row, pinned in the Effects pane, is where it is set (5.1-DogfoodPolish: no dialog of its own).</summary>
+    /// <summary>Selects the blur fill row so its settings show in the Effects pane (no separate dialog).</summary>
     private void ShowBlurFillSettings()
     {
         SelectClip(_viewModel.BackgroundLayer);
@@ -719,8 +710,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// What a menu does to clips selected together (5.0): how many there are, Delete and Ripple Delete, Mute (or Unmute) of
-    /// their sound, each one step of Undo. Paste Effects onto all of them is the Effects pane's (MainViewModel.PasteEffectsToClips).
+    /// Multi-selection items: count header, Delete, Ripple Delete, Mute/Unmute audio (each one Undo step). Paste Effects for all lives
+    /// in the Effects pane (MainViewModel.PasteEffectsToClips).
     /// </summary>
     private void AddGroupItems(ItemsControl menu)
     {
@@ -746,7 +737,7 @@ public partial class MainWindow
             tip: "Lets go of the others: only the clip right-clicked stays selected.");
     }
 
-    /// <summary>Delete Clip on a clip's menu: the clip, or (one of clips selected together, 5.0) all of them.</summary>
+    /// <summary>Delete Clip: the clip, or the whole multi-selection when it is a member.</summary>
     private void DeleteMenuClip(Layer clip)
     {
         if (GroupHolds && _viewModel.IsInClipGroup(clip))
@@ -760,8 +751,8 @@ public partial class MainWindow
 
 
     /// <summary>
-    /// Adds an item to a track's menu: what it does (a drag still held let go first; a fault in it a status line, never an
-    /// exception that ends the app: 4.4 BugHunt), then the timeline drawn again. A shortcut shows the key bound to its action.
+    /// Adds a menu item whose action cancels any active drag, runs guarded (faults become a status line), then rebuilds the timeline.
+    /// Shows the bound shortcut when one exists.
     /// </summary>
     private MenuItem AddTrackItem(ItemsControl menu, string header, Action action, bool enabled = true, string? tip = null, string? gesture = null)
     {
@@ -780,14 +771,14 @@ public partial class MainWindow
         return item;
     }
 
-    /// <summary>A line between groups of a menu's items: never first, never two together.</summary>
+    /// <summary>Adds a separator between groups (never leading, never doubled).</summary>
     private static void AddSeparator(ItemsControl menu)
     {
         if (menu.Items.Count > 0 && menu.Items[^1] is not Separator)
             menu.Items.Add(new Separator());
     }
 
-    /// <summary>Takes out the lines a menu's groups left at its ends or two together, from the first item that was added.</summary>
+    /// <summary>Removes leading, trailing and doubled separators from the added range onward.</summary>
     private static void TidySeparators(ItemsControl menu, int first)
     {
         var items = menu.Items;
@@ -799,8 +790,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Makes the block a menu acts on the selection, for the tools that work on what is selected (a right-click selects its
-    /// block already: this keeps the menu right when it was opened another way).
+    /// Selects the menu's target block for selection-based tools (right-click already selects; this covers keyboard-opened menus).
     /// </summary>
     private void SelectForMenu(object clip)
     {
@@ -808,7 +798,7 @@ public partial class MainWindow
             SelectClip(clip);
     }
 
-    // The same, but a clip of the clips selected together keeps them selected (the clipboard's items work on all of them, 5.2A).
+    // Same, but a multi-selection member keeps the group selected (clipboard items act on all).
     private void SelectWithGroup(Layer clip)
     {
         if (!(GroupHolds && _viewModel.IsInClipGroup(clip)))
@@ -816,10 +806,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Add Effect on a track's menu (5.0-Release, the user's Q1): every effect the clip can take (Layer.CanTake), by category,
-    /// each put on it with its visible starting values (MainViewModel.AddEffect, as the Effects pane's Add Effect does), the
-    /// clip then selected so that the Effects pane shows its new effect; the preview follows the edit as any other. Null when the
-    /// clip takes none.
+    /// Add Effect submenu: every applicable effect (Layer.CanTake) by category, added with visible defaults via MainViewModel.AddEffect
+    /// (as the Effects pane does), then the clip is selected so the pane shows it. Null when none apply.
     /// </summary>
     private MenuItem? AddEffectMenu(Layer target)
     {
@@ -838,7 +826,7 @@ public partial class MainWindow
                 SelectClip(target);
                 ScheduleClipRedraw();
 
-                // A mask card needs its mask: the editor opens, as Add Effect in the Effects pane opens it.
+                // Mask effects open the mask editor, as in the Effects pane.
                 if (definition.Type == Models.Effects.EffectRegistry.Mask && !target.CustomMask)
                     OpenLayerTool(target, LayerTool.Mask);
             });
@@ -849,8 +837,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Toggle A/V Link for a clip with a picture and a sound (a video file's): linked, its sound moves and
-    /// trims with its picture; unlinked, on its own (a slip, J and L cuts). As the U key does, on the clip the menu is about.
+    /// Toggle A/V Link for a video-with-audio clip (same as U): linked audio moves and trims with the video; unlinked moves independently
+    /// (slips, J/L cuts).
     /// </summary>
     private void AddLinkItem(ItemsControl menu, Layer clip, bool linked) =>
         AddTrackItem(menu, "Toggle A/V Link", () =>
@@ -862,11 +850,11 @@ public partial class MainWindow
             : "Its sound moves on its own now. Linked again, it moves and trims with its picture.");
 
     /// <summary>
-    /// Unlink from Parent, when the clip's track is in another track's mini-stack (a Game Preset's HUD Cutout under its video's)
-    /// or the clip lies over a parent clip: edits of the parent stop carrying it along. A track leaves with its clips.
+    /// Unlink from Parent, when the track is nested in another's mini-stack (e.g. a HUD Cutout under its video) or the clip overlaps a
+    /// parent clip: parent edits stop carrying it. Un-nesting a track takes its clips.
     /// </summary>
-    /// <param name="clip">The clip the menu is about (an empty track's stand-in for an empty track).</param>
-    /// <param name="row">The view standing for the clip's track: its first clip's, or the empty track's stand-in.</param>
+    /// <param name="clip">Menu target clip (an empty track's stand-in for empty tracks).</param>
+    /// <param name="row">View representing the track: its first clip's, or the empty-track stand-in.</param>
     private void AddUnlinkItem(ItemsControl menu, Layer clip, Layer row)
     {
         var parentRow = _viewModel.ParentRowOf(clip);
@@ -879,10 +867,10 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The Captions submenu of a sound's menu, filled as the caption row's is (FillCaptionMenu), with Use for Auto-Captions
-    /// after Generate Auto-Captions... when the sound can be chosen as what the captions listen to.
+    /// Captions submenu for an audio item, filled like the caption row's (FillCaptionMenu), plus Use for Auto-Captions after Generate
+    /// Auto-Captions... when the item can be the caption source.
     /// </summary>
-    // <param name="target">The sound (a clip with sound), or null for what is set (the sound listened to: ListenedSound).</param>
+    /// <param name="target">The audible clip, or null for the current caption source (ListenedSound).</param>
     private void AddCaptionsSubmenu(ItemsControl menu, object? target, Action? useFor)
     {
         var captions = new MenuItem { Header = "Captions" };
@@ -903,7 +891,7 @@ public partial class MainWindow
 
     private static readonly double[] GainSteps = [12, 6, 3, 0, -3, -6, -12];
 
-    /// <summary>A sound's Gain submenu: a few usual amounts, the one it has ticked. Anything between is typed into its Gain box.</summary>
+    /// <summary>Gain submenu: common values with the current one ticked; other values via the Gain box.</summary>
     private MenuItem GainMenu(double gainDb, Action<double> setGain)
     {
         var gain = new MenuItem { Header = string.Create(CultureInfo.InvariantCulture, $"Gain ({gainDb:+0.0;-0.0;0} dB)") };
@@ -928,12 +916,12 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// The audio filters dialog of a sound (a track of sound clips or of a video with sound),
-    /// as its Filters button opens it: TrackFilters_Click reads what it is for from its sender's DataContext.
+    /// Opens the audio filters dialog for an audio or audible video track, like its Filters button (TrackFilters_Click reads the target
+    /// from the sender's DataContext).
     /// </summary>
     private void OpenAudioFilters(object sound) => TrackFilters_Click(new FrameworkElement { DataContext = sound }, new RoutedEventArgs());
 
-    /// <summary>A rename that takes its one step of Undo at its first keystroke, as a marker's does.</summary>
+    /// <summary>Inline rename that opens one Undo step at the first keystroke (like marker renames).</summary>
     private Action<string> RenameWithUndo(string name, Action<string> rename)
     {
         var started = false;
@@ -949,7 +937,7 @@ public partial class MainWindow
         };
     }
 
-    /// <summary>The two ducking boxes of a sound's right-click menu: turned down under a voice, or the voice itself.</summary>
+    /// <summary>Ducking checkboxes: duck under voice, or mark as the voice.</summary>
     private void AddDuckingItems(ItemsControl menu, object sound, bool ducks, bool isVoice)
     {
         foreach (var (header, isOn, voice, tip) in new[]
@@ -965,8 +953,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Remove Dead Air on a video with no sound to listen to (4.3E): shown on its menu like every video track's, greyed out, with
-    /// where to run it instead (the video it was cut from, whose cuts reach every unlocked track, its Cutouts among them).
+    /// Disabled Remove Dead Air for silent video, with a hint to run it on the source video instead (whose cuts reach every unlocked track,
+    /// Cutouts included).
     /// </summary>
     private static MenuItem DeadAirWithoutSound(Layer layer)
     {
@@ -980,7 +968,7 @@ public partial class MainWindow
         return item;
     }
 
-    /// <summary>A clip's Fade In and Fade Out, each a submenu of what its fade's handle menu offers (see FadeMenuItems).</summary>
+    /// <summary>Fade In and Fade Out submenus with the fade-handle menu items (FadeMenuItems).</summary>
     private void AddFadeSubmenus(ItemsControl menu, object clip)
     {
         var (fadeIn, fadeOut) = (FadeMenuItems(clip, fadeIn: true), FadeMenuItems(clip, fadeIn: false));
@@ -999,9 +987,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// What a fade's menu offers, for a clip: its transition styles (the one it has ticked;
-    /// a sound has none), a fade of the default length (Settings) or none, and, where a clip on another track is on
-    /// across that end of the clip, a crossfade with it over their overlap.
+    /// Fade menu items: transition styles (current ticked; none for audio), default-length fade (Settings) or none, and a crossfade over
+    /// the overlap with any clip on another track spanning that end.
     /// </summary>
     private List<object> FadeMenuItems(object? clip, bool fadeIn)
     {
@@ -1042,7 +1029,7 @@ public partial class MainWindow
             IsEnabled = false,
         });
 
-        // A sound fades in and out; only a picture has a style to come on or go in.
+        // Audio fades have no style; only video transitions do.
         if (layer is not { IsAudio: true })
         {
             foreach (var each in TransitionStyles.All)
@@ -1074,9 +1061,9 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A transition style's drawn picture for its menu item (4.2B-3, <see cref="TransitionStyles.IconGeometry"/>), stroked
-    /// and filled in the item's own text colour, so it turns with the words when the item is highlighted. The colour is bound to
-    /// the item itself: a FindAncestor binding is tried while the icon is not yet in the item's tree, fails, and is never tried again.
+    /// Transition style icon (<see cref="TransitionStyles.IconGeometry"/>) stroked and filled with the item's Foreground so it follows
+    /// highlight. Bound directly to the item: a FindAncestor binding would resolve before the icon joins the item's tree, fail, and never
+    /// retry.
     /// </summary>
     private static System.Windows.Shapes.Path TransitionIcon(TransitionStyle style, MenuItem item)
     {
@@ -1096,8 +1083,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Puts a box for a name in a menu (at the top, or at <paramref name="at"/>): a sound's (the title a track of the video
-    /// is saved under, or what a clip is called) or a marker's. Each keystroke renames; Enter or Escape closes the menu.
+    /// Inserts an inline name box into a menu (top, or at <paramref name="at"/>) for audio (output track title or clip name) or a marker.
+    /// Each keystroke renames; Enter or Escape closes the menu.
     /// </summary>
     private static void AddRenameItem(ItemsControl menu, string name, Action<string> rename, int at = 0)
     {
@@ -1122,10 +1109,10 @@ public partial class MainWindow
             menu.Items.Insert(at + 1, new Separator());
     }
 
-    /// <summary>The shape a clip alone is cut to: its mask dialog, with the Cutout Studio's pen behind Draw Custom Shape.</summary>
+    /// <summary>Opens a clip's mask dialog (Draw Custom Shape uses the Cutout Studio pen).</summary>
     private void OpenMaskTool(Layer clip) => OpenLayerTool(clip, LayerTool.Mask);
 
-    /// <summary>Opens one of a track's modifier dialogs. What it changes can be undone as one step.</summary>
+    /// <summary>Opens a track modifier dialog; its changes undo as one step.</summary>
     private void OpenLayerTool(Layer layer, LayerTool tool)
     {
         _viewModel.Checkpoint(tool == LayerTool.Filters ? $"change the filters of {layer.Name}" : $"change the mask of {layer.Name}");

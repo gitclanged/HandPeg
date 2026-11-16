@@ -6,9 +6,8 @@ using HandPegApp.Models;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// One entry of the media browser pane: a drive, a folder, or a media file. A video's tile shows one of its frames,
-/// and, while the pointer moves across it, the frame at that point of the video (from a strip of a few frames,
-/// made once in the background and kept in the browser's cache).
+/// Media browser entry: a drive, folder or media file. A video tile shows a poster frame and, on hover, the frame at the pointer's
+/// horizontal position (from a short frame strip built once in the background and kept in the browser cache).
 /// </summary>
 public sealed partial class MediaBrowserItem : ObservableObject
 {
@@ -21,7 +20,7 @@ public sealed partial class MediaBrowserItem : ObservableObject
     public MediaBrowserKind Kind { get; }
     public string Name { get; }
 
-    /// <summary>The file's size in bytes (0 for a folder), and when it was last changed: what the list can be sorted by.</summary>
+    /// <summary>File size in bytes (0 for folders); with <see cref="Modified"/>, a list sort key.</summary>
     public long Bytes { get; init; }
 
     public DateTime Modified { get; init; }
@@ -29,7 +28,7 @@ public sealed partial class MediaBrowserItem : ObservableObject
     public bool IsFile => Kind is MediaBrowserKind.Video or MediaBrowserKind.Audio or MediaBrowserKind.Image;
     public bool IsVideo => Kind == MediaBrowserKind.Video;
 
-    /// <summary>The icon shown while there is no picture (Segoe MDL2): a drive, a folder, a video, a note, a picture.</summary>
+    /// <summary>Placeholder glyph (Segoe MDL2) shown until a picture loads: drive, folder, audio, photo or video.</summary>
     public string Glyph => Kind switch
     {
         MediaBrowserKind.Drive => Glyphs.HardDrive,
@@ -39,77 +38,77 @@ public sealed partial class MediaBrowserItem : ObservableObject
         _ => Glyphs.Video,
     };
 
-    /// <summary>The second line of the entry: a video's length and size, a file's size, a folder's nothing.</summary>
+    /// <summary>Entry subtitle: duration and size for video, size for other files, empty for folders.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(MetaLine), nameof(DurationText))]
     private string _info = "";
 
-    /// <summary>How long the file plays, in seconds; 0 while not known.</summary>
+    /// <summary>Duration in seconds; 0 while unknown.</summary>
     public double Seconds { get; set; }
 
-    /// <summary>A video's width over its height, which tells its frames apart in a strip; 0 while not known.</summary>
+    /// <summary>Video aspect ratio (width / height), used to slice strip frames; 0 while unknown.</summary>
     public double Shape { get; set; }
 
-    /// <summary>The picture of the entry when the pointer is not over it.</summary>
+    /// <summary>Resting picture of the entry (shown when not hovered).</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Shown))]
     [NotifyPropertyChangedFor(nameof(HasPicture))]
     private ImageSource? _poster;
 
-    /// <summary>The frame shown while the pointer is over the tile: the one at that point of the video.</summary>
+    /// <summary>Hover frame at the pointer's position across the tile.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(Shown))]
     private ImageSource? _hoverFrame;
 
-    /// <summary>What the tile shows: the frame under the pointer, or the poster.</summary>
+    /// <summary>Displayed image: the hover frame when present, else the poster.</summary>
     public ImageSource? Shown => HoverFrame ?? Poster;
 
     public bool HasPicture => Poster is not null;
 
-    /// <summary>How far across the tile the pointer is, 0 to 1, while it is over a video; NaN otherwise.</summary>
+    /// <summary>Pointer position across a hovered video tile (0..1); NaN when not hovering.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsScrubbing))]
     private double _hoverFraction = double.NaN;
 
     public bool IsScrubbing => !double.IsNaN(HoverFraction);
 
-    /// <summary>The moment under the pointer, written out: "0:12 / 0:58".</summary>
+    /// <summary>Hover time label, e.g. "0:12 / 0:58".</summary>
     [ObservableProperty] private string _hoverText = "";
 
-    /// <summary>The strip of frames has been asked for (made or found), so it is not asked for again this listing.</summary>
+    /// <summary>Frame strip already requested (built or found) for this listing; prevents re-requests.</summary>
     public bool PreviewRequested { get; set; }
 
-    /// <summary>Where the strip of frames is on disk, once it has been made; and how many frames it holds.</summary>
+    /// <summary>On-disk frame strip path once built; <see cref="StripFrames"/> holds its frame count.</summary>
     public string? StripPath { get; set; }
 
     public int StripFrames { get; set; }
 
-    // ----- Its details (5.4.0): the List view's columns and the Filmstrip view's second line -----
-    // Read once the entry is in sight in either view (MediaBrowserFrames.DetailsAsync, kept in the browser's cache), never before.
+    // ----- Media details (List view columns, Filmstrip view subtitle) -----
+    // Read lazily once the entry is visible in either view (MediaBrowserFrames.DetailsAsync, cached by the browser).
 
-    /// <summary>The details have been asked for this listing (made or found), so they are not asked for again.</summary>
+    /// <summary>Details already requested for this listing; prevents re-requests.</summary>
     public bool DetailsRequested { get; set; }
 
-    /// <summary>Whether the details are known (read, or found unreadable).</summary>
+    /// <summary>True once details are resolved (read, or found unreadable).</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ResolutionText), nameof(FrameRateText), nameof(DurationText), nameof(CodecText), nameof(AudioText), nameof(MetaLine))]
     private bool _detailsKnown;
 
-    /// <summary>The picture's width and height in pixels; 0 for a sound, or while not known.</summary>
+    /// <summary>Picture width in pixels (with <see cref="VideoHeight"/>); 0 for audio or while unknown.</summary>
     public int VideoWidth { get; private set; }
 
     public int VideoHeight { get; private set; }
 
-    /// <summary>Frames a second; 0 while not known.</summary>
+    /// <summary>Frames per second; 0 while unknown.</summary>
     public double FrameRate { get; private set; }
 
-    /// <summary>The video's codec as FFmpeg names it (h264, hevc, av1...), or a sound's when it has no picture; "" while not known.</summary>
+    /// <summary>FFmpeg codec name (h264, hevc, av1...) of the video, or of the audio when there is no picture; "" while unknown.</summary>
     public string Codec { get; private set; } = "";
 
-    /// <summary>How many sound streams the file has; -1 while not known.</summary>
+    /// <summary>Audio stream count; -1 while unknown.</summary>
     public int AudioStreams { get; private set; } = -1;
 
-    /// <summary>Takes the details read for the file (its length too, when the entry did not have it yet).</summary>
+    /// <summary>Applies read details; also fills duration and aspect ratio when not yet known.</summary>
     public void TakeDetails(double seconds, int width, int height, double frameRate, string codec, int audioStreams)
     {
         (VideoWidth, VideoHeight, FrameRate, Codec, AudioStreams) = (Math.Max(width, 0), Math.Max(height, 0), double.IsFinite(frameRate) ? Math.Max(frameRate, 0) : 0, codec, audioStreams);
@@ -134,22 +133,22 @@ public sealed partial class MediaBrowserItem : ObservableObject
     /// <summary>"HEVC", "H.264"; "" while not known.</summary>
     public string CodecText => FormatCodec(Codec);
 
-    /// <summary>"2" sound streams, "None"; "" while not known.</summary>
+    /// <summary>Audio stream count text ("2", "None"); "" while unknown.</summary>
     public string AudioText => FormatAudio(AudioStreams);
 
-    /// <summary>The file's size: "12.4 MB"; "" for a folder.</summary>
+    /// <summary>File size text, e.g. "12.4 MB"; "" for folders.</summary>
     public string SizeText => IsFile && Bytes > 0 ? FormatSize(Bytes) : "";
 
-    /// <summary>The Filmstrip view's second line: "1920x1080 • 60 fps • 2:03" (what is known of it), else what <see cref="Info"/> says.</summary>
+    /// <summary>Filmstrip subtitle from known parts ("1920x1080 • 60 fps • 2:03"), else <see cref="Info"/>.</summary>
     public string MetaLine => JoinMeta(ResolutionText, FrameRateText, DurationText) is { Length: > 0 } line ? line : Info;
 
-    /// <summary>The parts of a second line that are known, with a bullet between each two.</summary>
+    /// <summary>Joins non-empty parts with " • ".</summary>
     public static string JoinMeta(params string[] parts) => string.Join(" • ", parts.Where(p => p.Length > 0));
 
     public static string FormatResolution(int width, int height) =>
         width > 0 && height > 0 ? string.Create(CultureInfo.InvariantCulture, $"{width}x{height}") : "";
 
-    /// <summary>A rate to two places at most, whole rates without them: "60 fps", "59.94 fps", "23.98 fps".</summary>
+    /// <summary>Frame rate with up to two decimals, integers without: "60 fps", "59.94 fps", "23.98 fps".</summary>
     public static string FormatFrameRate(double fps) =>
         fps > 0 && double.IsFinite(fps)
             ? Math.Abs(fps - Math.Round(fps)) < 0.005
@@ -157,7 +156,7 @@ public sealed partial class MediaBrowserItem : ObservableObject
                 : string.Create(CultureInfo.InvariantCulture, $"{fps:0.##} fps")
             : "";
 
-    /// <summary>A codec as people write it: H.264, HEVC, AV1, VP9, ProRes; any other in capitals.</summary>
+    /// <summary>Display codec name (H.264, HEVC, AV1, VP9, ProRes...); unknown names upper-cased.</summary>
     public static string FormatCodec(string codec) => codec.ToLowerInvariant() switch
     {
         "" => "",
@@ -173,7 +172,7 @@ public sealed partial class MediaBrowserItem : ObservableObject
         var other => other.ToUpperInvariant(),
     };
 
-    /// <summary>How many sound streams: "None", "1", "2"...; "" while not known.</summary>
+    /// <summary>Audio stream count text: "None", "1", "2"...; "" when negative (unknown).</summary>
     public static string FormatAudio(int streams) => streams < 0 ? "" : streams == 0 ? "None" : streams.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>"1:02:03" or "2:03".</summary>

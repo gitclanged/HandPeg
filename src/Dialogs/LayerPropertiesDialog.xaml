@@ -8,10 +8,10 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
     </Window.Resources>
-    <!-- Bound straight to the clip: every change shows in the command at once. -->
+    <!-- Bound directly to the clip; changes update the command immediately. -->
     <StackPanel Margin="16">
         <DockPanel Margin="0,0,0,12">
-            <!-- Toggle Visibility: the eye on the clip's track, here too -->
+            <!-- Toggle Visibility: mirrors the track's eye -->
             <Button DockPanel.Dock="Right" Padding="7,4" Margin="12,0,0,0" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Top"
                     Click="Visibility_Click" AutomationProperties.Name="Toggle Visibility" Visibility="{Binding CanHide, Converter={StaticResource BoolToVisibility}}">
                 <Button.Style>
@@ -31,7 +31,7 @@
                        Text="How the clip sits on the picture. The preview shows the result as you change it." />
         </DockPanel>
 
-        <!-- Shape and transparency: always available -->
+        <!-- Shape and opacity (always available) -->
         <Grid Margin="0,0,0,10">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -55,7 +55,7 @@
             <StackPanel Grid.Row="1" Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"><TextBox Style="{StaticResource ValueBox}" Width="48" Margin="8,0,0,0" Text="{Binding Opacity, StringFormat={}{0:0}}" AutomationProperties.Name="Clip Opacity Value" local:NumericInput.Default="100" local:NumericInput.DragStep="1" local:NumericInput.Decimals="0" local:NumericInput.Minimum="0" local:NumericInput.Maximum="100" /><TextBlock Text="%" VerticalAlignment="Center" Margin="4,0,0,0" Foreground="{DynamicResource MutedTextBrush}" /></StackPanel>
         </Grid>
 
-        <!-- Shaping a picture: not for the caption box, which has only its opacity -->
+        <!-- Picture shaping (hidden for the caption box, which has opacity only) -->
         <StackPanel x:Name="ShapePanel">
         <CheckBox Content="Feather / Blurred Edges" IsChecked="{Binding Feather}"
                   ToolTip="Fades the clip out towards its edges instead of ending in a hard line." />
@@ -123,7 +123,7 @@
 
         </StackPanel>
 
-        <!-- For the clips added by hand: when the clip is on screen -->
+        <!-- Manually added clips: on-screen timing -->
         <StackPanel Orientation="Horizontal" Margin="0,12,0,0" Visibility="{Binding HasTiming, Converter={StaticResource BoolToVisibility}}">
             <TextBlock Text="Appears at (s):" VerticalAlignment="Center" Margin="0,0,8,0" />
             <TextBox Style="{StaticResource ValueBox}" Width="62" Text="{Binding StartTime, StringFormat={}{0:0.00}}" AutomationProperties.Name="Clip Start"
@@ -136,7 +136,7 @@
             <TextBlock Text="0 = to the end" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="{DynamicResource MutedTextBrush}" />
         </StackPanel>
 
-        <!-- For the pictures and videos added by hand: making part of the clip see-through -->
+        <!-- Manually added images/videos: transparency tools (chroma key, mask) -->
         <StackPanel Visibility="{Binding HasMask, Converter={StaticResource BoolToVisibility}}" Margin="0,12,0,0">
             <CheckBox Content="Chroma Key" IsChecked="{Binding ChromaKey}" Visibility="{Binding HasKeying, Converter={StaticResource BoolToVisibility}}"
                       ToolTip="Makes one color of the clip transparent: the green or blue of a screen behind a presenter, or of a game overlay recorded on a plain background." />

@@ -6,15 +6,14 @@ using HandPegApp.Models;
 
 namespace HandPegApp;
 
-// ----- The playback bar's controls -----
-// What the bar shows is chosen in the Views menu's Playback Bar column (PlaybackControls; 5.4.4: the bar's own settings button is retired). Most of its controls are
-// handled here: jumps (start, end, edit points), Play Backwards, the start and stop points, Play Start to Stop,
-// Loop, markers, Export Frame, Safe Margins and Mute. Play, the steps and the I-frame jumps are the transport's own.
+// ----- Playback bar controls -----
+// Visible controls are chosen in the Views menu's Playback Bar column (PlaybackControls). Handled here: jumps (start, end, edit points),
+// Play Backwards, Split, markers, Loop, Export Frame, Safe Margins and Mute. Play, frame steps and I-frame jumps belong to the transport.
 public partial class MainWindow
 {
-    // Play Start to Stop: the stretch being played, in milliseconds, while it is.
+    // Bar wiring, button dispatch, edit-point and loop navigation, frame export, safe margins and transport fitting.
 
-    /// <summary>Lists the bar's options under their headings (the Views menu's Playback Bar column), and keeps the player's mute and the safe margins in step.</summary>
+    /// <summary>Groups the bar options by heading (Views menu Playback Bar column) and keeps player mute and safe margins in sync.</summary>
     private void InitializePlaybackBar()
     {
         var options = CollectionViewSource.GetDefaultView(_viewModel.PlaybackControls.Options);
@@ -79,13 +78,13 @@ public partial class MainWindow
         }
     }
 
-    /// <summary>The stretch of the clip selected on the timeline, in milliseconds (what 4.2.0s selected cut segment was); null for none.</summary>
+    /// <summary>Span of the clip selected on the timeline in milliseconds; null when none.</summary>
     private (double From, double To)? SelectedStretch() =>
         _selectedClip is Layer layer && _viewModel.ClipOf(layer) is { } clip ? (clip.Start * 1000, clip.End * 1000) : null;
 
     /// <summary>
-    /// Moves the playhead to the nearest edit point that way: the start or end of a clip (every track's alike, 5.2-AuditB),
-    /// or of the sequence.
+    /// Moves the playhead to the nearest edit point in the given direction: any clip start or end on any track, or the
+    /// sequence bounds (20 ms dead zone around the playhead).
     /// </summary>
     private void GoToEditPoint(bool forward)
     {
@@ -104,7 +103,7 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// While playing: Loop goes back to the start of the selected clip. True when the position was dealt with.
+    /// During playback with Loop on, wraps to the selected clip's start within 15 ms of its end. Returns true when it seeked.
     /// </summary>
     private bool KeepPlaybackInRange(long timeMs)
     {
@@ -118,8 +117,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Where Loop takes playback back from and to now, in seconds (the selected clip, else the sequence's
-    /// end to its start): the engine makes the cuts there ready before the wrap. NaN to: Loop off.
+    /// Current Loop wrap (From, To) in seconds: the selected clip's end to start, else sequence end (+Infinity) to 0, so the engine
+    /// pre-rolls the cuts before the wrap. Both NaN when Loop is off.
     /// </summary>
     private (double From, double To) LoopWrap()
     {
@@ -128,7 +127,7 @@ public partial class MainWindow
         return SelectedStretch() is { } stretch ? (stretch.To / 1000.0, stretch.From / 1000.0) : (double.PositiveInfinity, 0);
     }
 
-    /// <summary>Playback reached the end of what is open: with Loop on, it starts again from the beginning.</summary>
+    /// <summary>End of playback: with Loop on, restarts from the selected clip's start (or 0).</summary>
     private void OnPlaybackEnded()
     {
         if (!_viewModel.LoopPlayback || _gpu is null)
@@ -139,7 +138,7 @@ public partial class MainWindow
         PlayerSetPause(false);
     }
 
-    /// <summary>Saves the frame on screen, as the player shows it (as the layout makes it), as a PNG in the output's folder.</summary>
+    /// <summary>Saves the displayed composite frame as a PNG in the output folder (Pictures as fallback), with a unique name.</summary>
     private void ExportFrame()
     {
         if (_gpu is not { } gpu)
@@ -163,9 +162,8 @@ public partial class MainWindow
     private void SafeMarginsCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => PlaceSafeMargins();
 
     /// <summary>
-    /// Outlines the action-safe (90%) and title-safe (80%) areas of the picture as the player shows it: the output
-    /// frame, or while Interactive Crop or a Draw Target shows a clip's own file that file's picture, fitted into the player
-    /// as the engine fits it.
+    /// Positions action-safe (90%) and title-safe (80%) outlines over the displayed picture: the output frame, or the source
+    /// picture while Interactive Crop or a Draw Target is shown, letterboxed as the engine fits it.
     /// </summary>
     private void PlaceSafeMargins()
     {
@@ -189,18 +187,16 @@ public partial class MainWindow
         }
     }
 
-    // ----- Room for the controls -----
+    // ----- Transport width fitting -----
 
     /// <summary>
-    /// The controls in the middle of the bar get the room its two ends do not need: the left end needs only its Views
-    /// button (its menu holds the panes, the timeline's I-frame checkboxes and what the bar shows), the right end all of its controls. What the
-    /// middle has no room for is left out of it and listed in its "more" menu (see OverflowStrip); nothing is ever wrapped
-    /// onto a second line.
-    /// Asked by the row each time it is measured, with the width it is offered (see PlaybackRow).
+    /// Gives the centre controls the width left by both ends: the left end needs only its Views button (panes, I-frame options,
+    /// bar contents), the right end all its controls. Centre controls that do not fit overflow into its "more" menu (OverflowStrip);
+    /// nothing wraps. Called by PlaybackRow on every measure with the offered width.
     /// </summary>
     private void FitTransport(double width)
     {
-        // (The right end's pills open over the middle's buttons and never move them: a click off an open pill closes it, 5.4.4.)
+        // Right-end pills expand over the centre buttons without reflowing them; clicking outside an open pill closes it.
         TransportRight.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var right = Math.Ceiling(TransportRight.DesiredSize.Width);
         TransportRow.ColumnDefinitions[2].MinWidth = right;
@@ -210,13 +206,12 @@ public partial class MainWindow
 }
 
 /// <summary>
-/// The playback bar's row: each time it is measured it first has its middle fitted (<see cref="Fitting"/>) to the width
-/// it is offered. Not to its own width: a row too wide for its pane is laid out at its own width and cut, so its own
-/// width never shrank, and the middle, sized from it, never gave way (the bar's right end was cut off in a narrow pane).
+/// Playback bar row that fits its centre (<see cref="Fitting"/>) to the offered measure width before measuring. Using its own
+/// ActualWidth instead would never shrink (an over-wide row is clipped at its own width), so the right end got cut off in narrow panes.
 /// </summary>
 public sealed class PlaybackRow : Grid
 {
-    /// <summary>Told the width offered to the row, before it measures its parts.</summary>
+    /// <summary>Receives the offered row width before children are measured.</summary>
     public Action<double>? Fitting { get; set; }
 
     protected override Size MeasureOverride(Size constraint)

@@ -7,21 +7,20 @@ using HandPegApp.Services;
 namespace HandPegApp;
 
 /// <summary>
-/// The Lightning Dial's settings (Settings > Keybinds &amp; Lightning Dial, 4.4): its eight slices (5.1-Polish), each an action
-/// run with one flick or a category (a name and the seven actions of its slices, clockwise from the slice the pointer comes
-/// in by), chosen by the slice's first box. Edits a copy of the dial; the settings keep it when they are saved
-/// (<see cref="KeybindManager.ForSettings"/>). Above them, the dial's top level drawn as it opens (4.4-BugHunt): the one
-/// ring of its slices, following the names and actions as they are chosen.
+/// Lightning Dial editor (Settings > Keybinds &amp; Lightning Dial): eight slices, each either a single-flick action or a category (a
+/// name plus seven actions, clockwise from the entry slice), selected by the slice's first combo box. Edits a copy of the dial,
+/// persisted when settings are saved (<see cref="KeybindManager.ForSettings"/>). A live preview of the dial's top-level ring sits
+/// above and updates as names and actions change.
 /// </summary>
 public sealed class DialConfiguratorControl : StackPanel
 {
-    /// <summary>An action a slice can hold, as the pickers list it ("" is an empty slice).</summary>
+    /// <summary>Picker entry for a slice action ("" = empty slice).</summary>
     public sealed record ActionChoice(string Id, string Label);
 
     private readonly List<DialCategoryState> _dial;
     private DialPicture? _picture;
 
-    // Every action but the held navigation keys (held keys, not things to run), by category.
+    // All actions except continuous (held) navigation keys, labelled by category.
     private static readonly IReadOnlyList<ActionChoice> Choices =
     [
         new("", "(Empty)"),
@@ -37,10 +36,10 @@ public sealed class DialConfiguratorControl : StackPanel
         Build();
     }
 
-    /// <summary>The dial as it is now edited (eight slices: actions, or categories of seven slots).</summary>
+    /// <summary>Dial being edited (eight slices: single actions or seven-slot categories).</summary>
     public IReadOnlyList<DialCategoryState> Dial => _dial;
 
-    // What a slice's first box offers: its own action, or a category (the choices' first, "Category...").
+    // Sentinel id for the slice kind box's first entry, "Category..." (the rest are single actions).
     private const string CategoryChoice = "\u0001category";
 
     private static readonly IReadOnlyList<ActionChoice> SliceChoices = [new(CategoryChoice, "Category (a ring of 7 actions)..."), .. Choices];
@@ -61,7 +60,7 @@ public sealed class DialConfiguratorControl : StackPanel
             var number = new TextBlock { Text = $"{index + 1}.", Width = 20, VerticalAlignment = VerticalAlignment.Center };
             number.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
 
-            // The slice's own action (run with one flick), or a category of its own (5.1-Polish, the user's directive).
+            // Slice kind: a single-flick action, or a category.
             var kind = new ComboBox
             {
                 ItemsSource = SliceChoices,
@@ -87,7 +86,7 @@ public sealed class DialConfiguratorControl : StackPanel
                     _dial[sliceAt] = chosen.Length > 0 ? KeybindManager.Leaf(chosen) : new DialCategoryState { Actions = [.. Enumerable.Repeat("", KeybindManager.DialSlots)] };
                 }
 
-                // The rest of the slice's row changes with it: made again after this choice is done.
+                // The row layout depends on the kind: rebuild after the selection completes.
                 Dispatcher.BeginInvoke(Build);
             };
 
@@ -153,9 +152,8 @@ public sealed class DialConfiguratorControl : StackPanel
     }
 
     /// <summary>
-    /// The dial's top level as it opens, drawn by the dial's own ring (<see cref="LightningDialOverlay.DrawRing"/>): each
-    /// slice's glyph and name (its action's, or its category's), clockwise from the top. Nothing to click: it shows what the
-    /// boxes below make.
+    /// Non-interactive preview of the dial's top level, drawn with the dial's own ring renderer
+    /// (<see cref="LightningDialOverlay.DrawRing"/>): each slice's glyph and action or category name, clockwise from the top.
     /// </summary>
     private sealed class DialPicture : FrameworkElement
     {
@@ -175,7 +173,7 @@ public sealed class DialConfiguratorControl : StackPanel
             AutomationProperties.SetName(this, "Lightning Dial picture");
         }
 
-        /// <summary>A category's name changed: drawn again (its texts are made as it is drawn).</summary>
+        /// <summary>Redraws after a name or action change (labels are built during render).</summary>
         public void Relabel() => InvalidateVisual();
 
         private Brush Themed(string key, Color fallback)

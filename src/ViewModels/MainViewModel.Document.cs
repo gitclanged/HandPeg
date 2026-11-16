@@ -5,29 +5,21 @@ using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.ViewModels;
 
-// ----- The timeline is a TimelineDocument (4.3C) -----
-// The view model's timeline is one document: its tracks bottom first, the clips on them (5.2-AuditB: every video is a clip
-// of its own file on any track, the file last opened as well, and no track is privileged), its markers and the Sequence
-// Output's effects. Nothing else says where a clip is. Every change to where clips are, how long they last and what of
-// their files they play, to their fades, crossfades, gain, speed, switches and tracks is an edit of the document made in
-// one transaction (Edit), which Undo keeps one step of and after which the rows are brought into line (OnDocumentCommitted).
+// ----- Timeline document and clip views -----
+// The timeline is one TimelineDocument (tracks bottom-first, clips, markers, Sequence Output effects) and the single source of
+// clip placement. Every timing/structure change is one transaction via Edit: one undo step, then OnDocumentCommitted syncs views.
 //
-// What the window works on is a Layer for each clip, its view: the Layers tab's rows and blocks, the Canvas's boxes, the
-// Effects and Keyframes panes all use it as they used a 4.2.0 layer, and a row is a track, its first clip standing for it.
-// A view's timing and switches are its clip's, written into it by SyncViews and nowhere else; a change made to them any
-// other way (a box bound to one) is taken as a request and made an edit of the clip (TakeClipField). A view's look (its
-// place, size, filters, keyframes, effects, name) goes the other way: it is changed on the view, which is then the newer of
-// the two, and written into its clip as a new LayerState (FlushLooks; a look is never changed in place) before anything
-// reads the document: an edit, an undo step, a graph, a save. A track's clips share their look as in 4.2.0 (OnLayerChanged
-// copies it along the track), so every clip's own State holds all of it and no track carries a TrackLook.
+// Each clip has a Layer view used by the rows, Canvas, Effects and Keyframes panes. Timing and switches flow document -> view
+// (SyncViews only); a direct view write is treated as a request and becomes a clip edit (TakeClipField). Looks flow view ->
+// document: FlushLooks writes a new immutable LayerState before any edit, undo, render or save reads the document.
+// Looks are per clip; legacy shared track looks are folded once (TimelineDocument.FoldTrackLooks).
 public partial class MainViewModel
 {
-    /// <summary>The timeline: every track and clip, its markers, the Sequence Output's effects. See the section above.</summary>
+    /// <summary>The timeline document: tracks, clips, markers and Sequence Output effects.</summary>
     public TimelineDocument Document { get; private set; } = new() { PoolsPlacedFiles = true };
 
-    // Each clip's view, by the clip's id; the look a view last took from its clip (taken again only when the clip has
-    // another one: an edit moved its keys, or an undo step put an older one back); each track's number as its views carry
-    // it in Layer.TrackId (given once, never reused in a session), and the stand-in view of a track with no clips.
+    // Views by clip id; the LayerState each view last loaded (reloaded only when the clip's state object changes); per-track
+    // Layer.TrackId numbers (never reused within a session); stand-in views for empty tracks.
     private readonly Dictionary<Guid, Layer> _views = [];
     private readonly Dictionary<Guid, LayerState> _taken = [];
     private readonly Dictionary<Guid, int> _trackNumbers = [];
@@ -38,26 +30,22 @@ public partial class MainViewModel
     // Views whose look is newer than their clip's.
     private readonly HashSet<Layer> _staleLooks = new(ReferenceEqualityComparer.Instance);
 
-    // How deep the views are being written from the document (SyncViews, a clip's values shown again, a look put on the main
-    // video): what they are told then is the document's, not a request. A depth (4.4-BugHunt), so that a sync inside another
-    // (an edit a handler commits while the views are written) cannot end the outer one early.
+    // Nesting depth of document -> view writes (SyncViews, clip value refresh); view changes during it are echoes, not requests.
+    // A counter so a nested sync (a handler committing mid-sync) cannot end the outer one early.
     private int _syncDepth;
 
-    /// <summary>
-    /// Whether the views are being written from the document. Set true as a sync starts and false as it ends (in a finally),
-    /// which goes one deeper and one back out: true while any sync is under way.
-    /// </summary>
+    /// <summary>True while any document -> view sync is running; setters increment/decrement the depth (callers use finally).</summary>
     private bool _syncingViews
     {
         get => _syncDepth > 0;
         set => _syncDepth = Math.Max(_syncDepth + (value ? 1 : -1), 0);
     }
 
-    // The edit under way (Edit), and what the timeline was before it, for its undo step.
+    // The open edit transaction (Edit) and its pre-edit snapshot for the undo step.
     private ITimelineTransaction? _openEdit;
     private TimelineSnapshot? _beforeEdit;
 
-    /// <summary>When the last undo step was taken by hand (Checkpoint), so a box's change right after it makes no second one.</summary>
+    /// <summary>Time of the last manual Checkpoint, so a box change immediately after it does not take a second step.</summary>
     private long _checkpointedAt;
 
     /// <summary>A timeline with nothing on it, of the frame and rate the settings give now.</summary>
@@ -71,17 +59,15 @@ public partial class MainViewModel
     };
 
     /// <summary>
-    /// Makes a document the timeline (a new project, an undo step, a project opened): its views are made afresh (the
-    /// selection following its clip into its new view), its markers and the Sequence Output's effects are taken into the
-    /// panes that edit them. No undo step of its own. A restore (4.4.0): nothing it sets going takes a step or makes an
-    /// edit, and the captions are projected once, as the outermost restore ends (<see cref="EndRestore"/>).
+    /// Installs a document (new project, undo/redo, open): rebuilds views (selection follows its clip), loads markers and
+    /// Sequence Output effects into their panes. Runs as a restore: no undo step or edit; captions project once at the
+    /// outermost <see cref="EndRestore"/>.
     /// </summary>
     internal void InstallDocument(TimelineDocument document) => PutDocumentInPlace(document, kept: null);
 
     /// <summary>
-    /// <see cref="InstallDocument"/>, with the views a project tab kept as it went behind (5.4.0, <see cref="KeptViews"/>):
-    /// taken up again for its own Sequence, and brought into line with it (only what changed is written into them), instead of every view
-    /// made anew. Null, or views kept for another Sequence, makes them anew as any document put in place.
+    /// <see cref="InstallDocument"/> reusing a backgrounded tab's <see cref="KeptViews"/>: re-synced incrementally instead of rebuilt.
+    /// Null, or views kept for another Sequence, rebuilds them.
     /// </summary>
     private void PutDocumentInPlace(TimelineDocument document, KeptViews? kept)
     {
@@ -89,7 +75,7 @@ public partial class MainViewModel
         _turnBeforePreset = null;
         Document.Committed -= OnDocumentCommitted;
 
-        // Project Media takes in the file of every clip placed on the timeline (5.4C), whichever document it is.
+        // Project Media registers every clip's source file of the installed document.
         document.PoolsPlacedFiles = true;
         document.FoldTrackLooks();
         Document = document;
@@ -118,30 +104,30 @@ public partial class MainViewModel
             GenerateCommand();
         }
 
-        // The captions follow the clips that play their source (4.4): projected once the anchors put back are in place too.
+        // Captions track their source clips: project them after the restored anchors are in place.
         _reprojectPending = true;
     }
 
     // ----- Finding a clip's view, a view's clip, a row's track -----
 
-    /// <summary>The clip a view is the view of; null for one that is none (a stand-in: the caption box, the background, an empty track).</summary>
+    /// <summary>The clip behind a view; null for stand-ins (caption box, background, empty track).</summary>
     public TimelineClip? ClipOf(Layer? view) => view is { ClipId: var id } && id != Guid.Empty ? Document.FindClip(id) : null;
 
     /// <summary>
-    /// Whether a layer's picture is drawn at a moment: never a clip hidden, on a hidden track (a view says only its own switch), or
-    /// see-through there. What is not drawn cannot be clicked or dragged, in the player or on the Canvas.
+    /// Whether a layer renders at a time: not hidden itself, not on a hidden track, not fully transparent. Undrawn layers are
+    /// not hit-testable in the player or Canvas.
     /// </summary>
     public bool IsPictureDrawn(Layer layer, double seconds)
     {
         if (layer.IsHidden || (ClipOf(layer) is { } clip && (clip.IsHidden || Document.TrackOf(clip) is { IsHidden: true })))
             return false;
 
-        // Opacity is in percent: 0.1 is one thousandth of the picture.
+        // Opacity is a percentage: 0.1 means 0.1 %.
         return layer.Evaluate(KeyProperty.Opacity, seconds - layer.StartTime) > 0.1;
     }
 
-    /// <summary>The track a row stands for: its clip's, or the empty track's; null for the stand-ins.</summary>
-    /// <summary>Gives a track's row a height of its own on the Timeline, or the one Track Height again with null (one step of Undo; saved with the project).</summary>
+    /// <summary>The row's track (its clip's, or the empty track); null for stand-ins.</summary>
+    /// <summary>Sets a per-track row height, or null for the global Track Height. One undo step; saved with the project.</summary>
     public void SetTrackHeight(TimelineTrackModel track, double? height) =>
         Edit(height is null ? $"reset the height of {track.DisplayName}" : $"resize {track.DisplayName}", edit => edit.SetTrackHeight(track, height));
 
@@ -163,7 +149,7 @@ public partial class MainViewModel
         return number;
     }
 
-    /// <summary>Where a new picture track goes to be on top of the pictures: after the last track that is not a sound's.</summary>
+    /// <summary>Insertion index for a new top picture track: after the last non-audio track.</summary>
     private int TopPictureIndex()
     {
         var index = Document.Tracks.FindLastIndex(t => t.Kind is not (TimelineTrackKind.Audio or TimelineTrackKind.Subtitle));
@@ -171,8 +157,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether every clip with sound has it linked to its picture (the Layers tab's one switch for them all); as the switch
-    /// is while no clip has sound (it is then what the next one is given).
+    /// Whether every clip with audio has it linked to its picture (the Layers tab's global switch); with no audio clips, the
+    /// switch value applied to the next one.
     /// </summary>
     private bool AllAudioLinked()
     {
@@ -183,16 +169,13 @@ public partial class MainViewModel
     // ----- Edits -----
 
     /// <summary>
-    /// Makes one change to the timeline, as one transaction: the change is made through <paramref name="change"/>'s
-    /// transaction, a track it leaves with no clips goes (a row lasts as long as it has clips, as in 4.2.0; an empty track
-    /// made as one stays), and on commit Undo keeps a step of it (named <paramref name="label"/>) and the rows follow
-    /// (<see cref="OnDocumentCommitted"/>). A change the timeline refuses (<see cref="TimelineEditException"/>) changes
-    /// nothing and says why in the status bar; returns false then. One made inside another folds into it. Since 4.4.0
-    /// no exception escapes it: a fault in the change (never the user's doing) is rolled back with it, written down and said,
-    /// and returns false; and none is made while a document is being put in place (an undo step, a project opened).
+    /// Runs <paramref name="change"/> as one transaction: tracks it empties are removed (explicitly created empty tracks stay),
+    /// and on commit an undo step named <paramref name="label"/> is taken and views sync (<see cref="OnDocumentCommitted"/>).
+    /// A <see cref="TimelineEditException"/> rolls back and posts the reason. Nested calls fold into the outer transaction.
+    /// No exception escapes: faults roll back, are logged and return false. Refused during a document restore.
     /// </summary>
-    /// <param name="undoable">False for what is not the user's doing (a file's length learned after it was dropped): no undo step.</param>
-    /// <param name="removeEmptied">False to keep a track the change leaves with no clips (an empty track given back).</param>
+    /// <param name="undoable">False for derived changes (a probed length after a drop): no undo step.</param>
+    /// <param name="removeEmptied">False to keep tracks the change empties.</param>
     internal bool Edit(string label, Action<ITimelineTransaction> change, bool undoable = true, bool removeEmptied = true)
     {
         if (_openEdit is { } open)
@@ -201,8 +184,7 @@ public partial class MainViewModel
             return true;
         }
 
-        // What asks for an edit while a document is being put in place is the restore itself, or something it set going: an
-        // edit would land in the middle of it (and on a document about to be another).
+        // Edits requested during a restore come from the restore itself and would land on a document about to be replaced.
         if (_restoring > 0)
         {
             AppLog.Write($"Edit \"{label}\" refused while a step was being put back");
@@ -251,18 +233,16 @@ public partial class MainViewModel
         }
     }
 
-    // Whether the edit under way has been committed (OnDocumentCommitted ran): a fault after that is not one that changed nothing.
+    // Set once OnDocumentCommitted ran: a later fault must not be reported as a no-op rollback.
     private bool _editCommitted;
 
     /// <summary>
-    /// A change committed: an undo step of what was before it, the views brought into line, the graphs built again. Raised
-    /// inside the transaction's Commit, so nothing escapes it (4.4-BugHunt): a fault in bringing the views into line is
-    /// written down and the views are made afresh from the document; the edit keeps its undo step all the same.
+    /// Commit handler: pushes the undo step, syncs views and rebuilds the render state. Runs inside Commit, so nothing may
+    /// escape: a view-sync fault is logged and views are rebuilt from the document; the undo step is kept.
     /// </summary>
     private void OnDocumentCommitted(TimelineCommit commit)
     {
-        // The edit is over: what is done from here on (an edit a handler makes) is an edit of its own. Undo waits until its
-        // step is taken (_committing), or the step would land on the history after the one Undo moved.
+        // From here, handler edits are separate edits. Undo waits on _committing so this step is pushed before history moves.
         var before = _beforeEdit;
         (_openEdit, _beforeEdit) = (null, null);
         _editCommitted = true;
@@ -303,7 +283,7 @@ public partial class MainViewModel
             _committing--;
         }
 
-        // The captions follow the clips that play their source (4.4).
+        // Captions track their source clips.
         try
         {
             ReprojectCaptions();
@@ -314,13 +294,12 @@ public partial class MainViewModel
         }
     }
 
-    // How many commits are bringing the views into line and taking their steps (OnDocumentCommitted): Undo waits for them.
+    // Commits currently in OnDocumentCommitted (view sync + undo push); Undo waits until zero.
     private int _committing;
 
     /// <summary>
-    /// The views made afresh from the document after they could not be brought into line: as a document put in place is
-    /// (the selection following its clip, the window told once by <see cref="TimelineRestored"/>). A fault in that too is
-    /// written down: the document is what renders and is saved, whatever its views show.
+    /// Rebuilds all views from the document after an incremental sync failed (selection follows its clip; one
+    /// <see cref="TimelineRestored"/>). Faults here are logged only: the document, not the views, renders and saves.
     /// </summary>
     private void RecoverViews()
     {
@@ -348,14 +327,11 @@ public partial class MainViewModel
     // ----- The views -----
 
     /// <summary>
-    /// Brings <see cref="Layers"/> into line with the document: a view for each clip, in stacking order (the pictures
-    /// track by track from the bottom, then the sounds), each track's clips in time, a stand-in for a track with no clips;
-    /// views of clips that are gone release. A view keeps being the same object for as long as its clip is there, so what
-    /// holds it (a selection, a pane) keeps it; <paramref name="afresh"/> makes every view anew (a document put in place).
-    /// <para>The list is replaced in one change (<see cref="ViewList.ReplaceAll"/>: one Reset, nothing when the order is unchanged), never one
-    /// insert or move per view: an edit that adds hundreds of clips (Remove Dead Air) or deletes an early one (every later view moving up)
-    /// tells the seven listeners (rows, Canvas, player boxes, Effects pane, command, media browser) once. Every caller refreshes the rows
-    /// itself afterwards, so the rows' own listener skips the Reset (<see cref="ViewList.Syncing"/>).</para>
+    /// Syncs <see cref="Layers"/> to the document: one view per clip in stacking order (picture tracks bottom-up, then audio;
+    /// clips in time), stand-ins for empty tracks; removed clips' views are released. View identity is stable per clip so
+    /// selections and panes keep their references; <paramref name="afresh"/> rebuilds all views.
+    /// <para>Applied as one <see cref="ViewList.ReplaceAll"/> (a single Reset, none if order is unchanged) so bulk edits notify each
+    /// listener once. Callers refresh rows themselves, so the rows' listener skips that Reset (<see cref="ViewList.Syncing"/>).</para>
     /// </summary>
     private void SyncViews(bool afresh = false)
     {
@@ -423,19 +399,19 @@ public partial class MainViewModel
             DrawTargetLayer = null;
         RefreshAnyKeys();
 
-        // The Crop boxes show the clip they stand for as the document has it now (an undo step puts back its crop, 4.4).
+        // Refresh the Crop boxes from the document (undo may have restored CropTarget's crop).
         ShowCropTarget();
     }
 
-    /// <summary>A clip's view: the one it has, its look taken again when the clip has another; or a new one made from its look.</summary>
+    /// <summary>Returns the clip's existing view (reloading its look if the state changed) or creates one from its look.</summary>
     private Layer ViewFor(TimelineClip clip, TimelineTrackModel track)
     {
         if (_views.TryGetValue(clip.Id, out var view))
         {
             if (!ReferenceEquals(_taken.GetValueOrDefault(clip.Id), clip.State))
             {
-                // Its keys moved by an edit (a trim of its start, a split, a speed), or an older look put back, or a place
-                // given to it (4.4: its place, crop and blur fill are its own, so an edit or an undo step can change them).
+                // New state object: keys shifted by an edit (start trim, split, speed), an undo restore, or a new placement,
+                // crop or blur fill.
                 view.ApplyLook(clip.State);
                 view.ApplySource(clip.State);
                 view.ApplyPlace(clip.State);
@@ -452,22 +428,19 @@ public partial class MainViewModel
             _views[clip.Id] = view;
             _taken[clip.Id] = clip.State;
 
-            // A clip made from another (a split's second half): kept in place by the middle that one was kept by, while its
-            // corner, width and crop are that one's, so a frame of another shape keeps the two one look.
+            // Derived clip (split's second half): inherit the source's reshape anchor so both halves stay identical on reshape.
             if (_placedFor.FirstOrDefault(p => p.Value.Wrote == (view.SizeWidth, view.PositionX, view.PositionY) && CropOf(p.Key) == CropOf(view)
                     && p.Key.ImagePath == view.ImagePath) is { Key: not null } same)
             {
                 _placedFor[view] = same.Value;
             }
 
-            // A video whose file was still being looked at when this clip was kept (an undo step, a save taken during a
-            // drop): looked at again, its length and sound filled in, its place kept (4.2.0's SetLayers did the same).
+            // Clip captured mid-probe (undo step or save during a drop): re-probe to fill length and audio, keeping placement.
             if (view is { IsVideoFile: true } && (view.ImageWidth <= 0 || clip.SourceDuration <= 0) && !_isBackgroundWorker)
             {
                 view.IsLoading = true;
 
-                // One just dropped as its tab went behind (5.4D-TabPerf review, P2): finished as the drop would have finished it, to its
-                // file's length and fitted to the frame, not kept at its stand-in length and box.
+                // Dropped just before its tab was backgrounded: finish as the drop would (file length, fitted), not at stand-in size.
                 if (_addsToResume is { } resumed && resumed.TryGetValue(clip.Id, out var add))
                     _ = FinishVideoAddAsync(view, add);
                 else
@@ -483,7 +456,7 @@ public partial class MainViewModel
         return view;
     }
 
-    /// <summary>A clip's look as a layer is made from: its State, with the kind and the file the clip itself says.</summary>
+    /// <summary>The LayerState a view is built from, with kind and file taken from the clip.</summary>
     private static LayerState LookOf(TimelineClip clip)
     {
         var look = clip.State.ShallowCopy();
@@ -494,8 +467,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Writes a clip's own values (its timing, fades, switches, gain, slip, proxy, track) into its view. A picture is hidden by
-    /// its track's switch (and its parents'), which its views show as their own.
+    /// Writes clip-owned fields (timing, fades, switches, gain, slip, proxy, track) into the view; track and parent hide
+    /// switches are folded into the view's own.
     /// </summary>
     private void TakeClip(Layer view, TimelineClip clip, TimelineTrackModel track)
     {
@@ -510,7 +483,7 @@ public partial class MainViewModel
             view.MediaDuration = clip.SourceDuration;
     }
 
-    /// <summary>The stand-in row of a track with no clips (+ Add Layer's): it takes the first clip dropped onto it.</summary>
+    /// <summary>Stand-in row for an empty track; replaced by the first clip dropped on it.</summary>
     private Layer EmptyTrackView(TimelineTrackModel track, int trackNumber)
     {
         if (!_emptyTrackViews.TryGetValue(track.Id, out var view))
@@ -530,8 +503,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A view taken into use: its changes are listened to (and, 4.4, a change of its look by the user takes an undo step just
-    /// before it is made, OnViewChanging), and from now on it grows about its middle.
+    /// Attaches a view: subscribes to its changes (OnViewChanging takes an undo step before a user look change) and enables
+    /// centre-anchored resizing.
     /// </summary>
     private void Hook(Layer view)
     {
@@ -552,26 +525,21 @@ public partial class MainViewModel
             DrawTargetLayer = null;
     }
 
-    // ----- A project tab's views kept with it (Pass 5.4D-TabPerf) -----
-    // A tab kept live in memory (MainViewModel.Tabs.cs) keeps the views of its clips too: they are its own, of its own Sequence, and a
-    // Sequence that did not change while it was behind needs none made anew as it comes back (a view made is its look read, its pictures
-    // asked for, its handlers hooked; all of it again for every clip). While the tab is behind its views are in no map or list of the view
-    // model and listened to by nothing, so nothing done in another tab reaches them, nor through them a clip of any tab (a duplicate's clips
-    // have the same ids). Coming back, they are brought into line with the Sequence as after an edit: by their clips' ids, a look taken
-    // again only where the clip has another.
+    // ----- Per-tab kept views -----
+    // A live background tab (MainViewModel.Tabs.cs) keeps its clip views so activation skips rebuilding them (look load, picture
+    // requests, handler hookup per clip). While backgrounded they are in no VM map and unsubscribed, so other tabs cannot reach
+    // them (duplicate tabs share clip ids). On activation they re-sync by clip id like after an edit.
 
     /// <summary>
-    /// The views of a project tab put behind (Pass 5.4D-TabPerf): of which Sequence, each clip's view and the look it last took, each empty
-    /// track's stand-in, and how each picture was last kept about its middle (<see cref="KeepPlacesOnReshape"/>).
+    /// A backgrounded tab's views: owning Sequence, clip views with their last LayerState, empty-track stand-ins, and reshape
+    /// anchors (<see cref="KeepPlacesOnReshape"/>).
     /// </summary>
     internal sealed record KeptViews(TimelineDocument Document, Dictionary<Guid, Layer> Views, Dictionary<Guid, LayerState> Taken,
         Dictionary<Guid, Layer> EmptyTrackViews, Dictionary<Layer, PicturePlacement> PlacedFor);
 
     /// <summary>
-    /// The views of the project held now taken out of the view model as its tab goes behind (Pass 5.4D-TabPerf, DetachForTab, once the
-    /// looks are written into the clips: CaptureState): kept with the tab, no longer listened to, and in no map of the view model, so
-    /// nothing done before the next tab is in place (its settings reshaping the frame: KeepPlacesOnReshape) moves them. The views list
-    /// is emptied after (DetachForTab), with the Sequence.
+    /// Detaches the current views for a backgrounding tab (after CaptureState flushed looks): unsubscribed and removed from VM
+    /// maps so the next tab's setup (KeepPlacesOnReshape) cannot move them. DetachForTab clears the list afterwards.
     /// </summary>
     internal KeptViews LetGoOfViews()
     {
@@ -583,11 +551,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A tab's kept views taken up again for its own Sequence as it comes back (<see cref="PutDocumentInPlace"/>), in place of whatever
-    /// views the view model held (let go of as a document made afresh lets go of them). A view whose clip was still being looked at as the
-    /// tab went behind is not: what looked at it was the old tab's and fills in nothing now, so its view is made anew and its file looked at
-    /// again, as an open makes it. Its pictures are not asked for again: what was asked for is drawn for the view itself (its waveform and
-    /// strip land on it, in front or behind), as for any view an edit keeps.
+    /// Re-attaches a tab's kept views on activation (<see cref="PutDocumentInPlace"/>), releasing the current ones. Views captured
+    /// mid-probe are rebuilt and re-probed (the old probe is orphaned). Pictures are not re-requested: pending strips and
+    /// waveforms target the view itself whether its tab is active or not.
     /// </summary>
     private void TakeUpViews(KeptViews kept)
     {
@@ -615,7 +581,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Every map of the views emptied (the views themselves let go of by the caller).</summary>
+    /// <summary>Clears every view map; the caller releases the views.</summary>
     private void ForgetViews()
     {
         _views.Clear();
@@ -626,16 +592,13 @@ public partial class MainViewModel
         _cropShown = null;
     }
 
-    /// <summary>
-    /// The views list (<see cref="Layers"/>), which can also be filled anew in one change (Pass 5.4D-TabPerf: a document put in place, whose
-    /// views are all new to it, is told once, not once for each view put in and once for each taken out).
-    /// </summary>
+    /// <summary>The <see cref="Layers"/> collection, with a bulk replace that raises a single Reset instead of per-item events.</summary>
     public sealed class ViewList : System.Collections.ObjectModel.ObservableCollection<Layer>
     {
-        /// <summary>True while a view sync raises its Reset: the sync's caller refreshes the rows itself right after it.</summary>
+        /// <summary>True while a sync raises its Reset; the caller refreshes the rows immediately after.</summary>
         internal bool Syncing { get; private set; }
 
-        /// <summary>The list made <paramref name="views"/>, in that order, told as one Reset (nothing told when it is that already).</summary>
+        /// <summary>Replaces the contents with <paramref name="views"/> in order as one Reset; no event if already equal.</summary>
         internal void ReplaceAll(IReadOnlyList<Layer> views, bool syncing = false)
         {
             if (Items.Count == views.Count && Items.SequenceEqual(views, ReferenceEqualityComparer.Instance))
@@ -660,8 +623,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A new clip for a view made for it (a file dropped, a layer added): its timing from <paramref name="start"/> to
-    /// <paramref name="end"/>, the rest from the view. The view is taken as the clip's own (<see cref="Adopt"/>) once it is placed.
+    /// Creates a clip for a new view (drop, add layer) spanning <paramref name="start"/>..<paramref name="end"/>, other fields
+    /// from the view; the view is bound to it on placement (<see cref="Adopt"/>).
     /// </summary>
     private TimelineClip NewClipFor(Layer view, double start, double end) => new()
     {
@@ -687,7 +650,7 @@ public partial class MainViewModel
         State = view.ToState(),
     };
 
-    /// <summary>Makes a view the view of a clip about to be placed, so the rows keep that very view (and its pictures) for it.</summary>
+    /// <summary>Pre-binds a view to a clip about to be placed so the sync reuses that instance (and its pictures).</summary>
     private void Adopt(Layer view, TimelineClip clip)
     {
         view.ClipId = clip.Id;
@@ -696,7 +659,7 @@ public partial class MainViewModel
         Hook(view);
     }
 
-    /// <summary>Lets go of a view whose clip was refused.</summary>
+    /// <summary>Releases a view whose clip placement was refused.</summary>
     private void Unadopt(Layer view)
     {
         if (view.ClipId != Guid.Empty && Document.FindClip(view.ClipId) is null)
@@ -709,9 +672,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Puts a new clip of a view onto the timeline, by the row it was dropped on: an empty track takes it; a track it
-    /// joins (<paramref name="joins"/>) takes it where it is free; otherwise it gets a track of its own just above that row
-    /// (Track 1's included), and with no row, a track on top of the pictures (a sound's at the end).
+    /// Places a new view's clip by drop row: fills an empty track, joins a track when <paramref name="joins"/> and free, else a
+    /// new track just above the row; with no row, a new top picture track (audio at the end).
     /// </summary>
     private TimelineClip PlaceNew(ITimelineTransaction edit, Layer view, double start, double end, Layer? onRow, bool joins)
     {
@@ -726,14 +688,14 @@ public partial class MainViewModel
             {
                 try
                 {
-                    // An empty track filled by a file still being looked at is given back, empty, if it is not a video after all.
+                    // Remember an empty track filled by a probing clip so it is restored empty if the file is not a video.
                     if (row.Clips.Count == 0 && view.IsLoading)
                         _filledEmptyTracks.Add(row.Id);
                     return edit.PlaceClip(row, clip, allowCrossfadeOverlap: false);
                 }
                 catch (TimelineEditException) when (row.Clips.Count > 0)
                 {
-                    // No room there: a track of its own, just above.
+                    // No room: create a new track just above.
                 }
             }
 
@@ -751,8 +713,8 @@ public partial class MainViewModel
     // ----- Looks: from the views into the clips -----
 
     /// <summary>
-    /// Writes every view whose look is newer than its clip's into the clip, as a new LayerState, and the markers and the
-    /// Sequence Output's effects into the document: before an edit, an undo step, a graph or a save reads it.
+    /// Flushes dirty view looks into their clips as new LayerStates, plus markers and Sequence Output effects, before an edit,
+    /// undo step, render or save reads the document.
     /// </summary>
     private void FlushLooks()
     {
@@ -774,10 +736,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A view was changed. Its clip's own values (<see cref="LayerFields.Clip"/>) come from the document, so a change to one of them made
-    /// outside <see cref="SyncViews"/> (a box bound to the view) is a request, made an edit of the clip; the view's own values
-    /// (<see cref="LayerFields.View"/>) are nobody else's, and an alias's change is counted as the change of the value it sets; anything
-    /// else is its look, newer now than its clip's. Returns whether it was one of the clip's own values.
+    /// Classifies a view change: <see cref="LayerFields.Clip"/> fields changed outside <see cref="SyncViews"/> become clip edits;
+    /// <see cref="LayerFields.View"/> fields are view-local; aliases count as the field they set; anything else marks the look dirty.
+    /// Returns true for clip-owned fields.
     /// </summary>
     private bool NoteViewChange(Layer view, string? name)
     {
@@ -795,8 +756,7 @@ public partial class MainViewModel
 
         if (_openEdit is null && ClipOf(view) is { } clip)
         {
-            // While a step is being put back, and its bindings settle on the new views, a clip's value set on its view is
-            // their echo (a box re-rounding what it shows), never the user's request (4.4-BugHunt): the view shows its clip's.
+            // During undo/redo and the binding settle, clip-field writes are binding echoes (a box re-rounding), not requests.
             if (IsRestoringTimeline)
                 ShowClipAgain(view, clip);
             else
@@ -806,14 +766,14 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>The Sequence's markers cleared through the document's transaction (no undo step); nothing done when it has none.</summary>
+    /// <summary>Clears the Sequence markers via a document transaction (no undo step); no-op when empty.</summary>
     private void ClearDocumentMarkers()
     {
         if (Document.Markers.Count > 0)
             Edit("clear the markers", edit => edit.SetMarkers([]), undoable: false);
     }
 
-    /// <summary>A view shows its clip's own values again, as the document has them: nothing is edited.</summary>
+    /// <summary>Reloads clip-owned values into a view from the document; no edit.</summary>
     private void ShowClipAgain(Layer view, TimelineClip clip)
     {
         if (Document.TrackOf(clip) is not { } track)
@@ -831,9 +791,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether a box's change of a clip's value takes an undo step of its own: not when it is set right after a step taken by
-    /// hand, nor when it is the same value of the same clip again within a second and a half (a box dragged sets one on every
-    /// move of the mouse: one step for the drag).
+    /// Whether a box's clip-field change takes its own undo step: not right after a manual Checkpoint, nor for the same field
+    /// of the same clip within 1.5 s (a dragged box writes on every mouse move).
     /// </summary>
     private bool TakesUndoStep(Layer view, string name)
     {
@@ -842,10 +801,10 @@ public partial class MainViewModel
         return now - _checkpointedAt > HandStepGrace && !again;
     }
 
-    /// <summary>One of a clip's own values set on its view: the clip is edited to it (within what the timeline allows), and the view shows what came of it.</summary>
+    /// <summary>Turns a clip-field write on a view into a clip edit (clamped by timeline rules); the view then shows the result.</summary>
     private void TakeClipField(Layer view, TimelineClip clip, string name)
     {
-        // Never while a step is being put back or settles (4.4-BugHunt): no edit, no step, the redo history kept.
+        // Ignored during undo/redo and its settle: no edit, no step, redo history preserved.
         if (IsRestoringTimeline)
         {
             ShowClipAgain(view, clip);
@@ -891,7 +850,7 @@ public partial class MainViewModel
             }
         }, undoable);
 
-        // What the timeline made of it (held to its limits, or refused): the view shows the clip as it is.
+        // Show the clip's resulting values (clamped, or unchanged if refused).
         if (Document.FindClip(clip.Id) is not null)
             ShowClipAgain(view, clip);
     }
@@ -899,10 +858,8 @@ public partial class MainViewModel
     // ----- The document as the graph builder is given it -----
 
     /// <summary>
-    /// The timeline for one state of the graph builder: a copy of the document (its own tracks and clips, the looks shared,
-    /// since none is ever changed in place), the looks written in first, at the frame the graph is built for. On the copy
-    /// only: a clip whose file is still being looked at is left out (it has no size yet), and a sound whose file is missing
-    /// is silenced (4.2.0 left it out). The builder keeps what it lowers by the copy, which nothing changes afterwards.
+    /// Render snapshot: a copy of the document (own tracks/clips, shared immutable looks) after FlushLooks, at the target frame.
+    /// The copy omits clips still probing (no size) and mutes audio with missing files. The builder caches by this immutable copy.
     /// </summary>
     private TimelineDocument TimelineForBuilder(int frameWidth, int frameHeight)
     {
@@ -922,18 +879,16 @@ public partial class MainViewModel
         return copy;
     }
 
-    // ----- The Sequence's clips of files (5.2-AuditB) -----
-    // No clip is privileged: there is no main video and no primary chain. What the timeline draws along it (the playback bar's
-    // edit points, snapping, chapters at cuts, the I-frames) is every clip that plays a file's picture (SequenceSpans), each
-    // of its own file; the Sequence's natural size is its own (TimelineDocument.NaturalWidth/Height), given as the first
-    // file's picture lands on it. The file last opened (LocalMediaPath) is a clip like any dropped one once it is placed.
+    // ----- Sequence file clips -----
+    // No clip is privileged (no main video). Edit points, snapping, chapters at cuts and I-frames come from every picture clip
+    // (SequenceSpans). Natural size is TimelineDocument.NaturalWidth/Height, set by the first file; LocalMediaPath is an ordinary clip.
 
     /// <summary>Length of the sequence in seconds: to where its last clip ends (its sound included).</summary>
     public double SequenceSeconds => Document.TotalDuration;
 
     /// <summary>
-    /// Every shown top-level clip that plays a file's picture, by where it starts (SequenceSpans.PictureSpans): what the
-    /// playback bar's edit points, snapping, chapters at cuts, cut fractions and the I-frames along the timeline are made of.
+    /// Visible top-level picture clips by start (SequenceSpans.PictureSpans): source for edit points, snapping, chapters,
+    /// cut fractions and timeline I-frames.
     /// </summary>
     public IReadOnlyList<ClipSpan> PictureSpans() => SequenceSpans.PictureSpans(Document);
 
@@ -941,38 +896,34 @@ public partial class MainViewModel
     private string OpenedFile => LocalMediaPath.Trim().Trim('"');
 
     /// <summary>
-    /// Whether the file last opened is the whole Sequence (one clip of it from its start to its end, untouched,
-    /// SequenceSpans.WholeFiles): then what is its own (soft subtitles, an anchored subtitle import) goes with the Sequence.
+    /// Whether the last opened file is the entire Sequence untouched (SequenceSpans.WholeFiles), so its soft subtitles and
+    /// anchored subtitle imports apply to the Sequence.
     /// </summary>
     private bool IsOpenedFileWhole => OpenedFile.Length > 0 && SequenceSpans.WholeFiles(Document).Contains(OpenedFile);
 
-    /// <summary>The view of the top-level clip of the file last opened that ends last (what files opened with it follow, in line); null while none is on the timeline.</summary>
+    /// <summary>The last-ending top-level clip of the last opened file (files opened with it append after it); null when absent.</summary>
     public Layer? OpenedFileView => Document.Tracks.SelectMany(t => t.Clips)
         .Where(c => c is { ParentClipId: null, ContentKind: LayerKind.VideoFile or LayerKind.Audio } && SameFile(c.SourcePath, OpenedFile))
         .OrderBy(c => c.End).Select(ViewOf).LastOrDefault(v => v is not null);
 
-    // A Game Preset or a preset's place, look and Cutouts chosen while no clip could take it (4.3D): the next file opened takes it.
+    // A Game Preset (or preset placement/look/Cutouts) chosen with no target clip; applied to the next file opened.
     private ClipTemplate? _templateToCome;
 
-    // The file opened before one whose length is not known yet (a recording never finished): its clips are replaced once the
-    // new file's I-frames say how long it is (SetSourceIFrames). Null while nothing waits.
+    // Previous file whose clips await replacement until the new file's length is known from its I-frames (unfinished
+    // recordings; SetSourceIFrames). Null when nothing is pending.
     private string? _openedOver;
 
-    // The clip the file opened last was placed as (its automatic preset goes on it); null when it placed none.
+    // Clip placed for the last opened file (receives its automatic preset); null when none.
     private Guid? _openedClip;
 
     /// <summary>
-    /// Puts a clip of the file just opened on the timeline, made as a dropped file is (5.2.0: no clip is privileged):
-    /// a video-file clip of the whole file (a sound clip for a file with no picture), fitted to the frame as Settings say, its
-    /// blur fill on unless the Blur Fill row's switch is off, its audio streams on Sub-Lanes of their own (UnpackStreams). On an
-    /// empty Sequence it goes on Track 1 at 0. Another file opened over clips of the one opened before takes their place: they
-    /// go, it lies at the start of the first one's track with its look, place and crop (fitted to the frame when that leaves it
-    /// taller than the frame), and what hung from them hangs from it (a Cutout cut from their picture cut from its picture, on
-    /// its clock; their own streams' sound goes with them). On a Sequence holding nothing else it gives the Sequence its rate
-    /// and natural size. What ran to the end of the timeline (a picture, words, an adjustment) runs to its end (4.3.0). A Game
-    /// Preset chosen before any clip (<see cref="_templateToCome"/>) goes on it. No undo step: opening a file is not an edit.
+    /// Places the opened file like a drop: a whole-file clip (audio-only without video), fitted per Settings, blur fill per the
+    /// Blur Fill row, audio streams on their own Sub-Lanes (UnpackStreams); Track 1 at 0 on an empty Sequence.
+    /// Replaces the previous file's clips in place (inheriting look, placement and crop; Cutouts re-parented, their stream audio
+    /// dropped). On an otherwise empty Sequence it sets frame rate and natural size; run-to-end clips are extended and a pending
+    /// <see cref="_templateToCome"/> applied. No undo step.
     /// </summary>
-    /// <param name="previous">The file opened before this one ("" for none): its clips are the ones replaced.</param>
+    /// <param name="previous">The previously opened file ("" for none) whose clips are replaced.</param>
     internal void PlaceOpenedFile(string previous)
     {
         var path = OpenedFile;
@@ -988,15 +939,14 @@ public partial class MainViewModel
         var old = before.Length == 0 ? [] : Document.Tracks.Where(t => !t.IsLocked).SelectMany(t => t.Clips
             .Where(c => c is { ParentClipId: null, ContentKind: LayerKind.VideoFile or LayerKind.Audio } && SameFile(c.SourcePath, before))
             .Select(c => (Track: t, Clip: c))).ToList();
-        // Empty but for the clips this file takes the place of and what hangs from them: it is as the first file opened.
+        // Empty except for the replaced clips and their children: treat as the first file opened.
         var oldIds = old.Select(o => o.Clip.Id).ToHashSet();
         var empty = !Document.Tracks.Any(t => t.Clips.Exists(c => !oldIds.Contains(c.Id) && !(c.ParentClipId is { } parent && oldIds.Contains(parent))));
         var picture = info.Video is { Width: > 0, Height: > 0 };
         var kind = picture ? LayerKind.VideoFile : LayerKind.Audio;
 
-        // The Sequence ticks at the first file's own rate (as 4.2.0's canvas did), and takes its shape (as the Crop boxes cut
-        // it, a preset's chosen before any video): outside any transaction, as a project's document-level values are.
-        // 5.4A: what the New Project studio chose on purpose (ExplicitFrame, ExplicitFrameRate) stays; the colour space follows.
+        // Sequence takes the first file's frame rate and cropped shape, set outside any transaction like other document-level
+        // values. Explicit New Project choices (ExplicitFrame, ExplicitFrameRate) are kept; the colour space follows the file.
         if (empty)
         {
             var rate = Document.ExplicitFrameRate ? Document.FrameRate : Models.Timeline.FrameRate.OfSource(SourceFrameRate);
@@ -1010,7 +960,7 @@ public partial class MainViewModel
             NoteDocumentShape();
         }
 
-        // Its look: the replaced clip's (without the keys, which were its timing's), at its place; or a new clip's, fitted.
+        // Look: the replaced clip's (minus its timing-bound keyframes) at its placement, else a new fitted look.
         var name = System.IO.Path.GetFileName(path);
         var replaced = old.Count > 0 ? ViewOf(old[0].Clip) : null;
         Layer view;
@@ -1049,9 +999,8 @@ public partial class MainViewModel
                     (view.CropLeft, view.CropTop, view.CropRight, view.CropBottom) = BoxCrop();
                 FitToFrame(view, AppSettings.Current.NewClipsFill);
 
-                // Its blur fill only where it leaves part of the frame bare (5.4A, the user's standing rule: a 16:9 clip in a 9:16
-                // Sequence, never one that fills the frame), and only as the Sequence's first picture: a file opened onto clips is
-                // a further layer. A Game Preset chosen before it still turns its own blur on (PutTemplateOn, below).
+                // Auto blur fill only when the clip leaves the frame partly bare (16:9 in 9:16) and is the Sequence's first
+                // picture. A pending Game Preset may still enable its own blur (PutTemplateOn, below).
                 view.BlurFill = !_backgroundRow.IsHidden && empty && LeavesFrameUncovered(view) ? true : null;
             }
         }
@@ -1068,7 +1017,7 @@ public partial class MainViewModel
                 .Where(c => c.ContentKind is LayerKind.Image or LayerKind.Text or LayerKind.Adjustment && Math.Abs(c.End - oldEnd) < 0.0005)
                 .ToList();
 
-            // The old clips go, but not what hangs from them (a Game Preset's Cutouts): those are given to the new clip below.
+            // Remove the old clips but keep their children (Game Preset Cutouts); they are re-parented to the new clip below.
             var oldEnds = old.ToDictionary(o => o.Clip.Id, o => o.Clip.End);
             var children = Document.Tracks.Where(t => !t.IsLocked)
                 .SelectMany(t => t.Clips.Where(c => c.ParentClipId is { } parent && oldEnds.ContainsKey(parent))
@@ -1102,7 +1051,7 @@ public partial class MainViewModel
                 }
                 catch (TimelineEditException)
                 {
-                    // Something after it on its track: it keeps its end.
+                    // A following clip on the track: keep the current end.
                 }
             }
 
@@ -1126,14 +1075,14 @@ public partial class MainViewModel
             PutTemplateOn(made.Id, template, $"put the Game Preset on {name}");
         }
 
-        // Two pictures side by side on one canvas (5.2C): offered, never done unasked.
+        // Side-by-side layout is offered, never applied automatically.
         if (picture)
             OfferSideBySide(view);
     }
 
     /// <summary>
-    /// Whether a picture laid out as it is leaves part of the frame uncovered (5.4A: a 16:9 clip fitted into a 9:16 frame): only then
-    /// is a blur fill worth turning on by itself. A pixel of slack for the frame's even rounding.
+    /// Whether the picture's current layout leaves part of the frame uncovered (e.g. 16:9 fitted into 9:16), the condition for
+    /// auto blur fill. One pixel of slack covers even-size rounding.
     /// </summary>
     private bool LeavesFrameUncovered(Layer view)
     {
@@ -1145,19 +1094,18 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// How long a clip of a whole file lasts as it is placed (5.4A, no trailing black frame): a file with a picture ends where its video
-    /// stream does when the probe says (a container is often longer, its sound padded past the last frame), never past the container;
-    /// otherwise the container's length. The clip's file stays as long as the container, so a trim can still reach what is past it.
-    /// Bounded, it ends on the Sequence's last frame within the picture (a placement rounds to the nearest frame, which could be past it).
+    /// Initial length of a whole-file clip with no trailing black frame: the probed video-stream length (containers often pad
+    /// audio past it), capped at the container length; else the container length. The file length stays the container's so
+    /// trims can reach the tail. Bounded to the last Sequence frame inside the picture (placement rounds to nearest).
     /// </summary>
     private double VideoSeconds(MediaInfo info, double container)
     {
         if (info.Video is not { Width: > 0, Height: > 0, DurationSeconds: > 0.05 } video || video.DurationSeconds >= container)
             return container;
 
-        // A probed length is rounded (to the microsecond, or a Matroska file's millisecond), often a hair short of its last frame's
-        // end: within about 2 ms of a frame boundary counts as reaching it (overshooting by a hair is harmless, the export samples
-        // no later than half a frame before the end, GpuExportTiming.SampleLimitSeconds).
+        // Probed lengths are rounded (microseconds, Matroska milliseconds) and can fall just short of the last frame: within ~2 ms
+        // of a boundary counts as reaching it. Slight overshoot is safe (export samples <= half a frame before the end,
+        // GpuExportTiming.SampleLimitSeconds).
         var rate = Document.FrameRate;
         var fps = rate.IsValid ? (double)rate.Numerator / rate.Denominator : 0;
         var frames = fps > 0 ? Math.Floor(video.DurationSeconds * fps + Math.Max(0.002 * fps, 1e-6)) : 0;
@@ -1165,18 +1113,16 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// What a whole-file clip keeps as its <see cref="TimelineClip.PictureDuration"/> (5.4A): its picture's length as it was placed
-    /// (<see cref="VideoSeconds"/>) where that is shorter than its file's, so the whole-file tests know the untouched clip; else 0.
+    /// <see cref="TimelineClip.PictureDuration"/> for a whole-file clip: <see cref="VideoSeconds"/> when shorter than the file
+    /// (so whole-file checks recognise the untouched clip), else 0.
     /// </summary>
     private static double PictureDurationOf(double pictureEnd, double sourceDuration) =>
         pictureEnd > 0.05 && sourceDuration > 0 && pictureEnd < sourceDuration - 0.0005 ? pictureEnd : 0;
 
     /// <summary>
-    /// A clip that hung from a clip of the file opened before, as the file opened now takes that clip's place: that file's own
-    /// sound goes (the new file's streams are its own Sub-Lanes); a Cutout cut from its picture is cut from the new picture, on
-    /// the new clip's clock, held to the new clip's span (to its end when it ran to the old clip's end; none when nothing of it
-    /// lies over it: a piece of the old file never stays on its own); anything else hangs from the new clip where it lies over
-    /// it, and lets go otherwise.
+    /// Re-parents a child of a replaced clip to the newly opened file's clip: the old file's stream audio is dropped (the new
+    /// file has its own Sub-Lanes); Cutouts are re-sourced to the new picture and clamped to its span (removed if outside it);
+    /// other children re-parent where they overlap the new clip and detach otherwise.
     /// </summary>
     private void Repoint(ITimelineTransaction edit, TimelineTrackModel lane, TimelineClip child, bool ranToEnd, TimelineClip made, Layer view, string before)
     {
@@ -1202,7 +1148,7 @@ public partial class MainViewModel
             return;
         }
 
-        // Made anew (a new id, so its view is made anew with its new file).
+        // Recreate with a new id so its view rebuilds for the new file.
         var piece = CopyOfClip(child);
         (piece.Id, piece.ParentClipId, piece.SourcePath, piece.Start, piece.End) = (Guid.NewGuid(), null, made.SourcePath, start, end);
         (piece.MediaOffset, piece.Speed, piece.SourceDuration, piece.PictureDuration) = (made.MediaOffset + (start - made.Start) * made.Speed, made.Speed, made.SourceDuration, made.PictureDuration);
@@ -1217,8 +1163,7 @@ public partial class MainViewModel
         file.Length > 0 && string.Equals((path ?? "").Trim().Trim('"'), file.Trim().Trim('"'), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Puts a picture at a width (a fraction of the frame's) with its middle at a place (fractions of the frame), at its own
-    /// shape as its crop leaves it, its aspect locked: a template's place, or a replaced clip's.
+    /// Places a picture by width and centre (frame fractions) at its locked, cropped aspect: a template's or replaced clip's placement.
     /// </summary>
     private void PlaceAbout(Layer view, double width, double middleX, double middleY)
     {
@@ -1236,7 +1181,7 @@ public partial class MainViewModel
         });
     }
 
-    /// <summary>A look put on one clip, which keeps its own timing, switches and crop (a preset's crop is put on its own, ApplyPresetCrop).</summary>
+    /// <summary>Applies a look to one clip, preserving its timing, switches and crop (preset crops go through ApplyPresetCrop).</summary>
     private void TakeLook(Layer view, TimelineClip clip, TimelineTrackModel track, LayerState? look)
     {
         _syncingViews = true;
@@ -1257,18 +1202,18 @@ public partial class MainViewModel
         _staleLooks.Add(view);
     }
 
-    // ----- The Sequence's natural size (5.2-AuditB) -----
+    // ----- Sequence natural size -----
 
     // The natural size and whether the document holds any clip, as last told (NoteDocumentShape).
     private (int Width, int Height, bool Filled) _documentShown;
 
     /// <summary>
-    /// Tells what follows the document's natural size (the frame's sides, the other side of a size typed on one) and whether it
-    /// holds any clip (<see cref="HasSource"/>) when either has changed: after an edit, an undo step, a document put in place.
+    /// Raises dependents of the natural size (frame sides, completed size boxes) and <see cref="HasSource"/> when either changed
+    /// after an edit, undo step or document install.
     /// </summary>
     private void NoteDocumentShape()
     {
-        // The master fader follows the Sequence's gain (5.2B): an edit, an undo, a project opened.
+        // Master fader mirrors the Sequence gain after edits, undo and project open.
         NoteMasterGain();
         ApplySequenceRate();
 
@@ -1289,24 +1234,21 @@ public partial class MainViewModel
         OnPropertyChanged(nameof(ShowsCopyNote));
     }
 
-    // ----- Every picture keeps its middle as the frame changes shape (5.2-AuditB) -----
-    // A picture's place is its corner and width as fractions of the frame: a frame of another shape would leave the corner where
-    // it was and move the middle. So every picture is kept about its middle (what the main video's Center controls did for it
-    // alone until 5.2-AuditB): its width stays, and its corner moves to put its middle where it was at its height on the new
-    // frame. The middle it was kept at is used as it is while nothing has moved it since (a frame being typed, a few pixels wide
-    // on the way, loses nothing); otherwise it is worked out for the frame it was placed for.
+    // ----- Centre-preserving reshape -----
+    // Placement is stored as corner + width in frame fractions, so a reshape would drift the centre. On reshape each picture keeps
+    // its width and moves its corner to preserve its centre. The cached centre is reused while unchanged (intermediate sizes
+    // while typing lose nothing); otherwise it is recomputed for the frame it was placed in.
 
-    // Set while pictures are being put in place by what follows from a change (a frame reshaped, a template's place): what that
-    // does to them records no keyframe and takes no undo step.
+    // Set during derived placement (reshape, template placement): records no keyframe and takes no undo step.
     private bool _placingViews;
 
-    // How each picture was last kept: for what frame, its middle there (fractions of the frame), and the corner and width it had.
+    // Per picture: the frame it was last anchored to, its centre there (fractions), and its corner and width.
     internal readonly record struct PicturePlacement((int Width, int Height) Frame, double MiddleX, double MiddleY,
         (double SizeWidth, double PositionX, double PositionY) Wrote);
 
     private readonly Dictionary<Layer, PicturePlacement> _placedFor = new(ReferenceEqualityComparer.Instance);
 
-    /// <summary>Keeps every picture about its middle as the frame changes shape (see the section above); a picture met for the first time was placed for the frame as it is.</summary>
+    /// <summary>Re-anchors every picture about its centre for the new frame shape; unseen pictures are assumed placed for the current frame.</summary>
     private void KeepPlacesOnReshape()
     {
         if (_placingViews || _applyingKeys || FrameWidth <= 0 || FrameHeight <= 0)
@@ -1319,7 +1261,7 @@ public partial class MainViewModel
         _placingViews = true;
         try
         {
-            // (Over a copy: a view's change tells the window, whose handlers may commit an edit, which makes the views again.)
+            // Iterate a copy: view change handlers may commit an edit that rebuilds the views.
             foreach (var view in _views.Values.ToArray())
             {
                 if (!view.HasPlacement || view.IsCaptions || view.IsLoading)
@@ -1357,26 +1299,24 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Where a picture's middle is on a frame of a size, as fractions of it, its height at its width on that frame.</summary>
+    /// <summary>A picture's centre in frame fractions on a frame of the given size, with height derived from width and aspect.</summary>
     private (double X, double Y) MiddleOf(Layer view, (int Width, int Height) frame)
     {
         var (_, _, width, height) = view.GetOutputRect(Math.Max(frame.Width, 2), Math.Max(frame.Height, 2), SourceWidth, SourceHeight);
         return (view.PositionX + width / 2.0 / Math.Max(frame.Width, 2), view.PositionY + height / 2.0 / Math.Max(frame.Height, 2));
     }
 
-    // ----- The clip the Crop boxes stand for (5.2-AuditB) -----
-    // The Crop boxes (CropLeft..CropBottom, percentages of a picture) and Interactive Crop show and set one clip's own crop: the
-    // selected clip of a file's picture, else the lowest shown top-level video clip at the playhead (or the first). A default of
-    // the interface only: nothing renders by it, and with no clip to stand for they hold what they say for the next file opened.
+    // ----- Crop target -----
+    // The Crop boxes (percent) and Interactive Crop edit one clip: the selected picture clip, else the lowest visible top-level
+    // video at the playhead (or the first). UI-only: nothing renders from the boxes; with no target they hold values for the next file.
 
     // The clip the Crop boxes were last taken from, and whether a drag holds them to it.
     private Layer? _cropShown;
     private bool _cropHeld, _watchingCropTarget;
 
     /// <summary>
-    /// The clip the Crop boxes and Interactive Crop show and set: the selected clip of a file's picture, else the lowest shown
-    /// top-level video clip at the playhead (or the first); null while there is none. While a drag is under way, the one they
-    /// were taken from, so the playhead crossing into another clip during playback does not switch it partway through.
+    /// The clip the Crop boxes and Interactive Crop edit (see section); null when none. Pinned during a drag so playback
+    /// crossing into another clip cannot switch it mid-drag.
     /// </summary>
     public Layer? CropTarget =>
         _cropHeld && _cropShown is { ClipId: var heldId } held && heldId != Guid.Empty && _views.TryGetValue(heldId, out var heldView) && ReferenceEquals(heldView, held)
@@ -1386,15 +1326,14 @@ public partial class MainViewModel
                 : VideoViewAt(PositionMs / 1000) ?? FirstVideoView();
 
     /// <summary>
-    /// The clip whose own picture the player shows while a rectangle is drawn on it (Interactive Crop or a Draw Target: GpuPreviewEngine.ShowSource):
-    /// a region being marked (Draw Target) its video's, else a selected clip's or the one a crop drag holds; otherwise empty, for the
-    /// bottom video at each moment (the clip the Crop boxes stand for then, so the view follows the playhead from clip to clip).
+    /// Clip whose raw source the player shows during Interactive Crop or Draw Target (GpuPreviewEngine.ShowSource): the Draw Target
+    /// video, else the selected or drag-pinned clip; empty to follow the bottom video at the playhead.
     /// </summary>
     public Guid ShownSourceClip => DrawTargetLayer is { } piece && ClipOf(piece) is { ParentClipId: { } parent } ? parent
         : _cropHeld || KeyLayer is { IsFile: true } ? CropTarget?.ClipId ?? Guid.Empty
         : Guid.Empty;
 
-    /// <summary>Holds the clip the Crop boxes stand for while a drag is under way (a Canvas box, a gizmo, a slider), or lets it go: they then show the clip they stand for now.</summary>
+    /// <summary>Pins CropTarget during a drag (Canvas box, gizmo, slider) or releases it to resolve normally again.</summary>
     public void HoldCropTarget(bool hold)
     {
         _cropHeld = hold;
@@ -1403,14 +1342,14 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Shows the crop of the clip the Crop boxes stand for (<see cref="CropTarget"/>) in them; nothing is written into any clip.
-    /// After the timeline changed (an edit, an undo step, a project opened) and whenever they come to stand for another clip.
+    /// Loads <see cref="CropTarget"/>'s crop into the boxes without writing any clip; called after timeline changes and when
+    /// the target changes.
     /// </summary>
     private void ShowCropTarget()
     {
         if (!_watchingCropTarget)
         {
-            // The view model's own changes tell when the clip they stand for may be another: the selection's, the playhead's.
+            // Selection and playhead changes may change the target.
             _watchingCropTarget = true;
             PropertyChanged += (_, e) =>
             {
@@ -1438,7 +1377,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The view of the lowest shown top-level video clip on screen at a moment, or null when none is. Looked for at every move of the playhead.</summary>
+    /// <summary>The lowest visible top-level video clip at a time, or null; evaluated on every playhead move.</summary>
     private Layer? VideoViewAt(double seconds)
     {
         foreach (var track in Document.Tracks)
@@ -1474,12 +1413,12 @@ public partial class MainViewModel
         return null;
     }
 
-    // The one clip a preset goes on while it is set, whatever is selected: the clip of a file just opened, for its automatic preset.
+    // Overrides preset targeting while set: the just-opened file's clip receives its automatic preset.
     private Guid? _templateTargetOnly;
 
     /// <summary>
-    /// A preset or Game Preset saved with its blur fill hidden (the Background switch off) takes it from the clips it goes on, as
-    /// it hid the blurred background before 5.2-AuditB; one saved with it shown gives it only with its layout (PutTemplateOn).
+    /// A preset saved with the Background switch off removes blur fill from its targets (legacy behaviour); one saved with it
+    /// on enables blur fill only together with its layout (PutTemplateOn).
     /// </summary>
     private void TakeBlurFill(bool hidden)
     {
@@ -1493,8 +1432,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The video clips a Game Preset's layout or a preset's place and crop go on (5.2-AuditB, the per-clip template
-    /// path): those selected on the Timeline (a selected Cutout's clip), or with none selected every top-level video clip.
+    /// Target video clips for a Game Preset layout or preset placement/crop: the Timeline selection (a selected Cutout maps to
+    /// its clip), else every top-level video clip.
     /// </summary>
     private IReadOnlyList<Layer> TemplateTargets()
     {

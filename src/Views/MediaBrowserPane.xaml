@@ -8,15 +8,15 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <SolidColorBrush x:Key="Shade" Color="#B0000000" />
-        <!-- How wide a tile is wanted (its margins included), set from code for the size chosen; the panel stretches the columns to fill the pane. -->
+        <!-- Requested tile width including margins, set from code per size choice; the panel stretches columns to fill the pane. -->
         <sys:Double x:Key="TileWidth">208</sys:Double>
 
         <!--
-            A tile: the picture (a frame of the video, which follows the pointer across it), the length in a corner,
-            a line along the bottom for where the pointer is, and the name under it.
+            Tile: thumbnail (a video frame that follows horizontal hover), duration badge in a corner, hover-position
+            line along the bottom, and the name below.
         -->
         <DataTemplate x:Key="TileTemplate">
-            <!-- As wide as the panel's column (stretched to fill the pane, 5.3.1); the picture keeps 16:9 at that width. -->
+            <!-- Width of the panel's stretched column; the picture keeps 16:9 at that width. -->
             <StackPanel Margin="3" Background="Transparent">
                 <views:AspectBox>
                 <Grid Background="{DynamicResource InsetBrush}" ClipToBounds="True"
@@ -52,14 +52,14 @@
                     </Rectangle>
                 </Grid>
                 </views:AspectBox>
-                <!-- The path is the name's tooltip, not the picture's: over the picture it would hide the time being scrubbed. -->
+                <!-- Path tooltip sits on the name, not the picture, so it never covers the scrub time readout. -->
                 <TextBlock Text="{Binding Name}" Margin="1,3,1,0" FontSize="11.5" TextTrimming="CharacterEllipsis" ToolTip="{Binding Path}" />
             </StackPanel>
         </DataTemplate>
 
         <!--
-            The List view's columns (5.4C), as wide as the code sets them (a column dropped in a narrow pane is 0): the header and every
-            row share them, so they line up under virtualization with no shared size groups.
+            List view column widths, set from code (0 for columns dropped in a narrow pane); the header and every row share them, so
+            columns align under virtualization without shared size groups.
         -->
         <GridLength x:Key="ColThumb">72</GridLength>
         <GridLength x:Key="ColResolution">84</GridLength>
@@ -69,7 +69,7 @@
         <GridLength x:Key="ColAudio">48</GridLength>
         <GridLength x:Key="ColSize">70</GridLength>
 
-        <!-- A cell of the List view's details: muted, small, cut short with an ellipsis rather than spilling into the next column. -->
+        <!-- List view detail cell: muted, small, ellipsis-trimmed so it never spills into the next column. -->
         <Style x:Key="DetailCell" TargetType="TextBlock">
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="FontSize" Value="11" />
@@ -79,8 +79,8 @@
         </Style>
 
         <!--
-            A row of the List view (5.4C): a small picture (which follows the pointer too), the name, then the details read once the row
-            is in sight: resolution, frame rate, length, codec, sound streams, size.
+            List view row: small hover-scrubbing thumbnail, name, then details loaded lazily once visible: resolution, frame rate,
+            duration, codec, audio streams, size.
         -->
         <DataTemplate x:Key="DetailRowTemplate">
             <Grid Background="Transparent" Height="38">
@@ -127,7 +127,7 @@
             </Grid>
         </DataTemplate>
 
-        <!-- A row of the Filmstrip view's list (5.4C): a small picture, the name, and its resolution, frame rate and length under it. -->
+        <!-- Filmstrip view list row: small thumbnail, name, and resolution, frame rate and duration below. -->
         <DataTemplate x:Key="CompactRowTemplate">
             <DockPanel Margin="1" Background="Transparent">
                 <Grid DockPanel.Dock="Left" Width="64" Height="36" Background="{DynamicResource InsetBrush}" ClipToBounds="True"
@@ -160,7 +160,7 @@
             </DockPanel>
         </DataTemplate>
 
-        <!-- One side of the Project Media | Folder Browser switch: the side chosen is filled with the accent -->
+        <!-- Segment of the Project Media | Folder Browser switch; the selected segment is accent-filled. -->
         <Style x:Key="SwitchSide" TargetType="RadioButton">
             <Setter Property="GroupName" Value="MediaSource" />
             <Setter Property="Cursor" Value="Hand" />
@@ -168,9 +168,9 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <!--
-                        Each side is as wide as its words (no fixed width): the full name, or in a narrow pane the short one
-                        kept in Tag (Project, Folder). Both are in the template and one is shown, so the title row measures
-                        each form as it is, and gives the switch the whole width of the form it shows (it is never cut).
+                        Each segment sizes to its text (no fixed width): the full label, or in a narrow pane the short form
+                        stored in Tag (Project, Folder). Both forms are in the template with one visible, so the title row
+                        measures the shown form exactly and gives the switch its full width (never clipped).
                     -->
                     <ControlTemplate TargetType="RadioButton">
                         <Border x:Name="side" CornerRadius="8" Padding="8,1,8,2" Background="Transparent">
@@ -198,7 +198,7 @@
             </Setter>
         </Style>
 
-        <!-- Only the rows of tiles in view (and one more each side) are made: a folder of hundreds of videos stays light. -->
+        <!-- Virtualized: only visible tile rows plus one buffer row each side are realized, keeping large folders light. -->
         <ItemsPanelTemplate x:Key="TilePanel">
             <views:VirtualizingTilePanel TileWidth="{DynamicResource TileWidth}" />
         </ItemsPanelTemplate>
@@ -208,12 +208,12 @@
     </UserControl.Resources>
 
     <DockPanel>
-        <!-- The title, and against the right edge: what the files are sorted by, which way, how large they are shown, and Refresh -->
+        <!-- Title row with right-aligned sort field, sort direction, view mode and Refresh. -->
         <docking:PaneTitleRow DockPanel.Dock="Top" Margin="0,0,0,6">
             <docking:PaneTitleSlot PaneId="Media" HorizontalAlignment="Left" />
             <!--
-                What the pane lists: the files the open project uses, or a folder on disk. "Project | Folder" when the pane is
-                too narrow for the full names beside the sort and size controls (the row decides; it never cuts the names).
+                Source switch: files used by the open project, or a folder on disk. Shows "Project | Folder" when too narrow for
+                full labels beside the sort and view controls (the row decides; labels are never clipped).
             -->
             <Border Margin="0,0,8,0" Padding="1" CornerRadius="9" VerticalAlignment="Center" Background="{DynamicResource InsetBrush}"
                     BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" docking:PaneTitleRow.CanCompact="True">
@@ -249,10 +249,10 @@
                 </ToggleButton.Style>
             </ToggleButton>
             <!--
-                How the files are laid out (5.4C, in place of the size slider): Grid (tiles, their size in the tab's right-click menu), List
-                (a table of each file's details, with a preview and cutter beside it once the pane is wide) or Filmstrip (a preview and
-                sub-clip cutter beside a list). The sort box, its direction and the view are optional (4.2B-2): in a narrow column (a 150 %
-                laptop) they leave before the Project | Folder switch could be cut. The view is also in the tab's right-click menu.
+                View mode: Grid (tiles; size in the tab context menu), List (detail table, plus preview and cutter when the pane is wide)
+                or Filmstrip (preview and sub-clip cutter beside a list). Sort field, direction and view are optional overflow items: in a
+                narrow column (e.g. a laptop at 150 %) they drop out before the Project | Folder switch would clip. The view is also in
+                the tab context menu.
             -->
             <ComboBox x:Name="ViewBox" docking:PaneTitleRow.Optional="True" MinWidth="82" Margin="8,0,0,0" SelectionChanged="ViewBox_SelectionChanged"
                       AutomationProperties.Name="Media Browser View"
@@ -265,7 +265,7 @@
                     AutomationProperties.Name="Refresh Media Browser" ToolTip="Reads the folder (or the project's files) again." />
         </docking:PaneTitleRow>
 
-        <!-- The folder: up a level, the path (type one and press Enter), Browse inside the box as in the Source pane. Folder Browser only. -->
+        <!-- Folder row (Folder Browser only): up one level, editable path (Enter to navigate), and an inline Browse button. -->
         <Grid x:Name="FolderBar" DockPanel.Dock="Top" Margin="0,0,0,6">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
@@ -280,7 +280,7 @@
                     AutomationProperties.Name="Browse for Media Folder" ToolTip="Choose a folder." />
         </Grid>
 
-        <!-- The Clip Library's search (5.2C): every word in the title or a tag. Clip Library only. -->
+        <!-- Clip Library search (Clip Library only): every word must match the title or a tag. -->
         <TextBox x:Name="SearchBox" DockPanel.Dock="Top" Margin="0,0,0,6" Padding="6,5,4,5" VerticalContentAlignment="Center" Visibility="Collapsed"
                  TextChanged="SearchBox_TextChanged" AutomationProperties.Name="Search Clip Library"
                  ToolTip="Search the Clip Library: every word typed in a clip's title or among its tags." />
@@ -289,9 +289,9 @@
                    Text="Drag files onto the timeline or the player; double-click a folder to open it." />
 
         <!--
-            The views share one list (5.4C): Grid and List fill the pane with it; List puts a preview beside it once the pane is 600 DIPs
-            wide; Filmstrip puts the preview and cutter on the left and the list in a column on the right, a splitter between them. The
-            preview, the cutter and the List view's header are made from code the first time they are needed, after the first frame.
+            All views share one list: Grid and List fill the pane with it; List adds a side preview at 600+ DIPs; Filmstrip places
+            preview and cutter on the left and the list in a right column, separated by a splitter. Preview, cutter and the List header
+            are created from code on first need, after Frame 1.
         -->
         <Grid x:Name="ContentGrid" SizeChanged="ContentGrid_SizeChanged">
             <Grid.ColumnDefinitions>
@@ -307,9 +307,9 @@
             <DockPanel Grid.Column="2">
                 <ContentControl x:Name="ListHeaderHost" DockPanel.Dock="Top" Focusable="False" IsTabStop="False" Visibility="Collapsed" />
                 <!--
-                    The files. Dragged out, they drop like files from Explorer: onto a track of the timeline, or on
-                    the player. Double-click: a folder opens; a file is added at the playhead (or loaded,
-                    when nothing is). Right-click for more.
+                    File list. Drags drop like Explorer files: onto a Timeline track or the player.
+                    Double-click opens a folder, or adds a file at the playhead (or loads it when nothing
+                    is loaded). Context menu for more.
                 -->
                 <ListBox x:Name="Items" SelectionMode="Extended" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
                          ItemTemplate="{StaticResource TileTemplate}" ItemsPanel="{StaticResource TilePanel}"

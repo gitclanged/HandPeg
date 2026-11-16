@@ -1,8 +1,8 @@
 namespace HandPegApp.Models.Effects;
 
 /// <summary>
-/// The keys of the Color Grade card (5.6.0, <see cref="EffectRegistry.ColorStudio"/>): a contract with its definition, its shader
-/// (Effects.hlsl, PSColorStudio), the Color Studio's controls and Color Match. Never renamed.
+/// Color Grade card parameter keys (<see cref="EffectRegistry.ColorStudio"/>), a contract shared with Effects.hlsl PSColorStudio, the
+/// Color Studio controls and Color Match. Never rename.
 /// </summary>
 public static class ColorGradeKeys
 {
@@ -16,7 +16,7 @@ public static class ColorGradeKeys
 }
 
 /// <summary>
-/// What the Color Studio grades (5.6.0): a clip's (or the blur fill's) stack, or the Sequence Output's. Neither: nothing to grade.
+/// Color Studio target: a clip (or blur fill) stack, the Sequence Output, or none.
 /// </summary>
 public readonly record struct ColorGradeTarget(Layer? Layer, bool Sequence)
 {
@@ -30,7 +30,7 @@ public readonly record struct ColorGradeTarget(Layer? Layer, bool Sequence)
 }
 
 /// <summary>
-/// The Color Grade card's number values (5.6.0): the parametric part of the grade (everything but its curves and its LUT file).
+/// Parametric Color Grade values (everything except curves and the LUT file).
 /// </summary>
 public readonly record struct ColorGradeValues(
     double Temperature, double Tint, double Exposure,
@@ -48,7 +48,7 @@ public readonly record struct ColorGradeValues(
 
     public bool GainActive => GainR != 0 || GainG != 0 || GainB != 0;
 
-    /// <summary>Whether the parametric part changes nothing (the curves and the LUT are told apart by <see cref="ColorGradeMath"/>).</summary>
+    /// <summary>True when the parametric grade is identity (curves and LUT checked separately by <see cref="ColorGradeMath"/>).</summary>
     public bool IsNeutral => Temperature == 0 && Tint == 0 && Exposure == 0 && !LiftActive && !GammaActive && !GainActive
         && Contrast == 1 && Saturation == 1 && Vibrance == 0;
 
@@ -60,7 +60,7 @@ public readonly record struct ColorGradeValues(
         card.Get(ColorGradeKeys.GainR), card.Get(ColorGradeKeys.GainG), card.Get(ColorGradeKeys.GainB),
         card.Get(ColorGradeKeys.Contrast), card.Get(ColorGradeKeys.Saturation), card.Get(ColorGradeKeys.Vibrance), card.Get(ColorGradeKeys.LutMix));
 
-    /// <summary>Writes every value into the card (clamped to its parameter's range), raising ValueChanged for each that changed.</summary>
+    /// <summary>Writes all values to the card (range-clamped), raising ValueChanged per changed value.</summary>
     public void WriteTo(EffectInstance card)
     {
         void Set(string key, double value)
@@ -79,17 +79,16 @@ public readonly record struct ColorGradeValues(
 }
 
 /// <summary>
-/// The Color Grade's maths (5.6.0), pure: the reference its shader (Effects.hlsl, PSColorStudio) follows step for step, which the
-/// compositor-parity golden holds it to, and the model Color Match solves against. Colours are display-referred and gamma-encoded (as
-/// every compositor shader takes them), each channel 0..1. Order: white balance and exposure in linear light, lift / gamma / gain,
-/// contrast about 0.5, saturation and vibrance about BT.709 luma, clamped; then (GPU only, from tables) the curves and the LUT. A step at
-/// its neutral values is skipped, so a neutral card gives back exactly what it was given.
+/// Pure Color Grade reference math mirrored step for step by Effects.hlsl PSColorStudio (enforced by the compositor-parity golden) and
+/// used as Color Match's model. Inputs are display-referred, gamma-encoded 0..1. Order: white balance and exposure in linear light,
+/// lift/gamma/gain, contrast about 0.5, saturation and vibrance about BT.709 luma, clamp; then (GPU only, via tables) curves and LUT.
+/// Neutral steps are skipped so a neutral card is an exact identity.
 /// </summary>
 public static class ColorGradeMath
 {
     public const double LumaR = 0.2126, LumaG = 0.7152, LumaB = 0.0722;
 
-    /// <summary>How far the Temperature (at +-100) moves red against blue in linear light, and the Tint green against red and blue.</summary>
+    /// <summary>Linear-light gain swing at +-100: Temperature (red vs. blue) and Tint (green vs. red/blue).</summary>
     public const double TemperatureReach = 0.3, TintReach = 0.25;
 
     public static double SrgbToLinear(double c) => c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
@@ -97,8 +96,7 @@ public static class ColorGradeMath
     public static double LinearToSrgb(double c) => c <= 0.0031308 ? c * 12.92 : 1.055 * Math.Pow(c, 1 / 2.4) - 0.055;
 
     /// <summary>
-    /// The white-balance gains (red, green, blue) in linear light for a Temperature and a Tint (each -100..100), scaled so that BT.709 luma
-    /// keeps its brightness.
+    /// Linear-light white-balance RGB gains for Temperature and Tint (-100..100), normalized to preserve BT.709 luma.
     /// </summary>
     public static (double R, double G, double B) WhiteBalance(double temperature, double tint)
     {
@@ -194,7 +192,7 @@ public static class ColorGradeMath
         return false;
     }
 
-    /// <summary>The card's 16 number keys, in its lanes' order (P0..P7, ..): what <see cref="ColorGradeValues"/> holds.</summary>
+    /// <summary>The 16 numeric keys in lane order (P0..P7, ...), matching <see cref="ColorGradeValues"/>.</summary>
     public static readonly string[] NumberKeys =
     [
         ColorGradeKeys.Temperature, ColorGradeKeys.Tint, ColorGradeKeys.Exposure, ColorGradeKeys.LiftR, ColorGradeKeys.LiftG, ColorGradeKeys.LiftB,
@@ -202,7 +200,7 @@ public static class ColorGradeMath
         ColorGradeKeys.GainB, ColorGradeKeys.Saturation, ColorGradeKeys.Vibrance, ColorGradeKeys.LutMix,
     ];
 
-    /// <summary>Whether any of the card's 16 numbers is keyframed (5.6.0: drawn with its keys, not the static values Color Match reads).</summary>
+    /// <summary>True when any numeric key is keyframed (rendered values then differ from the static ones Color Match reads).</summary>
     public static bool IsKeyframed(EffectInstance card)
     {
         foreach (var key in NumberKeys)
@@ -215,8 +213,7 @@ public static class ColorGradeMath
     }
 
     /// <summary>
-    /// Whether the card mixes a LUT into its picture (5.6.0): a LUT file named (its parameter has no default file) and its mix above
-    /// 0. Allocates nothing: Color Match asks on every pointer move while picking.
+    /// True when a LUT file is set and its mix is above 0. Allocation-free (Color Match calls it on every pick move).
     /// </summary>
     public static bool LutMixedIn(EffectInstance card) =>
         card.Texts.TryGetValue(ColorGradeKeys.Lut, out var lut) && !string.IsNullOrWhiteSpace(lut) && card.Get(ColorGradeKeys.LutMix) > 0;

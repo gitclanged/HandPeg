@@ -5,14 +5,14 @@
              xmlns:docking="clr-namespace:HandPegApp.Docking"
              AutomationProperties.Name="Timeline Pane">
     <!--
-        The timeline (4.4): every track on one drawn surface (UnifiedTimelineControl): the tracks front to back, each with its
-        Sub-Lanes (its clips' Cutouts and sound streams) under it, the sound clips, the captions and the blur fill's settings
-        row. The ruler at the top edge, beside the tracks the scroll bars; under them (5.0, the user's call:
-        where the Layers tab had them) an inspector of the values of what is selected and the row of editing tools (made with
-        the pane; what is hidden at the first frame comes after it: DetailsTemplate). Nothing
-        here edits anything: every button goes out through ToolClick, by its Tag, to MainWindow.UnifiedTimeline.cs, which acts
-        on the selection it shares with the rest of the window.
-        A UserControl cannot see the window's resources while it is made: what it needs of them is its own, below.
+        Timeline pane: all tracks on one drawn surface (UnifiedTimelineControl), ordered top to bottom, each with its
+        Sub-Lanes (clip Cutouts and audio streams) beneath, plus audio clips, captions and the blur fill settings row.
+        Ruler along the top, scroll bars beside the tracks; below them a selection inspector and the editing tool row
+        (built with the pane; content hidden at Frame 1 is deferred to DetailsTemplate).
+        This view performs no edits: every button routes through ToolClick by Tag to MainWindow.UnifiedTimeline.cs,
+        which acts on the window's shared selection.
+        A UserControl cannot resolve window resources during construction, so the resources it needs are declared
+        locally below.
     -->
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
@@ -30,7 +30,7 @@
             <Setter Property="FontFamily" Value="Consolas" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
-        <!-- The tools along the bottom: a glyph each, the same size as the other panes' title buttons. -->
+        <!-- Bottom tool row buttons: one glyph each, sized like other panes' title buttons. -->
         <Style x:Key="Tool" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
             <Setter Property="FontSize" Value="13" />
@@ -45,13 +45,13 @@
             <Setter Property="Margin" Value="0,0,3,0" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
-        <!-- The corner's zoom buttons, smaller: they share the ruler's row. -->
+        <!-- Corner zoom buttons, smaller to share the ruler row. -->
         <Style x:Key="ZoomTool" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
             <Setter Property="FontSize" Value="11" />
             <Setter Property="Padding" Value="6,3" />
         </Style>
-        <!-- A deleted clip in the recycle bin: a picture of it, what it was and when it was on, and the way back. -->
+        <!-- Recycle bin entry: thumbnail, name and former time range, and a Restore button. -->
         <DataTemplate x:Key="BinItemTemplate">
             <Grid Margin="0,3" Width="380">
                 <Grid.ColumnDefinitions>
@@ -72,18 +72,18 @@
         </DataTemplate>
 
         <!--
-            What is under the tracks and hidden at the first frame (5.0, the user's Q5): Text Settings and the inspector (each
-            shown only while something is selected for them) and the flyouts of the tools' row (Add Track's kinds, the recycle
-            bin's list). Not made with the window: made from this once the window is on screen (RealizeTools), into
-            DetailsHost, which is empty (and takes no room) until then, so the first frame is laid out as every later one is.
-            The tools' row itself is the pane's own, made with it.
+            Deferred content below the tracks, hidden at Frame 1: Text Settings and the inspector (each visible only with a
+            matching selection) and the tool row flyouts (Add Track kinds, recycle bin list). Instantiated after the window
+            is shown (RealizeTools) into DetailsHost, which is empty and zero-height until then, so Frame 1 has the final
+            layout.
+            The tool row itself is built with the pane.
         -->
         <DataTemplate x:Key="DetailsTemplate">
             <Grid>
                 <StackPanel>
                     <!--
-                        Text Settings: the words of the text clip that is selected, and how they are drawn. Not there while anything
-                        else is selected.
+                        Text Settings: content and styling of the selected text clip. Hidden for any other
+                        selection.
                     -->
                     <GroupBox Header="Text Settings" Margin="0,4,0,0" x:Name="TextSettingsPanel"
                               Visibility="{Binding IsTextLayerSelected, Converter={StaticResource BoolToVisibility}}">
@@ -99,7 +99,7 @@
                             <WrapPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Top">
                                 <StackPanel Orientation="Horizontal" Margin="0,2,14,4">
                                     <TextBlock Text="Font:" Style="{StaticResource FieldLabel}" Margin="0,0,8,0" />
-                                    <!-- Its list (the fonts installed) and its choice are bound the first time Text Settings are shown (FontBox, in code). -->
+                                    <!-- Installed-font list and selection are bound in code on first show of Text Settings (FontBox). -->
                                     <ComboBox x:Name="FontBox" Width="190" IsTextSearchEnabled="True" AutomationProperties.Name="Font"
                                               ToolTip="The font, from those installed on this computer.">
                                         <ComboBox.ItemsPanel>
@@ -143,11 +143,11 @@
                     </GroupBox>
 
                     <!--
-                        The inspector: the values of what is selected (shown while something is), in the row of tools after the
-                        tools themselves (RealizeTools moves it there: one row along the bottom, 5.0-Verify). A picture clip: its
-                        speed, size, place and turn, Properties and Delete; the background: its blur; a sound (a track of the main
-                        file, a sound clip, a video clip's own sound): its gain, mute, filters, voice and ducking. Its groups are
-                        shown and given what they edit by MainWindow (Inspect).
+                        Inspector: values of the current selection (visible only with one), placed after the tools in the bottom
+                        tool row by RealizeTools. Picture clip: speed, size, position, rotation, Properties and Delete; background:
+                        blur; audio (main-file track, audio clip, or a video clip's own audio): gain, mute, filters, voice and
+                        ducking. MainWindow.Inspect shows the relevant groups and binds their
+                        targets.
                     -->
                     <Border x:Name="Inspector" Margin="8,0,0,0" Padding="8,0" CornerRadius="4" Background="{DynamicResource InsetBrush}" VerticalAlignment="Center"
                             Visibility="Collapsed" ClipToBounds="True" AutomationProperties.Name="Clip Inspector">
@@ -210,7 +210,7 @@
                                         ToolTip="Its zoom, blur passes and how much it is darkened, on its Blur Fill row in the Effects pane, with its own effects (colour, a LUT, a vignette)." />
                             </StackPanel>
                             <StackPanel x:Name="SoundGroup" Orientation="Horizontal" Visibility="Collapsed">
-                                <!-- Gain and filters work on decoded sound: not on a track that is copied as it is (or dropped). -->
+                                <!-- Gain and filters need decoded audio: disabled for stream-copied or dropped tracks. -->
                                 <StackPanel Orientation="Horizontal" IsEnabled="{Binding IsReencoded}" ToolTipService.ShowOnDisabled="True"
                                             ToolTip="Gain in decibels, and this sound's filters (compressor, gate, equalizer). Not for a track that is copied as it is.">
                                     <TextBlock Text="Gain" Style="{StaticResource PairLabel}" />
@@ -226,7 +226,7 @@
                                 </StackPanel>
                                 <ToggleButton IsChecked="{Binding IsMuted}" Content="&#xE74F;" FontFamily="Segoe MDL2 Assets" FontSize="12" Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center"
                                               AutomationProperties.Name="Mute" ToolTip="Mute: leaves this sound out of the mix, in the preview and in the export. Press again to bring it back." />
-                                <!-- A sound clip's speed (a video clip's is with its picture's values; an output audio track has none). -->
+                                <!-- Audio clip speed (video clips show speed with picture values; output audio tracks have none). -->
                                 <StackPanel x:Name="SoundSpeedHost" Orientation="Horizontal">
                                     <StackPanel Orientation="Horizontal" Visibility="{Binding HasSpeed, Converter={StaticResource BoolToVisibility}}"
                                                 ToolTip="Sound speed, 0.1x to 16x: faster makes the block shorter.">
@@ -247,8 +247,8 @@
                 </StackPanel>
 
                 <!--
-                    Add Track's kinds of clip, over its button (HoverFlyout: resting on the button opens them; leaving both closes them).
-                    Its target, the button's host, is in the pane's own name scope: set in code (RealizeTools).
+                    Add Track kind flyout above its button (HoverFlyout: hover rest opens; leaving both closes). PlacementTarget
+                    lives in the pane's name scope, so it is set in code (RealizeTools).
                 -->
                 <Popup x:Name="AddLayerPopup" StaysOpen="True" AllowsTransparency="True" Placement="Top">
                     <local:ButtonChrome x:Name="AddLayerFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6" Margin="0,0,0,2" PreviewKeyDown="AddLayerFlyout_PreviewKeyDown">
@@ -311,11 +311,11 @@
                 </Popup>
 
                 <!--
-                    Quick FX's five slots (the Creator Hotbar, 5.3-Stage2), over its button (HoverFlyout: resting on the button, or a
-                    click, opens them; leaving both closes them, but not while a slot's right-click menu is open: HoldQuickFxFor).
-                    A slot's click puts what it holds on the selected clips and leaves the flyout open, so several go on in a row; a
-                    click with the pointer hands the keyboard back to the button (HotbarSlot_Click), so leaving both still closes it.
-                    Named from the settings by ShowHotbar; its target, the button's host, is set in code (RealizeTools).
+                    Quick FX five-slot flyout (Creator Hotbar) above its button (HoverFlyout: hover rest or click opens; leaving both
+                    closes, except while a slot context menu is open: HoldQuickFxFor). A slot click applies its effect to the selected
+                    clips and keeps the flyout open for chaining; mouse clicks return focus to the button (HotbarSlot_Click) so
+                    leaving both still closes it. ShowHotbar labels the slots from settings; PlacementTarget is set in code
+                    (RealizeTools).
                 -->
                 <Popup x:Name="QuickFxPopup" StaysOpen="True" AllowsTransparency="True" Placement="Top">
                     <local:ButtonChrome x:Name="QuickFxFlyoutPanel" Style="{StaticResource FlyoutChrome}" Padding="6" Margin="0,0,0,2" PreviewKeyDown="QuickFxFlyout_PreviewKeyDown">
@@ -341,8 +341,8 @@
                 </Popup>
 
                 <!--
-                    The recycle bin's list, over its button: its target and its IsOpen (the button's IsChecked, both ways) are set
-                    in code, as are its Opened and Closed (RealizeTools).
+                    Recycle bin list above its button: PlacementTarget, IsOpen (two-way with the button's IsChecked), Opened and
+                    Closed are wired in code (RealizeTools).
                 -->
                 <Popup x:Name="BinPopup" Placement="Top" VerticalOffset="-4" StaysOpen="False" AllowsTransparency="True">
                     <Border Background="{DynamicResource PanelBrush}" BorderBrush="{DynamicResource ControlBorderBrush}" BorderThickness="1" CornerRadius="6" Padding="12,10">
@@ -367,36 +367,36 @@
     <Grid>
         <DockPanel>
             <!--
-                The title row: the pane's tab, when its part shows it in a title (none in a part with a row of tabs, where
-                the row says nothing and the ruler is the pane's top edge). The tools are at the bottom.
+                Title row: shows the pane tab when its dock part uses a title (empty in a tabbed part, where the ruler is
+                the pane's top edge). Tools live in the bottom row.
             -->
             <docking:PaneTitleRow DockPanel.Dock="Top">
-                <!-- The pane is flush with its part's edges (5.3-Stage2): the title, where it shows, keeps off the left edge. -->
+                <!-- The pane is flush with its part's edges, so the title gets its own left inset. -->
                 <docking:PaneTitleSlot PaneId="UnifiedTimeline" Margin="8,4,0,4" />
             </docking:PaneTitleRow>
 
             <!--
-                Under the tracks: Text Settings (DetailsTemplate, made after the first frame; hidden until a text clip is
-                selected, so the host is empty and takes no room at the first frame), then the one row of tools, which takes the
-                inspector of what is selected after its tools once that is made.
+                Below the tracks: DetailsHost for Text Settings (DetailsTemplate, realized after Frame 1; hidden until a text clip
+                is selected, so it is empty and zero-height at Frame 1), then the single tool row, which receives the selection
+                inspector after its tools once realized.
             -->
             <StackPanel DockPanel.Dock="Bottom">
                 <Border x:Name="DetailsHost" />
                 <!--
-                    The tools, on one line along the bottom edge; what does not fit goes into the "more" menu, the least
-                    wanted first (OverflowStrip.Priority). Each works on what is selected on the timeline, or, with nothing
-                    selected, on the video clip at the playhead. Made with the window (5.0, the user's Q5: what the
-                    first frame shows is all there in it); their flyouts come with DetailsTemplate. A hairline under the tracks
-                    (5.3-Stage2: no band).
+                    Single-line bottom tool row; tools that do not fit move to the "more" menu, lowest OverflowStrip.Priority
+                    first. Each acts on the timeline selection, or on the video clip at the playhead when nothing is
+                    selected. Built with the window so Frame 1 is complete; flyouts arrive with DetailsTemplate.
+                    Separated from the tracks by a hairline margin,
+                    not a band.
                 -->
                 <Border x:Name="ToolbarRow" Height="26" Margin="0,1,0,0">
                     <local:OverflowStrip x:Name="Toolbar" MinWidth="150" VerticalAlignment="Center">
-                        <!-- Play / Pause, while neither the playback bar's nor the Sequence Overview Scrubber's is on screen (MainWindow shows it). -->
+                        <!-- Play / Pause, shown by MainWindow only when neither the playback bar nor the Overview Scrubber is visible. -->
                         <Button x:Name="PlayButton" Style="{StaticResource Tool}" local:OverflowStrip.Priority="110" Content="&#xE768;" Margin="0,0,6,0" Tag="PlayPause" Click="Tool_Click" Visibility="Collapsed"
                                 AutomationProperties.Name="Play / Pause" local:KeyTip.Action="transport.playPause" local:KeyTip.Text="Play / Pause{keys}." />
                         <!--
-                            Add Track: a click adds an empty track to drop clips onto; resting the pointer on it (or Down) opens the
-                            kinds of clip over it. Its icon is drawn from geometry: two sheets and a plus.
+                            Add Track: click adds an empty track; hover rest (or Down) opens the clip-kind flyout above it.
+                            Vector icon: two stacked sheets and a plus.
                         -->
                         <Grid x:Name="AddLayerHost" local:OverflowStrip.Priority="100" Margin="0,0,6,0" Background="Transparent" VerticalAlignment="Center">
                             <Button x:Name="AddLayerButton" Padding="9,4" AutomationProperties.Name="Add Track" Command="{Binding AddEmptyTrackCommand}" PreviewKeyDown="AddLayerButton_PreviewKeyDown"
@@ -418,9 +418,9 @@
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="85" Content="&#xE74D;" Tag="Delete" Click="Tool_Click" IsEnabled="{Binding HasSource}"
                                 AutomationProperties.Name="Delete" local:KeyTip.Action="edit.delete" local:KeyTip.Text="Delete{keys}: the selected clip goes into the recycle bin." />
                         <!--
-                            Undo and Redo: hidden unless Settings > Timeline (or Timeline Settings) shows them (5.3-Stage2, the user's
-                            de-clutter; ShowTimelineUndoRedo, off by default: ShowUndoRedo). Collapsed here, so the first frame is right
-                            before any code runs, and a collapsed tool is left out of the row and its "more" menu.
+                            Undo and Redo: hidden unless enabled in Settings > Timeline or Timeline Settings (ShowTimelineUndoRedo,
+                            off by default; applied by ShowUndoRedo). Collapsed in XAML so Frame 1 is correct before code runs;
+                            collapsed tools are excluded from both the row and its "more" menu.
                         -->
                         <Button x:Name="UndoButton" Style="{StaticResource Tool}" local:OverflowStrip.Priority="90" Content="&#xE7A7;" Margin="6,0,3,0" Tag="Undo" Click="Tool_Click" Visibility="Collapsed"
                                 AutomationProperties.Name="Undo" local:KeyTip.Action="edit.undo" local:KeyTip.Text="Undo{keys}: takes back the last change. Twenty steps are kept." />
@@ -431,7 +431,7 @@
                             <Path Width="14" Height="13" Stretch="None" StrokeThickness="1.3" StrokeLineJoin="Round"
                                   Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}"
                                   Data="M 2,1 L 2,7 A 5,5 0 0 0 12,7 L 12,1 L 9,1 L 9,7 A 2,2 0 0 1 5,7 L 5,1 Z M 2,4 L 5,4 M 9,4 L 12,4" />
-                            <!-- What else a clip snaps to and shows (5.2B): the beats found in clips' sound. -->
+                            <!-- Snap context menu: audio beat snapping and beat grid display. -->
                             <ToggleButton.ContextMenu>
                                 <ContextMenu>
                                     <MenuItem Header="Snap to Audio Beats" IsCheckable="True" IsChecked="{Binding SnapToBeats, Mode=TwoWay}" StaysOpenOnClick="True"
@@ -441,7 +441,7 @@
                                 </ContextMenu>
                             </ToggleButton.ContextMenu>
                         </ToggleButton>
-                        <!-- Timeline Settings (5.3): the same menu as the Timeline tab's right-click (MainWindow.FillTimelineSettings), opened over the gear. -->
+                        <!-- Timeline Settings gear: same menu as the Timeline tab's context menu (MainWindow.FillTimelineSettings). -->
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="74" Content="&#xE713;" Tag="TimelineSettings" Click="Tool_Click"
                                 AutomationProperties.Name="Timeline Settings"
                                 ToolTip="Timeline Settings: effect lanes, filmstrips, waveforms and keyframes on the clips, snapping, following the playhead, the bars and the track height. The same menu as a right-click on the Timeline's tab." />
@@ -449,8 +449,8 @@
                                       AutomationProperties.Name="Link A/V" local:KeyTip.Text="Link Audio and Video: linked sound moves and is cut with its picture." />
                         <ToggleButton Style="{StaticResource ToolToggle}" local:OverflowStrip.Priority="20" Content="&#xE8D6;" IsChecked="{Binding ShowLinkedAudio}"
                                       AutomationProperties.Name="Show Linked Audio" ToolTip="Show Linked Audio: draws the sound that belongs to a picture across its block, over the pictures (a video clip's own sound, or its sound stack's, on that clip)." />
-                        <!-- Where the in point being set is (or that none is), beside its buttons. -->
-                        <!-- The tracks' height (each track's row), with the other timeline tools (5.0-Verify: one row along the bottom). -->
+                        <!-- Track sizing. -->
+                        <!-- Track height slider (per-track row height), kept with the other timeline tools in the bottom row. -->
                         <StackPanel local:OverflowStrip.Priority="65" Orientation="Horizontal" Margin="6,0,6,0" VerticalAlignment="Center" Background="Transparent"
                                     ToolTip="Track height: how tall each track's row is.">
                             <TextBlock Text="&#xE1D8;" FontFamily="Segoe MDL2 Assets" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource MutedTextBrush}" />
@@ -463,7 +463,7 @@
                                 AutomationProperties.Name="Remove Dead Air..." local:KeyTip.Action="edit.deadAir" local:KeyTip.Text="Remove Dead Air{keys}: finds the selected clip's silences and folds them out." />
                         <Button Padding="9,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="40" Tag="CutoutStudio" Click="Tool_Click" IsEnabled="{Binding IsVideoReencoded}"
                                 AutomationProperties.Name="Cutout Studio" ToolTip="Trace a game's HUD by hand on a still of the video, zoomed in to the very pixels, name the Cutouts, and add them to the clip or save them as a Game Preset to drop videos on.">
-                            <!-- Scissors cutting along a dashed line in the accent (5.2): the Studio stands out on the row of tools. -->
+                            <!-- Scissors over an accent dashed line, so the Studio stands out in the tool row. -->
                             <StackPanel Orientation="Horizontal">
                                 <Grid Width="18" Height="15" VerticalAlignment="Center">
                                     <Path Stretch="None" StrokeThickness="1.3" StrokeDashArray="1.4 1.2" Stroke="{DynamicResource AccentBrush}" Data="M 10.5,7.5 L 18,7.5" />
@@ -474,14 +474,14 @@
                                 <TextBlock Text="Cutout Studio" Margin="6,0,0,0" VerticalAlignment="Center" />
                             </StackPanel>
                         </Button>
-                        <!-- No Game Presets box here (5.4C, the user's de-clutter): a clip's right-click menu applies one (Game Presets & Cutout
-                             Studio, which also saves, imports and exports them), a track's header sets its Track Preset. -->
+                        <!-- No Game Presets box here: the clip context menu applies presets (Game Presets & Cutout Studio also saves,
+                             imports and exports them); a track header sets its Track Preset. -->
                         <!--
-                            Quick FX, the Creator Hotbar (5.2.1; one button since 5.3-Stage2, the user's de-clutter): resting the pointer
-                            on it, or a click (or Down), opens its five slots over it (QuickFxPopup, made after the first frame with
-                            DetailsTemplate), each an Effect, a Transition, a Game Preset or a one-click tool put on the selected clips
-                            (else the video clip at the playhead), one step of Undo; a right-click on a slot chooses what it holds. Shown
-                            or hidden from the settings as the pane is made (ShowHotbar), so the first frame has it right.
+                            Quick FX (Creator Hotbar) button: hover rest, click or Down opens the five-slot QuickFxPopup above it
+                            (realized after Frame 1 with DetailsTemplate). Each slot applies an Effect, Transition, Game Preset or
+                            one-click tool to the selected clips (else the video clip at the playhead) as one Undo step; right-click a
+                            slot to assign it. Visibility comes from settings at construction (ShowHotbar), so Frame 1 is
+                            correct.
                         -->
                         <Grid x:Name="QuickFxHost" local:OverflowStrip.Priority="50" Margin="6,0,3,0" Background="Transparent" VerticalAlignment="Center">
                             <Button x:Name="QuickFxButton" Padding="9,4" Click="QuickFx_Click" PreviewKeyDown="QuickFx_PreviewKeyDown" AutomationProperties.Name="Quick FX"
@@ -492,7 +492,7 @@
                                 </StackPanel>
                             </Button>
                         </Grid>
-                        <!-- The recycle bin: deleted clips wait here, and are put back from here (its list opens under it, BinPopup). -->
+                        <!-- Recycle bin toggle: holds deleted clips for restore (list opens in BinPopup above it). -->
                         <ToggleButton x:Name="BinButton" Padding="7,4" Margin="6,0,3,0" VerticalAlignment="Center" local:OverflowStrip.Priority="35" AutomationProperties.Name="Recycle Bin"
                                       ToolTip="Recycle Bin: the clips that were deleted from the timeline. Nothing of them is rendered; any of them can be put back where it was.">
                             <StackPanel Orientation="Horizontal">
@@ -500,7 +500,7 @@
                                 <TextBlock Text="{Binding RecycleBinText}" Margin="4,0,0,0" VerticalAlignment="Center" />
                             </StackPanel>
                         </ToggleButton>
-                        <!-- The keyframes of the selected clip -->
+                        <!-- Keyframe navigation and options for the selected clip. -->
                         <Button Style="{StaticResource Tool}" local:OverflowStrip.Priority="14" Content="&#xE892;" Margin="6,0,3,0" Tag="PreviousKey" Click="Tool_Click"
                                 AutomationProperties.Name="Previous Keyframe" local:KeyTip.Action="key.prev" local:KeyTip.Text="Previous Keyframe of the selected clip{keys}." />
                         <Button local:OverflowStrip.Priority="26" Content="&#x2666;" FontSize="13" Padding="9,3" Margin="0,0,3,0" VerticalAlignment="Center" Tag="ToggleKey" Click="Tool_Click" Foreground="{DynamicResource KeyAccentBrush}"
@@ -517,7 +517,7 @@
                 </Border>
             </StackPanel>
 
-            <!-- While the video is copied, the other files' clips and the effects are not rendered: said once, under the tracks (only with something to export). -->
+            <!-- Stream-copy notice under the tracks: effects and other files' clips are not rendered (shown only when exportable). -->
             <Border DockPanel.Dock="Bottom" Margin="0,4,0,0" Padding="10,5" CornerRadius="4" Background="{DynamicResource InsetBrush}"
                     Visibility="{Binding ShowsCopyNote, Converter={StaticResource BoolToVisibility}}">
                 <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}"
@@ -525,9 +525,9 @@
             </Border>
 
             <!--
-                The tracks: the ruler over the time area, the surface, the rows' scroll bar beside it and the time's scroll bar
-                under it. The corners over and under the headers hold the zoom and the track height. The ruler and the time's
-                scroll bar begin where the headers end (Surface.HeaderWidth, set in code).
+                Track body: ruler above the time area, the surface, a vertical row scroll bar beside it and a horizontal time
+                scroll bar below. Corners above and below the headers hold zoom and track height. Ruler and time scroll bar
+                start at the header edge (Surface.HeaderWidth, set in code).
             -->
             <Grid x:Name="Body">
                 <Grid.RowDefinitions>
@@ -543,11 +543,11 @@
                 <StackPanel x:Name="ZoomCorner" Panel.ZIndex="1" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" TextElement.FontSize="11">
                     <Button Style="{StaticResource ZoomTool}" Content="&#xE9A6;" Margin="3,0,0,0" Tag="ZoomFit" Click="Tool_Click"
                             AutomationProperties.Name="Fit Timeline" local:KeyTip.Action="view.fit" local:KeyTip.Text="Fit{keys}: the whole sequence, with room after its end for new clips." />
-                    <!-- The tracks' height (5.1-Polish, the user's directive): dragged up or down, the wheel, a double-click for the usual one. -->
+                    <!-- Track height pill: vertical drag or wheel adjusts; double-click restores the default. -->
                     <local:TrackHeightPill Margin="5,0,0,0" VerticalAlignment="Center" Value="{Binding LayerTrackHeight}"
                                            ToolTip="Track height: drag up for taller tracks, down for lower ones (or use the wheel here, or Alt + Shift + the wheel over the tracks, or drag a track's lower edge in its header). A double-click puts the usual height back." />
-                    <!-- The zoom (5.4.4): a magnifier after Fit and the track height, opening into a pill slider to the right (over the corner's
-                         empty end and, raised by the corner's ZIndex, the ruler's first DIPs; never over Fit or the track height), its readout the zoom ("2.4x"). -->
+                    <!-- Zoom: magnifier after Fit and track height that expands rightward into a pill slider (over the corner's empty end and,
+                         via the corner's ZIndex, the ruler's first DIPs; never over Fit or track height), with a zoom readout ("2.4x"). -->
                     <local:ExpandablePillSlider x:Name="ZoomSlider" Margin="4,0,0,0" VerticalAlignment="Center" Icon="Magnifier"
                                                 Minimum="0" Maximum="1" SmallChange="0.04" LargeChange="0.1" DefaultValue="0" TrackLength="64"
                                                 AutomationProperties.Name="Timeline Zoom"
@@ -559,7 +559,7 @@
                                      ToolTip="Click or drag to move the playhead. The wheel zooms the tracks about the pointer; Shift + wheel, or a drag with the middle button, moves along. The shaded part after the end is room to drop or drag clips into." />
 
                 <local:UnifiedTimelineControl x:Name="Surface" Grid.Row="1" AutomationProperties.Name="Timeline Tracks" />
-                <!-- Its clicks are its own over a restored window's resize band too (the pane is flush with the window's edge, 5.3-Stage2). -->
+                <!-- Hit-testable inside the window-chrome resize band too, since the pane is flush with the window edge. -->
                 <ScrollBar x:Name="RowScroll" Grid.Row="1" Grid.Column="1" Orientation="Vertical" Scroll="RowScroll_Scroll" Visibility="Hidden"
                            WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Timeline Rows Scroll" />
 

@@ -7,7 +7,7 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <local:DecibelToScaleConverter x:Key="DecibelToScale" />
-        <!-- The three transport buttons: round, with a drawn shape in the middle -->
+        <!-- Transport buttons (Record, Pause, Stop): round, with a centred vector glyph. -->
         <Style x:Key="TransportButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Width" Value="52" />
             <Setter Property="Height" Value="44" />
@@ -16,8 +16,8 @@
         </Style>
     </UserControl.Resources>
     <!--
-        The Voiceover Studio (5.4C, a dock pane; a window of its own until then). Bound straight to the main window's settings: the
-        voiceover made here is part of the next encode. Its recording lives in the view model, so it goes on while the pane is hidden.
+        Voiceover Studio dock pane, bound directly to the main window's settings: the voiceover recorded here feeds the next
+        encode. Recording state lives in the view model, so it continues while the pane is hidden.
     -->
     <DockPanel>
         <docking:PaneTitleRow DockPanel.Dock="Top" Margin="0,0,0,6">
@@ -41,7 +41,7 @@
                             Command="{Binding RefreshMicrophonesCommand}" ToolTip="Look for microphones again" AutomationProperties.Name="Refresh Microphones" />
                 </Grid>
 
-                <!-- A narrow pane wraps the file buttons under the transport. -->
+                <!-- In a narrow pane the file buttons wrap below the transport. -->
                 <WrapPanel Margin="0,12,0,0">
                     <Button Style="{StaticResource TransportButton}" Command="{Binding RecordVoiceoverCommand}" AutomationProperties.Name="Record"
                             ToolTip="Record. After a pause, carries the same recording on.">
@@ -66,19 +66,19 @@
                             IsEnabled="{Binding HasVoiceover}" />
                 </WrapPanel>
 
-                <!-- How long the finished video is, and how far into it the recording has got -->
+                <!-- Output duration and recording progress through it. -->
                 <TextBlock x:Name="DurationText" Text="Total Cut Segment Duration: 0s" Margin="0,14,0,4" AutomationProperties.AutomationId="Total Cut Segment Duration" />
                 <Border Height="22" Background="{DynamicResource InsetBrush}" CornerRadius="3" ClipToBounds="True"
                         ToolTip="The length of the finished video. The small marks are where one cut segment ends and the next begins; the line moves along while you record.">
                     <Canvas x:Name="RecordBar" SizeChanged="RecordBar_SizeChanged" AutomationProperties.Name="Recording Timeline" />
                 </Border>
-                <!-- Tabular figures: the count changes ten times a second, and its digits must not shuffle the words after them. -->
+                <!-- Tabular figures: the counter updates rapidly and its digits must not shift the following text. -->
                 <TextBlock x:Name="RecordTimeText" Foreground="{DynamicResource MutedTextBrush}" Margin="0,4,0,0" Typography.NumeralAlignment="Tabular" AutomationProperties.AutomationId="Recording Time" />
 
                 <TextBlock Text="{Binding VoiceoverStatus}" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,10,0,0"
                            AutomationProperties.Name="Voiceover Status" />
 
-                <!-- The voiceover itself: its waveform, with handles for the part to keep -->
+                <!-- Voiceover waveform with trim handles for the kept range. -->
                 <StackPanel Visibility="{Binding HasVoiceover, Converter={StaticResource BoolToVisibility}}" Margin="0,12,0,0">
                     <Border Height="84" Background="{DynamicResource InsetBrush}" CornerRadius="4" ClipToBounds="True">
                         <Grid>

@@ -4,17 +4,17 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-/// <summary>One animated value of an effect card, as a row of the Keyframes pane stands for it.</summary>
+/// <summary>Keyframes pane row reference to one animated effect card value.</summary>
 public sealed record EffectKeyRef(EffectInstance Effect, EffectParam Param, string Label);
 
-// The Keyframes pane's rows (see KeyLanesView): All (every motion property at once, as the Key All button keys them), one
-// row per motion property, and one per animated effect value. Each row is keyed, moved and deleted on its own; the
-// selected one is what the easing box changes. A row stands for a KeyProperty, an EffectKeyRef, or (null) All.
+// Keyframes pane rows (KeyLanesView): All (every motion property, as Key All), one per motion property, one per animated effect
+// value. Rows key, move and delete independently; the easing box edits the selected row. Row identity: KeyProperty, EffectKeyRef,
+// or null for All.
 public partial class MainViewModel
 {
     private object? _selectedKeyLane;
 
-    /// <summary>The row of the Keyframes pane that is selected: null for All, a KeyProperty, or an EffectKeyRef.</summary>
+    /// <summary>Selected Keyframes row: null (All), KeyProperty or EffectKeyRef.</summary>
     public object? SelectedKeyLane
     {
         get => _selectedKeyLane;
@@ -29,10 +29,10 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The moment of the playhead on a clip's own clock: what its keyframes are counted in.</summary>
+    /// <summary>Playhead in clip-local time (keyframe time base).</summary>
     private double ClipClock(Layer layer) => PositionMs / 1000 - layer.StartTime;
 
-    /// <summary>The keyframe at the playhead on a row of the clip; null when the row has none there.</summary>
+    /// <summary>Keyframe at the playhead on a row; null when none.</summary>
     public Keyframe? KeyOnLane(Layer layer, object? lane)
     {
         var time = ClipClock(layer);
@@ -53,7 +53,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The diamond at a row's name: a keyframe at the playhead holding the value there, or the one there taken away.</summary>
+    /// <summary>Row diamond toggle: adds a keyframe at the playhead with the current value, or removes the existing one.</summary>
     public void ToggleLaneKey(Layer layer, object? lane)
     {
         if (!HasSource)
@@ -85,7 +85,7 @@ public partial class MainViewModel
 
                 using (OwnLookScope())
                 {
-                    // The last keyframe gone, the value stays what it was here.
+                    // Removing the last keyframe keeps the value at this time as the static value.
                     if (keys.Count == 0)
                         value.Effect.Set(value.Param.Key, now);
                     value.Effect.SetKeys(value.Param.Key, keys);
@@ -106,9 +106,9 @@ public partial class MainViewModel
         RefreshSelectedKey();
     }
 
-    /// <summary>A diamond let go elsewhere on its row: the keyframe (on All, every motion keyframe at that moment) moves there.</summary>
-    /// <param name="from">Where it was, in seconds of the sequence.</param>
-    /// <param name="to">Where it was let go, in seconds of the sequence.</param>
+    /// <summary>Diamond drag release: moves the keyframe (on All, every motion keyframe at that time).</summary>
+    /// <param name="from">Original time, Sequence seconds.</param>
+    /// <param name="to">Drop time, Sequence seconds.</param>
     public void MoveLaneKey(Layer layer, object? lane, double from, double to)
     {
         Checkpoint($"move a keyframe of {layer.Name}");
@@ -118,7 +118,7 @@ public partial class MainViewModel
         RefreshSelectedKey();
     }
 
-    /// <summary>Moves one keyframe of a row from one moment of the clip to another; false when there was none there.</summary>
+    /// <summary>Moves a row's keyframe between clip-local times; false when none at the source.</summary>
     private bool MoveOneLaneKey(Layer layer, object? lane, double start, double end)
     {
         bool moved;
@@ -154,17 +154,17 @@ public partial class MainViewModel
         return moved;
     }
 
-    // ----- Several keyframes at once (4.1.1-B): the Keyframes pane's selection -----
+    // ----- Keyframes pane multi-selection -----
 
-    /// <summary>The keyframes selected in the Keyframes pane: each a row (as <see cref="SelectedKeyLane"/>) and its moment in seconds of the sequence.</summary>
+    /// <summary>Selected keyframes as (row like <see cref="SelectedKeyLane"/>, Sequence seconds).</summary>
     public IReadOnlyList<(object? Lane, double Time)> SelectedLaneKeys { get; set; } = [];
 
-    // Copied keyframes: each its row, how long after the first one copied it is, and the keyframe itself (value and easing).
+    // Copied keyframes: row, offset from the first copied, and the keyframe (value, easing).
     private static List<(object? Lane, double Offset, Keyframe Key)>? _copiedKeys;
 
     public bool HasCopiedKeys => _copiedKeys is { Count: > 0 };
 
-    /// <summary>Selected keyframes dragged together: each moves by the same time, as one undo step.</summary>
+    /// <summary>Moves all selected keyframes by the same delta in one undo step.</summary>
     public void MoveLaneKeys(Layer layer, IReadOnlyList<(object? Lane, double Time)> keys, double delta)
     {
         if (keys.Count == 0 || Math.Abs(delta) < 0.0005)
@@ -172,7 +172,7 @@ public partial class MainViewModel
 
         Checkpoint($"move {keys.Count} keyframes of {layer.Name}");
 
-        // The ones furthest along the way first, so that none is moved onto another that has yet to move.
+        // Process in move direction, furthest first, so no key lands on one not yet moved.
         var moved = 0;
         foreach (var (lane, time) in delta > 0 ? keys.OrderByDescending(k => k.Time) : keys.OrderBy(k => k.Time))
         {
@@ -187,7 +187,7 @@ public partial class MainViewModel
         RefreshSelectedKey();
     }
 
-    /// <summary>Delete with keyframes selected: every one of them goes, as one undo step (on All, every motion keyframe at that moment).</summary>
+    /// <summary>Deletes all selected keyframes in one undo step (on All, every motion keyframe at that time).</summary>
     public void DeleteLaneKeys(Layer layer, IReadOnlyList<(object? Lane, double Time)> keys)
     {
         if (keys.Count == 0)
@@ -212,7 +212,7 @@ public partial class MainViewModel
 
                     using (OwnLookScope())
                     {
-                        // The last keyframe gone, the value stays what it was there.
+                        // Removing the last keyframe keeps the value at that time as the static value.
                         if (list.Count == 0)
                             value.Effect.Set(value.Param.Key, EffectValueAt(layer, value, at));
                         value.Effect.SetKeys(value.Param.Key, list);
@@ -239,7 +239,7 @@ public partial class MainViewModel
         RefreshSelectedKey();
     }
 
-    /// <summary>Ctrl+C in the Keyframes pane: the keyframes given (on All, every motion keyframe at that moment) are kept to paste.</summary>
+    /// <summary>Keyframes pane Ctrl+C: copies the given keyframes (on All, every motion keyframe at that time).</summary>
     public void CopyLaneKeys(Layer layer, IReadOnlyList<(object? Lane, double Time)> keys)
     {
         var copied = new List<(object? Lane, double Time, Keyframe Key)>();
@@ -277,9 +277,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Ctrl+V in the Keyframes pane: the copied keyframes go in at the playhead, as far apart as they were, with their
-    /// values and easing. On another clip an effect value's keyframes go to its effect of the same kind; when it has none
-    /// they are left out.
+    /// Keyframes pane Ctrl+V: pastes at the playhead preserving spacing, values and easing. On another clip, effect keyframes map to
+    /// the same effect kind and are skipped if absent.
     /// </summary>
     public void PasteLaneKeys(Layer layer)
     {
@@ -317,7 +316,7 @@ public partial class MainViewModel
         RefreshSelectedKey();
     }
 
-    /// <summary>The easing box with several keyframes selected: each of them leaves that way. False when none changed.</summary>
+    /// <summary>Applies an outgoing easing to all selected keyframes; false when none changed.</summary>
     private bool SetSelectedKeysEasing(Layer layer, EasingType easing)
     {
         var changed = false;
@@ -350,7 +349,7 @@ public partial class MainViewModel
         return changed;
     }
 
-    /// <summary>Delete in the Keyframes pane: the selected row's keyframe at the playhead goes.</summary>
+    /// <summary>Keyframes pane Delete: removes the selected row's keyframe at the playhead.</summary>
     public void DeleteLaneKey(Layer layer, object? lane)
     {
         if (KeyOnLane(layer, lane) is null)
@@ -367,7 +366,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>A dot of the layout pane's motion path dragged: the place keyframes at that moment move by so much (fractions of the frame).</summary>
+    /// <summary>Motion path dot drag: offsets position keyframes at that time (frame fractions).</summary>
     public void MoveMotionKey(Layer clip, double time, double dx, double dy)
     {
         var (x, y) = (clip.GetKeyAt(time, KeyProperty.X), clip.GetKeyAt(time, KeyProperty.Y));
@@ -383,7 +382,7 @@ public partial class MainViewModel
         Log($"Moved the keyframe at {TimeDisplay.Format(clip.StartTime + time)} of {clip.Name} on the frame");
     }
 
-    /// <summary>What a row is called in the log and the undo list.</summary>
+    /// <summary>Row label for the log and undo list.</summary>
     public static string LaneName(object? lane) => lane switch
     {
         KeyProperty.X => "X",
@@ -397,7 +396,7 @@ public partial class MainViewModel
         _ => "motion",
     };
 
-    /// <summary>An effect value at a moment of the clip: its keyframes', or its set value (a value of the layer's own, the layer's).</summary>
+    /// <summary>Effect value at a clip time: interpolated keyframes, else its static value (layer-owned values read from the layer).</summary>
     public static double EffectValueAt(Layer layer, EffectKeyRef value, double time)
     {
         var keys = value.Effect.GetKeys(value.Param.Key);
@@ -410,12 +409,12 @@ public partial class MainViewModel
 
     // ----- The easing of the selected keyframe, and a Custom Bezier's handles -----
 
-    /// <summary>The curves the Custom Bezier boxes offer to start from.</summary>
+    /// <summary>Custom Bezier starting presets.</summary>
     public IReadOnlyList<BezierPreset> BezierPresets => BezierPreset.All;
 
     private (double X1, double Y1, double X2, double Y2) _selectedHandles = EasingCurves.DefaultHandles;
 
-    /// <summary>Whether the selected keyframe leaves by a Custom Bezier: its handles' boxes are shown.</summary>
+    /// <summary>Selected keyframe uses Custom Bezier (shows handle boxes).</summary>
     public bool IsBezierSelected => _selectedKey.Has && _selectedKey.Easing == EasingType.CubicBezier;
 
     public double BezierX1 { get => _selectedHandles.X1; set => SetHandles(_selectedHandles with { X1 = Math.Clamp(value, 0, 1) }); }
@@ -423,7 +422,7 @@ public partial class MainViewModel
     public double BezierX2 { get => _selectedHandles.X2; set => SetHandles(_selectedHandles with { X2 = Math.Clamp(value, 0, 1) }); }
     public double BezierY2 { get => _selectedHandles.Y2; set => SetHandles(_selectedHandles with { Y2 = Math.Clamp(value, -2, 3) }); }
 
-    /// <summary>A preset chosen in the Custom Bezier box: its handles go on the selected keyframe.</summary>
+    /// <summary>Applies a Custom Bezier preset's handles to the selected keyframe.</summary>
     public BezierPreset? SelectedBezierPreset
     {
         get => BezierPreset.All.FirstOrDefault(p => Math.Abs(p.X1 - _selectedHandles.X1) < 1e-3 && Math.Abs(p.Y1 - _selectedHandles.Y1) < 1e-3
@@ -435,7 +434,7 @@ public partial class MainViewModel
         }
     }
 
-    // A box's value dragged is one undo step: a checkpoint when the first change comes after a pause of a second.
+    // A box drag is one undo step: checkpoint on the first change after a 1 s pause.
     private long _handlesWrittenAt;
 
     private void SetHandles((double X1, double Y1, double X2, double Y2) handles, bool whole = false)
@@ -450,7 +449,7 @@ public partial class MainViewModel
         SetLaneEasing(layer, EasingType.CubicBezier, handles);
     }
 
-    /// <summary>Gives the keyframe at the playhead on the selected row an easing (with a Bezier's handles).</summary>
+    /// <summary>Sets easing (with Bezier handles) on the selected row's keyframe at the playhead.</summary>
     private bool SetLaneEasing(Layer layer, EasingType easing, (double X1, double Y1, double X2, double Y2)? handles)
     {
         var time = ClipClock(layer);

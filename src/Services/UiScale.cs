@@ -11,30 +11,21 @@ using static HandPegApp.Native.User32;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// HandPeg's own UI scale (5.1-Polish, the user's directive: Windows' high-DPI scaling takes room an editor needs). Unless the
-/// settings follow Windows' display scaling (<see cref="AppSettings.FollowWindowsDpiScaling"/>, off by default), every
-/// window's content is laid out at a scale of HandPeg's own (<see cref="BasePixelsPerDip"/>, screen-aware since 5.2): 1:1 at
-/// the monitor's own pixels on a desktop monitor (at 150 % in Windows, half as much room again), and about 1920 DIPs across on
-/// a high-PPI screen (a 2880 x 1800 laptop at 200 %: 1.5 pixels a DIP, not a microscopic 1:1). It is an inverse
-/// LayoutTransform on the window's root, times the UI Scale (<see cref="AppSettings.UiScalePercent"/>, 75 to 150 %), with
-/// layout rounding.
+/// Application UI scaling independent of Windows DPI scaling (unless <see cref="AppSettings.FollowWindowsDpiScaling"/>). Content uses
+/// <see cref="BasePixelsPerDip"/>: 1:1 physical pixels on desktop monitors, ~1920 DIP wide on high-PPI screens (2880 x 1800 at 200 % gives
+/// 1.5 px/DIP). Implemented as an inverse LayoutTransform on the window root times <see cref="AppSettings.UiScalePercent"/> (75-150 %),
+/// with layout rounding.
 /// <list type="bullet">
-/// <item>A window's own size stays Windows' (its frame, its saved place), but a dialog sized by its XAML is made as much
-/// smaller (once, and again if its scale changes), so it holds its content as designed, centred on its owner again.
-/// Windows sized by what they cover (the editor, the settings screen over it, the video's overlay, the dock's windows) say so
-/// with <see cref="SetKeepsItsSize"/>.</item>
-/// <item>A title bar drawn under WindowChrome gets a caption as tall as it is drawn.</item>
-/// <item>The window's root DPI (5.1-AutoHud-Part1, the user's Q3: <see cref="VisualTreeHelper.SetRootDpi"/>) is what one of its
-/// content's DIPs is in real pixels: the UI Scale, on its own, unless Windows' display scaling is followed. WPF then rounds
-/// layout to whole pixels of the monitor, 1 px borders land on one pixel at 125 % and 150 %, text is laid out for what it
-/// is drawn at, and <see cref="VisualTreeHelper.GetDpi"/> within a window is exactly its content's pixels per DIP. What
-/// truly wants the monitor's DPI (a window's own frame) asks <see cref="MonitorScale"/>.</item>
-/// <item>The editor is scaled before its first layout (<see cref="BeforeFirstLayout"/>), every other window as it is
-/// loaded, a window moved to a monitor of another DPI again (Window.DpiChanged), and every window open when the settings
-/// are saved (<see cref="ApplyAll"/>).</item>
-/// <item>A popup outside every window's tree (a tooltip, a context menu, a popup HandPeg makes in code: <see cref="Track"/>)
-/// is drawn at its window's pixels per DIP as it opens (5.2, <see cref="ScalePopup"/>). One inside a window's tree (a
-/// ComboBox's list, a menu's submenu, the flyouts of MainWindow.xaml) takes its window's transform from WPF.</item>
+/// <item>Window frames keep Windows sizing; XAML-sized dialogs shrink by the same factor and re-centre on their owner. Windows sized by
+/// what they cover (editor, settings, overlay, dock windows) opt out via <see cref="SetKeepsItsSize"/>.</item>
+/// <item>WindowChrome caption height matches the drawn title bar.</item>
+/// <item>Root DPI (<see cref="VisualTreeHelper.SetRootDpi"/>) equals content pixels per DIP, so layout rounds to monitor pixels, 1 px borders
+/// stay crisp at 125/150 %, text renders at its true scale, and <see cref="VisualTreeHelper.GetDpi"/> is exact. Frame code uses
+/// <see cref="MonitorScale"/>.</item>
+/// <item>Applied before the editor's first layout (<see cref="BeforeFirstLayout"/>), on other windows' Loaded, on DpiChanged, and to all
+/// open windows on settings save (<see cref="ApplyAll"/>).</item>
+/// <item>Out-of-tree popups (tooltips, context menus, code popups via <see cref="Track"/>) are rescaled on open (<see cref="ScalePopup"/>);
+/// in-tree popups inherit the window transform.</item>
 /// </list>
 /// </summary>
 public static partial class UiScale
@@ -56,9 +47,8 @@ public static partial class UiScale
     public static bool GetKeepsItsSize(Window window) => (bool)window.GetValue(KeepsItsSizeProperty);
 
     /// <summary>
-    /// The window whose monitor sets this window's pixels per DIP (null: its own). A window laid exactly over part of another (the
-    /// video's overlay) takes that window's scale, so its content is drawn at the same pixels per DIP as what it covers even while
-    /// Windows still reports it on another monitor (before its first placement, or straddling two monitors).
+    /// Window whose monitor determines this window's scale (null: its own). Overlays use their host's scale so they match it even when
+    /// Windows reports another monitor (before placement or straddling).
     /// </summary>
     public static readonly DependencyProperty ScaleSourceProperty =
         DependencyProperty.RegisterAttached("ScaleSource", typeof(Window), typeof(UiScale), new PropertyMetadata(null));
@@ -86,16 +76,16 @@ public static partial class UiScale
                 Apply(window);
         }));
 
-        // Raised by a monitor's change, and by SetRootDpi itself: the monitor's own scale is asked for, never the event's. A
-        // change of monitor is still walking the tree with the monitor's DPI: the root DPI is put back once it has finished.
+        // Raised on monitor change and by SetRootDpi itself; query the monitor scale rather than trusting the event. WPF is still
+        // propagating the monitor DPI, so the root DPI is reapplied afterwards.
         EventManager.RegisterClassHandler(typeof(Window), Window.DpiChangedEvent, new DpiChangedEventHandler(static (sender, _) =>
         {
             if (sender is Window window)
                 window.Dispatcher.BeginInvoke(() => Apply(window), System.Windows.Threading.DispatcherPriority.Send);
         }));
 
-        // Every tooltip and context menu as it opens (both raise Opened whether or not anything listens; Loaded is raised only
-        // on elements with handlers of their own, so a class handler for it never sees a popup's root).
+        // Hook Opened for all tooltips and context menus (Loaded only fires on elements with their own handlers, so a class handler
+        // would miss popup roots).
         EventManager.RegisterClassHandler(typeof(ToolTip), ToolTip.OpenedEvent, new RoutedEventHandler(static (sender, _) =>
         {
             if (sender is ToolTip tip)
@@ -108,7 +98,7 @@ public static partial class UiScale
         }));
     }
 
-    /// <summary>A popup HandPeg makes in code, outside every window's tree: drawn at its window's pixels per DIP each time it opens.</summary>
+    /// <summary>Registers an out-of-tree code popup for rescaling on every open.</summary>
     public static void Track(Popup popup) => popup.Opened += static (sender, _) =>
     {
         if (sender is Popup { Child: FrameworkElement child } popup)
@@ -116,11 +106,9 @@ public static partial class UiScale
     };
 
     /// <summary>
-    /// Places a popup's top left corner <paramref name="x"/>, <paramref name="y"/> of <paramref name="target"/>'s own DIPs from
-    /// the target's top left: what PlacementMode.Relative is meant to do (5.2). Relative is mirrored on a PC whose menus open to
-    /// the left of the hand (a touch screen set right-handed, SystemParameters.MenuDropAlignment: the user's touch-screen laptop), where it
-    /// puts the popup's top right corner there instead, a whole popup's width to the left (the tour's ring beside what it rings,
-    /// the dial beside the pointer, X-Ray off the window). A custom placement, in the target's device pixels, is never mirrored.
+    /// Places a popup's top-left at (<paramref name="x"/>, <paramref name="y"/>) DIPs from <paramref name="target"/>'s top-left, as
+    /// PlacementMode.Relative intends. Relative is mirrored when SystemParameters.MenuDropAlignment is right-handed (touch devices), shifting
+    /// the popup a full width left; a custom device-pixel placement is never mirrored.
     /// </summary>
     public static void PlaceRelative(Popup popup, UIElement target, double x, double y)
     {
@@ -142,12 +130,12 @@ public static partial class UiScale
         }
     }
 
-    // ----- Flyouts against the button they open from (5.3-Stage3) -----
+    // ----- Flyout placement against the opening button -----
 
     /// <summary>Which side of its button a flyout opens on, and which of its edges lines up with the button's.</summary>
     public enum FlyoutSide
     {
-        /// <summary>Under the button, its right edge at the button's (the header's flyouts: the header sits at the window's right).</summary>
+        /// <summary>Below the button, right edges aligned (header flyouts at the window's right).</summary>
         BelowEnd,
 
         /// <summary>Under the button, its left edge at the button's.</summary>
@@ -163,8 +151,8 @@ public static partial class UiScale
         Right,
     }
 
-    // A flyout's place against its button: the button's rectangle and the room it is kept in, in the target's device pixels, taken
-    // at the first placement after it opened and kept until it closes; the device pixels a DIP of the button's.
+    // Button and containment rectangles (target device pixels) captured at first placement after open and held until close, plus the
+    // button's device pixels per DIP.
     private sealed class Anchored
     {
         public FrameworkElement Button = null!;
@@ -179,15 +167,11 @@ public static partial class UiScale
         DependencyProperty.RegisterAttached("Anchored", typeof(Anchored), typeof(UiScale), new PropertyMetadata(null));
 
     /// <summary>
-    /// Places a flyout against the button it opens from, <paramref name="gap"/> of the button's DIPs away (5.3-Stage3, the user's bug:
-    /// the Layout Selector opened hundreds of pixels left of the Layout button, and jumped as layouts were previewed under it). One
-    /// custom placement in device pixels for every header flyout and the Views menu: never mirrored on a PC whose menus open to the
-    /// left of the hand (SystemParameters.MenuDropAlignment, which mirrors Relative, Bottom and Top placement: the user's touch-screen
-    /// laptop), and whatever the UI Scale. The button's rectangle is taken once, at the first placement after the flyout opened, and
-    /// kept until it closes, measured from a target that never moves with the panes (<paramref name="within"/>, else the button's
-    /// window's content): a dock laid out again under an open flyout (a layout previewed from the Layout Selector) moves or takes
-    /// away the button, never the flyout. With <paramref name="within"/> it is kept inside that element, at least
-    /// <paramref name="inset"/> DIPs from its left; Windows keeps it on the screen.
+    /// Places a flyout <paramref name="gap"/> DIPs from its button using a custom device-pixel placement (immune to MenuDropAlignment
+    /// mirroring of Relative/Bottom/Top and to UI Scale). The button rectangle is captured once at open, relative to a pane-stable target
+    /// (<paramref name="within"/>, else the window content), so dock rebuilds under an open flyout (layout preview) never move it.
+    /// With <paramref name="within"/> it is clamped inside that element at least <paramref name="inset"/> DIPs from its left; Windows keeps
+    /// it on screen.
     /// </summary>
     public static void PlaceAgainst(Popup popup, FrameworkElement button, FlyoutSide side, double gap, FrameworkElement? within = null, double inset = 0)
     {
@@ -216,7 +200,7 @@ public static partial class UiScale
         }
     }
 
-    // The flyout's top left in the target's device pixels: from the button's rectangle as it was taken when the flyout opened.
+    // Flyout top-left (target device pixels) from the button rectangle captured at open.
     private static Point Placed(Anchored state, Size popupSize)
     {
         state.Taken ??= Take(state);
@@ -227,8 +211,7 @@ public static partial class UiScale
         return FlyoutCorner(state.Side, taken.Button, popupSize, state.Gap * taken.PerDip, room);
     }
 
-    // The button's rectangle (and the room's, when it is in the same window) on the screen, from the target's top left; null while
-    // either is in no window.
+    // Button (and same-window containment) rectangles relative to the target's top-left; null while detached.
     private static (Rect Button, Rect? Room, double PerDip)? Take(Anchored state)
     {
         var (button, target) = (state.Button, state.Target);
@@ -250,8 +233,8 @@ public static partial class UiScale
     }
 
     /// <summary>
-    /// Where a flyout of <paramref name="popup"/>'s size goes against a button's rectangle (all in device pixels, from one origin),
-    /// <paramref name="gap"/> away, kept inside <paramref name="room"/> when there is one: its top left.
+    /// Top-left for a <paramref name="popup"/>-sized flyout <paramref name="gap"/> from the button (device pixels, common origin), clamped
+    /// to <paramref name="room"/> when given.
     /// </summary>
     internal static Point FlyoutCorner(FlyoutSide side, Rect button, Size popup, double gap, Rect? room)
     {
@@ -273,8 +256,8 @@ public static partial class UiScale
     }
 
     /// <summary>
-    /// A window scaled before its first layout (the editor's constructor): its first measure already comes after the window's
-    /// handle is made and its root is set, the one moment before it (<see cref="PresentationSource.AddSourceChangedHandler"/>).
+    /// Scales a window before its first layout (editor constructor), hooking source creation
+    /// (<see cref="PresentationSource.AddSourceChangedHandler"/>), the only point between HWND creation and the first measure.
     /// </summary>
     public static void BeforeFirstLayout(Window window)
     {
@@ -289,7 +272,7 @@ public static partial class UiScale
         PresentationSource.AddSourceChangedHandler(window, first);
     }
 
-    /// <summary>The scale of the monitor a window is on (1.5 at Windows' 150 %): what the window's own frame is measured in, whatever its root DPI says.</summary>
+    /// <summary>Monitor DPI scale for a window (1.5 at 150 %), used for frame metrics regardless of root DPI.</summary>
     public static double MonitorScale(Window window)
     {
         var handle = new WindowInteropHelper(window).Handle;
@@ -297,7 +280,7 @@ public static partial class UiScale
         return dpi > 0 ? dpi / 96.0 : VisualTreeHelper.GetDpi(window).DpiScaleX;
     }
 
-    /// <summary>The longer side, in pixels, of the monitor a window is on (its width when it stands landscape); 0 when it is not known.</summary>
+    /// <summary>Longer side (px) of the window's monitor; 0 when unknown.</summary>
     public static int MonitorPixels(Window window)
     {
         var handle = new WindowInteropHelper(window).Handle;
@@ -320,20 +303,16 @@ public static partial class UiScale
     }
 
     /// <summary>
-    /// The workspace HandPeg keeps on a high-PPI screen, in DIPs across; and what makes a screen high-PPI rather than a desktop
-    /// monitor: Windows scaling it to 150 % or more, with more than 2560 pixels on its longer side (5.2, the user's Windows on ARM laptop).
+    /// Target workspace width (DIP) on high-PPI screens, and the high-PPI criteria: Windows scale >= 150 % with a long side over 2560 px.
     /// </summary>
     public const double HighPpiWorkspaceDips = 1920, HighPpiScale = 1.5;
     public const int HighPpiPixels = 2560;
 
     /// <summary>
-    /// What one of a window's content DIPs is in real pixels on a monitor of <paramref name="dpiScale"/> (2 at Windows' 200 %)
-    /// whose longer side is <paramref name="monitorPixels"/> pixels (0: not known), before the UI Scale. Windows' own scale when
-    /// it is followed. Otherwise 1 on a desktop monitor (scaled to 125 % or less, or to 150 % or less with no more than 2560
-    /// pixels: a 1080p or 1440p screen), so HandPeg has the monitor's every pixel; and on a high-PPI screen (150 % or more, over
-    /// 2560 pixels) as many pixels as keep the workspace about <see cref="HighPpiWorkspaceDips"/> DIPs across, never more than
-    /// Windows' own scale: 1.5 on 2880 x 1800 at 200 % (not 1, which made the editor microscopic), 2 on 3840 x 2160 at 200 %,
-    /// 1.5 on 3840 x 2160 at 150 %.
+    /// Base pixels per DIP for <paramref name="dpiScale"/> and long side <paramref name="monitorPixels"/> (0 unknown), before UI Scale.
+    /// Following Windows: <paramref name="dpiScale"/>. Desktop monitors (&lt;= 125 %, or &lt;= 150 % at &lt;= 2560 px): 1. High-PPI: enough for
+    /// ~<see cref="HighPpiWorkspaceDips"/> DIP width, capped at <paramref name="dpiScale"/> (2880 x 1800 at 200 %: 1.5; 3840 x 2160 at 200 %:
+    /// 2; at 150 %: 1.5).
     /// </summary>
     public static double BasePixelsPerDip(double dpiScale, int monitorPixels)
     {
@@ -348,7 +327,7 @@ public static partial class UiScale
         return Math.Clamp(monitorPixels / HighPpiWorkspaceDips, 1, dpiScale);
     }
 
-    /// <summary><see cref="BasePixelsPerDip"/> times the UI Scale (75 to 150 %): what one of a window's content DIPs is in real pixels.</summary>
+    /// <summary>Effective content pixels per DIP: <see cref="BasePixelsPerDip"/> x UI Scale (75-150 %).</summary>
     public static double PixelsPerDip(double dpiScale, int monitorPixels)
     {
         var settings = AppSettings.Current;
@@ -357,8 +336,7 @@ public static partial class UiScale
     }
 
     /// <summary>
-    /// The scale of a window's content on a monitor of <paramref name="dpiScale"/> (1.5 at Windows' 150 %) and
-    /// <paramref name="monitorPixels"/> pixels: its <see cref="PixelsPerDip"/> over the monitor's own scale.
+    /// Content LayoutTransform scale: <see cref="PixelsPerDip"/> / <paramref name="dpiScale"/> for a <paramref name="monitorPixels"/>-wide monitor.
     /// </summary>
     public static double For(double dpiScale, int monitorPixels)
     {
@@ -366,7 +344,7 @@ public static partial class UiScale
         return PixelsPerDip(dpiScale, monitorPixels) / monitor;
     }
 
-    /// <summary>Gives a window the scale its monitor and the settings make, and the root DPI that goes with it (nothing when it has them already).</summary>
+    /// <summary>Applies the computed scale and matching root DPI to a window (no-op when unchanged).</summary>
     public static void Apply(Window window)
     {
         try
@@ -415,13 +393,10 @@ public static partial class UiScale
     }
 
     /// <summary>
-    /// A popup outside every window's tree (a tooltip, a context menu, one made in code) is a window of its own at its
-    /// monitor's DPI, so WPF draws it at the monitor's scale, not its window's (5.2, the user's bug: at 200 % beside an editor
-    /// drawn 1:1, tooltips came out several times the size of everything round them). As it opens, its content takes the pixels
-    /// per DIP of the window it belongs to (that of <paramref name="target"/>, else the editor): that window's root DPI on the
-    /// popup's root, and the LayoutTransform from the monitor's scale to it on <paramref name="content"/>, the popup's child. Not
-    /// on its root: the popup's window is sized from its root's own size, which the root's LayoutTransform does not change. WPF
-    /// sizes and places the popup again before it is first drawn.
+    /// Out-of-tree popups are separate HWNDs at monitor DPI, so they would render at monitor scale rather than the app's (oversized next
+    /// to a 1:1 editor). On open, applies the owner's (<paramref name="target"/>, else editor) root DPI to the popup root and the
+    /// monitor-to-owner LayoutTransform to <paramref name="content"/> (not the root, whose size drives the popup HWND size). WPF re-measures
+    /// before first render.
     /// </summary>
     private static void ScalePopup(FrameworkElement content, UIElement? target)
     {
@@ -466,7 +441,7 @@ public static partial class UiScale
         return true;
     }
 
-    /// <summary>Everything under a root laid out again: a window already laid out rounded its layout at the DPI it had (a dialog is scaled as it is loaded).</summary>
+    /// <summary>Invalidates layout under a root so rounding is redone at the new DPI.</summary>
     private static void MeasureAgain(DependencyObject element)
     {
         if (element is UIElement shown)
@@ -476,12 +451,9 @@ public static partial class UiScale
     }
 
     /// <summary>
-    /// The caption WindowChrome hit-tests as tall as the title bar drawn (its XAML height, scaled): in the window's own DIPs,
-    /// at the monitor's scale. WindowChrome itself would measure the pointer by the root DPI set here (SetRootDpi), a third off
-    /// at 200 % on a 2880 x 1800 screen: the windows that draw their own title bar hit-test their frame in real pixels instead
-    /// (MainWindow.FrameHitTest, 5.2-AuditB), with this height. A new WindowChrome only when it would differ from the window's
-    /// (5.3): WPF works the whole frame out again for each one it is given (its glass, its system menu, SWP_FRAMECHANGED). A real
-    /// change of scale (a move onto a monitor of another DPI) still gives a new one, in the middle of a drag if it comes in one.
+    /// Sets the WindowChrome caption height to the drawn title bar (XAML height scaled, window DIPs at monitor scale). WindowChrome would
+    /// hit-test using the overridden root DPI, so custom-chrome windows hit-test in physical pixels (FrameHitTest) with this height.
+    /// A new WindowChrome is assigned only when values change, since each assignment recomputes the frame (SWP_FRAMECHANGED).
     /// </summary>
     private static void ScaleCaption(Window window, double scale)
     {
@@ -509,7 +481,7 @@ public static partial class UiScale
             && had.NonClientFrameEdges == wanted.NonClientFrameEdges;
     }
 
-    /// <summary>A dialog's own size (what its XAML gives it) by a factor, its content's size following it; centred on its owner again.</summary>
+    /// <summary>Scales a dialog's XAML size by a factor and re-centres it on its owner.</summary>
     private static void ScaleSize(Window window, double factor)
     {
         var (oldWidth, oldHeight) = (window.ActualWidth, window.ActualHeight);

@@ -4,16 +4,13 @@ using HandPegApp.Services.Audio;
 
 namespace HandPegApp.Services;
 
-// Peaks without FFmpeg (5.1-CleanupStudioAndFfmpegPurge, the Great FFmpeg Purge): Media Foundation's Source Reader over every stream
-// wanted in one pass, in this process. One reading of the file whatever the number of its tracks, as the FFmpeg graph it takes over
-// from was built to be: a recording with six tracks must not read its gigabytes six times. FFmpeg's pipe is what is left for a file
-// Windows cannot decode.
+// In-process waveform peaks via Media Foundation Source Reader: all wanted streams in a single pass, so a six-track recording is read
+// once, not six times. The FFmpeg pipe remains only for files Windows cannot decode.
 public static partial class Waveforms
 {
     /// <summary>
-    /// A file's tracks read as peaks, each by its own reader, in one pass. False (the readers then hold nothing to use) when Media
-    /// Foundation cannot read it: FFmpeg's pipe does then. An MP4 with several sound tracks is FFmpeg's too: Windows lists them in an
-    /// order of its own (AudioDecoder.Open).
+    /// Reads peaks for all requested tracks in one pass, one reader each. False when MF cannot read the file (FFmpeg fallback); multi-audio
+    /// MP4s also go to FFmpeg since MF stream order differs (AudioDecoder.Open).
     /// </summary>
     private static unsafe bool ReadPeaksNatively(string path, IReadOnlyList<int> tracks, PeakReader[] readers, CancellationToken token)
     {
@@ -145,8 +142,8 @@ public static partial class Waveforms
     }
 
     /// <summary>
-    /// One stream on its way to peaks: made mono, then brought down to the rate peaks are counted at by averaging what falls in each
-    /// step (what the graph's aresample did, near enough for an outline). A gap in the stream is silence, so that a peak's place is its time.
+    /// Per-stream peak accumulator: downmix to mono, decimate to the peak rate by box averaging; stream gaps are filled with silence so
+    /// peak positions match time.
     /// </summary>
     private sealed class StreamPeaks(PeakReader peaks)
     {
@@ -219,8 +216,7 @@ public static partial class Waveforms
     }
 
     /// <summary>
-    /// One track's peaks, from the cache or read now, for what looks at them instead of drawing them (Remove Dead Air). Null when the
-    /// sound cannot be read.
+    /// Track peaks from cache or freshly read, for analysis consumers (Remove Dead Air); null when unreadable.
     /// </summary>
     public static async Task<WaveformData?> PeaksOfAsync(string mediaPath, int track, CancellationToken cancellationToken) =>
         DataOf((await RenderManyAsync(mediaPath, [new WaveformRequest([track], 16, 16, "gray")], cancellationToken, WorkLane.Interactive))[0]);

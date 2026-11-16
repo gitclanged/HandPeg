@@ -7,14 +7,13 @@ using System.Text;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// One editor for a project double-clicked while HandPeg is open (5.2.0's re-cut, the user's answer): HandPeg started with a .hproj
-/// or .hpb (Explorer's open command, ExplorerThumbnails) hands it to the copy already open for the same user, session and data folder,
-/// over a pipe only that user can open; that copy asks about its unsaved changes, opens it and comes to the front, and the new process
-/// ends without a window. A start with no project, a copy of another data folder (a portable one beside an installed one), or a hand-off
-/// that fails for any reason starts as it always did.
+/// Single-instance project hand-off: launching with a .hproj/.hpb (Explorer open command) forwards it over a user-only pipe to the
+/// running instance with the same user, session and data folder; that instance prompts for unsaved changes, opens it and activates,
+/// and the new process exits windowless. No project, a different data folder (portable vs. installed) or any hand-off failure starts
+/// normally.
 ///
-/// Law 1: the open copy takes a named mutex in Program.Start (one kernel call) and listens only after its first frame, on a pool thread;
-/// a start with no project never looks for another copy.
+/// Law 1: the running instance takes a named mutex in Program.Start (one kernel call) and listens only after Frame 1 on the pool;
+/// project-less starts never probe for another instance.
 /// </summary>
 public static partial class SingleInstance
 {
@@ -26,7 +25,7 @@ public static partial class SingleInstance
 
     private static Mutex? _held;
 
-    /// <summary>The .hproj or .hpb on the command line (<c>HandPeg.exe "x.hproj"</c>: Explorer's open command), made whole; null for none.</summary>
+    /// <summary>Full path of the .hproj/.hpb command-line argument (<c>HandPeg.exe "x.hproj"</c>); null when absent.</summary>
     public static string? LaunchFile()
     {
         var file = Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(arg => !arg.StartsWith('-') && IsProjectPath(arg));
@@ -43,7 +42,7 @@ public static partial class SingleInstance
     private static bool IsProjectPath(string path) =>
         path.EndsWith(ProjectStore.Extension, StringComparison.OrdinalIgnoreCase) || path.EndsWith(ProjectBundle.Extension, StringComparison.OrdinalIgnoreCase);
 
-    // The same user, session and data folder make the same names; a copy with a data folder of its own (portable) is an editor of its own.
+    // Names derive from user, session and data folder, so instances with different data folders (portable) stay independent.
     private static string Key => _key ??= Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
         $"{Environment.UserDomainName}\\{Environment.UserName}|{SessionId()}|{AppPaths.DataRoot.ToLowerInvariant()}")), 0, 12);
 
@@ -56,14 +55,14 @@ public static partial class SingleInstance
     private static string PipeName => $"HandPeg-Open-{Key}";
 
     /// <summary>
-    /// Program.Start, before WPF, for a start with a project: hands it to the copy open, when there is one. True when that copy took
-    /// it (this process then ends); false to start as usual.
+    /// Called from Program.Start before WPF for project launches: forwards to a running instance. True when accepted (this process exits);
+    /// false to start normally.
     /// </summary>
     public static bool HandOff(string path)
     {
         try
         {
-            // No copy open: nothing waits (the mutex is the open copy's from its first moment; its pipe comes after its first frame).
+            // No running instance: no wait (the mutex exists from process start; the pipe opens after Frame 1).
             if (!Mutex.TryOpenExisting(MutexName, out var other))
                 return false;
             other.Dispose();
@@ -89,7 +88,7 @@ public static partial class SingleInstance
         }
     }
 
-    /// <summary>Program.Start: this copy is the one a project double-clicked later is handed to (it listens after its first frame, <see cref="Listen"/>).</summary>
+    /// <summary>Program.Start: claims the primary-instance mutex (listening starts after Frame 1 via <see cref="Listen"/>).</summary>
     public static void Claim()
     {
         try
@@ -102,7 +101,7 @@ public static partial class SingleInstance
         }
     }
 
-    /// <summary>The window is closing: a project double-clicked from now on starts a copy of its own, never waiting on this one.</summary>
+    /// <summary>On window close: releases the mutex so later launches start their own instance.</summary>
     public static void Release()
     {
         _held?.Dispose();
@@ -110,8 +109,8 @@ public static partial class SingleInstance
     }
 
     /// <summary>
-    /// After the first frame: takes projects handed over, one at a time, on a pool thread, until <paramref name="token"/> ends. Each that is a
-    /// project file there is answered "ok" and given to <paramref name="open"/> (on the pool thread: the window marshals it to its own).
+    /// Post-Frame-1 pool listener accepting hand-offs serially until <paramref name="token"/> cancels; valid project paths get "ok" and go
+    /// to <paramref name="open"/> (on the pool; the window marshals to the UI thread).
     /// </summary>
     public static void Listen(Action<string> open, CancellationToken token)
     {
@@ -147,7 +146,7 @@ public static partial class SingleInstance
                 }
                 catch (Exception ex) when (ex is IOException or OperationCanceledException or UnauthorizedAccessException)
                 {
-                    // One hand-off that went wrong (the other copy gone mid-way, a line that never came): the next is listened for.
+                    // Failed hand-off (peer exited, no line received): continue listening.
                     AppLog.Write("A project handed over by another HandPeg could not be taken", ex);
                     await Task.Delay(250, CancellationToken.None);
                 }

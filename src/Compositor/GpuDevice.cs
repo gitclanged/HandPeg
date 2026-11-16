@@ -4,9 +4,9 @@ using HandPegApp.Compositor.Native;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// The compositor's Direct3D 11 device on one card, with the few fixed states every pass shares (three samplers, two
-/// blend states, one rasterizer state, the pass constants) and a pool of render textures. Video support is asked for
-/// (Media Foundation decodes on it) and the device is multithread-protected, because the decoder uses it from its own threads.
+/// The compositor's D3D11 device on one adapter, with the fixed states every pass shares (four samplers, two blend states, one rasterizer
+/// state, the pass constant buffer) and a render-texture pool. Created with video support (Media Foundation decodes on it) and
+/// multithread-protected, since the decoder calls it from its own threads.
 /// </summary>
 internal sealed unsafe class GpuDevice : IDisposable
 {
@@ -28,27 +28,26 @@ internal sealed unsafe class GpuDevice : IDisposable
 
     public long AdapterLuid { get; private set; }
 
-    /// <summary>The card's place in DXGI's list (the number the GPU roles and FFmpeg's -hwaccel_device use); -1 for WARP.</summary>
+    /// <summary>Adapter index in DXGI enumeration order (as used by GPU roles and FFmpeg -hwaccel_device); -1 for WARP.</summary>
     public int AdapterIndex { get; private set; } = -1;
 
     public string AdapterName { get; private set; } = "";
 
     public uint VendorId { get; private set; }
 
-    /// <summary>The processor's software renderer: no hardware to decode with.</summary>
+    /// <summary>True for WARP, the CPU software rasterizer (no hardware decode).</summary>
     public bool IsWarp { get; private set; }
 
-    /// <summary>The card's own memory, in bytes (0 for WARP or when it is not known): the 3D view's plane budget grows with it (5.1-Polish, the user's Q8).</summary>
+    /// <summary>Dedicated VRAM in bytes (0 for WARP or when unknown); scales the 3D view's plane budget.</summary>
     public long DedicatedVideoMemory { get; private set; }
 
-    /// <summary>The computer's memory DXGI says the card may use besides its own, in bytes (0 for WARP).</summary>
+    /// <summary>Shared system memory DXGI reports for the adapter, in bytes (0 for WARP).</summary>
     public long SharedSystemMemory { get; private set; }
 
     /// <summary>
-    /// Whether the card shares the computer's memory, as a unified-memory SoC's graphics does (5.2-Arm64AndNpu: the Snapdragon X's
-    /// Adreno has a 128 MB carve-out and 16 GB shared): DXCore's IsIntegrated when the driver says, else DXGI's sizes
-    /// (<see cref="MemoryTier.IsUnifiedMemory"/>). Asked the first time it is wanted (the frame cache's Auto budget, in the worker),
-    /// never as the device is made: a device the editor makes for itself loads no DXCore.
+    /// True for unified-memory SoC graphics (e.g. Snapdragon X Adreno: 128 MB carve-out, 16 GB shared): DXCore IsIntegrated when reported,
+    /// else the DXGI size heuristic (<see cref="MemoryTier.IsUnifiedMemory"/>). Evaluated lazily on first use (the worker's Auto cache budget),
+    /// never at device creation, so editor-side devices never load DXCore.
     /// </summary>
     public bool UnifiedMemory => _unifiedMemory ??= MemoryTier.IsUnifiedMemory(IsWarp ? null : DxCore.IsIntegratedCard(AdapterLuid), DedicatedVideoMemory, SharedSystemMemory, IsWarp);
 
@@ -59,9 +58,8 @@ internal sealed unsafe class GpuDevice : IDisposable
     private GpuDevice() => Textures = new TexturePool(this);
 
     /// <summary>
-    /// A device on the card at <paramref name="adapterIndex"/> (DXGI's order), on the one Windows calls high-performance
-    /// for -1, or on a card found by its LUID when <paramref name="luid"/> is not 0. Falls back to WARP when no card works
-    /// and <paramref name="allowWarp"/>.
+    /// Creates a device on adapter <paramref name="adapterIndex"/> (DXGI order), on the high-performance adapter for -1, or on the adapter
+    /// matching <paramref name="luid"/> when non-zero. Falls back to WARP when no adapter works and <paramref name="allowWarp"/> is set.
     /// </summary>
     public static GpuDevice Create(int adapterIndex, long luid = 0, bool allowWarp = true)
     {
@@ -116,7 +114,7 @@ internal sealed unsafe class GpuDevice : IDisposable
                 : -1;
             if (hr < 0 && adapter != 0)
             {
-                // A card without video support (or a driver that refuses the flag) still composites.
+                // Adapters without video support (or drivers rejecting the flag) can still composite.
                 hr = Dxgi.D3D11CreateDevice(adapter, D3D11.DriverUnknown, 0, D3D11.CreateBgraSupport, levels, 2, D3D11.SdkVersion, &device, &level, &context);
             }
 
@@ -133,14 +131,14 @@ internal sealed unsafe class GpuDevice : IDisposable
             (_device, _context) = (device, context);
             _device1 = Com.Query(_device, Iid.D3D11Device1);
 
-            // The card actually used (also when chosen by preference or after WARP).
+            // Describe the adapter actually used (also when chosen by preference or after the WARP fallback).
             var used = Dxgi.AdapterOf(_device);
             if (used != 0)
             {
                 var desc = Dxgi.Describe(used);
                 AdapterLuid = desc.Luid;
                 AdapterName = Dxgi.Name(desc);
-                HandPegApp.Services.GpuNativeBreadcrumbs.Adapter = desc.Luid; // the card the process's breadcrumbs name (5.4.4)
+                HandPegApp.Services.GpuNativeBreadcrumbs.Adapter = desc.Luid; // adapter tagged on this process's GPU breadcrumbs
                 VendorId = desc.VendorId;
                 IsWarp |= (desc.Flags & AdapterDesc1.FlagSoftware) != 0;
                 DedicatedVideoMemory = IsWarp ? 0 : (long)desc.DedicatedVideoMemory;
@@ -197,7 +195,7 @@ internal sealed unsafe class GpuDevice : IDisposable
         _linearBorder = device.CreateSamplerState(Sampler(D3D11.FilterLinear, D3D11.AddressBorder));
         _linearWrap = device.CreateSamplerState(Sampler(D3D11.FilterLinear, D3D11.AddressWrap));
 
-        // Premultiplied "over": source + destination * (1 - source alpha), for colour and alpha alike.
+        // Premultiplied over: src + dst * (1 - src alpha), for colour and alpha.
         var blend = default(BlendDesc);
         blend.Targets[0] = new RenderTargetBlendDesc
         {
@@ -212,13 +210,13 @@ internal sealed unsafe class GpuDevice : IDisposable
         };
         _premultipliedOver = device.CreateBlendState(blend);
 
-        // Added (sub-frames of a layer summed by a shutter, particles of light): source + destination, for colour and alpha alike.
+        // Additive (shutter sub-frame sums, light particles): src + dst, for colour and alpha.
         var added = blend;
         added.Targets[0].DestBlend = D3D11.BlendOne;
         added.Targets[0].DestBlendAlpha = D3D11.BlendOne;
         _additive = device.CreateBlendState(added);
 
-        // The scissor is on: every pass sets it, to its whole target or (a layer laid on the player's letterboxed canvas) the picture.
+        // Scissor enabled: every pass sets it to its full target or, for layers on the letterboxed player canvas, the picture rect.
         _rasterizer = device.CreateRasterizerState(new RasterizerDesc { FillMode = D3D11.FillSolid, CullMode = D3D11.CullNone, DepthClipEnable = 1, ScissorEnable = 1 });
     }
 
@@ -233,7 +231,7 @@ internal sealed unsafe class GpuDevice : IDisposable
         MaxLod = float.MaxValue,
     };
 
-    /// <summary>The states every pass starts from: the samplers, the constants, the rasterizer, triangles, no input layout.</summary>
+    /// <summary>Binds the shared baseline state: samplers, constants, rasterizer, no input layout.</summary>
     public void BindCommon()
     {
         var context = Context;
@@ -245,13 +243,13 @@ internal sealed unsafe class GpuDevice : IDisposable
         context.IASetInputLayout(0);
     }
 
-    /// <summary>Premultiplied "over" (true), or writing straight over what is there (false).</summary>
+    /// <summary>Premultiplied over (true) or straight overwrite (false).</summary>
     public void SetBlend(bool over) => Context.OMSetBlendState(over ? _premultipliedOver : 0);
 
-    /// <summary>The next draw is added to what is there.</summary>
+    /// <summary>The next draw blends additively.</summary>
     public void SetAdditive() => Context.OMSetBlendState(_additive);
 
-    /// <summary>Writes the pass constants (a dynamic buffer, discarded each time: the driver renames it, no stall).</summary>
+    /// <summary>Uploads the pass constants (dynamic buffer mapped WRITE_DISCARD: the driver renames it, no stall).</summary>
     public void SetConstants(in PassConstants constants)
     {
         var context = Context;
@@ -260,7 +258,7 @@ internal sealed unsafe class GpuDevice : IDisposable
         context.Unmap(_constants, 0);
     }
 
-    /// <summary>Throws <see cref="GpuException"/> (device lost) when the card has gone away.</summary>
+    /// <summary>Throws <see cref="GpuException"/> (device lost) when the device has been removed.</summary>
     public void CheckAlive()
     {
         var reason = Device.GetDeviceRemovedReason();
@@ -269,8 +267,8 @@ internal sealed unsafe class GpuDevice : IDisposable
     }
 
     /// <summary>
-    /// How many textures <see cref="CreateTexture"/> has made on this device (any thread: the decode lanes make theirs too). Published
-    /// as ControlBlock.TexturesMade: the proof that the 3D view's way in and out makes none after its first frame (5.3-Stage3).
+    /// Count of textures created via <see cref="CreateTexture"/> on this device (any thread; decode lanes create theirs too). Published as
+    /// ControlBlock.TexturesMade to prove the 3D view's enter/exit creates none after its first frame.
     /// </summary>
     public int TexturesMade => Volatile.Read(ref _texturesMade);
 
@@ -300,7 +298,7 @@ internal sealed unsafe class GpuDevice : IDisposable
         }
         catch
         {
-            // The views failed (memory pressure, an unsupported format): what was made is released before the error goes on.
+            // View creation failed (memory pressure, unsupported format): release what was created, then rethrow.
             Com.Release(ref srv);
             Com.Release(ref texture);
             throw;
@@ -309,15 +307,13 @@ internal sealed unsafe class GpuDevice : IDisposable
         return new GpuTexture(texture, srv, rtv, width, height, format);
     }
 
-    // IDXGIDevice3 (dxgi1_3.h): Trim is its first method of its own, after IUnknown's 3, IDXGIObject's 4, IDXGIDevice's 5,
-    // IDXGIDevice1's 2 and IDXGIDevice2's 3.
+    // IDXGIDevice3 (dxgi1_3.h) interface id; Trim is its first own method (IDXGIDevice3Slot.Trim).
     private static readonly Guid DxgiDevice3 = new("6007896c-3244-4afd-bf18-a6d3beda5023");
 
     /// <summary>
-    /// Gives the driver's own memory back (the worker's trim): the context's state cleared (every render binds its own
-    /// again, BindCommon and each pass), the queued work flushed, and IDXGIDevice3::Trim, which releases the allocations the driver kept
-    /// for reuse after textures were released. Call between frames, on the thread that draws. False where Windows has no Trim (it then
-    /// only clears and flushes).
+    /// Returns driver-held memory (worker trim): clears context state (every render rebinds via BindCommon and its passes), flushes queued
+    /// work and calls IDXGIDevice3::Trim to release allocations the driver kept for reuse. Call between frames on the drawing thread. False
+    /// when Trim is unavailable (it then only clears and flushes).
     /// </summary>
     public bool Trim()
     {
@@ -338,7 +334,7 @@ internal sealed unsafe class GpuDevice : IDisposable
         }
     }
 
-    /// <summary>A staging texture to read a picture back (tests, the benchmark): never on the preview's path.</summary>
+    /// <summary>Staging texture for CPU readback or upload (tests, benchmark); never on the preview path.</summary>
     public nint CreateStaging(int width, int height, uint format, bool read = true)
     {
         return Device.CreateTexture2D(new Texture2DDesc
@@ -373,7 +369,7 @@ internal sealed unsafe class GpuDevice : IDisposable
     }
 }
 
-/// <summary>A texture with its views (any of which may be 0).</summary>
+/// <summary>A texture with its SRV and RTV (either may be 0).</summary>
 internal sealed class GpuTexture(nint texture, nint srv, nint rtv, int width, int height, uint format) : IDisposable
 {
     private nint _texture = texture, _srv = srv, _rtv = rtv;
@@ -385,7 +381,7 @@ internal sealed class GpuTexture(nint texture, nint srv, nint rtv, int width, in
     public int Height { get; } = height;
     public uint Format { get; } = format;
 
-    /// <summary>Set by <see cref="TexturePool"/> while rented.</summary>
+    /// <summary>True while rented from <see cref="TexturePool"/>.</summary>
     public bool Rented { get; set; }
 
     public void Dispose()
@@ -397,8 +393,8 @@ internal sealed class GpuTexture(nint texture, nint srv, nint rtv, int width, in
 }
 
 /// <summary>
-/// Render textures reused across passes and frames, by size and format: a frame rents what it needs and gives it all
-/// back at its end; what went unused for a few seconds is let go (a layer that left the frame, a resized player).
+/// Render textures reused across passes and frames, keyed by size and format: a frame rents what it needs and returns it all at its end;
+/// textures unused for 240 frames are released (a layer left the frame, the player resized).
 /// </summary>
 internal sealed unsafe class TexturePool(GpuDevice gpu) : IDisposable
 {
@@ -428,7 +424,7 @@ internal sealed unsafe class TexturePool(GpuDevice gpu) : IDisposable
         return made;
     }
 
-    /// <summary>Gives one texture back before the frame ends.</summary>
+    /// <summary>Returns one texture before the frame ends.</summary>
     public void Return(GpuTexture texture)
     {
         if (!texture.Rented)
@@ -438,7 +434,7 @@ internal sealed unsafe class TexturePool(GpuDevice gpu) : IDisposable
         _free.Add((texture, _frame));
     }
 
-    /// <summary>Every rented texture comes back (a layer is drawn: its working textures are free for the next).</summary>
+    /// <summary>Returns every rented texture (once a layer is drawn, its working textures are free for the next).</summary>
     public void ReturnAll()
     {
         foreach (var texture in _rented)
@@ -450,13 +446,12 @@ internal sealed unsafe class TexturePool(GpuDevice gpu) : IDisposable
         _rented.Clear();
     }
 
-    /// <summary>How many frames have ended (a texture given back is marked with the frame it was last used in).</summary>
+    /// <summary>Number of frames ended; returned textures are stamped with their last-use frame.</summary>
     public long Frame => _frame;
 
     /// <summary>
-    /// Releases every texture not rented now, returning the bytes they held (5.4D-TabPerf, the worker's trim: between frames nothing is
-    /// rented, so the pool is emptied; what the next frame needs is made again). <see cref="ReleaseUnusedSince"/> with
-    /// <see cref="Frame"/> + 1 does the same; with 0 it releases nothing.
+    /// Releases every non-rented texture and returns the bytes freed (worker trim: between frames nothing is rented, so the pool empties and
+    /// the next frame recreates what it needs). Equivalent to <see cref="ReleaseUnusedSince"/> with <see cref="Frame"/> + 1.
     /// </summary>
     public long ReleaseFree()
     {
@@ -471,14 +466,14 @@ internal sealed unsafe class TexturePool(GpuDevice gpu) : IDisposable
         return released;
     }
 
-    /// <summary>How many textures are free (not rented).</summary>
+    /// <summary>Number of free (non-rented) textures.</summary>
     public int FreeCount => _free.Count;
 
-    // A pool texture's size: RGBA16F (the working textures) is 8 bytes a pixel; anything else is taken as 4.
+    // Pool texture size: RGBA16F working textures are 8 bytes per pixel; anything else is counted as 4.
     private static long BytesOf(GpuTexture texture) =>
         (long)texture.Width * texture.Height * (texture.Format == DxgiFormat.R16G16B16A16Float ? 8 : 4);
 
-    /// <summary>Releases every free texture last used before frame <paramref name="frame"/> (the 3D view's, once it has gone).</summary>
+    /// <summary>Releases every free texture last used before frame <paramref name="frame"/> (e.g. the 3D view's after it closes).</summary>
     public void ReleaseUnusedSince(long frame)
     {
         for (var i = _free.Count - 1; i >= 0; i--)
@@ -491,7 +486,7 @@ internal sealed unsafe class TexturePool(GpuDevice gpu) : IDisposable
         }
     }
 
-    /// <summary>The frame is over: every rented texture comes back; ones unused for 240 frames are released.</summary>
+    /// <summary>Ends the frame: returns every rented texture and releases those unused for 240 frames.</summary>
     public void EndFrame()
     {
         _frame++;

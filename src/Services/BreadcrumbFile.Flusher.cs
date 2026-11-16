@@ -98,7 +98,7 @@ internal sealed unsafe partial class BreadcrumbFile
         return false;
     }
 
-    /// <summary>Whether the flusher is asleep with its timer stopped (no hot line for <see cref="IdleAfterQuietPeriods"/> periods): tests.</summary>
+    /// <summary>True when the flusher sleeps with its timer stopped after <see cref="IdleAfterQuietPeriods"/> quiet periods (tests).</summary>
     internal bool FlusherIdle => Volatile.Read(ref _flusherIdle) != 0;
 
     /// <summary>How many periods the flusher has woken for (tests: none while it is idle).</summary>

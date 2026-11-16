@@ -6,11 +6,11 @@ using System.Windows.Input;
 namespace HandPegApp;
 
 /// <summary>
-/// A dialog's own Undo over one typed state, kept whole: the state is captured as each press of the pointer or a key begins, and kept
-/// as a step when the press has changed it (compared by <c>key</c>, a canonical text of the state). Ctrl+Z restores the last step whole;
-/// Ctrl+Y or Ctrl+Shift+Z goes forward again. Unlike <see cref="BoundUndo"/>, which reads the properties the shown controls are bound
-/// to, it also takes back what no control is bound to (list edits, a whole state replaced by Reset), and a restore never writes into
-/// an object the dialog no longer shows. A text box keeps the keys for its own typing until it has handed that on.
+/// Dialog-local Undo over whole-state snapshots of one typed state: captured at each pointer/key press start and recorded as a step if
+/// the press changed it (compared via <c>key</c>, a canonical text form). Ctrl+Z restores the previous snapshot; Ctrl+Y or Ctrl+Shift+Z
+/// redoes. Unlike <see cref="BoundUndo"/> (which reads bound control properties), it also reverts unbound changes (list edits, Reset
+/// replacing the whole state), and a restore never writes into objects the dialog no longer shows. A text box handles its own
+/// uncommitted typing first.
 /// </summary>
 public sealed class SnapshotUndo<T>
     where T : class
@@ -23,10 +23,10 @@ public sealed class SnapshotUndo<T>
     private readonly List<(T State, string Key)> _undo = [], _redo = [];
     private (T State, string Key)? _beforePress;
 
-    /// <param name="window">The dialog whose presses and keys make the steps.</param>
-    /// <param name="capture">A deep copy of the state as it is now.</param>
-    /// <param name="restore">Puts a captured state back (the dialog shows it, rebinding what it must).</param>
-    /// <param name="key">A canonical text of a state: two states are one step apart when their keys differ.</param>
+    /// <param name="window">Dialog whose pointer and key presses delimit steps.</param>
+    /// <param name="capture">Returns a deep copy of the current state.</param>
+    /// <param name="restore">Restores a captured state (the dialog displays it, rebinding as needed).</param>
+    /// <param name="key">Canonical text of a state; differing keys mean a change.</param>
     public SnapshotUndo(Window window, Func<T> capture, Action<T> restore, Func<T, string> key)
     {
         (_capture, _restore, _key) = (capture, restore, key);
@@ -44,7 +44,7 @@ public sealed class SnapshotUndo<T>
 
     public void Redo() => Step(_redo, _undo);
 
-    /// <summary>A press begins: the state as it is now is what a change made by this press is undone to.</summary>
+    /// <summary>Press start: snapshots the current state as the undo target for changes made by this press.</summary>
     internal void BeginPress()
     {
         if (_beforePress is not null)
@@ -53,7 +53,7 @@ public sealed class SnapshotUndo<T>
         _beforePress = (state, _key(state));
     }
 
-    /// <summary>A press has ended: a step, when it changed the state.</summary>
+    /// <summary>Press end: records a step if the state changed.</summary>
     internal void EndPress()
     {
         if (_beforePress is not { } before)
@@ -79,7 +79,7 @@ public sealed class SnapshotUndo<T>
             return;
         }
 
-        // A text box's own typing, not yet handed on, is taken back (or put back) in the box first.
+        // Uncommitted text box typing is undone or redone inside the box first.
         if (Keyboard.FocusedElement is TextBox box && (redo ? box.CanRedo : box.CanUndo)
             && BindingOperations.GetBindingExpression(box, TextBox.TextProperty) is not { IsDirty: false })
         {
@@ -103,12 +103,12 @@ public sealed class SnapshotUndo<T>
 
     private void Step(List<(T State, string Key)> from, List<(T State, string Key)> to)
     {
-        // The press that asked for it (a click of a button, Ctrl held for the key) is not a change of its own.
+        // The triggering press (button click, Ctrl key) must not record its own step.
         _beforePress = null;
         var now = _capture();
         var nowKey = _key(now);
 
-        // A step that would change nothing is passed over.
+        // Skip no-op steps (same key as the current state).
         while (from.Count > 0 && from[^1].Key == nowKey)
             from.RemoveAt(from.Count - 1);
         if (from.Count == 0)

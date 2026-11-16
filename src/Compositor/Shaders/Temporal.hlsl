@@ -1,9 +1,8 @@
-// HandPeg compositor: effects that look back over frames (Pass 5.0-AudioAnd3D, the user's answer Q3).
+// Temporal effects.
 //
-// Matte Smooth, as FFmpeg's tmix does it: the transparency averaged over the last N frames (Hann weights, the current
-// frame the newest), the colour the current frame's. The host keeps each smoothed layer's last frames' alpha in R8
-// textures (PSAlphaOf writes one) and binds up to eight of them at t5..t12, oldest first, while the player plays or
-// steps in order; a jump falls back to the spatial pass (PSMatteSmooth in Effects.hlsl).
+// Matte Smooth (tmix-style): alpha averaged over the last N frames with Hann weights, colour from the current frame. The host keeps
+// each layer's alpha history in R8 textures (PSAlphaOf) and binds up to eight at t5..t12, oldest first, during sequential playback;
+// a jump falls back to the spatial PSMatteSmooth (Effects.hlsl).
 
 #include "Common.hlsli"
 
@@ -16,14 +15,13 @@ Texture2D<float> History5 : register(t10);
 Texture2D<float> History6 : register(t11);
 Texture2D<float> History7 : register(t12);
 
-// The input's transparency, into an R8 target (one frame of a layer's history).
+// Input alpha into an R8 target (one history frame).
 float4 PSAlphaOf(VsOut input) : SV_Target
 {
     return Sample(input.Uv).aaaa;
 }
 
-// Params2: the weights of History0..3; Params3: of History4..7 (0 for those not bound); Color.x: the current frame's
-// weight; Color.y: the sum of every weight used.
+// Params2/Params3: weights of History0..3 / History4..7 (0 when unbound); Color.x current-frame weight; Color.y weight sum.
 float4 PSMatteTemporal(VsOut input) : SV_Target
 {
     float4 c = Sample(input.Uv);
@@ -39,8 +37,8 @@ float4 PSMatteTemporal(VsOut input) : SV_Target
     a += History7.SampleLevel(LinearClamp, uv, 0) * Params3.w;
     a = saturate(a / max(Color.y, 1e-6));
 
-    // Where the current frame shows nothing its colour is lost (premultiplied): the edge's colour is borrowed from the
-    // nearest shown pixels round it, one ring and then two out (FFmpeg keeps the keyed-out picture's own colour there).
+    // Fully transparent pixels lost their colour (premultiplied): borrow it from the 3x3 ring, else the 5x5 ring
+    // (tmix keeps the keyed-out colour there).
     float4 s = Unpremul(c);
     if (c.a <= 1e-5 && a > 1e-4)
     {
@@ -55,7 +53,7 @@ float4 PSMatteTemporal(VsOut input) : SV_Target
             }
         }
 
-        // Premultiplied sums: their colour over their alpha is the alpha-weighted straight colour round the pixel.
+        // Premultiplied sums: rgb / a is the alpha-weighted straight colour.
         float4 sum = nearSum.a > 1e-4 ? nearSum : farSum;
         s.rgb = sum.a > 1e-4 ? sum.rgb / sum.a : 0;
         if (sum.a <= 1e-4)

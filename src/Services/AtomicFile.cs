@@ -4,19 +4,15 @@ using System.Text;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Whole-file writes: after a write the file holds either its old content or its new content, never a mix and never a
-/// truncated copy. The content goes to a temporary file in the same folder, which then replaces the target in one rename.
+/// Atomic whole-file writes via a same-folder temp file and a single rename: readers see old or new content, never partial.
 /// </summary>
 /// <remarks>
-/// <para><b>Durable writes</b> flush the temporary file to the disk (<c>FlushFileBuffers</c>) before the rename. Without
-/// the flush NTFS can commit the rename before the data, and a bugcheck or power loss within the lazy writer's window then
-/// leaves a zero-filled file in place of the old one. A process crash alone never needs it (the data is already in the OS
-/// cache), so caches rewritten on every tab switch skip it; user settings, presets and project saves use it. The flush
-/// costs about 1-10 ms on an idle NVMe drive and can stall longer while an export writes to the same drive.</para>
-/// <para><b>Previous copies</b> (<c>keepPrevious</c>) keep the replaced file as <c>&lt;path&gt;.prev</c> through
-/// <see cref="File.Replace(string, string, string?, bool)"/>, so a load that finds the file damaged can fall back one save.
-/// The suffix is not <c>.bak</c>: <see cref="BackupImporter"/> reserves <c>appsettings.json.bak</c> for the copy it
-/// promises the user from before an import.</para>
+/// <para><b>Durable writes</b> call <c>FlushFileBuffers</c> before the rename; otherwise NTFS may commit the rename before the data
+/// and a bugcheck or power loss leaves a zero-filled file. Process crashes alone are safe (data is in the OS cache), so per-tab-switch
+/// caches skip it; settings, presets and project saves use it. Costs ~1-10 ms on idle NVMe, more under concurrent export writes.</para>
+/// <para><b>Previous copies</b> (<c>keepPrevious</c>) retain the replaced file as <c>&lt;path&gt;.prev</c> via
+/// <see cref="File.Replace(string, string, string?, bool)"/> for one-step recovery. Not <c>.bak</c>, which <see cref="BackupImporter"/>
+/// reserves for its pre-import copy.</para>
 /// </remarks>
 internal static class AtomicFile
 {
@@ -25,7 +21,7 @@ internal static class AtomicFile
 
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
-    /// <summary>Writes <paramref name="text"/> as UTF-8 without a byte order mark (the bytes <see cref="File.WriteAllText(string, string?)"/> writes).</summary>
+    /// <summary>Writes <paramref name="text"/> as BOM-less UTF-8 (same bytes as <see cref="File.WriteAllText(string, string?)"/>).</summary>
     public static void WriteAllText(string path, string text, bool durable, bool keepPrevious = false)
         => Write(path, stream =>
         {
@@ -34,9 +30,8 @@ internal static class AtomicFile
         }, durable, keepPrevious);
 
     /// <summary>
-    /// Writes the content <paramref name="write"/> produces into a temporary file beside <paramref name="path"/> and then moves it
-    /// over the target. If anything fails part of the way (the delegate throws, the disk fills), the target is left as it was, the
-    /// temporary file is deleted and the exception is rethrown.
+    /// Writes <paramref name="write"/>'s output to a temp file beside <paramref name="path"/> and replaces the target. On any failure the
+    /// target is untouched, the temp file deleted and the exception rethrown.
     /// </summary>
     public static void Write(string path, Action<Stream> write, bool durable, bool keepPrevious = false)
     {
@@ -46,8 +41,7 @@ internal static class AtomicFile
         var partial = PartialPath(path);
         try
         {
-            // Opened as File.WriteAllText opens a file (shared for reading). Unbuffered: the project serializer hands over
-            // pieces of 16 KB or more, and the string overload writes one block.
+            // Same sharing as File.WriteAllText (read-shared). Unbuffered: callers write chunks of 16 KB or more.
             using (var stream = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.Read, bufferSize: 0))
             {
                 write(stream);
@@ -65,18 +59,16 @@ internal static class AtomicFile
     }
 
     /// <summary>
-    /// The temporary file a whole write goes into: <c>&lt;path&gt;.&lt;32 hex digits&gt;.tmp</c>, a new name for every write, so two
-    /// writes of the same file at once (a tab's cache written on the thread pool and again during a crash shutdown) never share
-    /// one; the last rename wins with complete content. The ".tmp" suffix is what the project-tab clean-up looks for.
+    /// Unique temp path <c>&lt;path&gt;.&lt;32 hex&gt;.tmp</c> per write so concurrent writers never collide (last rename wins, complete).
+    /// The ".tmp" suffix is what project-tab cleanup matches.
     /// </summary>
     public static string PartialPath(string path) => path + "." + Guid.NewGuid().ToString("N") + ".tmp";
 
     /// <summary>
-    /// Moves a file that could not be parsed out of the way as <c>&lt;name&gt;.damaged-&lt;yyyyMMdd-HHmmss&gt;&lt;ext&gt;</c> beside it (copies
-    /// it when it cannot be moved), so no later save can overwrite the only copy and a <c>keepPrevious</c> write cannot rotate the
-    /// damage into the previous copy.
+    /// Moves (or copies) an unparseable file aside as <c>&lt;name&gt;.damaged-&lt;yyyyMMdd-HHmmss&gt;&lt;ext&gt;</c> so later saves cannot
+    /// overwrite it and <c>keepPrevious</c> cannot rotate the damage into .prev.
     /// </summary>
-    /// <returns>The set-aside copy's path, or null when it could neither be moved nor copied.</returns>
+    /// <returns>Set-aside path, or null if neither move nor copy succeeded.</returns>
     public static string? SetAside(string path)
     {
         var aside = Path.Combine(Path.GetDirectoryName(path) ?? "",
@@ -111,9 +103,8 @@ internal static class AtomicFile
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
             {
-                // ReplaceFile fails on some file systems (FAT/exFAT, several network shares) and while another process holds the
-                // target open without FILE_SHARE_DELETE. The temporary file still has its own name in every failure case
-                // (ERROR_UNABLE_TO_MOVE_REPLACEMENT included), so the plain rename below still commits it.
+                // ReplaceFile fails on FAT/exFAT, some shares, or when the target is open without FILE_SHARE_DELETE. The temp file keeps
+                // its name in every failure (including ERROR_UNABLE_TO_MOVE_REPLACEMENT), so the plain rename below still commits.
             }
         }
 

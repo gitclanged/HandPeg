@@ -15,28 +15,26 @@ using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
-// ----- Pass 5.6A (lane B): Color Match: a target picked on the player, a reference picked anywhere on screen, the grade solved -----
-// The Color Studio puts the bar this makes in its Color Match row. Pick Target pauses the player when it plays, reads ONE frame at the
-// canvas's own size (GpuPreviewEngine.CaptureFrameAsync, the export's picture: never while playing, Law 3), and turns the pointer over the
-// player into a crosshair with a loupe beside it, drawn on the processor from that one frame (no GPU or decoder turn per move); a click
-// on the picture takes the bilateral mean of the 15 x 15 pixels about it (ColorMatch.BilateralMean); Esc cancels; the 3D view and a
-// source view refuse. Reference is the screen eyedropper (ScreenEyedropper): pressed and dragged anywhere, on any monitor. With both
-// colours, the Color Grade card's values are solved (ColorMatch.Solve, against ColorGradeMath.Apply, the target ungraded first) and
-// applied as one step of Undo (MainViewModel.ApplyColorGrade, the card put on when missing). The colours are display-referred SDR: an
-// HDR project's frame is read as its 8-bit picture. 5.6A review: the target's colour is ungraded once, on the click, under the grade its
-// frame was read with (ColorMatch.SolveFrom then starts from it); the card's curves are in the model; a LUT mixed in, a keyframed value
-// or a target off screen at the playhead refuse; an edit, Undo, the 3D view or a source view end the pick.
+// ----- Color Match: target picked on the player, reference picked anywhere on screen, grade solved -----
+// Builds the Color Studio's Color Match row. Pick Target pauses playback, captures ONE canvas-size frame (GpuPreviewEngine.CaptureFrameAsync,
+// export picture; never while playing, Law 3), and turns the player pointer into a crosshair with a CPU-drawn loupe from that frame (no
+// GPU/decoder work per move). Click samples the bilateral mean of 15 x 15 pixels (ColorMatch.BilateralMean); Esc cancels; 3D and source
+// views refuse. Reference uses ScreenEyedropper (press and drag anywhere, any monitor). With both colours, Color Grade values are solved
+// (ColorMatch.Solve against ColorGradeMath.Apply, target ungraded first) and applied as one Undo step (MainViewModel.ApplyColorGrade,
+// adding the card if missing). Colours are display-referred SDR (HDR frames read as 8-bit). The target colour is ungraded once at click
+// time under the frame's grade (ColorMatch.SolveFrom starts from it); card curves are modelled. A mixed-in LUT, keyframed value or a
+// target off screen at the playhead refuse; an edit, Undo, 3D view or source view ends the pick.
 public partial class MainWindow
 {
     /// <summary>
-    /// The Color Studio's Color Match bar, for the target <paramref name="target"/> gives at the moment of use (null: none).
+    /// Creates the Color Studio's Color Match bar; <paramref name="target"/> is evaluated at use time.
     /// </summary>
     internal FrameworkElement? CreateColorMatchBar(Func<ColorGradeTarget> target) => new ColorMatchBar(this, target).Root;
 
-    /// <summary>One Color Match bar: its two pickers, their swatches, its status, and the player's pick mode while it is on.</summary>
+    /// <summary>Color Match bar: two pickers with swatches, a status line, and the player pick mode while active.</summary>
     private sealed class ColorMatchBar
     {
-        // The loupe's side over the player (DIPs), and its distance from the pointer.
+        // Loupe size over the player and its offset from the pointer (DIPs).
         private const double LoupeSide = 96, LoupeGap = 18;
 
         private static readonly Geometry TargetIcon = Icon("M 2,6 A 4,4 0 1 0 10,6 A 4,4 0 1 0 2,6 M 6,0 V 3.5 M 6,8.5 V 12 M 0,6 H 3.5 M 8.5,6 H 12");
@@ -51,17 +49,17 @@ public partial class MainWindow
         private readonly ScreenEyedropper _reference;
         private readonly TextBlock _status;
 
-        // The swatches' brushes: their colours follow the picks (mutable by design: each is changed in place, never made again).
+        // Swatch brushes, intentionally unfrozen: colours are updated in place on each pick.
         private readonly SolidColorBrush _targetBrush = new(Colors.Transparent), _referenceBrush = new(Colors.Transparent);
         private readonly Border _targetSwatch, _referenceSwatch;
 
-        // The two colours (sRGB 0..1): the target's before its card (5.6A review: ungraded once, under the grade its frame was read with, so
-        // an Undo or a grade moved since never makes it stale) and the reference; and the target the first was picked for.
+        // Colours in sRGB 0..1: target ungraded once under the capture-time grade (so later Undo or grade edits never stale it), the
+        // reference, and the target it was picked for.
         private (double R, double G, double B)? _targetUngraded, _referenceColor;
         private ColorGradeTarget _pickedFor;
 
-        // The pick mode: the frame read for it (let go when it ends) and the grade it was read under, whether it is being read, the loupe
-        // and its one bitmap, patch and brush.
+        // Pick mode state: captured frame (released on end) and its grade shot, read-in-progress flag, loupe popup with its single bitmap,
+        // patch buffer and swatch brush.
         private (byte[] Bgra, int Width, int Height)? _frame;
         private GradeShot _shot;
         private bool _reading;
@@ -94,8 +92,8 @@ public partial class MainWindow
                 }
                 else
                 {
-                    // Ended: the swatch back to the reference kept (a pick that follows sets the new one, and matches), the status with it
-                    // (5.6A review: a plain click, or Esc, with nothing picked says how Reference works).
+                    // Drag ended: restore the swatch to the kept reference (Picked sets a new one and matches); a click or Esc without a
+                    // pick shows a usage hint.
                     _referenceBrush.Color = _referenceColor is { } kept ? ToColor(kept) : Colors.Transparent;
                     Status(Next() is { Length: > 0 } next ? next : _referenceColor is null ? "Drag to a colour" : "");
                 }
@@ -122,22 +120,22 @@ public partial class MainWindow
             AutomationProperties.SetName(row, "Color Match");
             Root = row;
 
-            // Out of the window (the Color tab moved or hidden): the pick mode ends with it.
+            // Unloaded (Color tab moved or hidden): end pick mode.
             row.Unloaded += (_, _) => EndPick();
         }
 
         public FrameworkElement Root { get; }
 
-        // What to do next, in the status line: the colour still missing; nothing once both are there.
+        // Next-step hint for the status line: the missing colour, or empty when both are set.
         private string Next() => _targetUngraded is null ? _referenceColor is null ? "" : "Now pick the target" : _referenceColor is null ? "Now drag Reference" : "";
 
-        // ----- Pick Target: one frame read, the pointer over the player a crosshair with a loupe, a click takes the colour -----
+        // ----- Pick Target: single frame capture, crosshair + loupe over the player, click samples -----
 
         private async Task PickTargetAsync()
         {
             if (_frame is not null)
             {
-                // Pressed again while picking: cancelled.
+                // Pressed again while picking: cancel.
                 EndPick();
                 Status(Next());
                 return;
@@ -151,18 +149,18 @@ public partial class MainWindow
                 return;
             }
 
-            // Never a readback while the player plays (Law 3): paused first.
+            // No readback during playback (Law 3): pause first.
             if (_window.PlayerIsPlaying)
                 _window.PlayerSetPause(true);
 
-            // 5.6A review: the grade the frame is read under (the target's colour is ungraded with it on the click).
+            // Grade at capture time (used to ungrade the target colour on click).
             var shot = ShotOf(_target());
             _reading = true;
             Status("Reading the frame");
             (byte[] Bgra, int Width, int Height)? frame;
             try
             {
-                // One slot serves Export Frame and Copy Frame too (a newer request ends an older one with nothing): asked once more on nothing.
+                // The capture slot is shared with Export/Copy Frame (a newer request cancels an older one with null): retry once on null.
                 var engine = _window._gpu!;
                 frame = await engine.CaptureFrameAsync() ?? await engine.CaptureFrameAsync();
             }
@@ -177,8 +175,7 @@ public partial class MainWindow
                 return;
             }
 
-            // Closed, or the view changed while the frame was read: no pick. 5.6A review: nor when the target or its grade changed meanwhile
-            // (the frame may have been drawn under either).
+            // Abort if unloaded, the view became refused, or the target/grade changed during capture (frame may reflect either).
             var late = Root.IsLoaded ? Refusal() : "";
             if (late is not null)
             {
@@ -195,9 +192,8 @@ public partial class MainWindow
             BeginPick(read, shot);
         }
 
-        // Why picking is refused now (the 3D view, no picture, a source view, nothing to grade; 5.6A review: the target off screen at the
-        // playhead, its grade not drawn, its card's LUT or keys); null when it may go ahead. Allocates nothing (asked again on every move
-        // while picking).
+        // Refusal reason (3D view, no picture, source view, nothing to grade, target off screen, grade not drawn, card LUT or keys), or null.
+        // Allocation-free: re-evaluated on every move while picking.
         private string? Refusal()
         {
             var viewModel = _window._viewModel;
@@ -212,22 +208,22 @@ public partial class MainWindow
                 return "Nothing to grade";
             if (target.Layer is { } layer && !ColorMatch.ShownAt(layer, viewModel.PositionMs / 1000))
                 return "Target not shown";
-            // 5.6A review: a card switched off or a bypassed stack draws no grade ("Grade is off"), checked before its LUT or keys.
+            // Disabled card or bypassed stack draws no grade ("Grade is off"); checked before LUT/keys.
             var card = viewModel.FindColorGrade(target);
             return ColorMatch.DrawnRefusal(card, Bypassed(target)) ?? ColorMatch.CardRefusal(card);
         }
 
-        // 5.6A review: whether the target's effects are bypassed (a clip's or the blur fill's Bypass All, or the Sequence Output's).
+        // True when the target's effects are bypassed (clip or blur fill Bypass All, or Sequence Output).
         private bool Bypassed(ColorGradeTarget target) => target.Layer?.EffectsBypassed ?? _window._viewModel.SequenceEffectsBypassed;
 
-        // The target's Color Grade card as it is now (5.6A review): its values and its curves (a LUT or keys refuse the match: Refusal).
+        // Snapshot of the target's Color Grade card: values and curves (LUT or keys refuse via Refusal).
         private readonly record struct GradeShot(ColorGradeTarget For, ColorGradeValues Values, string Master, string Red, string Green, string Blue)
         {
             public ColorCurveStage? Curves => ColorCurveStage.Of(Master, Red, Green, Blue);
         }
 
-        // 5.6A review: the curves only while the card holds the layer's curve table (an earlier Curves card that takes it leaves them
-        // undrawn: OwnsCurveTable), so the table changing hands while the frame is read is a different shot too.
+        // Curves are included only while the card owns the layer's curve table (an earlier Curves card takes it: OwnsCurveTable), so a
+        // table ownership change during capture yields a different shot.
         private GradeShot ShotOf(ColorGradeTarget target)
         {
             var viewModel = _window._viewModel;
@@ -276,8 +272,8 @@ public partial class MainWindow
                 _loupe.IsOpen = false;
         }
 
-        // The player starting to play, another source, the playhead moved (5.6A review: Interactive Crop or a Draw target begun): the pick
-        // ends (its frame would no longer be what is shown, or where).
+        // End the pick when playback starts, the source changes, the playhead moves, or Interactive Crop/Draw Target begins (the frame no
+        // longer matches what is shown).
         private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
         {
             var viewModel = _window._viewModel;
@@ -295,8 +291,8 @@ public partial class MainWindow
             }
         }
 
-        // 5.6A review: something the picture is made from changed (an edit, Undo or Redo, a grade moved, a setting): the frame held is no
-        // longer what is shown, so the pick ends (a rare extra invalidation only asks for the pick again).
+        // Preview inputs changed (edit, Undo/Redo, grade or setting): the held frame is stale, so end the pick (a spurious invalidation
+        // only costs a re-pick).
         private void Picture_Invalidated()
         {
             if (_frame is null)
@@ -314,7 +310,7 @@ public partial class MainWindow
             Status(Next());
         }
 
-        // The frame's pixel under a point of the player (its overlay's), null off the picture.
+        // Frame pixel under an overlay point; null outside the picture.
         private (int X, int Y)? PixelAt(Point at)
         {
             if (_frame is not { } frame || _window.PictureFocalAt(at) is not { } focal)
@@ -322,8 +318,8 @@ public partial class MainWindow
             return (Math.Max(0, Math.Min((int)(focal.X * frame.Width), frame.Width - 1)), Math.Max(0, Math.Min((int)(focal.Y * frame.Height), frame.Height - 1)));
         }
 
-        // 5.6A review: the view or the target refused since the frame was read (the 3D view, a source view, the target off screen, its
-        // card's LUT or keys): the pick ends and the press or move is left to the player (the 3D view takes its own); true when it did.
+        // If refused since capture (3D view, source view, target off screen, LUT or keys), end the pick and leave the input to the player;
+        // returns true when ended.
         private bool EndedByRefusal()
         {
             if (Refusal() is not { } refused)
@@ -338,7 +334,7 @@ public partial class MainWindow
             if (EndedByRefusal())
                 return;
 
-            // The click is the pick's: no clip box, gizmo or crop under it takes it.
+            // Consume the click so clip boxes, gizmos or crop handles underneath never receive it.
             e.Handled = true;
             if (_frame is not { } frame || PixelAt(e.GetPosition(_window.PlayerOverlay)) is not { } pixel)
             {
@@ -346,7 +342,7 @@ public partial class MainWindow
                 return;
             }
 
-            // 5.6A review: another target, or its grade changed, since the frame was read: its colour would be ungraded wrongly.
+            // Target or grade changed since capture: ungrading would be wrong, so re-pick.
             var shot = _shot;
             if (ShotOf(_target()) != shot)
             {
@@ -363,7 +359,7 @@ public partial class MainWindow
                 return;
             }
 
-            // The colour before the card, worked out once under the grade the frame was read with (the swatch shows it as picked).
+            // Ungrade once under the capture-time grade; the swatch shows the colour as picked.
             var ungraded = ColorMatch.Ungrade(picked, shot.Values, shot.Curves);
             (_targetUngraded, _pickedFor, _targetBrush.Color, _targetSwatch.ToolTip) = (ungraded, shot.For, ToColor(picked), $"Target {Hex(picked)}");
             if (_referenceColor is null)
@@ -383,7 +379,7 @@ public partial class MainWindow
                 return;
             }
 
-            // The 15 x 15 pixels about the pointer into the loupe's one bitmap (off the frame: dark), and their colour into its swatch.
+            // Copy the 15 x 15 patch around the pointer into the loupe bitmap (dark outside the frame) and update its swatch.
             const int side = ScreenEyedropper.PatchSide, radius = side / 2;
             for (var y = 0; y < side; y++)
             {
@@ -407,7 +403,7 @@ public partial class MainWindow
             if (ColorMatch.BilateralMean(frame.Bgra, frame.Width, frame.Height, pixel.X, pixel.Y) is { } colour)
                 _loupeSwatch.Color = ToColor(colour);
 
-            // Beside the pointer, on the side of the player with room (the player's HUD: never zoomed with the picture).
+            // Place beside the pointer on whichever side has room, in HUD coordinates (unaffected by picture zoom).
             var hud = _window.PlayerHud;
             var at = e.GetPosition(hud);
             var height = LoupeSide + 14;
@@ -425,7 +421,7 @@ public partial class MainWindow
                 _loupe.IsOpen = false;
         }
 
-        // The loupe: a popup over the player's HUD (UiScale-tracked), placed in its device pixels at _loupeAt (one placement array, reused).
+        // Loupe popup over the player HUD (UiScale-tracked), custom-placed in device pixels at _loupeAt (reused placement array).
         private Popup MakeLoupe()
         {
             const int side = ScreenEyedropper.PatchSide;
@@ -458,9 +454,9 @@ public partial class MainWindow
             return popup;
         }
 
-        // ----- The match -----
+        // ----- Match -----
 
-        // Both colours: the card's values solved against its own model and applied, one step of Undo.
+        // With both colours: solve the card values against its model and apply as one Undo step.
         private void Match()
         {
             var viewModel = _window._viewModel;
@@ -475,16 +471,15 @@ public partial class MainWindow
 
             if (target != _pickedFor)
             {
-                // Another clip (or the Sequence Output) is graded now: the target colour was not its.
+                // Grade target changed since the pick: discard the target colour.
                 (_targetUngraded, _targetBrush.Color, _targetSwatch.ToolTip) = (null, Colors.Transparent, null);
                 Status("Pick the target again");
                 return;
             }
 
-            // 5.6A review: checked here too (the card may have changed since the pick): a grade not drawn (a card switched off, a bypassed
-            // stack: a match would change nothing on screen), a LUT mixed in or a keyframed value refuses; the card's curves are part of
-            // the model it is solved and checked against while it holds the curve table (never "Matched" from a model short of a stage,
-            // nor through curves the GPU leaves out).
+            // Re-check (the card may have changed): refuse if the grade is not drawn (disabled card or bypassed stack), a LUT is mixed in,
+            // or a value is keyframed. Curves are modelled only while the card owns the curve table, so "Matched" never comes from an
+            // incomplete model or curves the GPU skips.
             var card = viewModel.FindColorGrade(target);
             if ((ColorMatch.DrawnRefusal(card, Bypassed(target)) ?? ColorMatch.CardRefusal(card)) is { } refused)
             {
@@ -501,8 +496,8 @@ public partial class MainWindow
                 return;
             }
 
-            // The swatch: the target as the new grade makes it. Its colour before the card is kept as it is (a second match, after an
-            // Undo or a grade moved by hand, starts from it again).
+            // Swatch shows the target under the new grade; the ungraded colour is kept so a later match (after Undo or manual edits)
+            // restarts from it.
             _targetBrush.Color = ToColor(ColorMatch.Graded(ungraded, solution.Values, curves));
             Status(solution.Converged ? "Matched" : "Closest match");
             _status.ToolTip = string.Create(CultureInfo.InvariantCulture, $"Left: dE {solution.DeltaE:0.000} (OKLab)");
@@ -514,7 +509,7 @@ public partial class MainWindow
             _status.ToolTip = null;
         }
 
-        // ----- Parts -----
+        // ----- UI helpers -----
 
         private static StackPanel Labelled(Geometry icon, string text)
         {

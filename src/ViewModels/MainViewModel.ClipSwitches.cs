@@ -4,21 +4,20 @@ using HandPegApp.Models.Timeline;
 
 namespace HandPegApp.ViewModels;
 
-// ----- A block's own switches on the Timeline (Pass 5.2-HotfixAndDeBloat, the user's call) -----
-// Every clip's block has its own On/Off (its picture shown or hidden, a sound heard or not) in one click, and it is that clip's
-// alone: a parent clip switched off leaves its Cutouts, its stream lanes and its effects' own switches as they are. Only a track
-// header's switch takes the whole family (ToggleHidden: TimelineDocument.IsHiddenWithParents; SetTrackSoundMuted). A child block (a
-// Cutout, a stream, any clip on a track in another's stack, an effect) has a Lock to its parent: locked it moves, trims and splits
-// with its parent clip (TimelineClip.ParentClipId); unlocked it is free (an effect: a stretch of its clip of its own,
-// EffectInstance.Range, which the GPU engine and FFmpeg's graph both keep to).
+// ----- Per-block Timeline switches -----
+// Each clip block has its own one-click On/Off (picture shown/hidden, audio heard/muted) affecting only that clip; children (Cutouts,
+// stream lanes, effects) keep their switches. Only track header switches cascade to the family (ToggleHidden via
+// TimelineDocument.IsHiddenWithParents; SetTrackSoundMuted). Child blocks (Cutouts, streams, clips on nested tracks, effects) have a
+// parent Lock: locked follows parent move/trim/split (TimelineClip.ParentClipId); unlocked is free (effects get their own
+// EffectInstance.Range, honoured by the GPU engine and FFmpeg graph).
 public partial class MainViewModel
 {
-    /// <summary>Whether a clip is on: its own switch, a track header's not counted.</summary>
+    /// <summary>Clip's own On state (track header switch excluded).</summary>
     public bool IsClipOn(Layer clip) => IsClipOn(ClipOf(clip));
 
     internal static bool IsClipOn(TimelineClip? model) => model is not { IsHidden: true };
 
-    /// <summary>Turns one clip on or off, alone (its children keep their own switches): one step of Undo.</summary>
+    /// <summary>Toggles one clip only (children unaffected). One undo step.</summary>
     public void SetClipOn(Layer clip, bool on)
     {
         if (ClipOf(clip) is not { } model || model.IsHidden == !on)
@@ -35,12 +34,12 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A child block's Lock: true when it is locked to a parent clip (it moves, trims and splits with it), false when it is free on a
-    /// track that lies in another's stack with a clip there to lock to, null for a clip with nothing to be locked to.
+    /// Child Lock state: true when locked to a parent clip (follows move/trim/split), false when free on a nested track with a lock
+    /// candidate, null when nothing to lock to.
     /// </summary>
     public bool? ClipLock(Layer clip) => ClipOf(clip) is { } model && Document.TrackOf(model) is { } track ? ClipLock(model, track) : null;
 
-    /// <summary>The same for a clip and its track already resolved.</summary>
+    /// <summary>Overload for an already-resolved clip and track.</summary>
     internal bool? ClipLock(TimelineClip model, TimelineTrackModel track)
     {
         if (model.ParentClipId is { } parent && Document.FindClip(parent) is not null)
@@ -48,7 +47,7 @@ public partial class MainViewModel
         return ParentClipUnder(model, track) is not null ? false : null;
     }
 
-    // The clip a child is locked to: the one on its track's parent track that it overlaps the most.
+    // Lock target: the clip on the parent track with the greatest overlap.
     private TimelineClip? ParentClipUnder(TimelineClip child, TimelineTrackModel track)
     {
         if (track.ParentTrackId is not { } id || Document.Tracks.Find(t => t.Id == id) is not { } parent)
@@ -57,7 +56,7 @@ public partial class MainViewModel
             .MaxBy(c => Math.Min(c.End, child.End) - Math.Max(c.Start, child.Start));
     }
 
-    /// <summary>Locks a child block to the clip it lies over, or frees it to be dragged, slid and trimmed on its own: one step of Undo.</summary>
+    /// <summary>Locks a child to the clip beneath it, or frees it for independent drag/slip/trim. One undo step.</summary>
     public void SetClipLocked(Layer clip, bool locked)
     {
         if (ClipOf(clip) is not { } model || Document.TrackOf(model) is not { } track || (ClipLock(clip) == true) == locked)
@@ -70,7 +69,7 @@ public partial class MainViewModel
             return;
         }
 
-        // Pass 5.5A: a clip its Link switch locks is one of its clip's pieces, as before 5.5A (never tethered: TimelineClip.Tethered).
+        // A Link-locked clip is a piece of its parent, never tethered (TimelineClip.Tethered cleared).
         if (!Edit(locked ? $"lock {clip.Name} to its clip" : $"unlock {clip.Name} from its clip", edit => edit.SetClipParent(model, parent?.Id, tethered: false)))
             return;
 
@@ -81,7 +80,7 @@ public partial class MainViewModel
 
     // ----- An effect's block -----
 
-    /// <summary>Turns one effect card on or off: one step of Undo.</summary>
+    /// <summary>Toggles one effect card. One undo step.</summary>
     public void SetEffectOn(Layer clip, EffectInstance effect, bool on)
     {
         if (!clip.Effects.Contains(effect) || effect.Enabled == on)
@@ -93,8 +92,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Locks an effect to its clip's whole span (no stretch of its own: it goes with every trim and split), or unlocks it to a stretch of
-    /// its own, at first all of the clip, which its block then drags and trims along the clip: one step of Undo.
+    /// Locks an effect to the full clip span (follows every trim/split), or unlocks it to its own range (initially the whole clip),
+    /// draggable and trimmable within the clip. One undo step.
     /// </summary>
     public void SetEffectLocked(Layer clip, EffectInstance effect, bool locked)
     {
@@ -106,7 +105,7 @@ public partial class MainViewModel
         StatusText = locked ? $"{NameOf(effect)} works over the whole of {clip.Name} again." : $"{NameOf(effect)} is unlocked: drag or trim its block along {clip.Name}.";
     }
 
-    /// <summary>The stretch an unlocked effect works in, in seconds of its clip, kept within the clip: one step of Undo.</summary>
+    /// <summary>Sets an unlocked effect's range in clip seconds, clamped to the clip. One undo step.</summary>
     public void SetEffectRange(Layer clip, EffectInstance effect, double start, double end)
     {
         if (ClipOf(clip) is not { } model || !clip.Effects.Contains(effect) || !double.IsFinite(start) || !double.IsFinite(end))
@@ -122,10 +121,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// An unlocked effect taken out of its clip (5.2-Audit, the user's Q2): dragged past its clip's span, or onto a picture or Effect
-    /// track, it becomes an Effect Clip of its own (an adjustment clip, as the 3D VFX drop-ins are) over <paramref name="start"/> to
-    /// <paramref name="end"/> on the sequence, on <paramref name="onTrack"/> or a new track; it then works on everything under it, not on
-    /// its clip alone. Its keyframes keep their moments on the sequence. One step of Undo; false when it could not be placed.
+    /// Detaches an unlocked effect dragged past its clip or onto a picture/Effect track into a standalone Effect Clip (adjustment clip,
+    /// like 3D VFX drop-ins) over <paramref name="start"/>..<paramref name="end"/> on <paramref name="onTrack"/> or a new track,
+    /// affecting everything beneath. Keyframes keep their Sequence times. One undo step; false if it cannot be placed.
     /// </summary>
     public bool DetachEffect(Layer clip, EffectInstance effect, double start, double end, Layer? onTrack = null)
     {
@@ -136,7 +134,7 @@ public partial class MainViewModel
         if (to - from < 0.05)
             return false;
 
-        // The card as the clip's own: its keys counted from the new clip's start (they were from its clip's), working over all of it.
+        // Rebase key times from the source clip's start to the new clip's start; the card spans the whole new clip.
         var card = effect.Clone();
         card.Range = null;
         var shift = model.Start - from;
@@ -158,7 +156,7 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>Takes an effect card off its clip: one step of Undo.</summary>
+    /// <summary>Removes an effect card from its clip. One undo step.</summary>
     public void RemoveEffect(Layer clip, EffectInstance effect)
     {
         if (!clip.Effects.Contains(effect))

@@ -7,21 +7,16 @@ using HandPegApp.Services.Gpu;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// The v5.0 preview engine (Pass 5.0-AudioAnd3D, 5.0D): the player (the only one since 5.0-Verify). Four parts that never
-/// wait for one another:
+/// GPU preview engine behind the player. Four non-blocking parts:
 /// <list type="bullet">
-/// <item>the compositor worker (<see cref="CompositorClient"/>), drawing <see cref="GpuScenePlan"/>'s scenes, decoding on the
-/// card with Instant Seek;</item>
-/// <item>the WASAPI mixer (<see cref="WasapiAudioEngine"/>), whose device clock is the master clock while playing;</item>
-/// <item>the viewport (<see cref="GpuViewport"/>) on the video surface's native window;</item>
-/// <item>the frame pump, a thread of its own: while playing it waits for the swap chain's turn, evaluates the plan at the
-/// moment the picture will be on the screen (the audio clock plus one refresh), publishes the scene, and presents the
-/// worker's frame; paused, it publishes only what changed (a seek, an edit, a resize) and presents what the worker drew
-/// (also the exact frame Instant Seek brings in after a stand-in), and leaves the worker its hints (GpuHintWriter: every
-/// cut within the lookahead horizon, playing or not; paused, where a scrub is heading and the pointer over a timeline).</item>
+/// <item>compositor worker (<see cref="CompositorClient"/>): renders <see cref="GpuScenePlan"/> scenes, GPU decode with Instant Seek;</item>
+/// <item>WASAPI mixer (<see cref="WasapiAudioEngine"/>): its device clock is the master clock during playback;</item>
+/// <item>viewport (<see cref="GpuViewport"/>) on the video surface HWND;</item>
+/// <item>frame pump thread: playing, it waits on the swap chain, evaluates the plan at display time (audio clock + display lead),
+/// publishes and presents; paused, it publishes only changes and presents worker redraws. It also writes seek hints (GpuHintWriter).</item>
 /// </list>
-/// <para>Threads: <see cref="SetState"/> and <see cref="PrepareAround"/> on the UI thread (WPF rasterizes text and
-/// captions there); everything else from any thread. The pump is the only thread that writes scenes and hints.</para>
+/// <para>Threads: <see cref="SetState"/> and <see cref="PrepareAround"/> on the UI thread (WPF text rasterization); all else any
+/// thread. The pump is the sole writer of scenes and hints.</para>
 /// </summary>
 public sealed partial class GpuPreviewEngine : IDisposable
 {
@@ -38,8 +33,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private double _pausedAt;
     private double _rate = 1;
 
-    // The view of the player (its zoom and pan, MainWindow's player navigation) and the pointer over the timeline (its
-    // moment, and when it last moved: Stopwatch ticks).
+    // Player zoom/pan and timeline hover (time and last-move Stopwatch ticks).
     private float _viewScale = 1, _viewPanX, _viewPanY;
     private double _pointer = double.NaN;
     private long _pointerMoved;
@@ -52,22 +46,20 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private sealed record PrewarmedFile(int Source, long PathHash, long Until);
     private PrewarmedFile? _prewarm;
 
-    // The project tabs' pre-roll (PrewarmTabs): the frames at their playheads, and until when (Stopwatch ticks) they are asked for.
+    // Tab pre-roll requests (PrewarmTabs): playhead frames and their expiry (Stopwatch ticks).
     private sealed record PrewarmedTabs(GpuSeekHint[] Hints, long Until);
     private PrewarmedTabs? _tabPrewarm;
 
-    /// <summary>How far past a tab's playhead its pre-roll decodes, seconds of the file (5.4.2A: half a second, the worker's HoverRoll at most).</summary>
+    /// <summary>Tab pre-roll length past the playhead, file seconds (capped by the worker's HoverRoll).</summary>
     public const double TabPreRollSeconds = 0.5;
 
-    /// <summary>How long a file opened ahead of a drop is kept asked for, seconds (no drop came: let go).</summary>
+    /// <summary>Seconds a pre-opened drop candidate stays requested before release.</summary>
     private const double PrewarmSeconds = 10;
 
-    // Something the picture shows changed (1): the paused pump draws again. A pointer moving over the timeline only
-    // changes the hints and wakes the pump without it (no frame drawn for a hover).
+    // 1 when visible content changed and the paused pump must redraw; hover only updates hints and wakes the pump without a redraw.
     private int _sceneDirty = 1;
 
-    // The scrub's heading: where the last seeks went and when (a paused drag of the playhead). The time is written by Seek (the UI thread)
-    // and read by the pump, through Volatile (5.4.4: the quiet window of the tabs' pre-roll).
+    // Scrub direction from recent seek targets and times. Written by Seek (UI thread), read by the pump via Volatile (gates tab pre-roll).
     private double _lastSeekAt = double.NaN;
     private long _lastSeekTicks;
     private double _scrubVelocity;
@@ -79,9 +71,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     {
         (_client, _audio, _player) = (client, audio, player);
 
-        // The player's tabs put behind are parked lean on unified memory or on battery (5.4.4): asked of the worker and its standby alike
-        // (they share the control block); strip, export, bench and test clients never ask.
-        // 5.5.2: the Playback & A/V Sync Test's engine (player: false) has no tabs and never asks.
+        // Player only: lean-park inactive tabs on unified memory or battery (worker and standby share the control block). Strip, export,
+        // bench, test and A/V Sync Test engines never request it.
         if (player)
             client.TabParking = 1;
         _viewport = new GpuViewport(client, surface);
@@ -104,24 +95,23 @@ public sealed partial class GpuPreviewEngine : IDisposable
             Current = this;
     }
 
-    /// <summary>The engine the player runs on now (null while it is not started, or stopped): Settings' cache readout.</summary>
+    /// <summary>Active player engine (null when stopped); used by the Settings cache readout.</summary>
     public static GpuPreviewEngine? Current { get; private set; }
 
     /// <summary>The swap chain it presents on (the Playback &amp; A/V Sync Test's sampler reads its frame statistics).</summary>
     internal GpuViewport Viewport => _viewport;
 
     /// <summary>
-    /// Starts the engine for a player surface: the worker and its standby (off the UI thread), the audio device, then the
-    /// viewport and the pump. Null when the compositor cannot start (no Direct3D 11 card, a worker that fails at once), with
-    /// the reason in <see cref="LastStartFailure"/>: the player then says so and tries again (MainWindow.OnGpuFailed). On the
-    /// card of Settings' Compositor GPU role, or on <paramref name="adapter"/> (a DXGI index: the processor's WARP after the
-    /// card failed). Call after Frame 1.
-    /// <para><paramref name="player"/> false (5.5.2, the Playback &amp; A/V Sync Test): an engine beside the player's, never
-    /// <see cref="Current"/>, with no standby worker, a small frame cache, no tab parking, and the card it draws on not taken for Auto's.</para>
+    /// Starts an engine for a player surface: worker and standby (off the UI thread), audio device, viewport, pump. Returns null
+    /// when the compositor cannot start (no D3D11 adapter, immediate worker failure) with <see cref="LastStartFailure"/> set
+    /// (MainWindow.OnGpuFailed retries). Uses the Compositor GPU role, or <paramref name="adapter"/> (DXGI index, e.g. WARP fallback).
+    /// Call after Frame 1.
+    /// <para><paramref name="player"/> false (A/V Sync Test): secondary engine, never <see cref="Current"/>; no standby, small cache,
+    /// no tab parking, and its adapter does not define Auto.</para>
     /// </summary>
     public static async Task<GpuPreviewEngine?> StartAsync(nint surface, int? adapter = null, bool player = true)
     {
-        // An engine still being torn down (DisposeInBackground) goes first: a window takes one flip-model swap chain at a time.
+        // Wait for any engine still disposing (DisposeInBackground): an HWND allows one flip-model swap chain at a time.
         await Volatile.Read(ref _teardown);
         var settings = AppSettings.Current;
         var card = adapter ?? settings.CompositorGpuAdapter;
@@ -146,7 +136,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
                 AppLog.Write(string.Create(System.Globalization.CultureInfo.InvariantCulture, $"GPU engine started in {clock.ElapsedMilliseconds} ms: {client.Message}"));
 
-                // The card it draws on is what Auto means for the background card (5.4.4: never a second card on its own). Not WARP's.
+                // The render adapter defines Auto for background work (never an automatic secondary GPU); WARP excluded.
                 if (player && client.Memory.Control.IsSoftwareDevice == 0 && client.Memory.Control.AdapterIndex >= 0)
                     GpuAdapters.CompositorIndex = client.Memory.Control.AdapterIndex;
                 return (client, WasapiAudioEngine.Create(settings.AudioOutputDeviceId));
@@ -169,7 +159,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// <summary>Why the last <see cref="StartAsync"/> gave no engine, for the player's notice.</summary>
     public static string LastStartFailure { get; private set; } = "";
 
-    /// <summary>Raised on the pump's thread when the compositor gave up (it failed too often in a row): the player stops and says why (MainWindow.OnGpuFaulted).</summary>
+    /// <summary>Raised on the pump thread when the supervisor stops respawning the compositor (MainWindow.OnGpuFaulted).</summary>
     public event Action<string>? Faulted;
 
     public CompositorClient Client => _client;
@@ -180,7 +170,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     public double SequenceSeconds => Volatile.Read(ref _plan).SequenceSeconds;
 
-    /// <summary>The master clock: the sound being heard while playing, the paused moment otherwise (sequence seconds).</summary>
+    /// <summary>Master clock in sequence seconds: audio device position while playing, else the paused time.</summary>
     public double Position => _playing ? _audio.Position : Volatile.Read(ref _pausedAt);
 
     /// <summary>J, K, L: forward and back at so many times (0.25 to 4, negative backward; sound only forward).</summary>
@@ -207,7 +197,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         set => _audio.Muted = value;
     }
 
-    /// <summary>Every window input at once (<see cref="PlayerInputs"/>): what a new engine is told before its first frame.</summary>
+    /// <summary>Applies all window inputs (<see cref="PlayerInputs"/>) to a new engine before its first frame.</summary>
     public void Apply(PlayerInputs inputs)
     {
         Volume = inputs.Volume;
@@ -223,8 +213,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     // ----- What it shows -----
 
     /// <summary>
-    /// The sequence as it is now (UI thread): a new scene plan and sound program, drawn at once where the playhead is.
-    /// <paramref name="audio"/> carries what the state itself does not (one soloed track, see MainViewModel.Soloed).
+    /// Installs the current Sequence (UI thread): rebuilds the scene plan and audio program and redraws at the playhead.
+    /// <paramref name="audio"/> carries non-state inputs (solo, MainViewModel.Soloed).
     /// </summary>
     public void SetState(SequenceExportState state, AudioBuildOptions? audio = null)
     {
@@ -238,8 +228,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             Volatile.Write(ref _canvasFps, state.Timeline.FrameRate.IsValid ? state.Timeline.FrameRate.Fps : 0);
             var heard = audio is null ? AudioProgram.Build(state) : AudioProgram.Build(state, audio);
             _audio.SetProgram(heard);
-            // The bands are of what an export hears (every track): with nothing soloed and the usual buses and ducking, the program just
-            // built is that one (immutable; a render makes its own mixer), so no second one is built here.
+            // Reactive bands follow the export mix (all tracks). Without solo the program just built is that mix (immutable), so reuse it.
             var exportHears = audio is null or { Duck: null, Buses: null } && !state.Timeline.Tracks.Exists(t => t.IsSoloed);
             PlanEnergies(state, exportHears ? heard : null);
             plan.PrepareAround(Position);
@@ -254,11 +243,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// Nothing open any more (UI thread; the project closed): the engine as it starts, an empty plan and sound program, no
-    /// pointer and no file made ready, so the worker's hints name none of the closed project's files and its decoders are
-    /// let go when idle (DecoderPool.Tidy). Opening something gives it a state again (SetState). Instant Seek's frame cache is emptied
-    /// with it (5.4D-TabPerf): the closed project's frames are no other's, and the cache's budget is back at its baseline, to grow again as
-    /// the next project needs.
+    /// Project closed (UI thread): resets to an empty plan and audio program with no hover or prewarm, so hints reference no closed
+    /// files and idle decoders are released (DecoderPool.Tidy). Also clears the Instant Seek cache and resets its budget to baseline.
     /// </summary>
     public void Unload()
     {
@@ -266,7 +252,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         _client.ClearFrameCache();
     }
 
-    /// <summary>The engine as it starts (UI thread): <see cref="Unload"/> and <see cref="Suspend"/> but for what each does to the worker's frames.</summary>
+    /// <summary>Shared reset for <see cref="Unload"/> and <see cref="Suspend"/> (UI thread), excluding worker cache handling.</summary>
     private void Empty()
     {
         Pause();
@@ -282,25 +268,18 @@ public sealed partial class GpuPreviewEngine : IDisposable
         Invalidate();
     }
 
-    /// <summary>How long after a <see cref="Suspend"/> the sound's idle decoders are let go once more, ms: voices retired by the empty program give theirs back as the feeders finish with them.</summary>
+    /// <summary>Delay (ms) before a second idle audio-decoder release after <see cref="Suspend"/>, catching voices retired late.</summary>
     private const int ReleaseAgainMs = 1500;
 
     /// <summary>
-    /// A project tab put behind (UI thread; Pass 5.4A, MainWindow.ProjectTabs.cs): the engine emptied as <see cref="Unload"/> empties it,
-    /// then everything of the project the engine still holds let go at once instead of when idle: every source cleared in the worker's
-    /// table (its decoders disposed at its next turn: GpuResourceBroker.ReleaseAll), the worker trimmed (5.4D-TabPerf: its free frames,
-    /// working textures and readback staging let go of between frames on its next turn, after the sources; the driver's kept allocations
-    /// and its heap handed back to Windows once it is left alone a moment, so a run of quick switches pays for that once:
-    /// CompositorClient.TrimWorker), and the sound's idle decoders disposed, now and once more a moment later.
-    /// Instant Seek's frames are the worker's to keep or not (the TabPerf follow-up, the user's X1: CompositorWorker.TrimEmptiesCache): on
-    /// unified memory or a small card the trim empties the cache (its budget back at its baseline); on a big card the frames stay, the
-    /// least recently used going first as the next tab needs room, and the tab brought back finds its own (DecoderPool's parked sources).
-    /// No clear is sent from here: a full cache let go of texture by texture is the worker's time, never the switch's. The engine, its
-    /// worker and the audio device stay up for the tab that comes to the front, which gives it a state again (SetState). Nothing here
-    /// waits for the worker: the calls leave counted requests.
-    /// <para>5.4.4: the sources the tabs' pre-roll named are kept (the tab brought to the front finds the frames and decoders its pre-roll
-    /// made; the first SetState after lets go of those it does not use), and the worker keeps its working set when a scene follows the trim
-    /// (CompositorWorker: the tab brought to the front draws with it at once).</para>
+    /// Tab deactivation (UI thread, MainWindow.ProjectTabs.cs): resets like <see cref="Unload"/>, then releases project resources eagerly:
+    /// clears the worker source table (GpuResourceBroker.ReleaseAll), requests a worker trim (CompositorClient.TrimWorker; driver Trim
+    /// is idle-deferred so rapid switches coalesce) and disposes idle audio decoders now and again shortly after.
+    /// Cached frames are the worker's decision (CompositorWorker.TrimEmptiesCache): emptied on unified memory or small cards, kept LRU on
+    /// large cards for the returning tab. No clear is sent here, so the switch never pays for freeing a full cache. Engine, worker and
+    /// audio device stay up for the next tab's SetState. Non-blocking: all requests are counters.
+    /// <para>Sources named by tab pre-roll are kept for the incoming tab (the next SetState releases unused ones), and the worker keeps its
+    /// working set when a scene follows the trim.</para>
     /// </summary>
     public void Suspend()
     {
@@ -323,25 +302,24 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }, TaskScheduler.Default);
     }
 
-    /// <summary>The newest scene the worker has presented (its sequence number, growing): a still shown over the player waits for one after the scene it was shown with.</summary>
+    /// <summary>Monotonic sequence number of the newest presented scene; overlay stills wait for one newer than their own scene.</summary>
     public long PresentedScene => Volatile.Read(ref _client.Memory.Control.PresentedSequence);
 
     /// <summary>Whether the newest scene presented showed every video's exact frame (not a stand-in from the cache).</summary>
     public bool PresentedExact => Volatile.Read(ref _client.Memory.Control.PresentedExact) != 0;
 
     /// <summary>
-    /// Whether the worker's card shares the PC's memory (5.4.4: an integrated or ARM64 GPU; false until the worker is Ready). Read from
-    /// any thread: the worker wrote it once, with its device.
+    /// True when the worker adapter uses unified memory (integrated or ARM64 GPU); false until Ready. Written once by the worker; any thread.
     /// </summary>
     public bool UnifiedMemory => _client.UnifiedMemory;
 
-    // Scene marks (5.4.2A): the newest asked for (UI thread), the one the pump's turn read before it read the plan and the playhead (pump
-    // thread), and the newest a published scene was made after, with that scene's number (written by the pump, the number first).
+    // Scene marks: newest requested (UI thread), the value the pump read before the plan and playhead (pump thread), and the newest
+    // mark a published scene satisfied plus that scene's number (pump; number written first).
     private long _sceneMark, _turnMark, _markPublished, _markedScene;
 
     /// <summary>
-    /// A mark of now (UI thread), after a change the player has to show before anything stands in for it (a project tab brought back: its
-    /// Sequence, playhead and view set): <see cref="PresentedSince"/> says when a scene made after it has been presented. Draws again.
+    /// Takes a scene mark (UI thread) after a change that must be shown before any stand-in (tab activation); <see cref="PresentedSince"/>
+    /// reports when a later scene was presented. Requests a redraw.
     /// </summary>
     public long MarkScene()
     {
@@ -351,14 +329,14 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// Whether the viewport has put on the screen (IDXGISwapChain::Present, 5.4.3; the worker's drawing it is not enough) a scene the pump made after <paramref name="mark"/> (<see cref="MarkScene"/>): one of the state as it
-    /// was then or newer, never a scene of before it still on its way (the frame of the tab put behind, 5.4.2A's one-frame jump on a switch).
+    /// True once the viewport has presented (IDXGISwapChain::Present, not just worker render) a scene built after <paramref name="mark"/>
+    /// (<see cref="MarkScene"/>), never an in-flight older scene such as the previous tab's frame.
     /// </summary>
     public bool PresentedSince(long mark) => mark > 0 && Volatile.Read(ref _markPublished) >= mark && _viewport.PresentedSequence >= Volatile.Read(ref _markedScene);
 
     /// <summary>
-    /// The captions the player shows (UI thread): line by line on the sequence clock, their style and text scale (as the
-    /// .ass the export writes); null lines for none. Rasterized near the playhead by <see cref="PrepareAround"/>.
+    /// Sets player captions (UI thread): timed lines, style and text scale matching the exported .ass; null for none.
+    /// Rasterized near the playhead by <see cref="PrepareAround"/>.
     /// </summary>
     public void SetCaptions(IReadOnlyList<IReadOnlyList<CaptionWord>>? lines, CaptionStyle? style, double textScale)
     {
@@ -367,7 +345,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         Invalidate();
     }
 
-    /// <summary>The audio settings saved in Settings (device, buffer, sync offset): the device is opened again only when it changed.</summary>
+    /// <summary>Applies audio settings (device, buffer, sync offset); reopens the device only when it changed.</summary>
     public void ApplyAudioSettings(AppSettings settings) =>
         _audio.ApplySettings(settings.AudioOutputDeviceId, settings.AudioBufferMs, settings.AudioSyncOffsetMs);
 
@@ -397,8 +375,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// Draw again for a change of where the picture lies (zoom, pan, the player resized), not of the picture: the Export Quality
-    /// Preview's content stamp stays, so a paused frame is placed again without being encoded again.
+    /// Redraws for a placement-only change (zoom, pan, resize); the Export Quality Preview content stamp is kept, so the paused frame
+    /// is not re-encoded.
     /// </summary>
     public void InvalidateView()
     {
@@ -406,16 +384,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
         _dirty.Set();
     }
 
-    /// <summary>How much the magnifier loupe enlarges, against the player's own scale (the user's bug 6: 400 %).</summary>
+    /// <summary>Edge loupe magnification relative to the player scale (400 %).</summary>
     public const float LoupeZoom = 4;
 
     private long _loupeKey;
     private int _loupeKind;
 
     /// <summary>
-    /// The magnifier loupe (5.0-Verify): while an edge of the clip <paramref name="clipKey"/> (GpuHash.Of its id) is tuned,
-    /// the player shows it 400 % in a corner (SceneRenderer.Loupe.cs); 0 puts it away. <paramref name="kind"/>: 1 feather,
-    /// 2 mask, 3 matte, 4 key (FrameSceneHeader.LoupeKind).
+    /// Edge loupe: while an edge of clip <paramref name="clipKey"/> (GpuHash.Of its id) is tuned, shows it at 400 % in a corner
+    /// (SceneRenderer.Loupe.cs); 0 hides it. <paramref name="kind"/>: 1 feather, 2 mask, 3 matte, 4 key (FrameSceneHeader.LoupeKind).
     /// </summary>
     public void SetLoupe(long clipKey, int kind)
     {
@@ -426,9 +403,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// The moment under the pointer over a timeline (null when it left; MainWindow tells it at most about 30 times a
-    /// second): while paused its frame is decoded ahead of a click, and once it rests (GpuHintWriter.HoverRest) a short
-    /// play-ahead from it, so a click there and Space start at once. Nothing is done for it while playing or scrubbing.
+    /// Timeline hover time (null when the pointer leaves; updated up to ~30 Hz). While paused, pre-decodes its frame and, once at
+    /// rest (GpuHintWriter.HoverRest), a short play-ahead. Ignored while playing or scrubbing.
     /// </summary>
     public void SetPointer(double? sequenceSeconds)
     {
@@ -442,9 +418,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// A file a drop is likely to open (UI thread; Pass 5.0-Release, on a fast local drive only, MainWindow.Drops): put in
-    /// the source table (the drop's plan finds it there) and its first frames decoded by the worker, after everything else
-    /// it does, for <see cref="PrewarmSeconds"/> at most; null lets go of it. Nothing while playing.
+    /// Pre-opens a likely drop target on a fast local drive (UI thread, MainWindow.Drops): adds it to the source table and lets the
+    /// worker decode its first frames at lowest priority for up to <see cref="PrewarmSeconds"/>; null releases it. No-op while playing.
     /// </summary>
     public void Prewarm(string? path)
     {
@@ -470,12 +445,11 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// The project tabs likely to come to the front next (5.4.2A: the next in Ctrl+Tab's order, and the one under the pointer): the frame
-    /// at each one's playhead of every video it shows there, and <see cref="TabPreRollSeconds"/> after it, decoded by the worker after
-    /// everything else it does (never while playing), so a switch, and Space or a scrub right after it, finds them decoded and the decoders
-    /// open. Asked for <see cref="PrewarmSeconds"/> at most; an empty list lets go. UI thread (the source table is its).
+    /// Pre-rolls likely next tabs (next in Ctrl+Tab order, hovered tab): each visible video's playhead frame plus
+    /// <see cref="TabPreRollSeconds"/>, decoded at idle priority (never while playing) so a switch finds frames and decoders ready.
+    /// Requests expire after <see cref="PrewarmSeconds"/>; an empty list releases them. UI thread (owns the source table).
     /// </summary>
-    /// <param name="frames">Each video's file, its video stream (0 the first) and the moment of the file at its tab's playhead.</param>
+    /// <param name="frames">Per video: file, video stream index (0 first) and file time at the tab's playhead.</param>
     public void PrewarmTabs(IReadOnlyList<(string Path, int Stream, double MediaSeconds)> frames)
     {
         _uiOwner.Check();
@@ -485,7 +459,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             var source = _broker.SourceFor(path, stream);
             if (source >= 0 && double.IsFinite(media))
             {
-                // Idle work for the worker (5.4.4): after everything else, and only while the player is quiet.
+                // Idle-priority worker work, only while the player is quiet.
                 hints.Add(new GpuSeekHint
                 {
                     SourceId = source, Kind = (int)GpuSeekHintKind.TabRoll, PathHash = _broker.PathHashOf(source),
@@ -501,12 +475,10 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     // ----- The clock -----
 
-    // ----- The transport: Play, Pause, Seek, the priming hand-off and the end of the sequence -----
-    // The UI thread calls Play, Pause and Seek; the pump pauses by itself at the end of the sequence (tools\AvSync and the
-    // Playback & A/V Sync Test rely on that, with no dispatcher) and starts the sound when priming ends. Every one of these state
-    // changes runs under _transport, for a few instructions and never across I/O (the play session's log line is written after
-    // the lock), and bumps _transportSerial. The pump reads the serial before it measures the end, so a Seek, Play or Pause made
-    // after the end was measured wins over the pump's own pause. Lock order: _transport, then the sound engine's locks.
+    // ----- Transport: Play, Pause, Seek, priming hand-off, end of Sequence -----
+    // UI thread calls Play/Pause/Seek; the pump auto-pauses at the end (AvSync relies on this without a dispatcher) and starts audio when
+    // priming ends. All transitions run briefly under _transport (no I/O; log lines are written after release) and bump _transportSerial.
+    // The pump reads the serial before measuring the end, so a later user transition wins. Lock order: _transport, then audio engine locks.
     private readonly Lock _transport = new();
     private long _transportSerial;
 
@@ -564,7 +536,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             _audio.Seek(from);
             _scrubVelocity = 0;
 
-        // Several videos at once: the clock waits for their first frames (PlayStartWait), so none is shown late or out of step.
+        // Multiple videos: hold the clock for their first frames (PlayStartWait) so none starts late or out of sync.
             _primingSince = _state is { } state && VideosAt(state, from) > 1 ? Stopwatch.GetTimestamp() : 0;
             _primingScene = 0;
             if (_primingSince == 0)
@@ -577,8 +549,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// How long, at most, playback may wait for its first frames, ms (5.1-DogfoodPolish, the user's Q1: 350 at most). One video never
-    /// waits, and neither do videos whose frames at the playhead and just after it are already decoded: see <see cref="PlayStartReady"/>.
+    /// Maximum play-start wait for first frames (ms). A single video never waits, nor do videos already decoded at and just after the
+    /// playhead (<see cref="PlayStartReady"/>).
     /// </summary>
     public const int PlayStartWait = 350;
 
@@ -592,14 +564,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
             .Select(c => c.SourcePath).Distinct(StringComparer.OrdinalIgnoreCase).Count();
 
     /// <summary>
-    /// Whether play can start: every video on screen has its frame at the playhead and the two after it, as the first scene drawn since the
-    /// press found them (the worker's PresentedExact and PresentedAhead, each one's frames looked up in the cache; idea 3 of
-    /// LATE_FRAMES_MULTI_VIDEO.md, the user's Q2, and their answer to it: the frames after it too, 5.1-DogfoodPolish Q1). The lanes being
-    /// busy says nothing: the pre-roll keeps them so, which is what used to run the wait out every time. An earlier scene's answer is about
-    /// somewhere else, so it does not count: <paramref name="scene"/> has to be presented first.
+    /// True when every visible video has its playhead frame and the next two cached, per the first scene presented since the press
+    /// (worker PresentedExact/PresentedAhead). Lane busyness is ignored (pre-roll keeps lanes busy). Only answers for
+    /// <paramref name="scene"/> or later count.
     /// </summary>
     /// <param name="since">When play was pressed (Stopwatch ticks).</param>
-    /// <param name="scene">The first scene drawn since; 0 while there is none.</param>
+    /// <param name="scene">First scene presented since the press; 0 while none.</param>
     public static bool PlayStartReady(CompositorClient client, long since, long scene)
     {
         ref var control = ref client.Memory.Control;
@@ -635,8 +605,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// The pump reached the end of the sequence: paused there and <see cref="Ended"/> raised, unless the transport changed after the end
-    /// was measured (<paramref name="serial"/>): a Seek, Play or Pause the user made meanwhile wins, and no stale Ended is raised.
+    /// End of Sequence reached by the pump: pause and raise <see cref="Ended"/>, unless a transport change occurred after the end was
+    /// measured (<paramref name="serial"/> mismatch), in which case nothing happens.
     /// </summary>
     private void PauseAtEnd(long serial, double end)
     {
@@ -655,7 +625,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         Ended?.Invoke();
     }
 
-    /// <summary>Priming is over (every video's first frames are in): the sound starts, unless the user paused meanwhile.</summary>
+    /// <summary>Priming finished (first frames ready): starts audio unless paused in the meantime.</summary>
     private void EndPriming()
     {
         lock (_transport)
@@ -669,7 +639,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
     // ----- The frame pump -----
 
-    /// <summary>How long the playing pump last waited for the worker's frame, ms (Pass 5.5.2: AvSync's trace).</summary>
+    /// <summary>Last pump wait for the worker frame during playback (ms; AvSync trace).</summary>
     internal float LastFrameWaitMs;
 
     private void Pump()
@@ -679,33 +649,33 @@ public sealed partial class GpuPreviewEngine : IDisposable
         var failedNoted = false;
         var (owedTurn, presentedLast) = (false, false);
 
-        // The monitor's refresh period, read as each play begins (Pass 5.5.2): where the play's refresh estimate starts and its bound.
+        // Monitor refresh period sampled at play start: seed and bound for the refresh estimate.
         var (monitorPeriod, playBegun) = (double.NaN, false);
         Span<GpuSeekHint> hints = stackalloc GpuSeekHint[CompositorProtocol.MaxHints];
         while (!_stop.WaitOne(0))
         {
             try
             {
-                // Only the supervisor's giving up stops the player: a worker that failed once is taken over (~80 ms).
-                // Raised once someone listens (the pump starts before MainWindow subscribes).
+                // Only a supervisor give-up stops the player; single worker failures are taken over (~80 ms).
+                // Deferred until a subscriber exists (the pump starts before MainWindow subscribes).
                 if (_client.GaveUp && !failedNoted && Faulted is { } faulted)
                 {
                     failedNoted = true;
                     faulted(_client.Message);
                 }
 
-                // A one-off picture of the frame (Export Frame): drawn and read back here, the one thread that writes scenes.
+                // Export Frame capture: rendered and read back here (the sole scene-writing thread).
                 if (Interlocked.Exchange(ref _capture, null) is { } capture)
                     Capture(capture);
 
-                // The picture on screen read back for a project tab put behind (5.4.3), before anything new is drawn over it.
+                // Read back the on-screen frame for a deactivating tab before anything overwrites it.
                 TakeSnapshot();
 
-                // A project's thumbnail (a save, Pass 5.2D): drawn small the same way, and never while playing.
+                // Project save thumbnail: rendered small the same way; never while playing.
                 if (Interlocked.Exchange(ref _thumbnail, null) is { } thumbnail)
                     CaptureThumbnail(thumbnail);
 
-                // Side windows' Live Video Previews attached or let go (5.4C): made and dropped here, the one thread that presents.
+                // Attach/detach Live Video Preview mirrors here (the sole presenting thread).
                 TakeMirrorRequests();
 
                 if (_playing)
@@ -718,9 +688,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         SeedLeadOnce(monitorPeriod);
                     }
 
-                    // Paced by the swap chain: one frame queued at most, so what is drawn now is on screen one refresh on. A
-                    // turn that presented nothing left the swap chain's event unset: the next turn does not wait for it. The
-                    // refresh is measured only between two paced turns (a presented frame, then the swap chain's turn).
+                    // Swap-chain paced, max one queued frame. A turn without a present leaves the waitable unsignalled, so the next
+                    // turn skips the wait. Refresh is measured only between two paced turns.
                     var paced = !owedTurn;
                     if (owedTurn)
                         Thread.Sleep(1);
@@ -729,9 +698,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     var now = Stopwatch.GetTimestamp();
                     var interval = (now - lastTurn) / (double)Stopwatch.Frequency;
                     lastTurn = now;
-                    // 1.5 ms up: a 500 Hz display is 2 ms a refresh (5.0-Verify: a floor of 4 ms left a 500 Hz display
-                    // measured at 1/60 s, the picture 15 ms ahead of the sound). A turn over 1.5 of the monitor's refresh is a stall, not
-                    // a refresh, and is left out (5.5.2: a cold play's 37-52 ms turns took a 500 Hz estimate to ~18 ms, the frames that far ahead).
+                    // Accept intervals from 1.5 ms (500 Hz = 2 ms; a 4 ms floor once mis-measured 500 Hz as 60 Hz). Intervals over
+                    // 1.5x the monitor refresh are stalls and are excluded (cold-play 37-52 ms turns would skew the estimate).
                     if (paced && presentedLast)
                         _refresh = GpuViewport.NextRefresh(_refresh, interval, monitorPeriod);
                     presentedLast = false;
@@ -739,13 +707,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     if (_primingSince != 0 && PlayStartReady(_client, _primingSince, _primingScene))
                         EndPriming();
 
-                    // The marks asked for so far, read before the plan and the playhead: the scene made of them comes after them (PresentedSince).
+                    // Read requested marks before the plan and playhead so this scene satisfies them (PresentedSince).
                     _turnMark = Volatile.Read(ref _sceneMark);
                     var plan = Volatile.Read(ref _plan);
 
-                    // Drawing ahead (5.4.4; unified-memory GPUs such as the Snapdragon's Adreno): the frame drawn during the last refresh shown now,
-                    // and the next one handed to the worker at once, drawn while this one is on the screen (DrawAheadTurn).
-                    // A stalled turn (a cold play's first second) measures no lead: its frame's long way to the screen is not the display's (5.5.2).
+                    // Draw-ahead (unified-memory GPUs, e.g. Adreno): present the frame rendered last refresh and submit the next immediately
+                    // (DrawAheadTurn). Stalled turns record no display lead.
                     var origin = GpuViewport.LeadOrigin(now, interval, monitorPeriod, _refresh);
                     if (DrawsAhead)
                     {
@@ -753,8 +720,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         continue;
                     }
 
-                    // The frame is drawn for the moment it will be on the screen (5.4.4-Final, the user's Q4 a): the swap chain's measured lead
-                    // from this turn to the vblank that shows it (GpuViewport.DisplayLeadSeconds), else one refresh as before.
+                    // Evaluate at display time: measured lead to the presenting vblank (GpuViewport.DisplayLeadSeconds), else one refresh.
                     _viewport.FrameOrigin = origin;
                     var serial = Volatile.Read(ref _transportSerial);
                     var at = _audio.Position + GpuViewport.PlayingLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
@@ -764,17 +730,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         continue;
                     }
 
-                    // The same frame of the timeline as the one drawn last (a 60 fps timeline on a 144 Hz display, or the
-                    // 3D view at rest): not drawn again, unless something else changed (an edit, the camera, the window).
-                    // The worker's own redraw (an exact frame after a stand-in) is still shown.
+                    // Same timeline frame as last turn (60 fps on 144 Hz, 3D at rest): skip the render unless something else changed.
+                    // Worker redraws (exact frame after a stand-in) are still presented.
                     var frame = CanvasFrameOf(at);
                     var moved = false;
                     CameraMoving(ref moved);
                     if (frame == _lastPlayedFrame && frame != long.MinValue && Volatile.Read(ref _sceneDirty) == 0 && !moved)
                     {
-                        // The frame drawn last presented again (a copy, no render): the swap chain keeps its beat, so the
-                        // next turn wakes at the next refresh and a new frame is on screen at the first one after its time. A copy measures no
-                        // lead (5.5.2): it waits for no draw, and the lead is what a new frame takes to the screen.
+                        // Re-present the last frame (copy, no render) to keep swap-chain cadence so a new frame lands on the first
+                        // vblank after its time. Copies record no display lead.
                         _viewport.FrameOrigin = 0;
                         var kept = _viewport.PresentNewest(vsync: true, force: true);
                         (owedTurn, presentedLast) = (!kept, kept);
@@ -825,8 +789,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
                 owedTurn = false;
 
-                // Paused: only what changed is drawn; the worker's own redraws (an exact frame after a stand-in) are shown.
-                // The wait ends when the pointer comes to rest, for its play-ahead.
+                // Paused: render only changes; present worker redraws. The wait also ends when hover comes to rest (play-ahead hint).
                 var woke = WaitHandle.WaitAny(waits, PausedWaitMs());
                 if (woke == 1)
                     return;
@@ -836,7 +799,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 var pausedPlan = Volatile.Read(ref _plan);
                 var pausedAt = Volatile.Read(ref _pausedAt);
 
-                // A scrub that ended on a picture drawn smaller (Dynamic Preview Scaling): drawn whole again.
+                // Scrub ended on a downscaled frame (Dynamic Preview Scaling): redraw at full scale.
                 if (CrispOwed())
                 {
                     woke = 0;
@@ -859,12 +822,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
     }
 
-    /// <summary>Writes and publishes the scene at a moment; 0 when there is nothing to show it on (a hidden player).</summary>
-    // The timeline's own rate (frames a second, 0 unknown), and the frame of it drawn last while playing.
+    /// <summary>Writes and publishes the scene at a time; returns 0 when there is no surface (hidden player).</summary>
+    // Timeline frame rate (0 unknown) and the last timeline frame rendered while playing.
     private double _canvasFps;
     private long _lastPlayedFrame = long.MinValue;
 
-    /// <summary>The timeline frame a moment is in, at the canvas's own rate; long.MinValue when the rate is unknown (every refresh is drawn).</summary>
+    /// <summary>Timeline frame index at the canvas rate; long.MinValue when unknown (render every refresh).</summary>
     private long CanvasFrameOf(double seconds)
     {
         var fps = Volatile.Read(ref _canvasFps);
@@ -881,8 +844,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         if (plan.SequenceSeconds > 0.002 && seconds > plan.SequenceSeconds - 0.001)
             seconds = plan.SequenceSeconds - 0.001;
 
-        // The UI thread's display inputs read once for the whole scene: a Show Source toggle or a pinch landing part-way through must
-        // not mix a source evaluation with the sequence-only extras, or a new zoom with the old pan (the next turn redraws anyway).
+        // Snapshot UI display inputs once per scene so a mid-scene Show Source toggle or pinch cannot mix states (next turn redraws).
         var sourceView = _sourceView;
         var (viewScale, viewPanX, viewPanY) = (_viewScale, _viewPanX, _viewPanY);
 
@@ -914,7 +876,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
         var sequence = _client.Publish();
 
-        // A scene drawn smaller (5.4.4): no still is read until a newer frame is on screen (TakeSnapshot).
+        // Downscaled scene: block still readback until a newer full frame is on screen (TakeSnapshot).
         if (sequence > 0 && _lastScale < 1)
             _scaledSequence = sequence;
         if (sequence > 0 && _turnMark > _markPublished)
@@ -923,7 +885,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             Volatile.Write(ref _markPublished, _turnMark);
         }
 
-        // A mark asked for after this turn read the plan (its own redraw taken by this scene): drawn once more, so the mark is met.
+        // A mark requested after this turn read the plan: redraw once more so it is satisfied.
         if (sequence > 0 && Volatile.Read(ref _sceneMark) > _turnMark)
         {
             Volatile.Write(ref _sceneDirty, 1);
@@ -933,9 +895,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
         return sequence;
     }
 
-    // ----- Side windows' Live Video Previews (5.4C): mirrors of the player's picture -----
+    // ----- Live Video Preview mirrors -----
 
-    // Mirrors asked for (true) or let go (false), by native window: taken on the pump's thread (TakeMirrorRequests).
+    // Pending mirror attach (true) / detach (false) by HWND; drained on the pump thread (TakeMirrorRequests).
     private readonly System.Collections.Concurrent.ConcurrentQueue<(bool Attach, nint Window)> _mirrorRequests = new();
 
     // The mirrors, on the pump's thread only; the canvas the player's picture was last drawn at, and the shape last told.
@@ -944,9 +906,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private double _mirrorAspectTold;
 
     /// <summary>
-    /// Mirrors the player's picture into a native window (5.4C: a side window's Live Video Preview): from the next turn of the pump on,
-    /// the canvas's part of every frame the player presents is copied there on the card and presented without waiting (a swap chain
-    /// on the player's own device). From any thread; a window already mirrored is left as it is.
+    /// Mirrors the player into an HWND (Live Video Preview): from the next pump turn, the canvas region of each presented frame is
+    /// GPU-copied to a swap chain on the player device and presented without waiting. Any thread; idempotent.
     /// </summary>
     public void AttachMirror(nint window)
     {
@@ -956,7 +917,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         _dirty.Set();
     }
 
-    /// <summary>Stops mirroring into a native window (its side window closing, or a Pane Docker now); its swap chain goes on the pump's thread.</summary>
+    /// <summary>Stops mirroring into an HWND; its swap chain is released on the pump thread.</summary>
     public void DetachMirror(nint window)
     {
         if (window == 0)
@@ -966,8 +927,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// Raised on the pump's thread when the shape the mirrors show changes (the canvas's width over its height, as the player lays
-    /// it): the side windows fit their surfaces to it, so the swap chains' stretch is the same both ways.
+    /// Raised on the pump thread when the mirrored aspect ratio changes, so side windows resize their surfaces to avoid distortion.
     /// </summary>
     public event Action<double>? MirrorAspectChanged;
 
@@ -989,7 +949,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
     }
 
-    /// <summary>Each mirror's turn, after the player's (never waits: GpuViewport.PresentMirror), and the shape told when it changed.</summary>
+    /// <summary>Presents each mirror after the player (non-blocking, GpuViewport.PresentMirror) and raises aspect changes.</summary>
     private void PresentMirrors()
     {
         if (_mirrors.Count == 0)
@@ -1015,9 +975,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private long _sourceKey;
 
     /// <summary>
-    /// Show a clip's own picture, whole and unfinished, instead of the sequence (true while a crop or a Cutout's place is drawn
-    /// on a clip's source: Interactive Crop, a Draw Target): its file itself (5.2-AuditB: any clip's, where it was the primary
-    /// file's; GpuScenePlan.EvaluateSource). <paramref name="clipId"/> is the clip; empty for the bottom video at the playhead.
+    /// Shows a clip's unprocessed source instead of the Sequence (Interactive Crop, Draw Target; GpuScenePlan.EvaluateSource).
+    /// <paramref name="clipId"/> selects the clip; empty uses the bottom video at the playhead.
     /// </summary>
     public void ShowSource(bool source, Guid clipId = default)
     {
@@ -1032,8 +991,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     // ----- One picture of the frame, read back (Export Frame) -----
 
     /// <summary>
-    /// One frame capture asked for: its result and the plan it draws (the originals', made on the UI thread; null for the player's own),
-    /// exchanged as one object so the pump never draws one request with another's plan.
+    /// Pending frame capture: result source plus its plan (originals plan built on the UI thread; null = player plan), swapped
+    /// atomically so a request never renders with another's plan.
     /// </summary>
     private sealed record FrameRequest(TaskCompletionSource<(byte[] Bgra, int Width, int Height)?> Done, GpuScenePlan? Plan);
 
@@ -1042,15 +1001,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
     // The state the plan was made from.
     private SequenceExportState? _state;
 
-    // Set as Dispose begins: captures asked for after it end at once with null (a retry after Reload Player must neither wait for a
-    // pump that is gone nor signal its disposed wake event).
+    // Set when Dispose begins: later captures complete with null immediately (no wait on a dead pump or its disposed wake event).
     private volatile bool _disposed;
 
     /// <summary>
-    /// The frame at the playhead as the export makes it: the canvas's own size, no letterbox, no zoom, no 3D view, every
-    /// exact frame, from the original files (a clip optimized for scrubbing shows its original, not its proxy), BGRA8
-    /// (alpha meaningless). Null when it could not be read, or when a newer capture replaced this one before it was drawn.
-    /// Called on the UI thread (a plan of the originals is made there when the player's reads proxies); drawn on the pump's thread.
+    /// Captures the playhead frame as the export renders it: canvas size, no letterbox/zoom/3D, exact frames from originals (never
+    /// proxies), BGRA8 (alpha undefined). Null on failure or when superseded. Call on the UI thread (builds the originals plan);
+    /// rendered on the pump thread.
     /// </summary>
     public Task<(byte[] Bgra, int Width, int Height)?> CaptureFrameAsync()
     {
@@ -1110,34 +1067,28 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
     }
 
-    // ----- A small picture of the frame for the project file (Pass 5.2D, ProjectThumbnail) -----
+    // ----- Project thumbnail (ProjectThumbnail) -----
 
     /// <summary>
-    /// A thumbnail asked for, with all it is drawn as (5.4D review: one record, exchanged as a whole, so a request the pump has taken is
-    /// never drawn as a newer one asks, a project's thumbnail never in 3D, a tab's 3D still never flat): what completes it, the plan it
-    /// draws when the player's has fades (the same state without them; null: the player's), the short side asked for, and whether it is
-    /// the picture as the player shows it (5.4D: in the 3D view, a project tab's still).
+    /// Thumbnail request swapped as one record so the pump never mixes requests: completion source, plan (fade-free copy when the
+    /// player's has fades; null = player's), requested short side, and whether to render as displayed (3D tab still) or flat.
     /// </summary>
     private sealed record ThumbnailRequest(TaskCompletionSource<(byte[] Bgra, int Width, int Height)?> Done, GpuScenePlan? Plan, int ShortSide, bool AsShown);
 
     private ThumbnailRequest? _thumbnail;
 
-    /// <summary>The longest side of a still drawn as it is shown, in pixels (a player many times wider than tall is drawn smaller).</summary>
+    /// <summary>Max long side (px) of an as-displayed still; very wide players render smaller.</summary>
     private const int ShownStillLongest = 4096;
 
-    /// <summary>How long the pump waits for a thumbnail to be read back, ms: one that takes longer gives none (the save keeps the last one).</summary>
+    /// <summary>Thumbnail readback timeout (ms); on timeout the save keeps the previous thumbnail.</summary>
     private const int ThumbnailReadbackMs = 3000;
 
     /// <summary>
-    /// The frame at the playhead as the player composes it (its proxies, its captions), without the fades (a project that fades in is not
-    /// black at its start), drawn small: the short side <paramref name="shortSide"/> (never more than the canvas's), both sides even, BGRA8
-    /// (alpha meaningless). Its own readback, the size of that picture: the player's is not grown to the canvas for it. A project file's
-    /// thumbnail (ProjectThumbnail). Null at once while playing (no played frame ever waits for one: Law 3) or with nothing loaded, and
-    /// null when it could not be drawn in time. Called on the UI thread (a plan without the fades is made there when the player's has
-    /// them); drawn on the pump's thread, and completed off both.
-    /// <para>5.4D: with <paramref name="asShown"/> (a project tab's still, MainWindow.ProjectTabs.cs) and the 3D view on, the picture as
-    /// the player shows it: the 3D view where its camera is going, in the player's shape (<see cref="ShownStillSize"/>). The project's own
-    /// thumbnail is never asked for so: it stays flat.</para>
+    /// Small playhead frame as the player composes it (proxies, captions) without fades, short side <paramref name="shortSide"/> (capped
+    /// at the canvas), even dimensions, BGRA8 (alpha undefined), using its own readback buffer (ProjectThumbnail). Returns null immediately
+    /// while playing (Law 3) or empty, and null on timeout. Call on the UI thread; rendered on the pump, completed off both.
+    /// <para>With <paramref name="asShown"/> and 3D view on (tab still), renders the 3D view at its target camera in the player's shape
+    /// (<see cref="ShownStillSize"/>). Project thumbnails are always flat.</para>
     /// </summary>
     public Task<(byte[] Bgra, int Width, int Height)?> CaptureThumbnailAsync(int shortSide = ProjectThumbnail.ShortSide, bool asShown = false)
     {
@@ -1165,13 +1116,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
         return request.Task;
     }
 
-    /// <summary>Whether a thumbnail asked for is still waiting for the pump (5.4C review): a newer request would give that one none.</summary>
+    /// <summary>True while a thumbnail request is pending; a newer request would supersede it.</summary>
     public bool IsThumbnailWaiting => Volatile.Read(ref _thumbnail) is not null;
 
     /// <summary>
-    /// The size of a still drawn as it is shown (5.4D, pure: the goldens' project-tabs-exploded-pose): the player's shape (its pixels;
-    /// the canvas's while it is too small to draw on), the short side <paramref name="shortSide"/> at most (never more than the player's
-    /// own), both sides even, and the long side at most <see cref="ShownStillLongest"/>.
+    /// As-displayed still size (pure): player aspect (canvas aspect while the player is too small), short side at most
+    /// <paramref name="shortSide"/> and the player's, even dimensions, long side at most <see cref="ShownStillLongest"/>.
     /// </summary>
     internal static (int Width, int Height) ShownStillSize(int viewWidth, int viewHeight, int canvasWidth, int canvasHeight, int shortSide)
     {
@@ -1208,7 +1158,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
 
             if (asked.AsShown && ShownPose() is { } pose)
             {
-                // As the player shows it (5.4D): the 3D view in the player's shape, the canvas laid in it as the player lays it.
+                // As displayed: 3D view in the player's aspect, canvas letterboxed as in the player.
                 if (header.CanvasWidth <= 0 || header.CanvasHeight <= 0)
                     (header.CanvasWidth, header.CanvasHeight) = (1920, 1080);
                 var (viewWidth, viewHeight) = _viewport.PixelSize;
@@ -1245,20 +1195,18 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
     }
 
-    /// <summary>The 3D exploded view's camera and the layers' depth and marks, written into each scene (GpuPreviewEngine.Exploded.cs).</summary>
+    /// <summary>Writes the 3D camera and layer depth/selection flags into each scene (GpuPreviewEngine.Exploded.cs).</summary>
     partial void WriteCamera(ref FrameSceneHeader header, Span<GpuLayerDescriptor> layers);
 
-    /// <summary>Whether the camera is moving and the paused player must be drawn every refresh (GpuPreviewEngine.Exploded.cs).</summary>
+    /// <summary>True while the 3D camera animates, forcing paused redraws every refresh (GpuPreviewEngine.Exploded.cs).</summary>
     partial void CameraMoving(ref bool moving);
 
-    /// <summary>A scrub is running: the playhead was sent somewhere within this long, seconds (the pointer's work waits).</summary>
+    /// <summary>Scrub window (s): a seek within this interval counts as scrubbing and defers hover work.</summary>
     private const double ScrubbingFor = 0.25;
 
     /// <summary>
-    /// The worker's hints (Instant Seek; GpuHintWriter): every cut within the lookahead horizon of the playhead, playing or
-    /// not; paused, also where a scrub is heading (its speed carried 120 ms ahead) and, when no scrub runs, the pointer over
-    /// a timeline (its frame while it moves, its play-ahead once it rests). Written to the worker only when they changed.
-    /// The playhead's own neighbourhood the worker decodes by itself (its pre-roll, its play-ahead).
+    /// Writes worker seek hints (GpuHintWriter), only when changed: cuts within the lookahead horizon always; when paused, the scrub
+    /// target extrapolated 120 ms, or else the hover frame/play-ahead. The worker handles the playhead neighbourhood itself.
     /// </summary>
     private void LeaveHints(GpuScenePlan plan, double at, bool playing, Span<GpuSeekHint> hints)
     {
@@ -1283,9 +1231,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
             resting = (now - Volatile.Read(ref _pointerMoved)) * 1.0 / Stopwatch.Frequency >= GpuHintWriter.HoverRest;
         }
 
-        // A file opened ahead of a drop: its first frames; the project tabs likely next (5.4.2A): their playheads' half second. Idle work
-        // (5.4.4: GpuSeekHintKind.TabRoll, after everything else the worker does), named only while the player is quiet: not playing, not
-        // scrubbing, and the playhead at rest DecoderPool.IdleQuietMs since its last seek.
+        // Drop prewarm and tab pre-roll hints (GpuSeekHintKind.TabRoll, idle priority), emitted only while quiet: not playing, not
+        // scrubbing, and DecoderPool.IdleQuietMs since the last seek.
         Span<GpuSeekHint> extras = stackalloc GpuSeekHint[MostExtras];
         var extraCount = 0;
 
@@ -1307,15 +1254,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
             _client.SetHints(hints[..count]);
     }
 
-    // The most hints of the caller's ahead of the rest: a drop's file, and the two tabs' videos (four each at most, PrewarmTabs' callers).
+    // Cap on prewarm hints: one drop file plus two tabs' videos (four each, per PrewarmTabs callers).
     private const int MostExtras = 9;
 
     // Where Loop takes playback back from and to (seconds; NaN: no Loop; from infinite: the sequence's end), for the hints.
     private double _loopFrom = double.NaN, _loopTo = double.NaN;
 
     /// <summary>
-    /// Where Loop takes playback back to (<paramref name="to"/>, NaN: Loop off) when it reaches <paramref name="from"/>
-    /// (infinity: the sequence's end), so that the cuts there are made ready before the wrap (any thread).
+    /// Loop wrap from <paramref name="from"/> (infinity = Sequence end) to <paramref name="to"/> (NaN = Loop off), so cuts at the target
+    /// are pre-decoded before the wrap (any thread).
     /// </summary>
     public void SetLoop(double from, double to)
     {
@@ -1323,7 +1270,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         Volatile.Write(ref _loopTo, to);
     }
 
-    /// <summary>How long the paused pump waits for something to change: until the pointer counts as resting, or a scrub as over, at most 250 ms.</summary>
+    /// <summary>Paused pump wait: until hover rest or scrub end, at most 250 ms.</summary>
     private int PausedWaitMs()
     {
         var now = Stopwatch.GetTimestamp();
@@ -1339,16 +1286,15 @@ public sealed partial class GpuPreviewEngine : IDisposable
         if (scrub > 0)
             wait = Math.Min(wait, scrub);
 
-        // A picture drawn smaller for a scrub: drawn whole CrispAfter after its last move (Dynamic Preview Scaling).
+        // Downscaled scrub frame: redraw at full scale CrispAfter after the last move (Dynamic Preview Scaling).
         if (_lastScale < 1)
             wait = Math.Min(wait, Math.Max(CrispAfter - (now - Volatile.Read(ref _scrubMovedTicks)) * 1.0 / Stopwatch.Frequency, 0.001));
         return Math.Clamp((int)Math.Ceiling(wait * 1000), 1, 250);
     }
 
-    // ----- The audio-reactive shader bus (Pass 5.2B) -----
-    // While a card pulses with the sound (AudioReactive.Pulses), a map of the bands of the Sequence's sound (as an export hears it) is made in
-    // the background, and made again only when what is heard changes (AudioReactive.KeyOf): a frame drawn paused or scrubbed carries the
-    // bands the export's frame will. Until the map reaches a moment, a frame played carries the engine's own bands of what it plays.
+    // ----- Audio-reactive shader bus -----
+    // While any effect pulses (AudioReactive.Pulses), a band map of the export mix is built in the background and rebuilt only when the
+    // mix changes (AudioReactive.KeyOf), so paused/scrubbed frames match the export. Uncovered times fall back to live engine bands.
 
     private readonly object _energiesGate = new();
     private AudioEnergyMap? _energies;
@@ -1357,9 +1303,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private volatile bool _pulses;
 
     /// <summary>
-    /// The state's map (UI thread, SetState): kept while what is heard is the same, made again in the background when not, none when nothing
-    /// pulses. <paramref name="heard"/> is the program SetState built when it is the one an export hears (nothing soloed), else null for
-    /// one made here.
+    /// Updates the band map for a new state (UI thread, SetState): kept if the mix is unchanged, rebuilt in the background otherwise,
+    /// null when nothing pulses. <paramref name="heard"/> is SetState's program when it equals the export mix, else null.
     /// </summary>
     private void PlanEnergies(SequenceExportState state, AudioProgram? heard)
     {
@@ -1385,8 +1330,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
         {
             try
             {
-                // Filled from the Sequence's start, and drawn with as it fills (TryAt knows what is made). Published only while this is still
-                // the newest plan, under the gate the version moves under, so a task overtaken never covers a newer map (or a forgotten one's null).
+                // Filled progressively from the start (TryAt reports coverage). Published under the version gate only while still newest, so
+                // a stale task never overwrites a newer map or a cleared one.
                 var map = AudioEnergyMap.Of(0, program.SequenceSeconds);
                 lock (_energiesGate)
                 {
@@ -1420,7 +1365,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
     }
 
-    // The bands at a frame's moment (the pump): the map's where it is made (as the export looks them up), else, playing, the engine's own.
+    // Bands at a frame time (pump): from the map where covered, else live engine bands while playing.
     private void WriteAudioBands(ref FrameSceneHeader header, double seconds, bool playing)
     {
         if (!_pulses || GpuExport.WriteBands(ref header, Volatile.Read(ref _energies), seconds) || !playing)
@@ -1428,13 +1373,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
         (header.AudioBass, header.AudioMid, header.AudioHigh) = _audio.LiveBands;
     }
 
-    // The last engine torn down on the pool (DisposeInBackground); the next StartAsync waits for it. Written on the UI thread only.
+    // Last background teardown task (DisposeInBackground); StartAsync awaits it. UI thread only.
     private static Task _teardown = Task.CompletedTask;
 
     /// <summary>
-    /// Disposes the engine on the pool, after any earlier background teardown (the next <see cref="StartAsync"/> waits for this one), so
-    /// the pump's join (up to 2 s) and the compositor's and sound engine's ends never hold the window's thread (a Reload Player, a worker
-    /// given up on). The caller has let go of the engine: nothing calls it after this. UI thread.
+    /// Disposes the engine on the thread pool, chained after earlier teardowns (<see cref="StartAsync"/> waits), so the pump join (up to
+    /// 2 s) and compositor/audio shutdown never block the UI thread. The caller must drop all references first. UI thread.
     /// </summary>
     public Task DisposeInBackground()
     {
@@ -1462,8 +1406,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             Current = null;
         ForgetEnergies();
 
-        // The stop event also ends a frame's or a thumbnail's readback wait within a slice (TryReadback's abort), so the pump is
-        // out well inside the join (Pass 5.2D).
+        // The stop event also aborts readback waits within one slice (TryReadback), so the pump exits well inside the join timeout.
         _stop.Set();
         var pumpEnded = ThreadStop.Join(_pump, 2000, "Player pump");
 
@@ -1472,10 +1415,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
         Interlocked.Exchange(ref _thumbnail, null)?.Done.TrySetResult(null);
         if (!pumpEnded)
         {
-            // Still inside a call that has not returned (a driver hung in a present): nothing it reads is let go under it. The
-            // control plane unmapped, or the swap chain released, under a running thread is an access violation, not an
-            // exception it could catch, and its events disposed would throw out of its loop. The workers are ended and the sound
-            // stopped; the memory, the viewport and the events go with the process.
+            // Pump is stuck in a native call (e.g. a hung Present): freeing the mapping or swap chain under it would be an access
+            // violation and disposing its events would throw. End workers and stop audio; leak the rest until process exit.
             AppLog.Write("GPU engine: the frame pump did not stop within 2 s; the compositor's memory, the viewport and the pump's events are kept");
             _audio.Dispose();
             _broker.Dispose();

@@ -1,17 +1,16 @@
 namespace HandPegApp.Models;
 
-// ----- The colour sliders' grade (5.2-AuditB) -----
-// What the colour sliders do to the whole finished picture, as numbers: the compositor's ColorGrade, HueSaturation and
-// Sharpen packets are made from it directly (GpuScenePlan's Whole). Until 5.2-AuditB it travelled as FFmpeg eq, hue and
-// unsharp filter text that the scene plan read back.
+// ----- Colour slider grade -----
+// Typed whole-picture adjustments from the colour sliders, converted directly into ColorGrade, HueSaturation and Sharpen packets
+// (GpuScenePlan.Whole).
 
-/// <summary>The colour sliders' grade of the whole picture (5.2-AuditB: typed, was FFmpeg eq / hue / unsharp text).</summary>
+/// <summary>Whole-picture colour slider grade.</summary>
 public readonly record struct SequenceGrade
 {
     /// <summary>No grade: the picture as it is.</summary>
     public static SequenceGrade Neutral => default;
 
-    /// <summary>Contrast, brightness, saturation, gamma and the per-channel gammas (1 = none), or null for none of them.</summary>
+    /// <summary>Contrast, brightness, saturation, gamma and per-channel gammas (1 = neutral), or null when all neutral.</summary>
     public ColorBalance? Balance { get; init; }
 
     /// <summary>A hue turn in degrees, or null for none.</summary>
@@ -25,8 +24,8 @@ public readonly record struct SequenceGrade
 }
 
 /// <summary>
-/// The grade's eq part: contrast (1 none), brightness (0 none), saturation (1 none), gamma (1 none), and the red, green and
-/// blue gammas of the channel balance (1 none; a slider at -1 is a half, at 1 two).
+/// EQ component: contrast (1 neutral), brightness (0), saturation (1), gamma (1) and R/G/B balance gammas (1 neutral; slider -1 = 0.5,
+/// +1 = 2).
 /// </summary>
 public readonly record struct ColorBalance(double Contrast, double Brightness, double Saturation, double Gamma,
     double GammaRed, double GammaGreen, double GammaBlue);

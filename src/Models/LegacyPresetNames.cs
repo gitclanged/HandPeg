@@ -1,12 +1,9 @@
 namespace HandPegApp.Models;
 
 /// <summary>
-/// The Game Presets' names before 5.5.0, read as today's (5.5.2, (b)): a Track Preset Node of a project
-/// (<c>TimelineTrackModel.PresetNodeName</c>, mapped as the document is read) and the drop overlay's Game Presets of the settings
-/// (<c>AppSettings.SplashStylePresets</c>, mapped as they are read) that still name one by an old name are given the new one, so a node or
-/// an overlay entry never points at a file that took its new name. Game Preset surfaces only (5.5.2): Smart Rules and
-/// the default preset name Export Presets and are never mapped. One central table: every other name, the user's own included, is left
-/// exactly as it was.
+/// Maps legacy Game Preset names to current ones for Track Preset Nodes (<c>TimelineTrackModel.PresetNodeName</c>, on document read) and
+/// drop-overlay entries (<c>AppSettings.SplashStylePresets</c>, on settings read), so references follow renamed files. Game Presets only;
+/// Smart Rules and the default Export Preset are never mapped. All other names pass through unchanged.
 /// </summary>
 public static class LegacyPresetNames
 {
@@ -22,8 +19,7 @@ public static class LegacyPresetNames
     public static IReadOnlyDictionary<string, string> All => Renamed;
 
     /// <summary>
-    /// A preset's name as it is today: an old name (alone, or as a file name with the Game Preset extension) its new one, in the same form;
-    /// any other name (null, empty, the user's own) as it is.
+    /// Current name for a legacy name (bare or with the Game Preset extension, form preserved); other values returned unchanged.
     /// </summary>
     public static string? Map(string? name)
     {

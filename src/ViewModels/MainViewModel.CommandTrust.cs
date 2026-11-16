@@ -8,12 +8,12 @@ public sealed partial class MainViewModel
 {
     private readonly CommandTrust _commandTrust = new();
 
-    /// <summary>The fingerprints of the project commands trusted on this PC (AppSettings.TrustedProjectCommands).</summary>
+    /// <summary>Fingerprints of project commands trusted on this PC (AppSettings.TrustedProjectCommands).</summary>
     private static IReadOnlyCollection<string> TrustedCommands => AppSettings.Current.TrustedProjectCommands;
 
     /// <summary>
-    /// Asks once before running a command, or Extra options, that the opened project file carried (not this session's edits, nor text
-    /// trusted on this PC). With no one to ask (no Confirm hook) it is refused. Confirmed text is remembered on this PC.
+    /// Confirms once before running a command or Extra options supplied by the opened project file (not session edits or already-trusted
+    /// text). Refused when headless (no Confirm hook). Confirmed text is trusted on this PC.
     /// </summary>
     /// <returns>Whether the command may run.</returns>
     private bool ConfirmFileCommand(string command)
@@ -31,8 +31,8 @@ public sealed partial class MainViewModel
     }
 
     /// <summary>
-    /// A project being saved: a hand-edited command and Extra options it carries that are this PC's (not a file's still unconfirmed) are
-    /// remembered as trusted, so opening the user's own project again never asks.
+    /// On save, trusts locally authored command/Extra options (not unconfirmed file-supplied text) so reopening one's own project
+    /// never prompts.
     /// </summary>
     private void TrustOwnCommandOnSave()
     {
@@ -44,7 +44,7 @@ public sealed partial class MainViewModel
         TrustOnThisPc(ownCommand, ownExtras);
     }
 
-    /// <summary>Remembers a command and Extra options (either may be null or empty) as trusted on this PC, newest last, the oldest dropped.</summary>
+    /// <summary>Trusts a command and Extra options (either may be empty) on this PC; bounded list, oldest evicted.</summary>
     private static void TrustOnThisPc(string? command, string? extras)
     {
         var wanted = new List<string>(2);
@@ -66,8 +66,7 @@ public sealed partial class MainViewModel
     }
 
     /// <summary>
-    /// A project restored with no one to confirm its command (a background job made while the window encodes): the file's own command
-    /// and Extra options are dropped (unless trusted on this PC) and the command generated again.
+    /// Headless restore (background job while encoding): drops untrusted file-supplied command/Extra options and regenerates the command.
     /// </summary>
     /// <returns>Whether anything was dropped.</returns>
     private bool DropFileCommand()

@@ -1,32 +1,31 @@
-// HandPeg compositor: the social cut transitions (Pass 5.2.1, slots 70-73): Whip Pan, Zoom Warp, RGB Glitch and Spin. Each is one
-// pass over the layer's working picture (its own size), after its effects; what the picture does on top (a dissolve, a spin of its
-// box) is SceneRenderer's. Mirrored on the CPU by tools/GoldenTests/CompositorReference.Social.cs: change both together.
-// Nothing here depends on the clock but how far through the fade it is, so one moment always draws the same frame.
+// Social cut transitions (slots 70-73): Whip Pan, Zoom Warp, RGB Glitch, Spin. Each is one pass over the layer's working picture
+// (its own size) after its effects; the dissolve and box spin happen in SceneRenderer. CPU mirror:
+// tools/GoldenTests/CompositorReference.Social.cs (change both together). Output depends only on fade progress (deterministic).
 // Compiled at build time (HandPegApp.csproj).
 
 #include "Common.hlsli"
 
-// Every one: P0 how much of the clip is there along its curve (TransitionStyles.Easing), P3 how far through the fade the clock is
-// (0 to 1), P4 1 for a fade in. Outside the picture is transparent (LinearBorder): what is under it shows there.
+// Packets: P0 eased visible share (TransitionStyles.Easing), P3 fade progress 0..1, P4 1 for a fade in.
+// Outside the picture is transparent (LinearBorder) so the layer beneath shows.
 
 static const float Pi = 3.14159265;
 
 static const int WhipTaps = 32;
-static const float WhipSmear = 0.35;    // The smear at the fastest, as a share of the picture's width.
+static const float WhipSmear = 0.35;    // Peak smear, fraction of picture width.
 
 static const int WarpTaps = 24;
-static const float WarpReach = 2.0;     // How far it is zoomed in where it is not there at all: three times its size.
-static const float WarpStreak = 0.3;    // The radial streak where it is not there at all, as a share of the zoom.
+static const float WarpReach = 2.0;     // Extra zoom at zero visibility (1 + 2 = 3x).
+static const float WarpStreak = 0.3;    // Radial streak at zero visibility, fraction of the zoom.
 
-static const int GlitchSteps = 30;      // A new glitch so many times over the fade.
-static const int GlitchBands = 18;      // Rows of the picture, each torn on its own.
+static const int GlitchSteps = 30;      // Distinct glitch patterns over the fade.
+static const int GlitchBands = 18;      // Horizontal bands, each torn independently.
 
 static const int SpinTaps = 24;
-static const float SpinSweep = 0.35;    // The spin's blur at the fastest, in radians.
+static const float SpinSweep = 0.35;    // Peak rotational blur, radians.
 
 float4 Border(float2 uv) { return Input.SampleLevel(LinearBorder, uv, 0); }
 
-// Whip Pan (70): the picture whips in from the right (and away to the left), smeared along the way it goes, most at the fastest.
+// Whip Pan (70): slides in from the right (out to the left), smeared along the motion, most at peak speed.
 float4 PSWhipPan(VsOut i) : SV_Target
 {
     float through = saturate(P3);
@@ -38,7 +37,7 @@ float4 PSWhipPan(VsOut i) : SV_Target
     return sum / WhipTaps;
 }
 
-// Zoom Warp (71): the picture punches in from three times its size (and away into it) about its middle, streaked outward.
+// Zoom Warp (71): punches in from 3x (out into it) about the centre, streaked radially.
 float4 PSZoomWarp(VsOut i) : SV_Target
 {
     float away = 1 - saturate(P0);
@@ -51,7 +50,7 @@ float4 PSZoomWarp(VsOut i) : SV_Target
     return sum / WarpTaps;
 }
 
-// A whole number's hash (lowbias32), and a number in 0..1 from two (24 bits, exact as a float on the GPU and the CPU).
+// lowbias32 integer hash, and a 0..1 value from two inputs (24 bits: exact as float on GPU and CPU).
 uint GlitchHash(uint x)
 {
     x ^= x >> 16;
@@ -64,11 +63,11 @@ uint GlitchHash(uint x)
 
 float GlitchRandom(uint a, uint b) { return (GlitchHash(a * 0x9e3779b9u ^ GlitchHash(b)) >> 8) / 16777216.0; }
 
-// Which glitch it is at a moment of the fade.
+// Glitch pattern index for a fade progress.
 uint GlitchStep(float through) { return (uint)min(floor(saturate(through) * GlitchSteps), GlitchSteps - 1); }
 
-// RGB Glitch (72): torn rows slid across and the red and blue pulled apart, as much as the clip is not there yet (or no longer).
-// Whether the moment's frame blinks out is SceneRenderer's (GlitchBlink).
+// RGB Glitch (72): torn rows shifted sideways and red/blue split apart, scaled by the hidden share.
+// Blink-out is decided on the CPU (SceneRenderer.GlitchBlinks).
 float4 PSRgbGlitch(VsOut i) : SV_Target
 {
     float glitch = 1 - saturate(P0);
@@ -83,7 +82,7 @@ float4 PSRgbGlitch(VsOut i) : SV_Target
     return float4(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
 }
 
-// Spin (73): the picture blurred along its turn about its anchor (Params2.xy), most at the fastest; SceneRenderer turns its box.
+// Spin (73): rotational blur about the anchor (Params2.xy), strongest at peak speed; SceneRenderer rotates the box.
 float4 PSSpin(VsOut i) : SV_Target
 {
     float sweep = SpinSweep * sin(Pi * saturate(P3));

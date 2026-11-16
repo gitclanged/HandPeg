@@ -19,31 +19,30 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp;
 
 /// <summary>
-/// Interaction logic for MainWindow.xaml
+/// Main editor window: startup sequencing, close/exit flow, global keys, source loading and view-model change handlers.
 /// </summary>
 public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
 
-    // The heat lamp: made at idle after Frame 1 (null until then).
+    // Heat-lamp controller: created at idle after Frame 1 (null until then).
     private Shell.HeatLampController? _heatLamp;
 
-    // The Live Encoded Preview on the player (its toggle is made with the bar's first layout).
+    // Live Encoded Preview controller (its toggle is created with the bar's first layout).
     private readonly Shell.LoopbackPreviewController _loopback;
 
-    // The player's HUD and the Fullscreen Preview (made at first use, after the first frame).
+    // Player HUD and Fullscreen Preview controller (created on first use, after Frame 1).
     private readonly Shell.FullscreenController _fullscreen;
 
-    // What a drag carries, where its drop goes, and the drop overlay of an empty window.
+    // Drag payload classification, drop routing, and the empty-window drop overlay.
     private readonly Shell.DropRouter _drops;
     private bool _isScrubbing;
     private bool _applyingMagnet;
     private bool _updatingFromPlayer;
 
     /// <summary>
-    /// Looks for a newer HandPeg release in the background (Settings: Check for HandPeg Updates on Startup) and offers it
-    /// in the status bar: found, for the Update button to download; or downloaded already, when Settings say to download
-    /// in the background. Nothing waits on this, and a failed check (offline, no releases yet) only goes to the log.
+    /// Background update check (Settings: Check for HandPeg Updates on Startup); offers the release in the status bar, to download or
+    /// (with background download enabled) already downloaded. Fire-and-forget; failures (offline, no releases) are only logged.
     /// </summary>
     private async Task CheckForHandPegUpdateAsync()
     {
@@ -54,7 +53,7 @@ public partial class MainWindow : Window
             ShowUpdateNotice(update.Version, update.Downloaded);
     }
 
-    // The update offered: its version, and whether it is downloaded already (then the button restarts into it).
+    // Offered update: version and whether it is already downloaded (the button then restarts into it).
     private (string Version, bool Downloaded)? _updateOffered;
 
     private void ShowUpdateNotice(string version, bool downloaded)
@@ -82,7 +81,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Download first, on the chip, then restart into it as Restart to Update does.
+        // Download with chip progress, then restart into it as Restart to Update does.
         (UpdateActionButton.IsEnabled, UpdateLaterButton.IsEnabled) = (false, false);
         UpdateNoticeText.Text = $"Downloading HandPeg {offered.Version}...";
         bool ready;
@@ -117,14 +116,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        // The updater waits for this process to end, so the window closes the way it always does.
+        // The updater waits for this process to exit, so close through the normal path.
         if (AppUpdater.BeginRestartIntoUpdate())
             Close();
         else
             _viewModel.StatusText = "The update could not be started. It will be tried again when HandPeg is closed.";
     }
 
-    // Left for later: the update goes in when the application closes.
+    // Deferred: the update is applied when the application exits.
     private void DismissUpdateNotice_Click(object sender, RoutedEventArgs e) => UpdateNotice.Visibility = Visibility.Collapsed;
 
     public MainWindow()
@@ -135,28 +134,26 @@ public partial class MainWindow : Window
         _drops = new Shell.DropRouter(_viewModel, this, new Shell.DropOverlayParts(DropOverlay, DropPresetList, DropSquishList, DropPresetTitle,
             DropPresetSection, DropSquishSection, VideoView, ClearDropMark), () => _gpu);
 
-        // HandPeg's own UI scale before the first layout (5.1-Polish): the monitor's own pixels, unless Windows' scaling is
-        // followed. The window keeps the size Windows gives it; its content is laid out at the scale.
+        // Apply the app UI scale before the first layout (native monitor pixels unless following Windows scaling). The window keeps
+        // its OS-assigned size; content is laid out at the scale.
         UiScale.SetKeepsItsSize(this, true);
         UiScale.BeforeFirstLayout(this);
         var built = building.ElapsedMilliseconds;
         StartupTrace.Mark("MainWindow: InitializeComponent done");
         DataContext = _viewModel;
 
-        // Asked for even when already handled: the slider itself answers a press beside its playhead (it moves
-        // the playhead there) and marks it handled, which would keep it from this window altogether.
+        // handledEventsToo: the slider handles presses beside its thumb (seeking there) and would otherwise hide them from the window.
         ApplyStartupWindowSize();
-        // Asked for even when already handled: the window's own drag handlers mark these events handled
-        // (that is how they refuse a drop over a text box), which would keep them from the overlay.
+        // handledEventsToo: the window's drag handlers mark these handled (to refuse drops over text boxes), hiding them from the overlay.
         AddHandler(PreviewDragEnterEvent, new DragEventHandler((_, e) =>
         {
-            // Something is about to be dropped: the player starts now, before the drop, so that it is ready for it.
+            // A drag entered: start the player now so it is ready when the drop lands.
             WarmUpPlayer();
             _drops.ShowDropOverlay(e);
         }), handledEventsToo: true);
         AddHandler(PreviewDragOverEvent, new DragEventHandler((_, e) => _drops.ShowDropOverlay(e)), handledEventsToo: true);
 
-        // A path or a link being typed is about to be loaded too.
+        // Typing a path or URL also pre-starts the player.
         SourcePaneBox.GotKeyboardFocus += (_, _) => WarmUpPlayer();
 
         AddHandler(PreviewDragLeaveEvent, new DragEventHandler((_, _) => _drops.LeaveDropOverlay()), handledEventsToo: true);
@@ -173,9 +170,8 @@ public partial class MainWindow : Window
             },
         };
 
-        // The Layout button, in the header: resting on it opens the Layout Selector (layouts and themes, live; Pass 4.1B), and so does a
-        // click (5.4D: the one Layout UI, the click's menu retired). Escape, the pointer leaving it and the window deactivated close it. Resting
-        // on the button opens nothing while a project tab is being switched: a layout previewed then would be put back over the new tab's.
+        // Header Layout button: hover or click opens the Layout Selector (live layouts and themes); Escape, pointer leave or window
+        // deactivation close it. Hover does nothing during a tab switch (a preview then would be restored over the new tab's layout).
         _layoutHover = new HoverFlyout([LayoutButton], LayoutSelector, LayoutSelectorPanel)
         {
             Opening = OpeningLayoutSelector,
@@ -186,10 +182,10 @@ public partial class MainWindow : Window
         _autosave.Tick += Autosave_Tick;
         _autosave.Start();
 
-        // Pass 5.5A review: every save of the project in front lets its crash-recovery file go at once (MainWindow.TabCache.cs).
+        // Every save of the active project deletes its crash-recovery file immediately (MainWindow.TabCache.cs).
         _viewModel.ProjectSaved += ViewModel_ProjectSaved;
 
-        // Ctrl+S and Ctrl+Shift+S are key bindings of the window (see the XAML) on commands of the view model, which ask here.
+        // Save key bindings (XAML) invoke view-model commands, which call back here for UI.
         _viewModel.SaveRequested += choosePlace =>
         {
             if (choosePlace)
@@ -206,16 +202,15 @@ public partial class MainWindow : Window
         InitializeTitleBar();
         StartupTrace.Mark("MainWindow: docking laid out");
 
-        // The player's surface and the drop hint as they are to be in the first frame (the XAML starts them so too).
+        // Player surface and drop hint in their Frame 1 state (matching the XAML defaults).
         UpdateVideoVisibility();
         Application.Current.Resources["GlobalScrollBarThickness"] = Math.Clamp(AppSettings.Current.ScrollbarThickness, 4, 16);
         TimelineSlider.AddHandler(PreviewMouseLeftButtonDownEvent, new MouseButtonEventHandler(TimelineSlider_PreviewMouseLeftButtonDown), handledEventsToo: true);
 
-        // The first-run window may have been shown before this one, and WPF takes the first window made
-        // as the main one.
+        // The first-run window may have been created first, and WPF makes the first window MainWindow.
         Application.Current.MainWindow = this;
 
-        // The preview caches, kept to their sizes (in the background, a few seconds from now).
+        // Trim preview caches to their size limits (background, a few seconds after start).
         PreviewCache.Timeline.QueueTrim();
         PreviewCache.Browser.QueueTrim();
 
@@ -236,42 +231,42 @@ public partial class MainWindow : Window
         _viewModel.SessionCleared += OnSessionCleared;
         InitializeProjectWorkspace();
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
-        // (The last file's Sequence Overview Scrubber pictures go before the new one is opened, which asks for its own.)
+        // Release the previous file's Sequence Overview Scrubber images before the new open requests its own.
         _viewModel.MediaLoaded += _ => ClearProgramStrip();
         _viewModel.MediaLoaded += PlayMedia;
 
-        // Unsaved changes count from the user's first touch after a load or a save (4.3E): a key, a click, the wheel or a
-        // drop in any of HandPeg's windows (their popups and menus pass theirs up to them).
+        // Unsaved-change tracking starts at the first input after load/save: key, click, wheel or drop in any HandPeg window (popups
+        // and menus bubble to their window).
         RoutedEventHandler touched = (_, _) => _viewModel.NoteUserInput();
         foreach (var input in new[] { PreviewMouseDownEvent, PreviewKeyDownEvent, PreviewMouseWheelEvent, DragDrop.PreviewDropEvent })
             EventManager.RegisterClassHandler(typeof(Window), input, touched, handledEventsToo: true);
         InitializeDevFlight();
 
-        // The media browser: what it opens, and what it puts on the timeline at the playhead (MainWindow.MediaBrowser.cs).
+        // Media browser: open and insert-at-playhead handlers (MainWindow.MediaBrowser.cs).
         InitializeMediaBrowser();
         InitializeClipLibrary();
         EffectsView.Attach(_viewModel);
         EffectsView.EditMaskRequested += layer => OpenLayerTool(layer, LayerTool.Mask);
 
-        // The master meters and fader, the sound's cards' full dialog, the beat grid (5.2B, the Studio Audio Suite).
+        // Studio Audio Suite: master meters and fader, audio card dialog, beat grid.
         InitializeAudioSuite();
 
-        // The timeline (4.4): its surface, ruler, toolbar and inspector hooked up to the view model and this window.
+        // Wire the timeline surface, ruler, toolbar and inspector to the view model and this window.
         InitializeUnifiedTimeline();
         _viewModel.AskOverwrite = AskOverwrite;
         _viewModel.Confirm = (title, message, confirm) => new ConfirmDialog(title, message, confirm) { Owner = this }.ShowDialog() == true;
 
-        // A 5.1 project opened here is converted and written over its own file (the harnesses open projects only to read them).
+        // Legacy-format projects opened here are migrated in place (test harnesses open projects read-only).
         _viewModel.SavesConvertedProjects = true;
 
-        // A question that can be answered once for all (4.4): its "Remember my choice" box is kept with the answer.
+        // Confirmations with "Remember my choice" persist the remembered answer.
         _viewModel.ConfirmOrRemember = (title, message, confirm, decline) =>
         {
             var dialog = new ConfirmDialog(title, message, confirm) { Owner = this, RememberText = "Remember my choice (don't ask again)", CancelText = decline };
             return (dialog.ShowDialog() == true, dialog.Remember);
         };
 
-        // A tool that was never downloaded is offered at the moment something needs it.
+        // Missing tools are offered for download on first need.
         _viewModel.DependenciesNeeded = request => Task.FromResult(new DependencyPromptWindow(request) { Owner = this }.ShowDialog() == true);
         _viewModel.Choose = (title, message, first, second) =>
         {
@@ -279,46 +274,45 @@ public partial class MainWindow : Window
             return dialog.ShowDialog() != true ? 0 : dialog.ChoseOther ? 2 : 1;
         };
 
-        // Layers added or removed while they are being arranged change what is on the canvas.
+        // Layer add/remove refreshes the canvas.
         _viewModel.Layers.CollectionChanged += (_, _) => RedrawLayout();
 
         PreviewKeyDown += MainWindow_PreviewKeyDown;
 
-        // The mouse buttons, the press that takes the keyboard from a text box and the keys held (X-Ray, Caps Lock), heard in
-        // every window of the editor; their release (PreviewKeyUp) included (MainWindow.Keybinds.cs).
+        // Class handlers across all editor windows: mouse buttons, text-box focus release on press, and held keys (X-Ray, Caps Lock)
+        // including PreviewKeyUp (MainWindow.Keybinds.cs).
         InitializeKeybinds();
         Closing += MainWindow_Closing;
         Closed += MainWindow_Closed;
         Loaded += (_, _) => _ = CheckForHandPegUpdateAsync();
 
-        // What a Windows notification would have said while HandPeg was in front goes on the status line instead (5.0-Release).
+        // While HandPeg is foreground, toast-notification text goes to the status line instead.
         Notifier.Said += (title, message) => Dispatcher.BeginInvoke(() => _viewModel.StatusText = $"{title}: {message}");
 
-        // The player's picture is made again after every change it is made from (the preview state, MainViewModel.InvalidatePreviewState).
+        // Re-render the player on every preview-state change (MainViewModel.InvalidatePreviewState).
         _viewModel.PreviewStateInvalidated += ScheduleGpuState;
         _viewModel.IsTimelineDragHeld = () => TimelineDragHeld;
 
-        // What the view model's undo grouping asks of the input (it reads no WPF input itself): the left button held, a text box typed in.
+        // Input probes for the view model's undo grouping (it reads no WPF input): left button held, text box typing.
         _viewModel.IsPointerHeld = () => Dispatcher.CheckAccess() && System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed;
         _viewModel.IsTypingInTextBox = () => Dispatcher.CheckAccess() && System.Windows.Input.Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase;
         _viewModel.IsAltHeld = () => Dispatcher.CheckAccess() && System.Windows.Input.Keyboard.Modifiers.HasFlag(System.Windows.Input.ModifierKeys.Alt);
         _viewModel.TaskbarProgress = new Shell.WindowTaskbarProgress(this);
         _viewModel.TimelineSelection = SelectedGroup;
 
-        // The timeline's rows follow the clip views (Layers), and anything about one that changes, but not a look-only change (an
-        // effect value dragged at 30 Hz: nothing a row shows).
+        // Timeline rows rebuild on Layers changes, except look-only changes (e.g. a 30 Hz effect drag) that no row displays.
         _viewModel.PreviewStateInvalidated += ScheduleClipRedrawUnlessLook;
         _viewModel.Layers.CollectionChanged += (_, _) => ScheduleClipRedraw();
         _viewModel.TimelineChanged += ScheduleClipRedrawUnlessLook;
         _viewModel.TimelineChanged += DrawKeyTimeline;
 
-        // The Keyframes pane's rows: each property keyed, moved and deleted on its own.
+        // Keyframes pane rows: per-property key, move and delete.
         KeyLanes.LaneSelected += lane => _viewModel.SelectedKeyLane = lane.Target;
         KeyLanes.KeyToggleRequested += lane => _viewModel.ToggleLaneKey(_viewModel.ActiveKeyLayer, lane.Target);
         KeyLanes.KeyMoved += (lane, from, to) => _viewModel.MoveLaneKey(_viewModel.ActiveKeyLayer, lane.Target, from, to);
         KeyLanes.DeleteRequested += lane => _viewModel.DeleteLaneKey(_viewModel.ActiveKeyLayer, lane.Target);
 
-        // Several keyframes at once (4.1.1-B): the pane's selection, moved, deleted, copied and pasted as one step each.
+        // Multi-keyframe selection: move, delete, copy and paste, each one Undo step.
         KeyLanes.SelectionChanged += keys => _viewModel.SelectedLaneKeys = [.. keys];
         KeyLanes.KeysMoved += (keys, delta) => _viewModel.MoveLaneKeys(_viewModel.ActiveKeyLayer, keys, delta);
         KeyLanes.DeleteSelectedRequested += keys => _viewModel.DeleteLaneKeys(_viewModel.ActiveKeyLayer, keys);
@@ -333,47 +327,43 @@ public partial class MainWindow : Window
         _viewModel.LayerLoaded += RedrawLayout;
         _viewModel.LayerVisibilityChanged += RedrawLayout;
 
-        // Edit layout may already be on when the window opens (it is to start with): the pane opens with it, saying nothing
-        // (the title bar's middle stays empty until the user does something: 5.3-Stage3, the user's call).
+        // Edit layout may be on at open (the default): show the pane silently (the title-bar status stays empty until user input).
         Loaded += (_, _) => UpdateLayoutPane(announce: false);
         SizeChanged += (_, _) => UpdateBottomBar();
 
-        // A double-click on any slider or number box puts it back: to the style preset's value where there is one.
+        // Double-click on any slider or number box resets it (to the style preset's value when one exists).
         NumericInput.ResetValue = _viewModel.GetResetValue;
         NumericInput.RegisterDoubleClickReset();
 
-        // The player starts once there is a surface for it to draw on, away from the UI thread.
-        // And not before the window has been drawn (_shellDrawn): the workspace is on screen first, and the
-        // video canvas hooks in after it.
+        // The player starts off the UI thread once its surface exists and the window has rendered (_shellDrawn), so the workspace
+        // appears first and the video canvas attaches after.
         VideoView.SurfaceReady += EnsureGpuEngine;
 
-        // Once the window has been drawn, so the launch window opens over the program rather than over nothing.
-        // (ContentRendered is raised once, when the window has actually been drawn; waiting for the dispatcher
-        // to fall idle instead could be put off indefinitely by a player that is busy.)
+        // Post-render work runs on ContentRendered (raised once, after the first real render); waiting for dispatcher idle instead
+        // could be postponed indefinitely by a busy player.
         ContentRendered += (_, _) =>
         {
             ShowFirstFrame();
             StartupTrace.FirstFrame();
 
-            // The crash sentinel starts once the window is idle (no process before the first frame).
+            // Start the crash sentinel at idle (no child process before Frame 1).
             CrashReporter.FirstFrameShown(Dispatcher);
 
-            // Explorer's project previews and open command follow their setting, off this thread (Pass 5.2D, 5.2-Release).
+            // Sync Explorer thumbnail/open-command registration with its setting, off the UI thread.
             ExplorerThumbnails.ApplyLater();
 
-            // A project or bundle HandPeg was started with (a double-click in Explorer: ExplorerThumbnails' open command, 5.2-Release):
-            // opened once the window is up, as a choice in the launch window is.
+            // Open a command-line project/bundle (Explorer double-click via ExplorerThumbnails' open command) once the window is up.
             if (SingleInstance.LaunchFile() is { } launched)
                 Dispatcher.BeginInvoke(() => _ = OpenLaunchRequestAsync(new LaunchRequest(LaunchKind.Project, launched)), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
-            // And one double-clicked from now on, while this copy is open, is handed to it (5.2.0's re-cut, the user's answer).
+            // Later Explorer opens are handed to this instance (SingleInstance.Listen, until the window closes).
             SingleInstance.Listen(path => Dispatcher.InvokeAsync(() => _ = OpenHandedProjectAsync(path)), _windowClosing.Token);
 
-            // Settings or presets that existed but could not be opened run on defaults and are never written this session.
+            // Report unreadable settings/presets: they run on defaults and are not written this session.
             if (AppSettings.ReadFailed || PresetStore.ReadFailed)
                 _viewModel.StatusText = "Settings file unreadable: changes are not saved this session.";
 
-            // How long the launch took, for the log: from the process starting to the window being on screen.
+            // Log launch time: process start to first render.
             using var self = System.Diagnostics.Process.GetCurrentProcess();
             var sinceStart = (DateTime.Now - self.StartTime).TotalMilliseconds;
             AppLog.Write(FormattableString.Invariant($"Startup: window drawn {sinceStart:0} ms after the process started (window built in {built} ms)."));
@@ -381,27 +371,24 @@ public partial class MainWindow : Window
             _shellDrawn = true;
             Dispatcher.BeginInvoke(EnsureGpuEngine, System.Windows.Threading.DispatcherPriority.Loaded);
 
-            // What the timeline hides at the first frame (5.0, the user's Q5): its inspector, Text Settings and the tools'
-            // flyouts, made just after the first frame (they start hidden, so nothing moves when they come). The row of tools
-            // itself is made with the pane.
+            // Deferred timeline parts (inspector, Text Settings, tool flyouts) are built just after Frame 1; they start hidden, so
+            // nothing shifts. The tool row itself is built with the pane.
             Dispatcher.BeginInvoke(UnifiedTimeline.RealizeTools, System.Windows.Threading.DispatcherPriority.ContextIdle);
 
-            // The heat lamp (5.4.3): what the pointer is about to open made ready while it rests near it, hooked once everything is up.
+            // Heat lamp: pre-warms UI under a resting pointer; attached once everything is up.
             Dispatcher.BeginInvoke(() => _heatLamp ??= new Shell.HeatLampController(_viewModel, EditorHeader, UnifiedTimelinePanel, WarmLayoutCards,
                 () => IsScrubHeld || TimelineDragHeld, UnifiedTimeline.RealizeTools, CutoutTarget), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
-            // No window opens over the program at launch any more: it starts straight into its workspace. What
-            // the launch window offered is offered while a file is dragged in instead, and its targets are made
-            // now, once everything else is up and idle.
+            // No launch window: the workspace opens directly; the drag-in overlay offers its targets, built now at idle.
             Dispatcher.BeginInvoke(_drops.PrepareDropTargets, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             HookMediaMemory();
             Dispatcher.BeginInvoke(RealizeTabsWhenIdle, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
 
-            // A minute in, when nothing else is starting: the caches let go of what was made from files deleted since.
+            // About a minute in: purge cache entries for deleted source files.
             _ = PurgeCachesLaterAsync();
 
-            // The watched capture folder (5.4.1-M5): its recordings' strips, waveforms and seek indexes made in quiet time, after the
-            // index dwell (Settings' "Prepare the Whole Folder After"), so nothing of it competes with the start-up.
+            // Watched capture folder: pre-bake strips, waveforms and seek indexes at idle after the dwell (Settings: "Prepare the
+            // Whole Folder After") so it never competes with start-up.
             if (AppSettings.Current.WatchedCaptureFolder.Trim().Length > 0)
             {
                 _ = Task.Delay(TimeSpan.FromSeconds(Math.Clamp(AppSettings.Current.BrowserIndexDelaySeconds, 5, 3600)), _windowClosing.Token)
@@ -409,9 +396,7 @@ public partial class MainWindow : Window
                         TaskScheduler.Default).Unwrap();
             }
 
-            // Downloads beyond the cache size, temp folders of sessions that did not close cleanly, and the libmpv player an
-            // earlier version installed (5.0-Verify): disk work, so not before the first frame (it was in the constructor, on
-            // this thread).
+            // Disk cleanup after Frame 1: downloads over the cache limit, temp folders of unclean sessions, and a legacy libmpv install.
             _ = WorkScheduler.Run(new WorkSpec("Tidying old sessions and downloads", WorkLane.Idle) { Visible = false, Cancellable = false }, _ => Task.Run(() =>
             {
                 SessionPaths.DeleteAbandonedSessions();
@@ -420,8 +405,7 @@ public partial class MainWindow : Window
                     AppSettings.Current.KeepDownloadsUsedByProjects ? YtDlpDownloader.FoldersUsedByProjects([ProjectStore.Folder], []) : null);
             }), _windowClosing.Token);
 
-            // The built-in Game Presets (5.1-Release, the user's call): written at idle where the Styles folder has none of their
-            // names, once per version, never over a file. Lists that read the folder show them from then on.
+            // Seed built-in Game Presets into the Styles folder at idle, once per version, never overwriting an existing name.
             if (AppSettings.Current.BuiltInGamePresetsVersion < GamePresetLibrary.Version)
             {
                 _ = WorkScheduler.Run(new WorkSpec("Writing the built-in Game Presets", WorkLane.Idle) { Visible = false, Cancellable = false }, async _ =>
@@ -450,9 +434,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Deletes from the caches what was made from files that have since been deleted or changed (see
-    /// PreviewCache.PurgeMissing): a while after startup (Settings), as Idle work. Files on a drive that is not there
-    /// now are kept, unless Settings says they count as deleted.
+    /// Idle-priority purge of cache entries whose source files were deleted or changed (PreviewCache.PurgeMissing), delayed per
+    /// Settings. Entries on an absent drive are kept unless Settings treats them as deleted.
     /// </summary>
     private async Task PurgeCachesLaterAsync()
     {
@@ -489,7 +472,7 @@ public partial class MainWindow : Window
 
     private SplashWindow? _launchWindow;
 
-    /// <summary>Opens the launch window, whatever the settings say about showing it at startup: it is also where the Social Squisher is.</summary>
+    /// <summary>Opens the launch window regardless of its startup setting (it also hosts the Social Squisher).</summary>
     private void OpenLaunchWindow(bool startHidden = false)
     {
         if (_launchWindow is not null)
@@ -498,8 +481,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        // A soft dialog: it lies over this window without holding it, and a press anywhere on this window
-        // (or a file dropped on it) puts it away, as choosing nothing in it would.
+        // Modeless soft dialog: a press or drop anywhere on this window dismisses it, like choosing nothing.
         var splash = _launchWindow = new SplashWindow
         {
             Owner = this,
@@ -507,7 +489,7 @@ public partial class MainWindow : Window
             Opacity = startHidden ? 0 : 1,
         };
 
-        // Not while it is squishing a video, or holding the result: that is only closed with its own button.
+        // Not while squishing or showing a result: only its own button closes it then.
         void Dismiss(object? sender, EventArgs e)
         {
             if (!splash.IsSquishing)
@@ -528,9 +510,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// A project double-clicked while this copy was open (SingleInstance): the window comes to the front (restored from the taskbar), any
-    /// dialog open is answered first, then it opens in a project tab of its own (5.4A: never in place of the open work, never a prompt),
-    /// once nothing else is running.
+    /// SingleInstance hand-off: activates (and restores) the window, waits for any open dialog to close, then opens the project in its
+    /// own tab (no prompt, never replacing open work) once nothing else is running.
     /// </summary>
     private async Task OpenHandedProjectAsync(string path)
     {
@@ -541,7 +522,7 @@ public partial class MainWindow : Window
                 _ = Native.User32.ShowWindow(handle, Native.User32.SwRestore);
             Activate();
 
-            // A dialog of this window's up (Settings, a save prompt): the project waits for it to be closed.
+            // An owned dialog is open (Settings, save prompt): defer until it closes.
             while (System.Windows.Interop.ComponentDispatcher.IsThreadModal && !_windowClosing.IsCancellationRequested)
                 await Task.Delay(250);
             for (var waited = 0; _viewModel.IsBusy && waited < 300 && !_windowClosing.IsCancellationRequested; waited++)
@@ -559,8 +540,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Opens what was chosen in the launch window, once nothing else is running: an operation asked for while
-    /// the start-up checks are still busy would otherwise be dropped, and with it the style that was chosen.
+    /// Opens the launch-window choice once nothing else is running; requested during start-up checks it would otherwise be dropped,
+    /// along with its chosen style.
     /// </summary>
     private async Task OpenLaunchRequestAsync(LaunchRequest request)
     {
@@ -574,7 +555,7 @@ public partial class MainWindow : Window
                 break;
 
             case LaunchKind.Video:
-                // 5.4D-TabPerf: a video handed over from Explorer names the tab before its probe, as a drop does.
+                // A video handed over from Explorer names the tab before its probe, as a drop does.
                 DropLater("a video handed over", () => OpenNamingTabAsync(request.Path, () => _viewModel.LoadFileAsync(request.Path)));
                 break;
 
@@ -589,19 +570,17 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
         StartupTrace.Mark("SourceInitialized (window handle made)");
 
-        // A dark or a light title bar, to match the theme.
+        // Dark or light title bar to match the theme.
         ThemeManager.ApplyTitleBar(this);
 
-        // The working area of the monitor the window is really on (SystemParameters.WorkArea is the main one's, at
-        // the system's DPI): the window is kept inside it before it is first shown.
+        // Clamp into the actual monitor's work area before first show (SystemParameters.WorkArea is the primary's, at system DPI).
         KeepInside(Shell.WindowFrame.WorkAreaOf(this, new WindowInteropHelper(this).Handle));
 
-        // Before the first layout: the encoders an earlier launch found, so the tabs are drawn with the one they keep.
+        // Before the first layout: load cached encoder probe results so tabs render with their kept encoder.
         _viewModel.TakeEarlyHardwareEncoders();
         StartupTrace.Mark("hardware encoders as found before: " + (_viewModel.VideoEncoder.Name));
 
-        // Not on screen until its first frame is drawn: Windows would otherwise show the window empty (white) for the
-        // moment WPF takes to draw it. Shown when it has been drawn (ContentRendered), or after a while whatever happens.
+        // DWM-cloak the window until its first frame renders (avoids a white flash); uncloak on ContentRendered or after a timeout.
         if (!_firstFrameShown)
         {
             ThemeManager.SetCloaked(this, true);
@@ -617,7 +596,7 @@ public partial class MainWindow : Window
 
     private bool _firstFrameShown;
 
-    /// <summary>The window, cloaked since its handle was made, is shown: its first frame is there to be seen.</summary>
+    /// <summary>Uncloaks the window (cloaked since handle creation) once its first frame exists.</summary>
     private void ShowFirstFrame()
     {
         if (_firstFrameShown)
@@ -627,31 +606,28 @@ public partial class MainWindow : Window
         ThemeManager.SetCloaked(this, false);
     }
 
-    // Whether the save prompt of a close is up: a close asked for again meanwhile (the taskbar's Close, Alt+F4, a second
-    // click on Close before the prompt came up) waits for its answer instead of asking a second time.
+    // True while a close prompt is up: re-entrant close requests (taskbar Close, Alt+F4, double click) wait for it instead of prompting again.
     private bool _closeAsked;
 
     /// <summary>
-    /// Closing with changes that were not saved as a project asks first, when the settings say to: save and
-    /// close, close without saving, or go back. The window stays only when the user says so (5.2-AuditB, the user's bug:
-    /// the Close button did not always close HandPeg): Cancel in that prompt, or keeping it open when the project could not
-    /// be saved. Nothing that fails on the way out keeps it open with no word of it.
+    /// Close flow: prompts Save / Don't Save / Cancel for unsaved work when enabled. The window stays open only on explicit choice
+    /// (Cancel, or staying after a failed save); no shutdown failure silently keeps it open.
     /// </summary>
     private void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
-        // A project tab coming to the front (5.4A) is half in the view model and half in its cache file, and the tabs a dead session left are moved in at idle: never closed under either.
+        // Never close mid tab activation (state split between view model and cache) or mid orphan-tab import.
         if (_closeAsked || RefuseCloseMidSwitch())
         {
             e.Cancel = true;
             return;
         }
 
-        // From here the user is closing HandPeg: ended from outside while the save prompt is up (the taskbar, Task
-        // Manager), the crash sentinel takes it for the user's doing, not a crash. Going back to work clears it.
+        // Mark an intentional exit so the crash sentinel treats an external kill during the prompt (taskbar, Task Manager) as user
+        // action, not a crash; cleared if the close is cancelled.
         Guarded("note the close", () => CrashReporter.MarkUserClosing(true));
 
-        // The side window's place and size are kept with the arrangement. Set before the window's size is remembered,
-        // which writes the settings file: the arrangement's own save waits half a second, and the app is gone by then.
+        // Store side-window bounds with the layout before RememberWindowSize writes settings (the layout's own save is debounced
+        // 500 ms and would never run).
         Guarded("keep the arrangement", () => _viewModel.SavePaneLayout(SaveDockInto));
         Guarded("remember the window's size", RememberWindowSize);
 
@@ -661,8 +637,8 @@ public partial class MainWindow : Window
             _closeAsked = true;
             close = MayClose();
 
-            // A clean close (5.4A): the project tabs' cache files go, so nothing is offered back at the next start (Pass 5.5A: or stay, as
-            // the close's plan says). The 20 s tick writes no recovery file from here on.
+            // Clean close: apply the exit plan to tab cache files (delete, or keep for next start); the 20 s tick writes no
+            // more recovery files.
             if (close)
             {
                 _autosave.Stop();
@@ -684,7 +660,7 @@ public partial class MainWindow : Window
             e.Cancel = true;
             Guarded("note the close called off", () => CrashReporter.MarkUserClosing(false));
 
-            // Pass 5.5A final review: the tabs a dead session left, put off while this close was asking, are taken in now (at idle, as at start).
+            // Close cancelled: import orphaned-session tabs deferred during the prompt (at idle, as at start).
             TakeInLeftTabsPutOff();
             return;
         }
@@ -693,22 +669,21 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Whether the window may close: at once with nothing unsaved (or the prompt switched off in the settings); otherwise as the
-    /// save prompt is answered. False only when the user chose to stay.
+    /// True when the window may close: immediately with nothing unsaved (or the prompt disabled), else per the save prompt's answer.
+    /// False only when the user chooses to stay.
     /// </summary>
     private bool MayClose()
     {
-        // Every project tab behind the one in front with unsaved changes first (5.4A, MainWindow.ProjectTabs.cs).
+        // Inactive tabs with unsaved changes first (MainWindow.ProjectTabs.cs).
         if (!MayCloseProjectTabs())
             return false;
 
-        // Pass 5.5A: the tabs answered for the tab in front as well (kept for the next start, one dialog for every tab holding work, or nothing
-        // to ask): asked no more.
+        // The tab exit plan already covered the active tab (keep-tabs, multi-tab dialog, or nothing to ask): no further prompt.
         if (ExitAnsweredByTabs)
             return true;
 
-        // Left (the 5.5A addenda): the prompt to save switched off (nothing asked, as before), or one project alone, in front, with work not
-        // saved as a project: changes since it was opened or saved, or never saved at all (ExitPlanFor counted it, its dot made exact).
+        // Remaining cases: save prompt disabled (no prompt), or a single active project with unsaved or never-saved work (ExitPlanFor
+        // counted it and made its dot exact).
         var unsaved = _exitQuestion == ExitQuestion.Classic;
         if (!unsaved || !AppSettings.Current.PromptToSaveOnExit)
         {
@@ -729,8 +704,7 @@ public partial class MainWindow : Window
             name = "";
         }
 
-        // Pass 5.5A review: a project opened from or saved to a file is saved there, as Ctrl+S saves it (and as the tabs' dialog saves the tab in
-        // front); the name box is only for work never saved.
+        // A project with a file saves to it, as Ctrl+S (and the tabs' dialog) does; the name box is only for never-saved work.
         var projectPath = _viewModel.CurrentProjectPath;
         var dialog = new SaveOnExitDialog(name.Length > 0 ? name : $"Project {DateTime.Now:yyyy-MM-dd HH.mm}", projectPath) { Owner = this };
         dialog.ShowDialog();
@@ -740,8 +714,7 @@ public partial class MainWindow : Window
                 return false;
 
             case ExitChoice.SaveAndClose:
-                // A project that could not be saved must not be followed by losing what it was meant to keep without a word:
-                // what went wrong is said, and closing all the same is the user's call (never a window that silently stays).
+                // Save failed: report the error and let the user choose to close anyway (never discard silently, never stay silently).
                 var saved = projectPath.Length > 0 ? _viewModel.SaveProjectTo(projectPath) : _viewModel.SaveProject(dialog.ProjectName);
                 return saved.IsSaved
                     || new ConfirmDialog("Project Not Saved", $"{saved.Line}\n\nClose HandPeg anyway? The changes that were not saved are lost.", "Close Without Saving")
@@ -755,14 +728,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The save prompt itself failed: asked once more, plainly (a Windows message box), whether to close without saving;
-    /// when even that cannot be asked, HandPeg closes, as the user asked.
+    /// Fallback when the save prompt fails: asks via a plain MessageBox whether to close without saving; if that also fails, closes.
     /// </summary>
     private bool MayCloseAfterFault(Exception fault)
     {
         try
         {
-            // Pass 5.5A addenda: work never saved as a project counts too (UnsavedForExit), changed since it was opened or not.
+            // Never-saved work counts as unsaved too (UnsavedForExit), changed since open or not.
             if (!_viewModel.HasUnsavedChanges && !UnsavedForExit(false, _viewModel.HoldsNothingForTab, _viewModel.CurrentProjectPath))
                 return true;
             return MessageBox.Show(this, $"HandPeg could not ask whether to save the project ({fault.Message}).\n\nClose without saving? The changes that were not saved are lost.",
@@ -775,7 +747,7 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>One step of closing, which may fail without stopping the rest: what failed is written to the log.</summary>
+    /// <summary>Runs one shutdown step; a failure is logged and does not stop the remaining steps.</summary>
     private static void Guarded(string step, Action action)
     {
         try
@@ -792,9 +764,8 @@ public partial class MainWindow : Window
     {
         Guarded("note the window closed", () => CrashReporter.Note("app", "window closed"));
 
-        // Encodes, downloads and probes still running go first, children included, so nothing is left
-        // behind in the background and nothing still holds a file in the session folder. Each step on its own: one that
-        // fails leaves the others to run.
+        // Kill running encodes, downloads and probes (with child processes) first so none outlive the app or lock session files.
+        // Each step is isolated so one failure does not skip the others.
         Guarded("cancel the window's work", _windowClosing.Cancel);
         Guarded("let projects double-clicked from now on start a copy of their own", SingleInstance.Release);
         Guarded("end the tools still running", ProcessPipes.KillAll);
@@ -804,39 +775,38 @@ public partial class MainWindow : Window
         Guarded("close the GPU engine", CloseGpuEngine);
         Guarded("close the Sequence Overview Scrubber's drawer", () => _programStrip?.Dispose());
 
-        // The most recent downloads stay, so the same URL loads without downloading again.
+        // Keep the most recent downloads so a repeated URL loads from cache.
         Guarded("trim the downloads", () => YtDlpDownloader.TrimDownloads(AppSettings.Current.DownloadCacheSize, _viewModel.PinnedDownloads()));
 
-        // The main window gone, HandPeg is gone, whatever other window is still about (one never shown, one not owned by this
-        // one): the application's ShutdownMode is OnLastWindowClose unless the first-run window ran.
+        // Shut down explicitly: ShutdownMode is OnLastWindowClose (unless first-run ran), and stray windows (never shown, unowned)
+        // would otherwise keep the process alive.
         Application.Current?.Shutdown();
     }
 
     // ----- Hotkeys -----
 
-    // When a layout box was last nudged with the arrow keys: a run of nudges is one undo step.
+    // Last arrow-key nudge time of a layout box: a run of nudges is one Undo step.
     private long _nudgedAt;
 
-    // The text box last typed into, and the undo history as it stood then (MainViewModel.UndoMark): while no step of the
-    // timeline's has been taken, undone or redone since, Ctrl+Z and Ctrl+Y there take back and put back that typing.
+    // Last typed-in text box and the undo mark at that time (MainViewModel.UndoMark): while the timeline history has not moved since,
+    // Ctrl+Z / Ctrl+Y in that box undo/redo its typing.
     private (TextBoxBase Box, object? Mark)? _typedIn;
 
     /// <summary>
-    /// Null for any other key; false for undo (Ctrl+Z), true for redo (Ctrl+Y, or Ctrl+Shift+Z). These stay fixed whatever
-    /// the keybinds (KeybindManager never gives them to anything else).
+    /// False for undo (Ctrl+Z), true for redo (Ctrl+Y, Ctrl+Shift+Z), null otherwise. Fixed regardless of keybinds (KeybindManager
+    /// never rebinds them).
     /// </summary>
     private static bool? UndoKey(KeyEventArgs e) =>
         KeybindManager.IsUndo(e) ? false : KeybindManager.IsRedo(e) ? true : (bool?)null;
 
     /// <summary>
-    /// Whether Ctrl+Z (or Ctrl+Y) in the focused text box is the box's own: while it has typing to take back (or put back),
-    /// it was the box last typed into, and the timeline has taken no step since (a value typed and handed on with Enter, or
-    /// by leaving the box, takes one when it changes the timeline: that change is then the timeline's to take back).
+    /// True when Ctrl+Z/Ctrl+Y belongs to the focused text box: it can undo/redo, was the last typed into, and the timeline history
+    /// has not moved since (committing a value via Enter or focus loss creates a timeline step, which then owns the undo).
     /// </summary>
     private bool TypingIsNewest(TextBoxBase box, bool redo) =>
         (redo ? box.CanRedo : box.CanUndo) && _typedIn is { } typed && ReferenceEquals(typed.Box, box) && ReferenceEquals(typed.Mark, _viewModel.UndoMark);
 
-    /// <summary>Whether a key pressed in a text box types into it (a character, Back, Delete, Enter, Ctrl+V, Ctrl+X), not only moves about in it or selects.</summary>
+    /// <summary>True for keys that edit text-box content (characters, Back, Delete, Enter, Ctrl+V, Ctrl+X), not navigation/selection.</summary>
     private static bool TypesText(KeyEventArgs e)
     {
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
@@ -845,7 +815,7 @@ public partial class MainWindow : Window
         if (control && !alt)
             return key is Key.V or Key.X or Key.Back or Key.Delete;
 
-        // Alt alone is a menu's key; Ctrl+Alt together is AltGr, which types a character on many keyboards.
+        // Alt alone is menu access; Ctrl+Alt is AltGr, which types characters on many layouts.
         if (alt != control || modifiers.HasFlag(ModifierKeys.Windows))
             return false;
 
@@ -854,9 +824,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Every global key (4.4): the dial's and the tour's Esc (and Caps Lock's echo) first, then saving, undo and the text
-    /// box's keys, the nudge of a Canvas box, and every other shortcut through KeybindManager, the held navigation keys among
-    /// them (MainWindow.Keybinds.cs holds what each action does). The side window hands its keys here too.
+    /// Global key dispatch (side windows forward here too), in order: dial/tour Esc and Caps Lock echo; save; undo/redo and text-box
+    /// keys; Canvas box nudge; then KeybindManager shortcuts including held navigation keys (actions in MainWindow.Keybinds.cs).
     /// </summary>
     private void MainWindow_PreviewKeyDown(object sender, KeyEventArgs e)
     {
@@ -866,18 +835,14 @@ public partial class MainWindow : Window
         var chord = KeybindManager.ChordOf(e);
         var bound = KeybindManager.Resolve(chord);
 
-        // Shift with a held navigation key is that key going faster, unless Shift and the key are bound themselves.
+        // Shift + held navigation key = faster variant, unless Shift+key has its own binding.
         if (bound is null && chord.Mods == ModifierKeys.Shift && KeybindManager.Resolve(chord.WithoutShift) is { } faster
             && KeybindManager.Action(faster) is { } held && held.Has(KeyActionFlags.Continuous))
             bound = faster;
 
-        // Saving, before anything else sees the keys: a text box, which has uses of its own for some key
-        // combinations, never gets these (Ctrl+S and Ctrl+Alt+S unless they were rebound).
-        //
-        // Save As is Ctrl+Alt+S, not Ctrl+Shift+S: that one is taken, on computers with AMD's graphics
-        // software, by its "save instant replay" hotkey, which is registered with Windows for every program,
-        // so the keys are never given to HandPeg at all; KeybindManager refuses to bind it. (With Alt held, WPF
-        // reports the key as a system key: KeybindManager.ChordOf reads the key itself.)
+        // Save keys run before anything else (text boxes never receive Ctrl+S / Ctrl+Alt+S unless rebound).
+        // Save As is Ctrl+Alt+S because AMD's driver software registers Ctrl+Shift+S globally ("save instant replay"), so it never
+        // reaches HandPeg; KeybindManager refuses to bind it. With Alt held WPF reports Key.System; KeybindManager.ChordOf unwraps it.
         if (bound is not null && KeybindManager.Action(bound) is { } early && early.Has(KeyActionFlags.WorksInText))
         {
             if (!e.IsRepeat)
@@ -888,10 +853,8 @@ public partial class MainWindow : Window
 
         var focused = Keyboard.FocusedElement;
 
-        // Undo (Ctrl+Z) and redo (Ctrl+Y or Ctrl+Shift+Z), wherever the keyboard is but in an open drop-down (4.3E): the
-        // focused text box's own while what was done last is typing in it (TypingIsNewest), the timeline's otherwise, so a
-        // number box or a search box left holding the keyboard no longer swallows them. Not while a drag is held: what is
-        // dragged would go on being moved from where Undo put it (RunUndo).
+        // Undo/redo everywhere except open drop-downs: the focused text box's while its typing is newest (TypingIsNewest), else the
+        // timeline's, so a focused number/search box no longer swallows them. RunUndo cancels an active drag first.
         if (UndoKey(e) is { } redo && focused is not ComboBoxItem)
         {
             RunUndo(redo);
@@ -899,28 +862,27 @@ public partial class MainWindow : Window
             return;
         }
 
-        // A key that types into a text box: the box holds typing newer than the timeline's last step.
+        // An editing key in a text box: record it as typing newer than the timeline's last step.
         if (focused is TextBoxBase typedInto && TypesText(e))
             _typedIn = (typedInto, _viewModel.UndoMark);
 
-        // Typing stays typing, and a drop-down keeps its own keys. (A press anywhere else takes the keyboard from a text box,
-        // MainWindow.Keybinds.cs ReleaseTypingFocus, so the keys after it are shortcuts again.)
+        // Text boxes and open drop-downs keep their keys (a press elsewhere releases text focus via ReleaseTypingFocus in
+        // MainWindow.Keybinds.cs, restoring shortcuts).
         if (focused is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem)
             return;
 
         if (EndCropOnEscape(e, focused))
             return;
 
-        // A layout box chosen with the pointer: the arrow keys nudge it, a pixel of the output (ten with Shift). One undo
-        // step for a run of nudges.
+        // Selected layout box: arrows nudge 1 output pixel (10 with Shift); a run of nudges is one Undo step.
         if (e.Key is Key.Left or Key.Right or Key.Up or Key.Down && Keyboard.Modifiers is ModifierKeys.None or ModifierKeys.Shift && TakeNudge(e.Key, focused, e.IsRepeat))
         {
             e.Handled = true;
             return;
         }
 
-        // Every other shortcut (KeybindManager's map: the preset and the user's own keys), unless the control with the
-        // keyboard keeps that key or the action cannot run now (MainWindow.Keybinds.cs).
+        // All other shortcuts via KeybindManager (preset plus custom bindings), unless the focused control owns the key or the action
+        // cannot run now (MainWindow.Keybinds.cs).
         if (bound is not null && TryRunBound(bound, chord, e, sender, focused))
             e.Handled = true;
     }
@@ -947,7 +909,7 @@ public partial class MainWindow : Window
         var dialog = new SaveFileDialog
         {
             Title = "Save output as",
-            // In the order of the view model's Containers (5.4C: the audio-only FLAC, WAV and MP3 last), so FilterIndex finds the format.
+            // Same order as the view model's Containers (audio-only FLAC, WAV, MP3 last) so FilterIndex maps to the format.
             Filter = "MP4|*.mp4|Matroska|*.mkv|WebM|*.webm|QuickTime|*.mov|Animated GIF|*.gif|Animated WebP|*.webp|FLAC Audio|*.flac|WAV Audio|*.wav|MP3 Audio|*.mp3|All files|*.*",
             FilterIndex = Math.Max(1, _viewModel.Containers.ToList().IndexOf(_viewModel.Container) + 1),
             FileName = Path.GetFileName(_viewModel.DestinationPath),
@@ -965,11 +927,11 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog() != true)
             return;
 
-        // In the project tabs (5.4A): a New Project or a project opened in a tab of its own, never in place of the open work.
+        // New or opened projects go to their own tab, never replacing open work.
         await ActOnProjectManagerAsync(dialog);
     }
 
-    // The session emptied (+ New Project): the player lets its file go, and the drop hint is back where the video was.
+    // Session cleared (+ New Project): the player releases its file and the drop hint replaces the video.
     private void OnSessionCleared()
     {
         if (_gpu is { } gpu)
@@ -986,8 +948,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Split / Trim by Exact Timecode (a timeline row's right-click menu, and the toolbar's button for the selected clip):
-    /// a typed time, with the I-frames of the clip's file either side of it offered; then a split or a trim there.
+    /// Split / Trim by Exact Timecode (row context menu, toolbar for the selected clip): prompts for a time, offering the neighbouring
+    /// I-frames of the clip's file, then splits or trims there.
     /// </summary>
     private void SplitTrimByTimecode(Layer clip)
     {
@@ -1011,7 +973,7 @@ public partial class MainWindow : Window
 
         iFrames.Sort();
 
-        // The box starts at the playhead when it is on the clip, else at the clip's nearer end (Pass 4.2C).
+        // Initial value: the playhead if inside the clip, else the clip's nearer end.
         var at = Math.Clamp(_viewModel.PositionMs / 1000, start, Math.Max(start, end));
         var dialog = new ManualCutWindow(clip.Name, start, end, _viewModel.SequenceFps, iFrames, at) { Owner = this };
         if (dialog.ShowDialog() != true)
@@ -1027,7 +989,7 @@ public partial class MainWindow : Window
         ScheduleClipRedraw();
     }
 
-    // The toolbar's button: the selected clip, or else the video at the playhead.
+    // Toolbar button: the selected clip, else the video at the playhead.
     private void ManualCut_Click(object sender, RoutedEventArgs e) => SplitTrimByTimecode(_selectedClip switch
     {
         Layer layer when _viewModel.Layers.Contains(layer) && layer.HasTiming => layer,
@@ -1036,8 +998,8 @@ public partial class MainWindow : Window
     });
 
     /// <summary>
-    /// Remove Dead Air: first how quiet counts as silence (and whether to mark or delete),
-    /// then the search, on whatever is selected: a clip with sound, or otherwise the sound listened to (MainViewModel.ListenedSound).
+    /// Remove Dead Air: prompts for the silence threshold and mark/delete mode, then scans the selected audible clip, else
+    /// MainViewModel.ListenedSound.
     /// </summary>
     private void RemoveDeadAir_Click(object sender, RoutedEventArgs e) => RunDeadAir(_selectedClip switch
     {
@@ -1048,19 +1010,17 @@ public partial class MainWindow : Window
 
     private void DropHint_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => BrowseSource_Click(sender, e);
 
-    // ----- The header's flyouts (Add Media's box, the Settings button's queue and squisher, the Layout Selector) -----
-    // Each opens while the pointer rests on its button and stays while it is on the button or on it (see HoverFlyout).
-    // (Add Layer's kinds are the timeline's own flyout since 4.4: Views/UnifiedTimelinePane.)
+    // ----- Header flyouts (Add Media box, Settings queue and squisher, Layout Selector) -----
+    // Each opens on hover and stays open while the pointer is over its button or itself (HoverFlyout). Add Layer lives in
+    // Views/UnifiedTimelinePane.
 
     private readonly HoverFlyout _addMediaHover, _settingsHover, _layoutHover;
 
-    // ----- The window's size at startup -----
+    // ----- Startup window size -----
 
     /// <summary>
-    /// The size and place the window opens at (Pass 4.2B-2): never larger than the working area beside the taskbar,
-    /// centred on it and never above its top, so the title bar (the only way to move the window) is always on screen.
-    /// A 16" 1920 x 1200 laptop at 150 % has 1280 x 752 of it, less than the window's least size in the XAML: the
-    /// least size gives way. A size that fills nearly all of it (95 %) opens maximized, which is what it was for.
+    /// Initial bounds: clamped to the work area, centred, top never above it (keeps the title bar reachable). Overrides the XAML
+    /// minimum size when the work area is smaller (e.g. 1920x1200 at 150% gives 1280x752). A size covering >= 95% opens maximized.
     /// </summary>
     private void ApplyStartupWindowSize()
     {
@@ -1090,7 +1050,7 @@ public partial class MainWindow : Window
 
     private const double NearlyFullScreen = 0.95;
 
-    /// <summary>Not maximized, the window wholly inside a working area (in this window's DIPs): its top never above the area's.</summary>
+    /// <summary>Clamps restored bounds inside a work area (this window's DIPs), top never above the area's top.</summary>
     private void KeepInside(Rect work)
     {
         if (WindowState != WindowState.Normal || work.IsEmpty)
@@ -1103,8 +1063,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Notes how the window was left, for "Remember Last Size": its size while not maximized, and whether it was. Then
-    /// writes the settings, with whatever was set on the way out (the arrangement of the panes).
+    /// Records restore size and maximized state for "Remember Last Size", then writes settings (including the exit-time pane layout).
     /// </summary>
     private void RememberWindowSize()
     {
@@ -1122,7 +1081,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Not remembered this time.
+            // Remember Last Size off: skip.
         }
     }
 
@@ -1134,19 +1093,17 @@ public partial class MainWindow : Window
         OpenLaunchWindow();
     }
 
-    // 5.4D (Q12 b): the Game Presets' save, import and export, reachable from the Settings flyout even with nothing on the timeline.
+    // Game Preset save/import/export from the Settings flyout, available even with an empty timeline.
     private void FlyoutGamePresets_Click(object sender, RoutedEventArgs e)
     {
         _settingsHover.Close();
         ManageStyles_Click(UnifiedTimeline, e);
     }
 
-    // ----- Add Media (the header's): a click picks files; resting on it opens the box for a path or a link -----
-    // The Settings button's pattern (HoverFlyout): the flyout opens once the pointer has rested on the button, and
-    // leaving the button or the flyout closes it a moment later. While its box has the keyboard (something is being
-    // typed or pasted) it stays.
+    // ----- Header Add Media: click picks files; hover opens the path/URL box -----
+    // HoverFlyout: opens after a hover dwell, closes shortly after leaving button and flyout; stays open while its box has focus.
 
-    /// <summary>Picks files to add: with nothing open, the first is opened (or the project), onto Track 1; otherwise every one goes onto the timeline at the playhead.</summary>
+    /// <summary>File picker: with nothing open, opens the first file (or project) onto Track 1; otherwise inserts all at the playhead.</summary>
     private void AddMedia_Click(object sender, RoutedEventArgs e)
     {
         _addMediaHover.Close();
@@ -1172,7 +1129,7 @@ public partial class MainWindow : Window
         AddFilesToTimeline(files, _viewModel.PositionMs / 1000);
     }
 
-    /// <summary>Files put onto the timeline at a moment: sounds as audio clips, videos and pictures as layers (placed by PlaceClip).</summary>
+    /// <summary>Inserts files at a time: audio as audio clips, video and images as layers (placed by PlaceClip).</summary>
     private void AddFilesToTimeline(string[] files, double at)
     {
         var sounds = files.Where(f => MediaFiles.KindOf(f) == MediaBrowserKind.Audio).ToArray();
@@ -1192,22 +1149,20 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    // Opened: the player is started, as it is when the box gets the keyboard, so a link pasted in plays at once.
+    // Pre-start the player on open (as on box focus) so a pasted link plays immediately.
     private void AddMediaFlyout_Opened(object? sender, EventArgs e) => WarmUpPlayer();
 
     /// <summary>
-    /// Where a header flyout opens: under its button, a few pixels down so that its window never comes up under the
-    /// pointer, its right edge at the button's (the header sits at the window's right); beside it, towards the window's
-    /// middle, while the header stands as a strip at a side. One placement in device pixels for all of them
-    /// (UiScale.PlaceAgainst, 5.3-Stage3): never mirrored on a touch PC, and kept where it opened while the panes move.
+    /// Places a header flyout: below its button (offset so it never opens under the pointer), right-aligned; or beside it toward the
+    /// window centre when the header is a side strip. Uses UiScale.PlaceAgainst in device pixels (no touch mirroring; fixed while panes move).
     /// </summary>
     private void PlaceHeaderFlyout(Popup popup, FrameworkElement host, FrameworkElement? within = null, double inset = 0) =>
         UiScale.PlaceAgainst(popup, host, HeaderFlyoutSide(host), HeaderFlyoutGap, within, inset);
 
-    // How far from its button a header flyout opens, in DIPs.
+    // Header flyout offset from its button, in DIPs.
     private const double HeaderFlyoutGap = 6;
 
-    /// <summary>A header flyout's side of its button: under it, or beside it towards the window's middle while the header is a strip.</summary>
+    /// <summary>Flyout side relative to its button: below, or toward the window centre when the header is a side strip.</summary>
     private UiScale.FlyoutSide HeaderFlyoutSide(FrameworkElement host)
     {
         if (_headerShape != Docking.PaneShape.Column)
@@ -1218,13 +1173,12 @@ public partial class MainWindow : Window
         return onRight ? UiScale.FlyoutSide.Left : UiScale.FlyoutSide.Right;
     }
 
-    // ----- The progress chip (bottom left) and its flyout -----
-    // The Settings button's pattern: the flyout opens while the pointer rests on the chip, and leaving the chip or the
-    // flyout closes it a moment later, so the pointer can cross from one to the other.
+    // ----- Progress chip and flyout -----
+    // HoverFlyout pattern: opens on chip hover, closes shortly after leaving chip and flyout (so the pointer can cross between them).
 
     private readonly System.Windows.Threading.DispatcherTimer _workFlyoutClose = new() { Interval = TimeSpan.FromMilliseconds(260) };
 
-    // From the status in the title bar (the one home of the status and the work under way: the transport row's chip went in 5.4.2A), under it.
+    // Anchored below the title-bar status (the single home for status and running work).
     private void TitleStatus_MouseEnter(object sender, MouseEventArgs e)
     {
         _workFlyoutClose.Stop();
@@ -1277,17 +1231,16 @@ public partial class MainWindow : Window
         OpenQueue_Click(sender, e);
     }
 
-    // ----- Saving: Ctrl+S, Ctrl+Shift+S, and the autosave -----
+    // ----- Saving: Ctrl+S, Save As, and autosave -----
 
-    /// <summary>Save: to the file the project already has; without one, Save As.</summary>
-    /// <summary>Save As and a first save: HandPeg's own Project Manager, its name box in hand (the user's directive), not the system's file picker.</summary>
+    /// <summary>Save As / first save: opens the Project Manager with its name box focused (not the system file picker).</summary>
     private void OpenProjectManagerToSave()
     {
         var dialog = new ProjectManagerWindow(_viewModel, focusName: true) { Owner = this };
         if (dialog.ShowDialog() != true)
             return;
 
-        // In the project tabs (5.4A), as from the Header's Projects button.
+        // Route through the project tabs, as the header's Projects button does.
         _ = ActOnProjectManagerAsync(dialog);
     }
 
@@ -1302,9 +1255,8 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Save As: asks where, with the Windows file dialog. Neither kind of save touches the undo history. Its second file type
-    /// is the project bundle (5.0-Release: the project with every file it reads, in one .hpb), which <paramref name="bundle"/>
-    /// picks first.
+    /// Save As via the Windows file dialog (does not touch undo history). The second file type is a bundle (.hpb: project plus every
+    /// referenced file); <paramref name="bundle"/> preselects it.
     /// </summary>
     private void SaveProjectAs(bool bundle = false)
     {
@@ -1344,11 +1296,9 @@ public partial class MainWindow : Window
     private readonly System.Windows.Threading.DispatcherTimer _autosave = new() { Interval = TimeSpan.FromSeconds(20) };
     private DateTime _lastAutosave = DateTime.UtcNow;
 
-    // Looked at every twenty seconds: when autosave is on and its interval has passed, the project is written (if it has changed).
-    // Pass 5.5A: never while playing, scrubbing, dragging on the Timeline or switching tabs (the capture is the whole state, on this
-    // thread: Law 3), the next tick looks again; and first, whatever the autosave says, the tab in front's crash-recovery file.
-    // Pass 5.5A review: a recovery file still there for a tab in front with nothing unsaved since (saved by a way that told nobody) goes
-    // before anything holds the tick back (O(1): no fingerprint); the recovery copy also waits out a press, a modal dialog or a close.
+    // 20 s tick: writes the active tab's crash-recovery file, then autosaves when enabled, due and changed. Skipped while playing,
+    // scrubbing, dragging or switching tabs (full-state capture on the UI thread, Law 3), and for recovery also during a press, modal
+    // dialog or close. First deletes a stale recovery file of a clean active tab (O(1), no fingerprint).
     private void Autosave_Tick(object? sender, EventArgs e)
     {
         if (_frontRecovery is { Written: true } && !_viewModel.MayHaveUnsavedChanges && !_switchingTab)
@@ -1371,11 +1321,10 @@ public partial class MainWindow : Window
     private void OpenSettings_Click(object sender, RoutedEventArgs e) => OpenSettings();
 
     /// <summary>
-    /// The Settings window, at one of its tabs when named (a pane's "More ... Settings...", 4.2B-2): a full-window screen
-    /// over the editor, in its place on the screen and maximized when it is (4.3-0B), its stage mirroring the editor's
-    /// panes live (StageMirror, 4.4).
+    /// Opens Settings (optionally at a named tab, e.g. a pane's "More ... Settings..."), covering the editor at its bounds and maximized
+    /// state, with a live stage mirroring the editor panes (StageMirror).
     /// </summary>
-    /// <param name="prepare">Anything else to do to the window before it is shown (open it at a key, 4.4.0).</param>
+    /// <param name="prepare">Extra setup before showing (e.g. open at a specific key).</param>
     private void OpenSettings(string? tab = null, Action<SettingsWindow>? prepare = null)
     {
         CrashReporter.Note("settings", "opened");
@@ -1394,33 +1343,32 @@ public partial class MainWindow : Window
             UiScale.ApplyAll();
             ShowHotbar();
 
-            // The Timeline's switches there (5.3: its effect lanes, filmstrips, waveforms, gain lines...) are read as its rows are made.
+            // Timeline toggles (effect lanes, filmstrips, waveforms, gain lines...) are read during row builds: rebuild.
             ScheduleClipRedraw();
 
             if (_dock.IsRealized(ExportId))
                 FillExportSection();
 
-            // Explorer's project previews registered or taken out when that was switched (Pass 5.2D).
+            // Register or unregister Explorer project previews if toggled.
             if (AppSettings.Current.ShowExplorerThumbnails != explorerThumbnails)
                 ExplorerThumbnails.ApplyLater();
         }
 
-        // Crash reports switched on or off there (or in the first-run window it can open): the sentinel follows.
+        // Crash-report toggle (here or in the first-run window it can open): start/stop the sentinel.
         CrashReporter.FollowSetting();
 
-        // Check for Updates, in that window, may have found (or brought in) a release: it is offered here as one found at startup is.
+        // An update found or downloaded from Settings is offered like a startup-check result.
         if (AppUpdater.ReadyVersion is { } update)
             ShowUpdateNotice(update, downloaded: true);
         else if (AppUpdater.FoundVersion is { } found)
             ShowUpdateNotice(found, downloaded: false);
 
-        // FFmpeg may just have been installed from the dependency list: the player starts if it had been waiting for something to show.
+        // FFmpeg may have just been installed: start the player if it was waiting.
         EnsureGpuEngine();
     }
 
 
-    // The Source pane's one button, and Enter in its box: with the box empty there is nothing to load, and
-    // it browses for a file; with a path or a URL in it, it loads that.
+    // Source pane button / Enter: browse when the box is empty, else load its path or URL.
     private void SourceAction_Click(object sender, RoutedEventArgs e)
     {
         var path = (_viewModel.SourcePath ?? "").Trim().Trim('"');
@@ -1428,12 +1376,12 @@ public partial class MainWindow : Window
         if (path.Length == 0)
             BrowseSource_Click(sender, e);
         else if (ProjectStore.IsProjectFile(path))
-            _ = OpenProjectInTabAsync(path);   // A project file (or bundle) in the Source box opens the project (5.4A: in a project tab).
+            _ = OpenProjectInTabAsync(path);   // Project/bundle path: open it in a project tab.
         else
             _viewModel.LoadSourceCommand.Execute(null);
     }
 
-    // The command text is written as the settings change only while its box is on screen (see MainViewModel.CommandPreview).
+    // Command text regenerates on settings changes only while its box is visible (MainViewModel.CommandPreview).
     private void CommandPreviewBox_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e) =>
         _viewModel.CommandPreviewWatched = e.NewValue is true;
 
@@ -1443,11 +1391,11 @@ public partial class MainWindow : Window
             SourceAction_Click(sender, e);
     }
 
-    // ----- What the view model's changes redraw -----
+    // ----- View-model change handlers -----
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        // The markers' flags along the Sequence Overview Scrubber, at its new length.
+        // Re-lay marker flags on the Sequence Overview Scrubber for the new duration.
         if (e.PropertyName is nameof(MainViewModel.DurationMs))
             DrawTimelineMarkers();
 
@@ -1466,7 +1414,7 @@ public partial class MainWindow : Window
             MoveClipPlayheads();
             KeyLanes.MovePlayhead(_viewModel.PositionMs / 1000);
 
-            // Which rows have a keyframe at the playhead (their names' diamonds) is read again, while not playing.
+            // Refresh keyframe-at-playhead diamonds (paused only).
             if (!_viewModel.IsPlaying)
                 KeyLanes.InvalidateVisual();
         }
@@ -1485,8 +1433,8 @@ public partial class MainWindow : Window
             RebuildFilmstrip();
         if (e.PropertyName == nameof(MainViewModel.ShowTimelineThumbnails))
             ProgramStripSettingChanged();
-        // Never mid-switch (5.4D-TabPerf review, P12): the tab put behind has let the engine go already (GpuPreviewEngine.Suspend, which
-        // keeps the frames of every tab kept live), and an Unload would clear them all.
+        // Skip mid-switch: the outgoing tab already suspended the engine (GpuPreviewEngine.Suspend keeps live tabs' frames), and an
+        // Unload here would clear them all.
         if (e.PropertyName == nameof(MainViewModel.HasSource) && !_viewModel.HasSource && !_switchingTab)
         {
             ClearProgramStrip();
@@ -1508,19 +1456,18 @@ public partial class MainWindow : Window
         if (e.PropertyName is nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer))
             UpdateOverlayMode();
 
-        // The source view (Interactive Crop or a Draw Target) shows the selected clip's picture (MainViewModel.ShownSourceClip).
+        // Source view (Interactive Crop, Draw Target) shows the selected clip (MainViewModel.ShownSourceClip).
         if (e.PropertyName == nameof(MainViewModel.KeyLayer) && CurrentOverlayMode != OverlayMode.None)
             ScheduleGpuState();
 
         if (e.PropertyName == nameof(MainViewModel.IsArrangeActive))
             UpdateLayoutPane();
 
-        // Which layers there are to show in the layout pane.
+        // Refresh the layout pane's layer list.
         if (e.PropertyName is nameof(MainViewModel.AutoCaptions))
             RedrawLayout();
 
-        // What is drawn over the video, and the live crop of the video itself, follow the numbers
-        // whether they came from dragging or from typing.
+        // Overlays and the live crop follow value changes from both dragging and typing.
         if (e.PropertyName is nameof(MainViewModel.CropLeft) or nameof(MainViewModel.CropRight)
             or nameof(MainViewModel.CropTop) or nameof(MainViewModel.CropBottom)
             or nameof(MainViewModel.SourceWidth) or nameof(MainViewModel.SourceHeight)
@@ -1543,16 +1490,16 @@ public partial class MainWindow : Window
         return dialog.Decision;
     }
 
-    // The markers' flags along the Sequence Overview Scrubber are laid out again at its new width.
+    // Re-lay marker flags on the Sequence Overview Scrubber for the new width.
     private void MarkerCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => DrawTimelineMarkers();
 
-    // The layout pane's stage: the output frame.
+    // Layout pane stage = the output frame.
     private static readonly Brush StageBrush = Frozen(Color.FromRgb(0x2A, 0x2A, 0x2A));
 
-    /// <summary>The time, in milliseconds, at a horizontal position on the timeline.</summary>
+    /// <summary>Time in milliseconds at an x position on the timeline slider.</summary>
     private double TimelineMsAt(double x)
     {
-        // The track is shorter than the slider by half a thumb at each end.
+        // The track is inset by half a thumb width at each end.
         const double inset = 5.5;
         var track = TimelineSlider.ActualWidth - 2 * inset;
         return track > 0 ? Math.Clamp((x - inset) / track, 0, 1) * _viewModel.DurationMs : 0;
@@ -1569,12 +1516,11 @@ public partial class MainWindow : Window
     private void NextIFrame_Click(object sender, RoutedEventArgs e) => JumpToIFrame(1);
 
     /// <summary>
-    /// Puts the player on the I-frame before or after the playhead. The time comes from the I-frame
-    /// index; setting the position moves the timeline, which seeks the player to exactly that time.
+    /// Seeks to the previous/next I-frame from the I-frame index; setting the position moves the timeline, which seeks the player exactly.
     /// </summary>
     private void JumpToIFrame(int direction)
     {
-        // Like stepping, jumping is for looking at a still picture.
+        // Like frame stepping, I-frame jumps pause playback.
         if (PlayerIsPlaying)
             PlayerSetPause(true);
 
@@ -1583,7 +1529,7 @@ public partial class MainWindow : Window
 
     private void StepFrames(int frames)
     {
-        // Stepping only makes sense on a still picture.
+        // Frame stepping pauses playback.
         if (PlayerIsPlaying)
             PlayerSetPause(true);
 
@@ -1600,14 +1546,14 @@ public partial class MainWindow : Window
         }
         catch (System.Runtime.InteropServices.COMException)
         {
-            // Another program is holding the clipboard open; nothing was copied.
+            // Clipboard locked by another process; nothing copied.
             _viewModel.StatusText = "The clipboard is busy. Try again.";
             return;
         }
 
         _viewModel.StatusText = $"Copied {_viewModel.PositionText}";
 
-        // A brief flash confirms the copy.
+        // Brief flash confirms the copy.
         PositionTextBlock.Foreground = (Brush)FindResource("AccentBrush");
         await Task.Delay(300);
         PositionTextBlock.ClearValue(TextBlock.ForegroundProperty);

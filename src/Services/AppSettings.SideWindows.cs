@@ -1,13 +1,12 @@
 namespace HandPegApp.Services;
 
-// The side windows (Pass 5.4C): as many as wanted, each a Live Video Preview or a Pane Docker, saved apart from the main window's
-// arrangement (DockLayout) so a layout taken up never touches them.
+// Side windows (any number, each a Live Video Preview or Pane Docker), stored separately from DockLayout so applying a layout leaves
+// them untouched.
 public sealed partial class AppSettings
 {
     /// <summary>
-    /// The side windows open as HandPeg was last left (a JSON list of Docking.SideWindowState: each one's mode, its panes and its
-    /// place); null before 5.4C first saved them (the single side window of an older DockLayout then becomes the first Pane Docker),
-    /// "[]" for none. A string, as DockLayout is, so Clone copies it as it is.
+    /// Last-session side windows as JSON (Docking.SideWindowState list: mode, panes, placement); null when never saved (a legacy
+    /// DockLayout side window becomes the first Pane Docker), "[]" for none. Stored as a string like DockLayout so Clone copies it verbatim.
     /// </summary>
     public string? SideWindows { get; set; }
 }

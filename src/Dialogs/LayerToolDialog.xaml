@@ -5,11 +5,11 @@
         Width="520" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-    <!-- One of three panels is shown. Bound straight to the clip: every change shows in the command, and in Live Preview, at once. -->
+    <!-- Shows one of three panels; bound directly to the clip so changes update the command and Live Preview immediately. -->
     <StackPanel Margin="16">
         <TextBlock x:Name="IntroText" Foreground="{DynamicResource MutedTextBrush}" TextWrapping="Wrap" Margin="0,0,0,12" />
 
-        <!-- Filters of the clip's own: a view onto the clip's effects (Flip, LUT 3D, Denoise, Color Grade, Hue, Blur, Sharpen). -->
+        <!-- Per-clip filters: a view over the clip's effects (Flip, LUT 3D, Denoise, Color Grade, Hue, Blur, Sharpen). -->
         <StackPanel x:Name="FiltersPanel" Visibility="Collapsed">
         <TextBlock TextWrapping="Wrap" Margin="0,0,0,10" Foreground="{DynamicResource MutedTextBrush}"
                    Text="These are effects of the clip's effect stack, set here for this clip alone. The Effects pane shows the whole stack in order, with more effects, per clip." />
@@ -88,7 +88,7 @@
             </DockPanel>
         </StackPanel>
 
-        <!-- Where it is, how large, and how it is turned -->
+        <!-- Position, size and rotation -->
         <StackPanel x:Name="MaskPanel" Visibility="Collapsed">
             <CheckBox Content="Use a mask" IsChecked="{Binding CustomMask}"
                       ToolTip="Cuts the clip to a shape: a black-and-white picture, which shows where it is white and is see-through where it is black." />

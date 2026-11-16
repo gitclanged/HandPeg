@@ -2,9 +2,9 @@ using System.Windows.Shell;
 
 namespace HandPegApp.ViewModels;
 
-/// <summary>Progress on the taskbar button of the window that owns a view model (an encode's). Called on that window's thread.</summary>
+/// <summary>Taskbar button progress for the VM's owning window (encodes). Called on that window's UI thread.</summary>
 public interface ITaskbarProgress
 {
-    /// <summary>Shows <paramref name="state"/> with <paramref name="fraction"/> done (0 to 1).</summary>
+    /// <summary>Sets <paramref name="state"/> and progress <paramref name="fraction"/> (0..1).</summary>
     void Show(TaskbarItemProgressState state, double fraction);
 }

@@ -10,23 +10,16 @@ using CliWrap;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Strips of frames drawn by the GPU compositor (Pass 5.0-AudioAnd3D, 5.0D): the same picture FFmpeg's strip is
-/// (<see cref="FfmpegRunner.GenerateFilmstripAsync"/>, which asks here first), with the same frames' sizes, moments and
-/// order and written to the same file, so every picture made from a strip (a clip's block, the Sequence Overview Scrubber, the media
-/// browser's tiles) is unchanged. Each thumbnail is a one-layer scene the size of the thumbnail, drawn with its exact frame
-/// (<see cref="FrameSceneHeader.FlagExactFrames"/>) and read back (<see cref="FrameSceneHeader.FlagReadback"/>).
-/// <para>The worker is a compositor of its own (no standby, a small frame cache, one decode lane, on the background card),
-/// started on demand on a thread of its own the first time a strip is asked for, shared by every strip through one queue,
-/// and ended after <see cref="IdleMilliseconds"/> with nothing to do: its process, its decoders and its video memory go
-/// with it, so nothing is held while HandPeg sits idle. The player's own compositor is never asked: its scenes have one
-/// writer (the frame pump), and its frame cache is the player's.</para>
-/// <para>Key frames: a moment that lies within half a strip's spacing of a key frame is taken at that key frame, which
-/// decodes alone; a 4-hour recording with key frames 10 s apart then costs one decode per thumbnail, never a chase from the
-/// key frame before it. A moment with no key frame that near is taken exactly (a short clip's strip shows every moment it
-/// asks for, where FFmpeg's shows the key frame before each).</para>
-/// <para>Whenever this cannot draw a strip (the setting, no compositor, a file the card cannot decode, a worker that does
-/// not answer) it says so and FFmpeg makes the strip as before; a file the compositor could not decode is left to FFmpeg
-/// for the rest of the session, and three failures of the engine in a row leave every strip to FFmpeg.</para>
+/// GPU-rendered filmstrips, layout- and file-compatible with FFmpeg strips (<see cref="FfmpegRunner.GenerateFilmstripAsync"/> tries this
+/// first), so clip blocks, the Overview Scrubber and Media Browser tiles are unchanged. Each thumbnail is a one-layer exact-frame scene
+/// (<see cref="FrameSceneHeader.FlagExactFrames"/>) read back (<see cref="FrameSceneHeader.FlagReadback"/>).
+/// <para>Dedicated worker (no standby, small cache, one decode lane, background adapter) started on demand on its own thread, shared via
+/// one queue, and shut down after <see cref="IdleMilliseconds"/> idle, releasing process, decoders and VRAM. Never uses the player's
+/// compositor (single scene writer, player-owned cache).</para>
+/// <para>Key-frame snapping: times within half the strip spacing of a key frame use that key frame (one decode per thumbnail even for
+/// long-GOP recordings); others are exact.</para>
+/// <para>Falls back to FFmpeg when disabled, no compositor, undecodable files (remembered for the session) or an unresponsive worker;
+/// three consecutive engine failures disable GPU strips for the session.</para>
 /// </summary>
 public static class GpuFilmstrips
 {
@@ -35,16 +28,15 @@ public static class GpuFilmstrips
     /// <summary>The most frames a strip holds (FfmpegRunner's strip takes as many inputs).</summary>
     public const int MaxFrames = 40;
 
-    /// <summary>The frames a strip of a video so long holds: as asked (1 to <see cref="MaxFrames"/>), and one for a video of 0.2 s or less.</summary>
+    /// <summary>Strip frame count: as requested (1..<see cref="MaxFrames"/>), or 1 for videos of 0.2 s or less.</summary>
     public static int FrameCount(int count, double durationSeconds) => durationSeconds <= 0.2 ? 1 : Math.Clamp(count, 1, MaxFrames);
 
     /// <summary>How tall a strip's frames are made: an even number of pixels, 16 to 1080.</summary>
     public static int FrameHeight(int height) => Math.Clamp(height / 2 * 2, 16, 1080);
 
     /// <summary>
-    /// The moments a strip's frames are taken at, in seconds from the start of the file (its container's clock, as FFmpeg's
-    /// -ss counts): evenly spread, each in the middle of its share of the length, the last kept half a second clear of the end
-    /// (a file's length is often a little more than its picture's).
+    /// Sample times (container clock, like FFmpeg -ss): centred in equal shares, the last kept 0.5 s before the end (container duration
+    /// often exceeds the video stream).
     /// </summary>
     public static double[] Moments(int count, double durationSeconds)
     {
@@ -56,27 +48,24 @@ public static class GpuFilmstrips
     }
 
     /// <summary>
-    /// How wide a frame of a strip is: what FFmpeg's scale=-2:height makes of a picture this size (its stored shape, rounded
-    /// to the nearest even pixel, as av_rescale rounds: half away from zero).
+    /// Frame width matching FFmpeg scale=-2:height (stored aspect, nearest even pixel, av_rescale half-away-from-zero rounding).
     /// </summary>
     public static int FrameWidth(int sourceWidth, int sourceHeight, int height) =>
         sourceWidth <= 0 || sourceHeight <= 0 ? 0 : (int)(((long)height * sourceWidth + sourceHeight) / (2L * sourceHeight)) * 2;
 
-    /// <summary>A strip's layout: so many frames, each so wide and tall, side by side; and how many times larger each is drawn before it is shrunk.</summary>
+    /// <summary>Strip layout: frame count, frame size, and supersampling factor.</summary>
     public readonly record struct StripLayout(int Count, int FrameWidth, int Height, int Factor)
     {
         /// <summary>The strip's width in pixels.</summary>
         public int Width => Count * FrameWidth;
     }
 
-    // The compositor's sampler spreads its taps over at most this many source pixels per pixel drawn: a frame much smaller
-    // than its source is drawn this many times larger (at most MaxFactor), then shrunk by whole blocks here.
+    // Sampler footprint limit: heavily downscaled frames render at up to MaxFactor x size, then box-filter down here.
     private const int SamplerReach = 8, MaxFactor = 6, MaxOutput = 8192, MinOutput = 16;
 
     /// <summary>
-    /// The layout of the strip FFmpeg makes of a video of this size (<see cref="FrameCount"/>, <see cref="FrameHeight"/>,
-    /// <see cref="FrameWidth"/>), and the factor each frame is drawn at; null when the compositor cannot draw frames of that
-    /// size (narrower than its 16-pixel least: a very tall video at a tiny height).
+    /// FFmpeg-equivalent layout (<see cref="FrameCount"/>, <see cref="FrameHeight"/>, <see cref="FrameWidth"/>) plus supersampling factor;
+    /// null below the compositor's 16-pixel minimum width.
     /// </summary>
     public static StripLayout? Layout(int count, double durationSeconds, int height, int sourceWidth, int sourceHeight)
     {
@@ -91,11 +80,9 @@ public static class GpuFilmstrips
     }
 
     /// <summary>
-    /// The moments a strip's frames are drawn at: each moment that lies nearer than half <paramref name="spacing"/> to a key
-    /// frame (<paramref name="keyFrames"/>, ascending, on the moments' clock) is moved onto it, <paramref name="lead"/> past
-    /// its start (well inside the key frame, so that a seek to it lands on it whatever the rounding of the two clocks); the
-    /// rest are kept. Two moments never share a key frame (each is moved only inside its own half of the spacing), and the
-    /// nearer of the key frames round a moment wins (the earlier one when they are as near).
+    /// Snaps each time within half <paramref name="spacing"/> of a key frame (<paramref name="keyFrames"/>, ascending) to it plus
+    /// <paramref name="lead"/> (robust to clock rounding); others are unchanged. Snaps never collide (each stays in its half-spacing);
+    /// the nearest key frame wins, ties to the earlier.
     /// </summary>
     public static double[] SnapToKeyFrames(ReadOnlySpan<double> moments, ReadOnlySpan<double> keyFrames, double spacing, double lead)
     {
@@ -132,8 +119,7 @@ public static class GpuFilmstrips
     }
 
     /// <summary>
-    /// A frame drawn <paramref name="factor"/> times larger, shrunk into its place in the strip: the mean of each square of
-    /// factor x factor pixels (on the gamma-encoded values, as FFmpeg's scaler works), opaque. BGRA.
+    /// Box-downsamples a frame rendered at <paramref name="factor"/>x into the strip (mean of factor^2 gamma-encoded pixels, like FFmpeg), opaque BGRA.
     /// </summary>
     public static void Shrink(ReadOnlySpan<byte> drawn, int drawnWidth, int factor, Span<byte> strip, int stripStride, int left, int width, int height)
     {
@@ -173,23 +159,22 @@ public static class GpuFilmstrips
 
     // ----- Whether to ask the compositor -----
 
-    // A strip's file is decoded alone: the source id the thumbnail worker gives it (let go after each strip).
+    // Source-table slot for the strip's file (released after each strip).
     private const int SourceId = 0;
 
     // The thumbnail worker's frame cache: the least the compositor keeps (a thumbnail needs only the frame it shows).
     private const long ThumbnailCacheBytes = 96L << 20;
 
-    /// <summary>With nothing to draw for this long, the thumbnail worker ends (its process and its video memory with it).</summary>
+    /// <summary>Idle timeout after which the thumbnail worker exits (releasing its process and VRAM).</summary>
     public const int IdleMilliseconds = 15_000;
 
-    // How long a thumbnail may take: the first of a strip opens the file (a long recording's index is read), the rest decode one frame.
+    // Per-thumbnail timeout: the first opens the file (index read), later ones decode one frame.
     private const int FirstFrameMs = 15_000, FrameMs = 8_000;
 
     // A video this short is drawn at its exact moments even when its key frames are not known: no chase is longer than it.
     private const double ShortVideoSeconds = 30;
 
-    // Where no picture is drawn, the scene shows this (magenta): a thumbnail that is all of it was not drawn at all (a file
-    // the card cannot decode leaves its layer out), never a video's own black.
+    // Magenta background: an all-magenta thumbnail means the layer was not drawn (undecodable), distinguishing it from black video.
     private const float SentinelR = 1, SentinelG = 0, SentinelB = 1;
 
     private const int JpegQuality = 88;
@@ -201,8 +186,7 @@ public static class GpuFilmstrips
     private static int _failuresInARow;
 
     /// <summary>
-    /// Whether strips are drawn by the compositor: with a background card that is a card (Settings' Background GPU is not
-    /// Processor Only) and an engine that has not failed three times in a row this session.
+    /// True when GPU strips are enabled: background adapter is a GPU (not Processor Only) and fewer than three consecutive engine failures.
     /// </summary>
     public static bool IsWanted => !_givenUp && !ForceFfmpeg && AppSettings.Current.BackgroundGpu != -2;
 
@@ -210,10 +194,9 @@ public static class GpuFilmstrips
     public static bool ForceFfmpeg { get; set; }
 
     /// <summary>
-    /// Draws a video's strip with the compositor into <paramref name="imagePath"/> (a JPEG, or a PNG by its extension): the
-    /// strip <see cref="FfmpegRunner.GenerateFilmstripAsync"/> would make, frame for frame in size and moment. False, and
-    /// nothing written, when it is not drawn this way (see <see cref="IsWanted"/>) or could not be: FFmpeg then makes it.
-    /// Called inside the strip's background work; throws <see cref="OperationCanceledException"/> when that is cancelled.
+    /// Renders a strip to <paramref name="imagePath"/> (JPEG, or PNG by extension) identical in layout/timing to
+    /// <see cref="FfmpegRunner.GenerateFilmstripAsync"/>. Returns false with nothing written when disabled (<see cref="IsWanted"/>) or
+    /// failed (FFmpeg fallback). Runs inside background work; throws <see cref="OperationCanceledException"/> on cancel.
     /// </summary>
     public static async Task<bool> TryMakeAsync(string videoPath, string imagePath, int count, double durationSeconds, int height, CancellationToken token)
     {
@@ -223,8 +206,7 @@ public static class GpuFilmstrips
         Sheet sheet;
         try
         {
-            // What the file is: its picture's size and where its two clocks start (answered from memory when the file has
-            // been inspected this session; inside the strip's own work otherwise).
+            // Probe size and clock origins (cached for files probed this session, else probed inside this work).
             if (await MediaProbe.ProbeAsync(videoPath, token, WorkLane.Background) is not { Video: { Width: > 0, Height: > 0 } video } info
                 || Layout(count, durationSeconds, height, video.Width, video.Height) is not { } layout)
                 return false;
@@ -238,8 +220,8 @@ public static class GpuFilmstrips
             for (var i = 0; i < moments.Length; i++)
                 worker[i] = Math.Max(moments[i] + containerStart - videoStart, 0);
 
-            // The key frames: the file's whole list when HandPeg has it (also handed to the worker, which then seeks
-            // exactly), else for a long video the ones its moments' seeks land on, read from its index alone.
+            // Key frames: the full list when known (also passed to the worker for exact seeks), else for long videos the landing key
+            // frames for each sample time from the index alone.
             double[]? complete = null, keys = null;
             if (KnownIFrames(videoPath) is { Length: > 0 } listed)
             {
@@ -273,12 +255,12 @@ public static class GpuFilmstrips
     }
 
     /// <summary>
-    /// One frame of a video into <paramref name="imagePath"/> (a PNG by its extension, else a JPEG), through the same compositor as the
-    /// strips: a poster, a still to trace a HUD on. False, and nothing written, when it is not drawn this way: FFmpeg then makes it.
+    /// Renders one frame to <paramref name="imagePath"/> (PNG by extension, else JPEG) via the strip compositor (posters, HUD trace stills).
+    /// False with nothing written when unavailable (FFmpeg fallback).
     /// </summary>
-    /// <param name="atSeconds">The moment, on the container's clock (as FFmpeg's -ss before -i has it).</param>
-    /// <param name="height">How tall it is made; null for the video's own size.</param>
-    /// <param name="onAKeyFrame">The key frame nearest the moment is good enough, and much quicker to reach (a poster): else the exact frame.</param>
+    /// <param name="atSeconds">Container-clock time (as FFmpeg -ss before -i).</param>
+    /// <param name="height">Output height; null for native size.</param>
+    /// <param name="onAKeyFrame">Accept the nearest key frame (fast, for posters) instead of the exact frame.</param>
     public static async Task<bool> TryStillAsync(string videoPath, string imagePath, double atSeconds, int? height, bool onAKeyFrame, CancellationToken token)
     {
         if (!IsWanted || FfmpegOnly.ContainsKey(videoPath))
@@ -316,8 +298,8 @@ public static class GpuFilmstrips
         Result result;
         while (true)
         {
-            // A few decoding sessions at a time on the card, whatever asked for them (see WorkScheduler.GpuDecodeGate). A still (5.4.1-M3:
-            // Priority 0, a poster in sight) never waits there behind strips: it is one frame, drawn by the one worker the queue already has.
+            // Strips take a GPU decode permit (WorkScheduler.GpuDecodeGate); stills (priority 0 posters) skip it, being one frame on the
+            // existing worker.
             if (!sheet.IsStill)
                 await WorkScheduler.GpuDecodeGate.WaitAsync(token);
             try
@@ -331,8 +313,7 @@ public static class GpuFilmstrips
                     WorkScheduler.GpuDecodeGate.Release();
             }
 
-            // Stopped between pictures (5.4.4): its permit and its lane's slot given back until the player pauses or the scrub is over, then
-            // drawn again from its start (the pictures of one strip: at most one strip's work lost).
+            // Paused between frames: release permit and lane slot until playback/scrub ends, then redraw the strip from the start.
             if (result.Outcome != Outcome.Paused)
                 break;
             await WorkScheduler.WhenBackgroundMayRunAsync(token);
@@ -355,9 +336,8 @@ public static class GpuFilmstrips
         return false;
     }
 
-    // A file's I-frames on the container's clock, as HandPeg knows them: from this session, from the Timeline cache's seek
-    // facts (seekindex.bin), from the list FfmpegRunner.GetIFramesAsync kept there, or from the file's own index (NativeKeyFrames,
-    // 5.4.1-M4); null when none of them has it.
+    // Known I-frames (container clock): session cache, seekindex.bin, FfmpegRunner.GetIFramesAsync cache, or the container index
+    // (NativeKeyFrames); null when unavailable.
     private static double[]? KnownIFrames(string path)
     {
         if (MediaProbe.KnownIFrames(path) is { Length: > 0 } known)
@@ -385,9 +365,7 @@ public static class GpuFilmstrips
     }
 
     /// <summary>
-    /// The key frame each moment's seek lands on (container clock, ascending, each once), from one ffprobe that seeks to every
-    /// moment and reads the one packet it lands on (the index alone, nothing decoded: a moment for a 4-hour recording); null
-    /// when it could not be read.
+    /// Distinct ascending landing key frames per sample time from one ffprobe reading one packet per seek (index only, no decode); null on failure.
     /// </summary>
     private static async Task<double[]?> LandingsAsync(string path, double[] moments, CancellationToken token)
     {
@@ -427,10 +405,10 @@ public static class GpuFilmstrips
         /// <summary>This strip could not be drawn (written, read back): FFmpeg's this time.</summary>
         NotDrawn,
 
-        /// <summary>The worker did not start or did not answer: counted, three in a row and every strip is FFmpeg's.</summary>
+        /// <summary>Worker failed to start or respond; three consecutive failures disable GPU strips.</summary>
         EngineFault,
 
-        /// <summary>Stopped between pictures (5.4.4: the player plays, or a scrub holds background work back): drawn again once that is over.</summary>
+        /// <summary>Paused between frames (playback or scrub hold); redrawn afterwards.</summary>
         Paused,
     }
 
@@ -440,12 +418,11 @@ public static class GpuFilmstrips
     {
         public TaskCompletionSource<Result> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        /// <summary>One frame (a poster, a still: <see cref="TryStillAsync"/>): drawn ahead of every strip waiting (5.4.1-M3, Priority 0).</summary>
+        /// <summary>Single-frame request (<see cref="TryStillAsync"/>), served before queued strips (priority 0).</summary>
         public bool IsStill { get; init; }
 
         /// <summary>
-        /// Whether the strip stops between its pictures now (5.4.4, WorkScheduler.PausePoint, captured in the work that asked for it): null
-        /// never (a still, a strip asked for outside background work).
+        /// Pause check captured from the requesting work (WorkScheduler.PausePoint); null never pauses (stills, non-background requests).
         /// </summary>
         public Func<bool>? Pause { get; init; }
 
@@ -479,9 +456,8 @@ public static class GpuFilmstrips
     }
 
     /// <summary>
-    /// The thumbnail worker's thread: the stills, then the strips, each in the order they were asked for, the compositor started for the first and
-    /// ended once nothing has been asked for <see cref="IdleMilliseconds"/>; then the thread ends too (a new strip starts both
-    /// again). The only thread that writes the worker's scenes.
+    /// Thumbnail thread: serves stills then strips FIFO, starts the compositor on demand and stops it (and itself) after
+    /// <see cref="IdleMilliseconds"/> idle; new requests restart both. Sole scene writer for this worker.
     /// </summary>
     private static void Serve()
     {
@@ -495,7 +471,7 @@ public static class GpuFilmstrips
                 next = null;
                 lock (Gate)
                 {
-                    // Nothing left and no worker: the thread goes (under the lock, so a strip asked for now starts a new one).
+                    // Idle with no worker: exit under the lock so a concurrent request starts a new thread.
                     if (Waiting.Count + StillsWaiting.Count == 0 && client is null)
                     {
                         _server = null;
@@ -505,7 +481,7 @@ public static class GpuFilmstrips
                     if (Waiting.Count + StillsWaiting.Count == 0)
                         Monitor.Wait(Gate, IdleMilliseconds);
 
-                    // The stills first (5.4.1-M3): a poster in sight is never drawn after the strips asked for before it.
+                    // Stills first so visible posters never wait behind earlier strips.
                     if (StillsWaiting.Count > 0)
                         next = StillsWaiting.Dequeue();
                     else if (Waiting.Count > 0)
@@ -578,7 +554,7 @@ public static class GpuFilmstrips
         client = null;
     }
 
-    /// <summary>The thumbnail worker: on the background card (the high-performance one when there is no other), no standby, one decode lane.</summary>
+    /// <summary>Starts the thumbnail worker on the background adapter (Compositor GPU by default), no standby, one decode lane.</summary>
     private static CompositorClient? Start()
     {
         var adapter = GpuAdapters.BackgroundAdapter?.Index ?? AppSettings.Current.CompositorGpuAdapter;
@@ -613,14 +589,14 @@ public static class GpuFilmstrips
         var stride = layout.Width * 4;
         try
         {
-            // The player plays or a scrub is held (5.4.4): not started meanwhile.
+            // Do not start during playback or a scrub hold.
             if (!MayGoOn(sheet))
                 return new Result(Outcome.Paused, "");
             client ??= Start();
             if (client is null)
                 return new Result(Outcome.EngineFault, "the compositor did not start");
 
-            // Kept for the thread's next strips (and let go with it).
+            // Reused for subsequent strips; released with the thread.
             if (drawn is null || drawn.Length < shot)
                 drawn = GC.AllocateUninitializedArray<byte>(shot);
             if (strip is null || strip.Length < stride * layout.Height)
@@ -632,9 +608,8 @@ public static class GpuFilmstrips
             var clipKey = pathHash ^ Interlocked.Increment(ref _serial);
             try
             {
-                // The worker takes up a changed source table as it begins drawing a frame, after it has waited for that
-                // frame's exact pictures: an empty frame first, so that the strip's first frame waits for its picture as
-                // every other does (without it, the first came back empty).
+                // The worker reads source-table changes at frame start, after waiting for exact frames; publish an empty frame first so the
+                // strip's first real frame waits for its picture (otherwise it returned empty).
                 WriteScene(client, width, height, 0, pathHash, clipKey, picture: false);
                 if (!client.WaitForFrame(client.Publish(), FirstFrameMs))
                     return new Result(Outcome.EngineFault, "the compositor drew nothing in time");
@@ -644,7 +619,7 @@ public static class GpuFilmstrips
                     if (sheet.Token.IsCancellationRequested || sheet.Done.Task.IsCompleted)
                         return new Result(Outcome.Cancelled, "");
 
-                    // Between pictures (5.4.4): stopped while the player plays or a scrub is held (the source let go of below).
+                    // Pause point between frames during playback or scrub hold (source released below).
                     if (!MayGoOn(sheet))
                         return new Result(Outcome.Paused, "");
 
@@ -682,13 +657,12 @@ public static class GpuFilmstrips
         }
     }
 
-    /// <summary>How long a strip stopped between its pictures waits where it is before it lets go of its place in the queue, ms (5.4.4).</summary>
+    /// <summary>In-place pause wait (ms) before a paused strip yields its queue position.</summary>
     private const int PausedInPlaceMs = 1500;
 
     /// <summary>
-    /// Whether a strip goes on with its next picture (5.4.4): yes unless it is paused (Sheet.Pause); paused, it waits in place up to
-    /// <see cref="PausedInPlaceMs"/> (a short scrub, a moment of play) and goes on if that is over, else stops (false), at once when a still
-    /// waits behind it or it is cancelled.
+    /// True to continue with the next frame. When paused (Sheet.Pause), waits up to <see cref="PausedInPlaceMs"/> for the pause to end;
+    /// returns false on timeout, immediately if a still is queued, or on cancellation.
     /// </summary>
     private static bool MayGoOn(Sheet sheet)
     {
@@ -712,8 +686,8 @@ public static class GpuFilmstrips
     }
 
     /// <summary>
-    /// A thumbnail's scene: the frame at <paramref name="seconds"/> (the worker's clock) over the whole canvas, which is the
-    /// output, waited for and read back; without <paramref name="picture"/>, the same size with nothing on it.
+    /// Thumbnail scene: frame at <paramref name="seconds"/> (worker clock) filling the canvas/output, awaited and read back; without
+    /// <paramref name="picture"/>, an empty scene of the same size.
     /// </summary>
     private static void WriteScene(CompositorClient client, int width, int height, double seconds, long pathHash, long clipKey, bool picture)
     {

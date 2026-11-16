@@ -19,7 +19,9 @@ without the timeline lagging.
 
 ![The Export tab's three columns under the player: Preset & Format with the Export Presets selector on YouTube Shorts and a hardware H.264 encoder; Quality, Bitrate & Resolution at 1080 x 1920 with the project's frame rate; and Audio & Output with the project's sample rate, the Live Encoded Preview button and the Projected Output summary](docs/screenshots/export-tab-v5.4.png)
 
-![The Cutout Studio zoomed to 100 % on a still of a gameplay recording, with slim scroll bars along the view, and in the right-hand column the Source Navigator's picture of the whole frame with a bright box round the part in view, above the labelled Output Stage](docs/screenshots/cutout-studio-v5.3.1.png)
+![The Color tab beside the player: the clip graded with a warmer Temperature, more Contrast and Saturation in the Basics card, under the Master curve drawn over the picture's histogram, while the vertical gameplay frame plays in the player](docs/screenshots/color-studio-v5.6.png)
+
+![The Cutout Studio opened from the Timeline on a video with an older Overwatch preset: its three Cutouts listed by name (Killfeed with 2 shapes, Health & Name with 4, Abilities & Ammo with 6), their outlines traced over a still of the game, the Source Navigator and Output Stage beside it, and the Game Preset Name filled in as Overwatch](docs/screenshots/cutout-studio-v5.6.png)
 
 ![The audio tools while playing: the Master Meter pane's live levels, and the Audio tab's master mix, master fader and momentary, short-term and integrated LUFS with true peak](docs/screenshots/audio-suite-v5.2.png)
 
@@ -46,7 +48,14 @@ without the timeline lagging.
   gets that preset's frame, HUD Cutouts and blurred background. Built-in vertical presets include Overwatch Vertical and
   Fortnite Vertical, made from real hand-built ones. Draw your own game's HUD pieces in the Cutout Studio
   (pen, rectangle, ellipse, slant; zoom up to 64x with a pixel grid, pan with a right-drag or the Source Navigator's
-  picture of the whole frame) and save them as a preset.
+  picture of the whole frame) and save them as a preset. It opens on every Cutout of the selected video, older presets'
+  picture masks traced into editable outlines.
+- **Voiceover recording.** The Voiceover Studio records the microphone through Windows itself (no FFmpeg), places each take
+  on the timeline where you pressed Record, and marks it as a voice so other sounds duck under it.
+- **Color Studio.** Grade with lift, gamma and gain wheels, curves and a LUT beside a live Vectorscope; Color Match grades one
+  clip to look like another, and holding `\` shows the picture before the grade.
+- **Speed & Pitch.** Play a clip from 0.10x to 16x, with Smooth Slow-Mo's optical-flow in-between frames and sound that keeps
+  its pitch; Ripple Timeline moves the clips after it to fit.
 - **Multi-track audio.** Each audio stream of a recording gets its own Sub-Lane under its clip. Studio Voice (denoise,
   presence and a broadcast leveller in one card), a De-Esser and a parametric EQ are effect cards; the Master Meter pane
   shows live LUFS and true peak beside a master fader.
@@ -54,7 +63,7 @@ without the timeline lagging.
   exports frame-exact; a driver fault restarts it without taking the editor down. Layers can tilt in 3D, and the 3D
   Exploded View fans the stack out by depth (pinch to zoom and two-finger scroll to orbit on a touchpad or touch screen).
   Test Playback & A/V Sync (on the welcome's second screen, or in Settings) measures every frame your display shows against
-  the sound in under a minute.
+  the sound in under a minute, and the welcome rates the PC from S to F for compositing, decoding, background work and export.
 - **Project bundles and OBS recordings.** Save a project and its media as one `.hpb` file (stored, not re-encoded; long
   recordings can be trimmed to the parts in use). Split an OBS side-by-side recording into gameplay and facecam in one
   step.
@@ -65,8 +74,8 @@ From the [latest release](https://github.com/gitclanged/HandPeg/releases/latest)
 - `HandPeg-win-Setup.exe`: the installer (Windows 10 or 11, x64). It updates itself.
 - `HandPeg-win-arm64-Setup.exe`: the native installer for Windows on ARM (Snapdragon PCs). It updates itself from the ARM64
   releases.
-- `HandPeg-5.5.2-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
-- `HandPeg-5.5.2-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
+- `HandPeg-5.6.0-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
+- `HandPeg-5.6.0-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
 
 HandPeg runs on Microsoft's .NET 10 Desktop Runtime, and neither the installers nor the zips need it installed first. On a PC
 without it (an older .NET such as .NET 8 is not enough), `HandPeg.exe` asks the first time it starts: download .NET 10 for

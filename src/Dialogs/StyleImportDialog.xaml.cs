@@ -4,14 +4,11 @@ using HandPegApp.Models;
 
 namespace HandPegApp;
 
-/// <summary>
-/// Asks which parts of the project settings to take: from a file when importing, from the current
-/// settings when exporting. Everything that is there is ticked to begin with.
-/// </summary>
+/// <summary>Selects which project-setting sections to import (from a file) or export (current settings); all present ones start checked.</summary>
 public partial class StyleImportDialog : Window
 {
-    /// <param name="settings">The file's contents (import) or the current settings (export).</param>
-    /// <param name="fileName">The file being imported; null when exporting.</param>
+    /// <param name="settings">File contents (import) or current settings (export).</param>
+    /// <param name="fileName">Imported file name; null when exporting.</param>
     public StyleImportDialog(StylePreset settings, string? fileName)
     {
         InitializeComponent();
@@ -26,7 +23,7 @@ public partial class StyleImportDialog : Window
             : "Choose what to take from this file. Each part replaces what is set now; parts left unticked stay as they are.";
 
         var layers = settings.Layout?.Layers?.Count ?? 0;
-        // The masks travel inside the file; named here, so it is clear what comes with the Cutouts.
+        // Masks are embedded in the file; listed so it is clear they accompany the Cutouts.
         var masks = settings.Masks is { Count: > 0 } embedded ? $" Masks: {string.Join(", ", embedded.Keys)}." : "";
         Offer(LayoutBox, LayoutText, settings.Layout is not null,
             $"The video clips' position and zoom, and {layers} Cutout{(layers == 1 ? "" : "s")} with their masks.{masks}");

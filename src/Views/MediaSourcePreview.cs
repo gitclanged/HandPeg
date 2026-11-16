@@ -6,10 +6,10 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Media Browser's preview of the file chosen (5.4C): its frame at the cutter's moment, letterboxed in the box, with the moment under
-/// it and the sub-clip marked (In, Out and its length), or what keeps a frame from being shown (no file chosen, a sound, a file gone or
-/// unreadable). It owns no decoder: the pane gives it frames (SourceFrames, the strip's while a still is on its way). While the pane steps
-/// through the file (Space) it says so: stills at a few a second, no sound.
+/// Media Browser source preview: the selected file's frame at the cutter time, letterboxed, with a time line below and the marked
+/// sub-clip (In, Out, duration), or a status message when no frame is available (no selection, audio, missing or unreadable file).
+/// Owns no decoder: the pane supplies frames (SourceFrames, or a strip frame while a still is pending). During stepping (Space) it shows
+/// a notice: a few stills per second, no audio.
 /// </summary>
 public sealed class MediaSourcePreview : FrameworkElement
 {
@@ -31,7 +31,7 @@ public sealed class MediaSourcePreview : FrameworkElement
         SnapsToDevicePixels = true;
     }
 
-    /// <summary>The frame shown (frozen); null for none (the message is shown instead).</summary>
+    /// <summary>Displayed frame (frozen); null shows <see cref="Message"/> instead.</summary>
     public ImageSource? Frame
     {
         get => _frame;
@@ -44,7 +44,7 @@ public sealed class MediaSourcePreview : FrameworkElement
         }
     }
 
-    /// <summary>What is said while there is no frame: no file chosen, a sound, a file that is gone or cannot be read.</summary>
+    /// <summary>Status text shown without a frame (no selection, audio, missing or unreadable file).</summary>
     public string Message
     {
         get => _message;
@@ -57,7 +57,7 @@ public sealed class MediaSourcePreview : FrameworkElement
         }
     }
 
-    /// <summary>The moment shown and the file's length, seconds (the line under the picture).</summary>
+    /// <summary>Sets the current time and file duration in seconds (shown below the picture).</summary>
     public void ShowMoment(double position, double duration)
     {
         if (position == _position && duration == _duration)
@@ -66,7 +66,7 @@ public sealed class MediaSourcePreview : FrameworkElement
         InvalidateVisual();
     }
 
-    /// <summary>The sub-clip marked (In and Out, seconds); <paramref name="marked"/> false when the whole file is.</summary>
+    /// <summary>Sets the marked sub-clip (In/Out seconds); <paramref name="marked"/> false means the whole file.</summary>
     public void ShowRange(double inSeconds, double outSeconds, bool marked)
     {
         if ((_in, _out, _hasRange) == (inSeconds, outSeconds, marked))
@@ -75,7 +75,7 @@ public sealed class MediaSourcePreview : FrameworkElement
         InvalidateVisual();
     }
 
-    /// <summary>Whether the pane is stepping through the file (Space): said over the picture, as it plays no sound.</summary>
+    /// <summary>True while the pane steps through the file (Space); shows a no-audio notice over the picture.</summary>
     public bool Stepping
     {
         get => _stepping;
@@ -88,7 +88,7 @@ public sealed class MediaSourcePreview : FrameworkElement
         }
     }
 
-    /// <summary>"1:02.345" (hours when there are any): a moment to the millisecond.</summary>
+    /// <summary>Millisecond timecode, e.g. "1:02.345" (hours prefixed when non-zero).</summary>
     public static string FormatMoment(double seconds)
     {
         var ms = (long)Math.Round(Math.Max(double.IsFinite(seconds) ? seconds : 0, 0) * 1000);
@@ -98,11 +98,11 @@ public sealed class MediaSourcePreview : FrameworkElement
             : string.Create(CultureInfo.InvariantCulture, $"{minutes}:{secs:00}.{millis:000}");
     }
 
-    /// <summary>The sub-clip's line: "In 0:12.000 · Out 0:31.500 · 19.5 s".</summary>
+    /// <summary>Sub-clip label, e.g. "In 0:12.000 · Out 0:31.500 · 19.5 s".</summary>
     public static string FormatRange(double inSeconds, double outSeconds) =>
         string.Create(CultureInfo.InvariantCulture, $"In {FormatMoment(inSeconds)} · Out {FormatMoment(outSeconds)} · {Math.Max(outSeconds - inSeconds, 0):0.0##} s");
 
-    /// <summary>Where a picture of a shape goes in a box: as large as fits, in its middle (letterboxed or pillarboxed).</summary>
+    /// <summary>Largest centred rect of the picture's aspect inside the box (letterbox or pillarbox).</summary>
     internal static Rect Letterbox(Size box, double pictureWidth, double pictureHeight)
     {
         if (box.Width <= 0 || box.Height <= 0 || pictureWidth <= 0 || pictureHeight <= 0)
@@ -136,7 +136,7 @@ public sealed class MediaSourcePreview : FrameworkElement
             drawing.DrawText(said, new Point(12, Math.Max((pictureBox.Height - said.Height) / 2, 4)));
         }
 
-        // The line under the picture: the moment and the length on the left, the sub-clip on the right.
+        // Bottom line: time / duration on the left, sub-clip range on the right.
         if (_duration > 0)
         {
             var moment = Text($"{FormatMoment(_position)} / {FormatMoment(_duration)}", 11, TextBrush, dpi);

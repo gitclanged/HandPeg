@@ -7,24 +7,24 @@ using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
-// ----- Workspace (5.5A): a live miniature of a built-in layout in a theme, for the first-run window -----
+// ----- Workspace: live miniature of a built-in layout in a given theme (first-run window) -----
 //
-// The layout's arrangement (MainWindow.BuiltInLayoutStates: window-free) drawn as the editor lays it out: each split by its shares,
-// the rows as tall as their content (the playback controls, the Sequence Overview Scrubber, the Preset Bar, the header) as thin
-// strips, each group a panel with its tabs and a picture of the pane it shows (the player's frame, the timeline's Tracks and Clips,
-// the media's tiles, a settings page's rows), all in the theme's own colours (ThemeManager.Look). Every brush and pen frozen.
+// Renders the layout arrangement (MainWindow.BuiltInLayoutStates, window-free) as the editor lays it out: splits by their shares,
+// content-height rows (playback controls, Overview Scrubber, Preset Bar, header) as thin strips, and each group as a panel with tabs
+// and a stand-in for its active pane (player frame, Timeline tracks and clips, media tiles, settings rows), in the theme's colours
+// (ThemeManager.Look). All brushes and pens frozen.
 public sealed partial class SettingsStagePreview
 {
     private DockNode? _workspace;
     private string _workspaceName = "";
 
-    /// <summary>The arrangement the Workspace kind draws (a built-in layout's Main); null draws the window with nothing in it.</summary>
+    /// <summary>Arrangement drawn by the Workspace kind (a built-in layout's Main); null draws an empty window.</summary>
     public DockNode? Workspace => _workspace;
 
-    /// <summary>The layout's name, written under the miniature with the theme's.</summary>
+    /// <summary>Layout name, captioned under the miniature together with the theme name.</summary>
     public string WorkspaceName => _workspaceName;
 
-    /// <summary>Shows a layout (by its name and arrangement) in the Workspace kind, drawn again at once when it is on show.</summary>
+    /// <summary>Sets the layout name and arrangement for the Workspace kind; redraws immediately if that kind is shown.</summary>
     public void ShowWorkspace(string name, DockNode? layout)
     {
         if (ReferenceEquals(layout, _workspace) && name == _workspaceName)
@@ -35,10 +35,10 @@ public sealed partial class SettingsStagePreview
             InvalidateVisual();
     }
 
-    // The miniature's height for a width: a 16:10 window and its caption line, within reason.
+    // Miniature height for a width: ~16:10 window plus caption line, clamped 140..320.
     private static double WorkspaceHeight(double width) => Math.Round(Math.Clamp(width * 0.62, 140, 320));
 
-    // The panes laid out as tall as their content (DockPane.FitsContent in MainWindow), and the height each is drawn at here.
+    // Content-height panes (DockPane.FitsContent in MainWindow) and their drawn strip height here; 0 for normal panes.
     private static double ThinHeight(string pane) => pane switch
     {
         "Header" => 10,
@@ -47,10 +47,10 @@ public sealed partial class SettingsStagePreview
         _ => 0,
     };
 
-    // The panes a new start hides (the Master Meter is off until Tabs and Panes shows it): left out of the miniature's tabs.
+    // Panes hidden on a fresh start (Master Meter, until enabled in Tabs and Panes); omitted from miniature tabs.
     private static bool HiddenAtStart(string pane) => pane == "Meter";
 
-    // A pane's name on its tab, as the editor titles it.
+    // Tab title for a pane id, matching the editor.
     private static string TabTitle(string pane) => pane switch
     {
         "UnifiedTimeline" => "Timeline",
@@ -69,7 +69,7 @@ public sealed partial class SettingsStagePreview
         if (w < 120 || h < 80)
             return;
 
-        // The window: its frame, its title bar with the caption buttons, and the arrangement under it.
+        // Window frame, title bar with caption buttons, then the arrangement below.
         var frame = new Rect(0.5, 0.5, w - 1, h - 1);
         drawing.DrawRoundedRectangle(look.Window, Line(look.Border, 1), frame, 5, 5);
         drawing.DrawRoundedRectangle(look.Title, null, new Rect(1, 1, w - 2, 16), 5, 5);
@@ -87,7 +87,7 @@ public sealed partial class SettingsStagePreview
         Text(drawing, string.Create(CultureInfo.InvariantCulture, $"{_workspaceName}   ·   {ThemeManager.DisplayName(theme)}"), 2, h + 4, 11, MutedBrush, width: w - 4);
     }
 
-    // A part of the arrangement in its room: a group drawn, a split's parts laid out by their shares (thin rows at their height).
+    // Draws a dock node in its rect: groups directly; splits by child shares, with thin rows at their fixed height.
     private void DrawDockNode(DrawingContext drawing, DockNode node, Rect room, WorkspaceLook look, double tabRadius)
     {
         if (room.Width < 4 || room.Height < 3)
@@ -118,7 +118,7 @@ public sealed partial class SettingsStagePreview
         }
     }
 
-    // The pane of a group laid out as tall as its content, when that is all it shows; null otherwise.
+    // The group's single visible pane when it is content-height; null otherwise.
     private static string? Thin(DockNode node) =>
         node.IsGroup && node.Panes.Where(p => !HiddenAtStart(p)).ToList() is [var only] && ThinHeight(only) > 0 ? only : null;
 
@@ -137,8 +137,8 @@ public sealed partial class SettingsStagePreview
 
         drawing.DrawRoundedRectangle(look.Panel, Line(look.Border, 0.75), room, 2.5, 2.5);
 
-        // Tabs over a group of several, or over a settings tab or studio alone; the Timeline alone has none (its title row hidden,
-        // CLAUDE.md 8), nor do the player's and the other title-slot panes.
+        // Tabs for multi-pane groups, or a lone settings tab or studio; a lone Timeline has none (headerless tab bar), nor do the
+        // player and other title-slot panes.
         var body = room;
         var tabbed = panes.Count > 1 || active.StartsWith("Tab:", StringComparison.Ordinal) || active == MainWindow.SubtitleStudioId;
         if (tabbed && room.Height > 22)
@@ -179,7 +179,7 @@ public sealed partial class SettingsStagePreview
         }
     }
 
-    // The player: a 16:9 frame (a hill under a sun), as large as the room allows, in the middle of it.
+    // Player stand-in: centred 16:9 frame (sun over a hill), as large as fits.
     private static void DrawMiniPlayer(DrawingContext drawing, Rect room)
     {
         var (width, height) = room.Width / room.Height > 16.0 / 9 ? (room.Height * 16 / 9, room.Height) : (room.Width, room.Width * 9 / 16);
@@ -189,7 +189,7 @@ public sealed partial class SettingsStagePreview
         drawing.DrawRectangle(HillBrush, null, new Rect(picture.Left, picture.Top + height * 0.68, width, height * 0.32));
     }
 
-    // The timeline: a few Tracks, each with its Clips, and the playhead across them.
+    // Timeline stand-in: a few Tracks with Clips and a playhead.
     private static void DrawMiniTracks(DrawingContext drawing, Rect room, WorkspaceLook look)
     {
         var rows = (int)Math.Clamp(Math.Floor(room.Height / 9), 1, 5);
@@ -209,7 +209,7 @@ public sealed partial class SettingsStagePreview
         drawing.DrawLine(Line(PlayheadBrush, 1), new Point(x, room.Top), new Point(x, room.Bottom));
     }
 
-    // The media: a grid of tiles.
+    // Media stand-in: a tile grid.
     private static void DrawMiniTiles(DrawingContext drawing, Rect room, WorkspaceLook look)
     {
         const double tileWidth = 16, tileHeight = 10, gap = 3;
@@ -223,7 +223,7 @@ public sealed partial class SettingsStagePreview
         }
     }
 
-    // A pane of settings or tools: rows of words and a slider.
+    // Settings/tools stand-in: text rows with one slider.
     private static void DrawMiniRows(DrawingContext drawing, Rect room, WorkspaceLook look)
     {
         double[] widths = [0.62, 0.45, 0.78, 0.38, 0.55, 0.7];
@@ -236,7 +236,7 @@ public sealed partial class SettingsStagePreview
         }
     }
 
-    // A row as tall as its content: the playback controls, the Sequence Overview Scrubber, the Preset Bar, the header.
+    // Content-height strip: playback controls, Overview Scrubber, Preset Bar or header.
     private static void DrawThinPane(DrawingContext drawing, string pane, Rect room, WorkspaceLook look)
     {
         drawing.DrawRoundedRectangle(look.Panel, null, room, 1.5, 1.5);
@@ -270,7 +270,7 @@ public sealed partial class SettingsStagePreview
         }
     }
 
-    /// <summary>A theme's colours for the miniature, each a frozen brush made once a drawing.</summary>
+    /// <summary>Theme colours for the miniature as frozen brushes, built once per draw.</summary>
     private sealed class WorkspaceLook
     {
         public WorkspaceLook(IReadOnlyDictionary<string, Color> tokens)

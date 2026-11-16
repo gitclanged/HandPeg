@@ -1,15 +1,12 @@
-// HandPeg compositor: the Export Quality Preview's compare pass (Pass 5.4B, ExportLoopbackPreview).
+// Export Quality Preview compare pass (ExportLoopbackPreview).
 //
-// The frame as the export's encoder leaves it, against the frame as it was drawn, both as NV12 (the source's own 4:2:0 conversion,
-// PSRgbToNv12, so an untouched frame compares to exactly nothing): t0 the source's Y (R8), t1 its UV (R8G8), t3 the decoded Y and t4
-// its UV (one NV12 texture's two views, or two plain textures). Drawn over the whole output (VSFull) and placed by the letterbox:
-// outside the picture the player is black.
+// Compares the encoder's decoded output with the drawn frame, both NV12 (PSRgbToNv12, so an untouched frame diffs to zero):
+// t0 source Y (R8), t1 source UV (R8G8), t3/t4 decoded Y/UV (two views of one NV12 texture, or two textures). Full-output pass
+// (VSFull) placed by the letterbox; black outside the picture.
 //
-// Params:  x what is shown (0 the encoded picture, 1 a split wipe, 2 the difference), y the wipe's place (0..1 of the picture's width),
-//          z how much the difference is magnified, w half the divider's width in output pixels; negative (5.4C, the loupe's view over
-//          the compare: the encoded picture or the difference, never the wipe) the planes are point sampled, so each encoded pixel,
-//          and each 2 x 2 of its chroma, shows as the square it is.
-// Params2: the picture's rectangle on the output, in pixels (left, top, width, height).
+// Params:  x mode (0 encoded, 1 split wipe, 2 difference), y wipe position (0..1 of picture width), z difference gain,
+//          w half divider width in output px; w < 0 point-samples the planes (loupe view: encoded or difference, never the wipe).
+// Params2: picture rectangle on the output in px (left, top, width, height).
 // YuvRow0-2: BT.709 limited range to RGB (SceneRenderer.SetYuv).
 
 #include "Common.hlsli"
@@ -37,14 +34,14 @@ float4 PSLoopbackCompare(VsOut i) : SV_Target
         encoded = float3(LumaPlane.SampleLevel(LinearClamp, uv, 0), ChromaPlane.SampleLevel(LinearClamp, uv, 0));
     }
 
-    // The difference x the gain: luma in grey, the blue and red chroma's errors added to their own colours (0 is black).
+    // Difference x gain: luma error as grey, Cb/Cr errors added to blue/red (0 is black).
     if (Params.x > 1.5)
     {
         float3 d = abs(source - encoded) * Params.z;
         return float4(saturate(float3(d.x + d.z, d.x, d.x + d.y)), 1);
     }
 
-    // The split wipe: the source left of the line, the encoded picture right of it, and a light divider between.
+    // Split wipe: source left of the divider, encoded right, light divider line.
     if (Params.x > 0.5)
     {
         float divider = Params2.x + Params.y * Params2.z;

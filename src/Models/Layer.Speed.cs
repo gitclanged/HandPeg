@@ -2,9 +2,9 @@ using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace HandPegApp.Models;
 
-// ----- 5.6.0 (lane C): the Speed & Time card's per-clip options -----
-// A clip's own (its look: not ClipFields, so a change is written into its State with the rest of its look), saved in LayerState only
-// when not the default (Layer.Serialization.cs), and kept over a track's look by TimelineLowering.Merged.
+// ----- Speed & Time card per-clip options -----
+// Look properties (not ClipFields), flushed into State with the look, serialized only when non-default (Layer.Serialization.cs), and
+// preserved over track looks by TimelineLowering.Merged.
 public sealed partial class Layer
 {
     /// <summary>Smooth Slow-Mo: slower than 1x, the picture is drawn as optical-flow in-betweens instead of repeated frames.</summary>

@@ -5,22 +5,17 @@ using System.Windows.Media;
 namespace HandPegApp;
 
 /// <summary>
-/// The face of a button, drawn as one element (Pass 4.1C): its fill, a 1 px outline and the bevel (a light top and left
-/// edge just inside the outline), all with the theme's corner rounding, and its content inside the padding. It stands
-/// for the Grid of three Borders the button templates had: on a window of a few hundred buttons that was a few hundred
-/// elements more to make, measure and draw before the first frame (about 7 ms, measured), for lines a drawing makes
-/// with no elements at all.
+/// Single-element button face: fill, 1 px outline and bevel (light top/left edge just inside the outline) with theme corner
+/// rounding, plus padded content. Replaces the templates' Grid of three Borders, which added hundreds of elements to measure and
+/// render before Frame 1 on a window of a few hundred buttons (~7 ms measured); these lines are drawn with no extra elements.
 ///
-/// The outline and the bevel are drawn over the fill and take no room, so a button is as large as its padding and its
-/// content (<see cref="OutlineTakesRoom"/> gives the outline its pixel, as the toggle buttons' Border always did). A
-/// BorderThickness of 0 draws neither. Lines fall on whole device pixels.
+/// Outline and bevel render over the fill and take no layout space, so size = padding + content (<see cref="OutlineTakesRoom"/>
+/// reserves the outline pixel, as toggle buttons' Border did). BorderThickness 0 draws neither. Lines snap to device pixels.
 ///
-/// Since Pass 4.1C.2 the outline may be lit from the top left (<see cref="LowerBorderBrush"/>): BorderBrush along the top
-/// and left, the lower brush along the bottom and right, the classic raised control (light over dark) or sunken well
-/// (dark over light), split exactly at the top-right and bottom-left corners whatever the shape. A brush cannot do that
-/// (a gradient's split runs from corner to corner, along a thin bar's bottom edge for many pixels), so the lines are
-/// drawn here; and that is why the text boxes, combo boxes, check boxes, lists, cards and wells are faced by this element
-/// too, in place of the one Border each had.
+/// The outline can be lit from the top left (<see cref="LowerBorderBrush"/>): BorderBrush on top/left, the lower brush on
+/// bottom/right, for raised (light over dark) or sunken (dark over light) looks, split exactly at the top-right and bottom-left
+/// corners for any shape. A gradient brush cannot (its split runs corner to corner, along a thin bar's bottom edge for many pixels),
+/// so the lines are drawn here; text boxes, combo boxes, check boxes, lists, cards and wells use this element instead of a Border.
 /// </summary>
 public sealed class ButtonChrome : Decorator
 {
@@ -36,7 +31,7 @@ public sealed class ButtonChrome : Decorator
     public static readonly DependencyProperty BorderBrushProperty = DependencyProperty.Register(
         nameof(BorderBrush), typeof(Brush), typeof(ButtonChrome), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
-    /// <summary>The outline's colour.</summary>
+    /// <summary>Outline colour (top and left only when <see cref="LowerBorderBrush"/> is set).</summary>
     public Brush? BorderBrush
     {
         get => (Brush?)GetValue(BorderBrushProperty);
@@ -47,7 +42,7 @@ public sealed class ButtonChrome : Decorator
         nameof(BorderThickness), typeof(Thickness), typeof(ButtonChrome),
         new FrameworkPropertyMetadata(new Thickness(1), FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsRender));
 
-    /// <summary>Any thickness above 0 draws the outline (1 px) and the bevel; 0 draws neither.</summary>
+    /// <summary>Any side above 0 draws the 1 px outline and the bevel; all zero draws neither.</summary>
     public Thickness BorderThickness
     {
         get => (Thickness)GetValue(BorderThicknessProperty);
@@ -57,7 +52,7 @@ public sealed class ButtonChrome : Decorator
     public static readonly DependencyProperty BevelBrushProperty = DependencyProperty.Register(
         nameof(BevelBrush), typeof(Brush), typeof(ButtonChrome), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
-    /// <summary>The bevel's colour: transparent (or null) for a flat button.</summary>
+    /// <summary>Bevel colour; transparent or null for a flat button.</summary>
     public Brush? BevelBrush
     {
         get => (Brush?)GetValue(BevelBrushProperty);
@@ -68,8 +63,8 @@ public sealed class ButtonChrome : Decorator
         nameof(LowerBorderBrush), typeof(Brush), typeof(ButtonChrome), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
     /// <summary>
-    /// The outline's bottom and right sides, for an edge lit from the top left (the theme's ...LowerBrush tokens); null,
-    /// as in the flat themes, for an outline of one colour. Triggers that colour the outline (hover, focus, chosen) clear it.
+    /// Bottom/right outline brush for top-left lighting (theme ...LowerBrush tokens); null for a single-colour outline (flat
+    /// themes). Triggers that recolour the outline (hover, focus, selected) clear it.
     /// </summary>
     public Brush? LowerBorderBrush
     {
@@ -80,7 +75,7 @@ public sealed class ButtonChrome : Decorator
     public static readonly DependencyProperty CornerRadiusProperty = DependencyProperty.Register(
         nameof(CornerRadius), typeof(CornerRadius), typeof(ButtonChrome), new FrameworkPropertyMetadata(new CornerRadius(), FrameworkPropertyMetadataOptions.AffectsRender));
 
-    /// <summary>The corners' rounding (its top left is used for all four, as the themes round them alike).</summary>
+    /// <summary>Corner rounding; only TopLeft is used, for all four corners (themes round them uniformly).</summary>
     public CornerRadius CornerRadius
     {
         get => (CornerRadius)GetValue(CornerRadiusProperty);
@@ -99,7 +94,7 @@ public sealed class ButtonChrome : Decorator
     public static readonly DependencyProperty OutlineTakesRoomProperty = DependencyProperty.Register(
         nameof(OutlineTakesRoom), typeof(bool), typeof(ButtonChrome), new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsMeasure));
 
-    /// <summary>Whether the outline adds its pixel on each side to the size (a toggle button), or is drawn over the fill (a button).</summary>
+    /// <summary>True to reserve the outline pixel on each side in layout (toggle buttons); false to draw it over the fill (buttons).</summary>
     public bool OutlineTakesRoom
     {
         get => (bool)GetValue(OutlineTakesRoomProperty);
@@ -110,9 +105,8 @@ public sealed class ButtonChrome : Decorator
         nameof(DottedOutlineBrush), typeof(Brush), typeof(ButtonChrome), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
     /// <summary>
-    /// The classic 1 px dotted rectangle inside the face (4.2B-3), one pixel on and one off, square-cornered, drawn over the
-    /// content: the theme's DottedFocusBrush, set by triggers on what is focused, checked or chosen (Reno, Reno Dark;
-    /// transparent, so not drawn, in the flat themes). Drawn whether or not there is an outline.
+    /// Classic 1 px dotted focus rectangle (1 on, 1 off, square corners) drawn over the content. Triggers set it to the theme's
+    /// DottedFocusBrush when focused, checked or selected (Reno themes; transparent in flat themes). Drawn regardless of outline.
     /// </summary>
     public Brush? DottedOutlineBrush
     {
@@ -123,7 +117,7 @@ public sealed class ButtonChrome : Decorator
     public static readonly DependencyProperty DottedInsetProperty = DependencyProperty.Register(
         nameof(DottedInset), typeof(double), typeof(ButtonChrome), new FrameworkPropertyMetadata(3.0, FrameworkPropertyMetadataOptions.AffectsRender));
 
-    /// <summary>How far inside the edge the dotted rectangle runs, in device pixels (3: just inside a button's outline).</summary>
+    /// <summary>Dotted rectangle inset from the edge in device pixels (default 3, just inside a button outline).</summary>
     public double DottedInset
     {
         get => (double)GetValue(DottedInsetProperty);
@@ -132,7 +126,7 @@ public sealed class ButtonChrome : Decorator
 
     private bool HasOutline => BorderThickness is { Left: > 0 } or { Top: > 0 } or { Right: > 0 } or { Bottom: > 0 };
 
-    // The room around the content: the padding, and the outline's pixel when it takes room.
+    // Content inset: padding plus the outline pixel when OutlineTakesRoom.
     private Thickness Inset()
     {
         var (padding, edge) = (Padding, OutlineTakesRoom && HasOutline ? 1.0 : 0.0);
@@ -158,11 +152,11 @@ public sealed class ButtonChrome : Decorator
         return arrangeSize;
     }
 
-    // Pens kept while their brush stays the same (the theme's brushes are frozen, so the same brush is the same colour).
+    // Cached pens, reused while the brush reference is unchanged (theme brushes are frozen, so same reference = same colour).
     private Pen? _outlinePen, _bevelPen, _lowerPen, _dottedPen;
 
-    // The outline's pens end square (half a pixel past their ends), so each half of a lit outline covers its corner
-    // pixels whole; a closed outline has no ends, so it is unchanged by that.
+    // Outline pens use square caps (extending half a pixel) so each half of a lit outline fully covers its corner pixels;
+    // closed outlines have no ends and are unaffected.
     private static Pen PenFor(ref Pen? kept, Brush brush, bool squareEnds = false)
     {
         if (kept is null || !ReferenceEquals(kept.Brush, brush))
@@ -190,7 +184,7 @@ public sealed class ButtonChrome : Decorator
         if ((!HasOutline && dotted is null) || width < 2 || height < 2)
             return;
 
-        // Lines on the middle of whole device pixels: a 1 px line at x.5 covers exactly one pixel column.
+        // Centre lines on device pixels: a 1 px line at x.5 covers exactly one pixel column.
         var scale = VisualTreeHelper.GetDpi(this);
         var half = 0.5 / scale.DpiScaleX;
         var guidelines = new GuidelineSet([0, width], [0, height]);
@@ -202,7 +196,7 @@ public sealed class ButtonChrome : Decorator
 
         if (dotted is not null)
         {
-            // Square-cornered and on whole pixels: a zero-length dash with square caps is one pixel, its gap another.
+            // Pixel-aligned and square-cornered: a zero-length dash with square caps is one pixel on, one off.
             var inset = DottedInset / scale.DpiScaleX + half;
             var box = new Rect(inset, inset, width - 2 * inset, height - 2 * inset);
             if (box.Width >= 4 / scale.DpiScaleX && box.Height >= 4 / scale.DpiScaleX)
@@ -220,12 +214,12 @@ public sealed class ButtonChrome : Decorator
         drawing.Pop();
     }
 
-    // The bevel just inside the outline, then the outline itself (lit from the top left when the lower brush differs).
+    // Draws the bevel inside the outline, then the outline (two-tone when LowerBorderBrush differs).
     private void DrawOutline(DrawingContext drawing, double width, double height, double radius, DpiScale scale, double half)
     {
         if (BevelBrush is SolidColorBrush { Color.A: > 0 } bevel)
         {
-            // The top and left edges just inside the outline, turning round the top-left corner as the outline does.
+            // Left and top edges one pixel inside the outline, following its top-left corner arc.
             var (inner, r) = (1 / scale.DpiScaleX + half, Math.Max(0, radius - 1));
             var edge = new StreamGeometry();
             using (var context = edge.Open())
@@ -255,13 +249,12 @@ public sealed class ButtonChrome : Decorator
         ReferenceEquals(a, b) || (a is SolidColorBrush first && b is SolidColorBrush second && first.Color == second.Color);
 
     /// <summary>
-    /// The outline in two halves along its centre line: the upper pen up the left side and along the top, the lower pen
-    /// down the right side and along the bottom, meeting halfway round the top-right and bottom-left corners (at the
-    /// corner pixels themselves when square, where the lower half, drawn last, has them, as classic bevels did).
+    /// Draws the outline in two halves: upper pen on left and top, lower pen on right and bottom, meeting at the midpoints of the
+    /// top-right and bottom-left corner arcs. With square corners the lower half, drawn last, owns those corner pixels (classic bevel).
     /// </summary>
     private static void DrawLitOutline(DrawingContext drawing, Rect line, double r, Pen upper, Pen lower)
     {
-        // Halfway round a corner's arc: 45 degrees from either of its ends.
+        // Arc midpoint: 45 degrees from either end.
         var diagonal = r * (1 - Math.Sqrt(0.5));
         var topRight = new Point(line.Right - diagonal, line.Top + diagonal);
         var bottomLeft = new Point(line.Left + diagonal, line.Bottom - diagonal);

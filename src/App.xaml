@@ -9,8 +9,8 @@
              StartupUri="MainWindow.xaml">
     <Application.Resources>
         <!--
-            What a drop area shows: a video file (a page with its corner folded and a play triangle on it) and a link
-            (two loops of a chain over its lower right): files or links. Drawn with a stroke, as the drop targets' icons are.
+            Drop-area icon for files or links: a dog-eared page with a play triangle, and two chain links over its
+            lower right. Stroked, like the other drop-target icons.
         -->
         <GeometryGroup x:Key="DropFileOrLinkIcon" FillRule="Nonzero">
             <PathGeometry Figures="M 36,33 L 36,12 L 27,3 L 8,3 L 8,44 L 29,44 M 27,3 L 27,12 L 36,12" />
@@ -27,15 +27,15 @@
             </RectangleGeometry>
         </GeometryGroup>
 
-        <!-- The Layout button: a window of panes (a large one, two beside it, a band under them), drawn with a stroke as the header's other drawn icon is. -->
+        <!-- Layout button icon: a pane grid (one large, two stacked beside it, a band below), stroked like the header's other vector icon. -->
         <GeometryGroup x:Key="LayoutIcon" FillRule="Nonzero">
             <RectangleGeometry Rect="2,3 20,18" RadiusX="2.5" RadiusY="2.5" />
             <PathGeometry Figures="M 2,14.5 L 22,14.5 M 14.5,3 L 14.5,14.5 M 14.5,8.75 L 22,8.75" />
         </GeometryGroup>
 
         <!--
-            The palette. These are the dark colours; ThemeManager replaces the brushes at startup and whenever
-            the theme or the Windows accent changes, which is why everything refers to them dynamically.
+            Palette (dark defaults). ThemeManager replaces these brushes at start-up and on theme or Windows accent
+            changes, so all consumers use DynamicResource.
         -->
         <SolidColorBrush x:Key="InsetBrush" po:Freeze="True" Color="#181818" />
         <SolidColorBrush x:Key="OnAccentBrush" po:Freeze="True" Color="#FFFFFF" />
@@ -53,18 +53,18 @@
         <SolidColorBrush x:Key="WarningTextBrush" po:Freeze="True" Color="#E0A040" />
 
         <!--
-            The theme's look (Pass 4.1C, ThemeManager.LookDefaults and each palette): button faces, their outline and the
-            light top-left edge that embosses them (transparent: flat), hover and chosen fills and edges, the line that
-            traces the active tab, the cards' surface, and the rounding of controls, cards and boxed tabs. One set of
-            templates reads them all; these are the dark defaults until the theme is applied. Since Pass 4.1C.2 also: the
-            tabs not shown, the lists' wells, the sunken edge of wells and viewports, the raised edge of combo boxes and
-            cards, and the thickness of that sunken edge on wells that have no border in a flat theme (0 there: nothing
-            drawn, nothing moved). A theme may light an edge from the top left (ThemeManager.EdgeTokens): the token is then
-            its top and left, and the same name with LowerBrush its bottom and right (null here: one colour all round),
-            drawn as lines by the one element that faces the control (ButtonChrome, the time bars).
+            Theme look tokens (ThemeManager.LookDefaults and each palette): button faces, outlines and the top-left bevel
+            (transparent = flat), hover and selected fills and edges, the active-tab trace, card surfaces, and corner radii
+            for controls, cards and boxed tabs. One template set reads them all; these are dark defaults until a theme is
+            applied. Also: inactive tab fill, list wells, sunken edges of wells and viewports, raised edges of combo boxes
+            and cards, and the sunken-edge thickness for wells that are borderless in flat themes (0: nothing drawn, no
+            layout shift). A theme may light an edge from the top left (ThemeManager.EdgeTokens): the token is then the
+            top/left colour and its ...LowerBrush twin the bottom/right (null here: single colour), drawn as lines by the
+            single face element
+            (ButtonChrome, the time bars).
         -->
         <SolidColorBrush x:Key="CardBrush" po:Freeze="True" Color="#2D2D2D" />
-        <!-- The inspector cards (5.4B, CLAUDE.md 10.3: the Export tab's three columns): a dark surface with a hairline edge. -->
+        <!-- Inspector cards (e.g. the Export tab's three columns): dark surface with a hairline border. -->
         <SolidColorBrush x:Key="InspectorCardBrush" po:Freeze="True" Color="#1E1E22" />
         <SolidColorBrush x:Key="InspectorCardBorderBrush" po:Freeze="True" Color="#2A2A30" />
         <SolidColorBrush x:Key="ButtonFaceBrush" po:Freeze="True" Color="#0078D7" />
@@ -85,9 +85,9 @@
         <SolidColorBrush x:Key="TabEdgeBrush" po:Freeze="True" Color="Transparent" />
         <SolidColorBrush x:Key="ActiveTabEdgeBrush" po:Freeze="True" Color="Transparent" />
         <SolidColorBrush x:Key="TitleBarBrush" po:Freeze="True" Color="#1E1E1E" />
-        <!-- 5.3-Stage2: the 1 px line between two panes (the dock's borders), where a 10 px band of the window showed before. -->
+        <!-- 1 px seam between adjacent dock panes (replaces the former 10 px window-background band). -->
         <SolidColorBrush x:Key="PaneSeamBrush" po:Freeze="True" Color="#222228" />
-        <!-- After 5.3.0: the Sequence Overview Scrubber's pane, a little darker than the panes and the window (ThemeManager.LookDefaults). -->
+        <!-- Sequence Overview Scrubber pane background, slightly darker than panes and window (ThemeManager.LookDefaults). -->
         <SolidColorBrush x:Key="ScrubberBrush" po:Freeze="True" Color="#161616" />
         <SolidColorBrush x:Key="KeyAccentBrush" po:Freeze="True" Color="Gold" />
         <SolidColorBrush x:Key="WellBrush" po:Freeze="True" Color="#2D2D2D" />
@@ -96,9 +96,9 @@
         <SolidColorBrush x:Key="SelectedRowBrush" po:Freeze="True" Color="#005A9E" />
         <SolidColorBrush x:Key="SelectedRowBorderBrush" po:Freeze="True" Color="#0078D7" />
         <!--
-            4.2B-3: a ticked check box's fill, edge and mark (the accent filled with white in the flat themes; Reno and Reno Dark
-            keep the sunken well and draw a dark or a light-blue mark in it), and the classic 1 px dotted rectangle drawn inside
-            what is focused, checked or chosen (ButtonChrome.DottedOutlineBrush; transparent, so never drawn, in the flat themes).
+            Checked check box fill, edge and mark (accent with a white mark in flat themes; Reno themes keep the sunken well
+            with a dark or light-blue mark), and the classic 1 px dotted rectangle inside focused, checked or selected
+            controls (ButtonChrome.DottedOutlineBrush; transparent, never drawn, in flat themes).
         -->
         <SolidColorBrush x:Key="CheckedBoxBrush" po:Freeze="True" Color="#0078D7" />
         <SolidColorBrush x:Key="CheckedBoxBorderBrush" po:Freeze="True" Color="#0078D7" />
@@ -118,11 +118,11 @@
         <CornerRadius x:Key="TabCornerRadius">6,6,0,0</CornerRadius>
 
         <!--
-            The keyboard focus rectangle of buttons, toggle buttons and check boxes (4.2B-3): WPF's own dotted rectangle, in the
-            theme's text colour. ThemeFocusVisual is what the styles read: this one in the flat themes, and NoFocusVisual (draws
-            nothing) in Reno and Reno Dark (ThemeManager.Apply), whose dotted rectangle is drawn by the control's own face instead.
-            Not null: a resource set to null counts as missing to DynamicResource, and the control then falls back on WPF's
-            default black dashed rectangle, a second ring around the whole control (Pass 4.2C).
+            Keyboard focus visual for buttons, toggle buttons and check boxes: WPF's dotted rectangle in the theme text colour.
+            Styles read ThemeFocusVisual: StandardFocusVisual in flat themes, NoFocusVisual (empty) in Reno themes
+            (ThemeManager.Apply), where the control face draws the dotted rectangle instead.
+            Never null: DynamicResource treats a null resource as missing and falls back to WPF's default black dashed
+            rectangle, adding a second ring around the control.
         -->
         <Style x:Key="NoFocusVisual">
             <Setter Property="Control.Template">
@@ -143,9 +143,9 @@
         <StaticResource x:Key="ThemeFocusVisual" ResourceKey="StandardFocusVisual" />
 
         <!--
-            A flyout's or a menu's surface (4.2B-3): the panel colour, raised by the theme's lit edge (RaisedBorderBrush over
-            RaisedBorderLowerBrush) with the cards' rounding, drawn by one element as a button's face is. Every header flyout,
-            the Views menu, the Add Effect and Add Layer flyouts and the right-click menus wear it.
+            Flyout and menu surface: panel colour with the theme's raised edge (RaisedBorderBrush over RaisedBorderLowerBrush)
+            and card rounding, drawn by a single ButtonChrome. Used by header flyouts, the Views menu, the Add Effect and Add
+            Track flyouts, and context menus.
         -->
         <Style x:Key="FlyoutChrome" TargetType="local:ButtonChrome">
             <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
@@ -158,9 +158,9 @@
         </Style>
 
         <!--
-            A button: the theme's face in a 1 px outline, with its bevel (a light top and left edge) just inside, drawn by
-            one element (ButtonChrome). The outline and the bevel are drawn over the face, so they take no room: a button
-            is as large as it always was. A button with BorderThickness 0 (a row of a flyout's menu) has neither.
+            Button: theme face with a 1 px outline and an inner top-left bevel, drawn by one ButtonChrome. Outline and bevel
+            render over the face and take no layout space.
+            BorderThickness 0 (flyout menu rows) draws neither.
         -->
         <Style TargetType="Button">
             <Setter Property="Foreground" Value="{DynamicResource ButtonTextBrush}" />
@@ -206,16 +206,16 @@
         </Style>
 
         <!--
-            The height of the title bar of a window that draws its own (5.3-Stage2: 26, from 32): the main window's and the Settings
-            screen's alike, which lies exactly over it (CoverWindow), so the bar never jumps as Settings opens. Their WindowChrome's
-            CaptionHeight, their title bars, their progress fills and the caption buttons below all take it.
+            Custom title bar height (26 DIP) shared by the main window and the Settings screen, which overlays it exactly
+            (CoverWindow) so the bar never jumps when Settings opens. Used by WindowChrome.CaptionHeight, both title bars,
+            their progress fills and the caption buttons below.
         -->
         <sys:Double x:Key="CaptionBarHeight">26</sys:Double>
 
         <!--
-            The caption buttons of a window that draws its own title bar (Minimize, Maximize / Restore): Windows' own glyphs,
-            46 wide and as tall as the bar, lit on hover. Here since 4.4, for the main window's title bar and the Settings screen's
-            alike: one template.
+            Caption buttons for custom title bars (Minimize, Maximize / Restore): Windows glyphs, 46 DIP wide, full bar
+            height, highlighted on hover. One shared template for the main window and the Settings screen.
+            Close uses its own red-hover variant below.
         -->
         <Style x:Key="CaptionButton" TargetType="Button">
             <Setter Property="Width" Value="46" />
@@ -249,7 +249,7 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <!-- Close: red under the pointer, as Windows' own. -->
+        <!-- Close caption button: red hover and pressed states, matching Windows. -->
         <Style x:Key="CaptionCloseButton" TargetType="Button" BasedOn="{StaticResource CaptionButton}">
             <Setter Property="Template">
                 <Setter.Value>
@@ -272,7 +272,7 @@
             </Setter>
         </Style>
 
-        <!-- A button that stays down: the chosen fill while on, the neutral embossed face while off; dotted inside while focused (Reno). -->
+        <!-- Toggle button: selected fill when checked, neutral bevelled face when unchecked; inner dotted focus rectangle (Reno). -->
         <Style TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="Padding" Value="14,6" />
@@ -318,24 +318,24 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CaretBrush" Value="{DynamicResource TextBrush}" />
             <Setter Property="SelectionBrush" Value="{DynamicResource AccentBrush}" />
-            <!-- Applied once, by the text view itself (4.2D): the template gives PART_ContentHost no margin of its own. -->
+            <!-- Applied once by the internal text view; the template gives PART_ContentHost no margin of its own. -->
             <Setter Property="Padding" Value="6,5" />
             <!--
-                One line of text sits in the middle of its box (4.2B-3), so the caret, the typed text and a hint laid over the box
-                (the search boxes) share one centre line in a box taller than its text; a box of several lines starts at the top.
+                Single-line text is vertically centred so the caret, text and any overlaid hint (search boxes) share one centre
+                line in a box taller than its text; multi-line boxes set Top.
             -->
             <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TextBox">
-                        <!-- A sunken field: its edge the theme's well edge (WellBorderBrush over WellBorderLowerBrush). -->
+                        <!-- Sunken field using the theme's well edge (WellBorderBrush over WellBorderLowerBrush). -->
                         <local:ButtonChrome x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
                                             LowerBorderBrush="{DynamicResource WellBorderLowerBrush}" OutlineTakesRoom="True"
                                             BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{DynamicResource ControlCornerRadius}" SnapsToDevicePixels="True">
                             <!--
-                                Centred unless the box says otherwise (VerticalContentAlignment: Center by default, Top for several lines).
-                                No Margin or Padding here: the TextBox's text view insets the text by Padding already, so a margin bound to
-                                it counted it twice (4.2C finding 3).
+                                Follows VerticalContentAlignment (Center by default, Top for multi-line boxes).
+                                No Margin or Padding here: the TextBox text view already insets by Padding, so binding a margin to it
+                                would apply the inset twice.
                             -->
                             <ScrollViewer x:Name="PART_ContentHost" Focusable="False" Margin="0" Padding="0" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
                                           HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" />
@@ -442,9 +442,9 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="CheckBox">
                         <!--
-                            The box is a sunken well (WellBrush in the theme's well edge). Ticked, the flat themes fill it with the
-                            accent and a white mark; Reno and Reno Dark keep the well and draw a crisp mark in it (CheckedBoxBrush,
-                            CheckedBoxBorderBrush, CheckMarkBrush, 4.2B-3). Focused, the label is ringed by the dotted rectangle.
+                            Box is a sunken well (WellBrush with the theme's well edge). When checked, flat themes fill it with the
+                            accent and a white mark; Reno themes keep the well with a crisp mark (CheckedBoxBrush,
+                            CheckedBoxBorderBrush, CheckMarkBrush). When focused, the label gets the dotted rectangle.
                         -->
                         <StackPanel Orientation="Horizontal" Background="Transparent">
                             <local:ButtonChrome x:Name="box" Width="18" Height="18" VerticalAlignment="Center" CornerRadius="{DynamicResource ControlCornerRadius}"
@@ -506,8 +506,8 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
-                        <!-- The tab shown is traced along its top edge (2 px, ActiveTabTraceBrush); the others keep the room for it.
-                             Outlined where the theme gives tab edges (TabEdgeThickness, 4.1.1: Reno, Reno Dark). -->
+                        <!-- Selected tab gets a 2 px top trace (ActiveTabTraceBrush); others reserve the space for it.
+                             Outlined when the theme defines tab edges (TabEdgeThickness: Reno themes). -->
                         <Border x:Name="edge" BorderBrush="{DynamicResource TabEdgeBrush}" BorderThickness="{DynamicResource TabEdgeThickness}"
                                 CornerRadius="{DynamicResource TabCornerRadius}" Margin="0,0,2,0">
                             <Border x:Name="border" Background="{DynamicResource InactiveTabBrush}" CornerRadius="{DynamicResource TabCornerRadius}" BorderThickness="0,2,0,0"
@@ -541,9 +541,9 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBoxItem">
                         <!--
-                            A 1 px edge kept for the chosen row's trace (SelectedBorderBrush), so choosing a row never moves it; the
-                            chosen row (a track, a tile) of the list with the focus is also ringed by the theme's dotted rectangle just
-                            inside it (4.2B-3, Reno).
+                            Reserved 1 px edge for the selected-row trace (SelectedRowBorderBrush) so selection never shifts layout; in
+                            the focused list the selected row (a track, a tile) also gets the theme's inner dotted rectangle
+                            (Reno themes).
                         -->
                         <local:ButtonChrome x:Name="border" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" OutlineTakesRoom="True"
                                             CornerRadius="{DynamicResource ControlCornerRadius}" DottedInset="2" Padding="7,2" SnapsToDevicePixels="True">
@@ -558,7 +558,7 @@
                                 <Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource SelectedRowBorderBrush}" />
                                 <Setter Property="Foreground" Value="{DynamicResource SelectedTextBrush}" />
                             </Trigger>
-                            <!-- Ringed only while its list has the focus: the dotted rectangle is on one thing at a time, the last one clicked. -->
+                            <!-- Dotted ring only while the list is selection-active, so only the last-clicked control shows one. -->
                             <MultiTrigger>
                                 <MultiTrigger.Conditions>
                                     <Condition Property="IsSelected" Value="True" />
@@ -577,11 +577,11 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ListBox">
-                        <!-- A well: the theme's list colour, sunk by its edge where the theme lights one (WellBorderBrush over WellBorderLowerBrush). -->
+                        <!-- List well: theme list colour, sunken edge where the theme lights one (WellBorderBrush over WellBorderLowerBrush). -->
                         <local:ButtonChrome Background="{DynamicResource WellBrush}" BorderBrush="{DynamicResource WellBorderBrush}"
                                             LowerBorderBrush="{DynamicResource WellBorderLowerBrush}" OutlineTakesRoom="True"
                                             BorderThickness="1" CornerRadius="{DynamicResource ControlCornerRadius}" Padding="2">
-                            <!-- Scrolling by item rather than by pixel is what allows the list to create only the rows in view. -->
+                            <!-- Item-based scrolling (CanContentScroll) enables UI virtualization of off-screen rows. -->
                             <ScrollViewer Focusable="False" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                                           CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}">
                                 <ItemsPresenter />
@@ -607,11 +607,11 @@
         </Style>
 
         <!--
-            A splitter that stays out of sight until the pointer is on it. The splitter is its grip, a transparent area wide
-            enough to grab; the visible line is what its Padding leaves of it (5.3-Stage2: the dock's borders give a 7 px grip
-            laid out in 1 px and the Padding that puts the 1 px line on the seam, DockManager.SeamGrip, so beside the floating
-            player the grip lies wholly in the other part). Since 5.4D the dock's borders are Thumbs of their own (DockManager.SeamThumb,
-            with the cascade), and their look follows this one.
+            Hover-revealed splitter. The control is a transparent grab area; the visible line is what its Padding leaves
+            (the dock gives a 7 px grip in a 1 px layout slot, with Padding placing the 1 px line on the seam via
+            DockManager.SeamGrip, so beside the floating player the grip lies entirely in the other part).
+            Dock seams are now dedicated Thumbs (DockManager.SeamThumb, with cascade)
+            whose look follows this style.
         -->
         <Style x:Key="QuietSplitter" TargetType="GridSplitter">
             <Setter Property="Background" Value="Transparent" />
@@ -637,7 +637,7 @@
             </Setter>
         </Style>
 
-        <!-- Rounded container used for the main sections of the window. -->
+        <!-- Radio buttons: theme text colour, vertically centred, with trailing spacing. -->
         <Style TargetType="RadioButton">
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="VerticalAlignment" Value="Center" />
@@ -663,8 +663,8 @@
             </Setter>
         </Style>
 
-        <!-- The number box that sits beside a slider: type a value, or drag it sideways (see NumericInput). -->
-        <!-- Right-click menus, in the colours of the theme: the flyouts' raised surface (FlyoutChrome, 4.2B-3). -->
+        <!-- Context menus and menu items. -->
+        <!-- Context menu: theme colours on the raised flyout surface (FlyoutChrome). -->
         <Style TargetType="ContextMenu">
             <Setter Property="Background" Value="{DynamicResource PanelBrush}" />
             <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
@@ -685,9 +685,9 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="MenuItem">
                         <!--
-                            The words, with (4.2B-3) a drawn icon before them when the item has one (Icon: a Path, e.g. a transition's
-                            glyph), a tick in the left margin when the item is checked, and, for an item with items of its own, an
-                            arrow and the submenu beside it on the flyouts' raised surface.
+                            Header text with an optional leading vector icon (Icon: a Path, e.g. a transition glyph), a left-margin
+                            tick when checked, and for parent items an arrow plus the submenu on the raised flyout surface beside
+                            it.
                         -->
                         <Border x:Name="back" Background="Transparent" CornerRadius="{DynamicResource ControlCornerRadius}" Padding="14,6,22,6">
                             <Grid>
@@ -697,7 +697,7 @@
                                     <ContentPresenter x:Name="icon" DockPanel.Dock="Left" ContentSource="Icon" VerticalAlignment="Center" Margin="0,0,8,0" />
                                     <Path x:Name="arrow" DockPanel.Dock="Right" Data="M0,0 L3.5,3.5 L0,7" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.4"
                                           VerticalAlignment="Center" Margin="14,0,-12,0" Visibility="Collapsed" />
-                                    <!-- The item's key (5.3): KeybindManager.GestureText(id), set as InputGestureText, at the right, dimmer than the words. -->
+                                    <!-- Shortcut text (InputGestureText from KeybindManager.GestureText), right-aligned and dimmed. -->
                                     <TextBlock x:Name="gesture" DockPanel.Dock="Right" Text="{TemplateBinding InputGestureText}" Foreground="{TemplateBinding Foreground}"
                                                Opacity="0.65" VerticalAlignment="Center" Margin="24,0,0,0" />
                                     <ContentPresenter ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center" />
@@ -768,8 +768,8 @@
         </Style>
 
         <!--
-            Scrollbars, everywhere: a flat, rounded bar and nothing else. No arrow buttons; the track is empty and
-            pages when clicked. How thick they are is one number, set in Settings (Interface) and changed live.
+            Global scroll bars: flat rounded thumb only, no arrow buttons; clicking the empty track pages. Thickness is a
+            single resource, set in Settings (Interface) and applied live.
         -->
         <sys:Double x:Key="GlobalScrollBarThickness">10</sys:Double>
         <SolidColorBrush x:Key="ScrollThumbBrush" po:Freeze="True" Color="#7C8794" Opacity="0.55" />

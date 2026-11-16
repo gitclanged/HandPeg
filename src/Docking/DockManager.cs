@@ -9,15 +9,11 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp.Docking;
 
 /// <summary>
-/// Arranges the panes of the main window and of the side windows (5.4C: any number, each a Pane Docker or a Live Video Preview),
-/// as a tree of groups and splits (<see cref="DockNode"/>) for each window that holds panes, and lets them be rearranged by
-/// dragging their tabs: onto a part (into its group, as a tab) or to one side of it (a new part beside it), to a window's edge,
-/// or out of every window (into a new Pane Docker, opened where it is let go).
-///
-/// A pane's content is made once and kept; laying the windows out again (after a move, a pane shown or hidden, a mode
-/// change) takes every content out of where it was and puts it where the tree says. A hidden pane keeps its place in
-/// the tree and is simply not shown. A pane's tab is where its title was: in its <see cref="PaneTitleSlot"/>, over its
-/// top-left corner when the pointer comes there (a pane with no title), or in a row of tabs (the settings tabs).
+/// Docking layout for the main window and any number of side windows (Pane Docker or Live Video Preview): one tree of groups
+/// and splits (<see cref="DockNode"/>) per window. Tab drags dock into a group, beside a part, at a window edge, or into a
+/// new Pane Docker at the drop point.
+/// <para>Pane content is created once and re-parented on every layout pass; hidden panes keep their tree position. A pane's tab
+/// lives in its <see cref="PaneTitleSlot"/>, as a hover tab at its top-left (titleless panes), or in a tab row.</para>
 /// </summary>
 public sealed partial class DockManager
 {
@@ -36,8 +32,8 @@ public sealed partial class DockManager
     private bool _shuttingDown;
 
     /// <summary>
-    /// One side window (5.4C): what is saved of it, and its window and what its panes are laid out in once it is open (null
-    /// before the main window is shown: at launch the side windows open after the first frame).
+    /// A side window: its saved state plus its window and root once open (null before the main window shows; side windows open
+    /// after Frame 1).
     /// </summary>
     private sealed class SideHost(SideWindowState state)
     {
@@ -47,48 +43,45 @@ public sealed partial class DockManager
 
         public WindowRoot? Root { get; set; }
 
-        /// <summary>Opens under the pointer (a pane let go outside every window), rather than where it was.</summary>
+        /// <summary>Open at the pointer (pane dropped outside every window) instead of the saved position.</summary>
         public bool AtPointer { get; set; }
     }
 
-    // The side windows, in the order they were opened (their numbers in the menus: 1 the first).
+    // Side windows in opening order (menu ordinal 1 = first opened).
     private readonly List<SideHost> _sides = [];
 
-    // The side window whose tree is being laid out now (Render): its groups are known as its own.
+    // Side window currently being rendered (Render), so its groups are attributed to it.
     private SideHost? _renderingFor;
 
-    // A press on a tab, and the drag it may become.
+    // Tab press state and the drag it may start.
     private (string Pane, FrameworkElement Tab, Point At)? _press;
 
-    // A tab chosen from the keyboard: its strip is made again, and the new tab of that pane takes the focus.
+    // Keyboard-activated tab: refocused on the pane's new tab after the strip rebuilds.
     private string? _focusTabOf;
     private bool _dragging;
 
-    // Where a dragged pane goes if let go now: a group (or a window's edge), the side of it, and, among a row of tabs,
-    // the place there (counted among the tabs shown).
+    // Current drop target: group or window edge, side, and insertion index among visible tabs.
     private (SideHost? Side, DockNode? Group, DockZone Zone, bool Outside, int? At)? _target;
 
-    // The shape each pane that can change it was given at the last layout (see DockPane.Reshape).
+    // Shape assigned to each reshapeable pane at the last layout (DockPane.Reshape).
     private readonly Dictionary<string, PaneShape> _shapes = [];
 
-    // The pane joined to the row of tabs of the pane under it (the header): its bar there, and the group under it.
+    // The joining pane (header): its bar host in the tab row and the group below it.
     private (string Pane, FrameworkElement Bar, DockNode Under)? _joined;
 
-    // The group being laid out right under a pane that joins it (the header): it is given a row of boxed tabs for it.
+    // Group being rendered directly under the header; it gets a boxed tab row to host the header.
     private DockNode? _joinUnder;
 
-    // Room kept beside a joined pane and the name of the tab shown in the row it joined: the boxed tab's padding and
-    // margin, and the strip's "more" button. The group's least width grows by it.
+    // Extra width for a joined header's tab row (boxed tab padding/margin plus the overflow button); added to the group minimum.
     private const double JoinedTabRoom = 70;
 
-    // A pane that can change its shape and was laid out as a row stands as a column in a slot narrower than this.
+    // Slot width below which a reshapeable row pane switches to a column.
     private const double RowLeastWidth = 180;
 
-    // The slots of the panes laid out as a row that can change their shape, watched while they are there.
+    // Watched slots of reshapeable row panes.
     private readonly List<(FrameworkElement Slot, SizeChangedEventHandler Handler)> _shapeWatches = [];
 
-    // What each window's panes are laid out in (see WindowRoot), and the panes that float there (DockPane.Floats): each
-    // one's stand-in in the tree and the box on the layer holding its content.
+    // Per-window roots (WindowRoot) and floating panes (DockPane.Floats): each one's tree stand-in and overlay host.
     private readonly WindowRoot _mainRoot = new();
     private readonly Dictionary<string, (Border StandIn, Grid Box)> _floating = [];
 
@@ -102,43 +95,40 @@ public sealed partial class DockManager
     /// <summary>Raised when the arrangement has changed, to be saved.</summary>
     public event Action? Changed;
 
-    /// <summary>Raised when a side window has opened or closed, or changed its mode (5.4C): the Layout Selector's side-window rows and the mirrors follow.</summary>
+    /// <summary>Raised when a side window opens, closes or changes mode; drives the Layout Selector rows and mirrors.</summary>
     public event Action? SideChanged;
 
-    /// <summary>Raised when a side window's window has been made, before it is shown: for the main window to hand it keys and drops.</summary>
+    /// <summary>Raised after a side window is created, before it shows, so the main window can wire keys and drops.</summary>
     public event Action<SideWindow>? SideWindowOpened;
 
     /// <summary>Raised when a pane has been put on screen (made, the first time), by its name.</summary>
     public event Action<string>? PaneShown;
 
     /// <summary>
-    /// Panes that took the place of others, by the old name: a saved arrangement that still names the old one (and not
-    /// the new) has the new one put in its place, as it was there, instead of losing it and placing the new one apart.
+    /// Renamed panes, old id -> new id: a saved layout naming only the old id gets the new pane in its position.
     /// </summary>
     public IReadOnlyDictionary<string, string> Replaced { get; init; } = new Dictionary<string, string>();
 
-    /// <summary>Raised when a saved arrangement had a pane put in the place of an old one (see <see cref="Replaced"/>): old name, new name.</summary>
+    /// <summary>Raised when a load substitutes a renamed pane (<see cref="Replaced"/>): old id, new id.</summary>
     public event Action<string, string>? PaneReplaced;
 
     /// <summary>
-    /// Brings an arrangement made by an older HandPeg up to this one (DockLayoutState.Version), before anything else is done
-    /// to it: every arrangement taken up passes through it (the one saved, a built-in layout, one of the user's own, the
-    /// first run's choice). It leaves an arrangement that is up to date as it is, and is never a reason to save: the
-    /// arrangement is saved as it is the next time the user changes it (4.4: Load writes no settings before the first frame).
+    /// Migrates any loaded layout (saved, built-in, custom, first-run) to the current DockLayoutState.Version before use.
+    /// Idempotent and never triggers a save (Load writes no settings before Frame 1).
     /// </summary>
     public Func<DockLayoutState, DockLayoutState>? Upgrade { get; init; }
 
-    /// <summary>What a tab's menu's Reset Panes Layout does (5.4D: the window's own, the user's Default layout put back); null, <see cref="Reset"/>.</summary>
+    /// <summary>Handler for the tab menu's Reset Panes Layout (the window restores the Default layout); null falls back to <see cref="Reset"/>.</summary>
     public Action? ResetLayout { get; init; }
 
-    /// <summary>The side windows open now (5.4C), in the order they were opened; those whose window is not made yet are left out.</summary>
+    /// <summary>Open side windows in opening order, excluding those whose window is not yet created.</summary>
     public IReadOnlyList<SideWindow> SideWindows => _sides.Select(s => s.Window).OfType<SideWindow>().ToList();
 
     /// <summary>Whether any side window is open (or waits to open, at launch).</summary>
     public bool IsSideOpen => _sides.Count > 0;
 
     /// <summary>
-    /// The side windows open now, for the Layout Selector's rows (5.4C): each one's id, number (1 the first opened), mode and name
+    /// Layout Selector rows for open side windows: id, ordinal (1 = first opened), mode and display name
     /// ("Live Video Preview 2", "Pane Docker 1: Media, Effects").
     /// </summary>
     public IReadOnlyList<(string Id, int Number, SideWindowMode Mode, string Name)> SideWindowList =>
@@ -154,7 +144,7 @@ public sealed partial class DockManager
 
     private int NumberOf(SideHost side) => _sides.IndexOf(side) + 1;
 
-    /// <summary>The tree a pane is in, in the main window or a side window, with the side window holding it (null: the main window).</summary>
+    /// <summary>The tree containing a pane and its side window (null = main window).</summary>
     private (DockNode? Group, SideHost? Side) Find(string pane)
     {
         if (_state.Main.GroupOf(pane) is { } group)
@@ -182,8 +172,8 @@ public sealed partial class DockManager
             content = _panes[id].Content();
             _made[id] = content;
 
-            // Its data is always the window's, held by the pane itself: moved, it is out of every window for a moment,
-            // and anything it would have inherited would go, and a box bound to it would write its empty value back.
+            // Pin DataContext on the pane: while re-parented it is briefly outside every window, and an inherited context would
+            // drop, letting bound boxes write empty values back.
             if (content.ReadLocalValue(FrameworkElement.DataContextProperty) == DependencyProperty.UnsetValue)
                 content.SetBinding(FrameworkElement.DataContextProperty, new System.Windows.Data.Binding(nameof(FrameworkElement.DataContext)) { Source = _main });
         }
@@ -194,8 +184,8 @@ public sealed partial class DockManager
     public bool IsRealized(string id) => _made.ContainsKey(id);
 
     /// <summary>
-    /// What stands for a pane in the tree: its content, or, for a pane that floats (holds a native window), its stand-in,
-    /// with the content in a box on the window's layer, kept over the stand-in (see <see cref="WindowRoot"/>).
+    /// The tree element for a pane: its content, or for floating panes (native child window) a stand-in whose bounds the
+    /// overlay host tracks (<see cref="WindowRoot"/>).
     /// </summary>
     private FrameworkElement Placed(string id)
     {
@@ -214,13 +204,12 @@ public sealed partial class DockManager
         return floating.StandIn;
     }
 
-    /// <summary>What is taken out of a window with a pane: its content, or the box on the layer holding it (a floating pane's).</summary>
+    /// <summary>The element detached with a pane: its content, or its overlay host for floating panes.</summary>
     private IEnumerable<FrameworkElement> Movables() => _made.Select(m => _floating.TryGetValue(m.Key, out var floating) ? floating.Box : m.Value);
 
     /// <summary>
-    /// What a window's panes are laid out in: their tree, and over it a layer for the panes that float (hold a native
-    /// window: the player), each kept exactly over its stand-in in the tree and hidden while that cannot be seen. A
-    /// floating pane stays on its window's layer whatever the tree becomes, so laying the panes out again only moves it.
+    /// A window's dock root: the tree plus an overlay for floating panes (native windows such as the player), each kept over its
+    /// stand-in and hidden when that is not visible. Floating panes never leave the overlay, so relayout only moves them.
     /// </summary>
     private sealed class WindowRoot : Grid
     {
@@ -235,7 +224,7 @@ public sealed partial class DockManager
 
         public Canvas Layer { get; } = new();
 
-        // After each layout pass: every box where its stand-in is now. Set only when it moved, so the pass that brings is the last.
+        // After each layout pass, move hosts onto their stand-ins; only on change, so this cannot trigger another pass.
         private void Follow()
         {
             foreach (var box in Layer.Children.OfType<FrameworkElement>())
@@ -250,7 +239,7 @@ public sealed partial class DockManager
                     continue;
                 }
 
-                // On whole pixels of the screen, as the panes around it are laid out.
+                // Snap to device pixels like the surrounding panes.
                 var place = standIn.TransformToAncestor(this).TransformBounds(new Rect(standIn.RenderSize));
                 var dpi = VisualTreeHelper.GetDpi(this);
                 place = new Rect(Math.Round(place.X * dpi.DpiScaleX) / dpi.DpiScaleX, Math.Round(place.Y * dpi.DpiScaleY) / dpi.DpiScaleY,
@@ -272,14 +261,11 @@ public sealed partial class DockManager
     // ----- The arrangement as saved -----
 
     /// <summary>
-    /// Takes up a saved arrangement (null or unreadable: the mode's own), puts in what it lacks, and lays the windows out. With
-    /// <paramref name="showFirst"/> (5.4A: the Timeline at start-up), the group that holds that pane shows it, whatever tab was showing
-    /// as the arrangement was saved: in the same one build, with nothing raised and nothing saved (the arrangement is saved as it is the
-    /// next time the user changes it).
-    /// <para>5.4C: <paramref name="sideWindows"/> are the side windows saved with it (AppSettings.SideWindows); null (none saved yet, or
-    /// the arrangement taken up again after a preview) keeps the side windows as they are, and takes up the single side window of an
-    /// arrangement saved before 5.4C as the first Pane Docker. At launch the side windows open after the main window's first frame,
-    /// each laid out on its own: the main window's one build before its first frame is the only one it has.</para>
+    /// Loads a saved layout (the mode default if null/unreadable), adds missing panes and lays out. <paramref name="showFirst"/>
+    /// (the Timeline at start-up) activates that pane in its group within the same single build, raising and saving nothing.
+    /// <para><paramref name="sideWindows"/> come from AppSettings.SideWindows; null keeps current side windows and migrates a legacy
+    /// single side window to the first Pane Docker. At launch side windows open after Frame 1, each laid out separately, so the
+    /// main window keeps its single pre-Frame-1 build.</para>
     /// </summary>
     public void Load(string? saved, string? showFirst = null, string? sideWindows = null)
     {
@@ -293,9 +279,8 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// Makes the group holding a pane show it (5.4A), in the main window and in the side window while it is open; the arrangement the
-    /// side window closed on is left as the user made it. No other group is touched. True when anything changed. Window-free.
-    /// 5.4C: in every Pane Docker given too (<paramref name="sides"/>).
+    /// Activates a pane in its group in the main tree and in each given Pane Docker (<paramref name="sides"/>); closed side
+    /// windows keep their saved layout and other groups are untouched. Window-free; returns true if anything changed.
     /// </summary>
     internal static bool ShowInItsGroup(DockLayoutState state, string pane, IEnumerable<SideWindowState>? sides = null)
     {
@@ -313,9 +298,9 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// The side windows as a load has them (5.4C): one whose id is open already keeps its window and takes its new state (its
-    /// tree; a change of mode is shown by its window), one no longer listed closes (its panes are in the main window already: the
-    /// load placed them), and a new one is made once the main window can own it (ApplySideWindows).
+    /// Reconciles side windows with a load: open ids keep their window and take the new state (tree, mode); unlisted ones close
+    /// (the load already placed their panes in the main window); new ones are created once the main window can own them
+    /// (ApplySideWindows).
     /// </summary>
     private void TakeSides(List<SideWindowState> sides)
     {
@@ -341,8 +326,8 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// Sets the least width and height of every part laid out again, in place (5.4D): a pane's own least size can change with no layout to
-    /// follow (the Media Browser's Filmstrip view is wider, MainWindow.MediaMinWidth). Nothing is laid out again, raised or saved.
+    /// Recomputes every part's minimum size in place when a pane's minimum changes without a relayout (Media Browser Filmstrip
+    /// view, MainWindow.MediaMinWidth). No layout, events or save.
     /// </summary>
     public void RefreshMinSizes()
     {
@@ -362,11 +347,9 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// Whether a saved arrangement lays the main window out as a layout does (5.4D, the Default layout at start-up: <see cref="SameShape"/>),
-    /// each taken up as <see cref="Load"/> and <see cref="Apply"/> would take it with the side windows saved: brought up to date, the panes
-    /// it lacks put in, those a Pane Docker holds left out. The studios (DockPane.Optional) do not count: each is taken out of both first, so
-    /// opening or closing one never decides whether the arrangement left is the layout's. Nothing is laid out, raised or saved; false when the
-    /// arrangement cannot be read.
+    /// Whether a saved layout normalises (as <see cref="Load"/>/<see cref="Apply"/> would: migrated, filled, Pane Docker panes removed)
+    /// to the same main-window shape as a reference layout (<see cref="SameShape"/>). Optional studios are stripped from both first.
+    /// Side-effect free; false if unreadable.
     /// </summary>
     public bool LoadsAlike(string? saved, DockLayoutState layout, string? sideWindows)
     {
@@ -377,7 +360,7 @@ public sealed partial class DockManager
         return SameShape(WithoutStudios(Validate(kept, sides, migrate: true)), WithoutStudios(Validate(layout.Copy(), sides)));
     }
 
-    /// <summary>A tree of its own (a copy) with the panes that are shown only while it holds them (DockPane.Optional: the studios) taken out, and tidied: for LoadsAlike.</summary>
+    /// <summary>A tidied copy of a tree without optional studio panes (DockPane.Optional), for LoadsAlike.</summary>
     private DockLayoutState WithoutStudios(DockLayoutState state)
     {
         foreach (var group in state.Main.AllGroups())
@@ -391,10 +374,10 @@ public sealed partial class DockManager
         return state;
     }
 
-    /// <summary>The main window's arrangement, as saved (AppSettings.DockLayout). The side windows are saved apart (<see cref="SaveSideWindows"/>).</summary>
+    /// <summary>Serialized main-window layout (AppSettings.DockLayout); side windows are saved separately (<see cref="SaveSideWindows"/>).</summary>
     public string Save() => JsonSerializer.Serialize(_state, Services.AppSettingsJsonContext.Default.DockLayoutState);
 
-    /// <summary>The side windows open now, as saved (AppSettings.SideWindows, 5.4C): each one's mode, panes and place ("[]" for none).</summary>
+    /// <summary>Serialized open side windows (AppSettings.SideWindows): mode, panes and bounds each ("[]" for none).</summary>
     public string SaveSideWindows()
     {
         RememberPlacements();
@@ -402,8 +385,8 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// Every pane back where the mode starts with it (5.4D: where <paramref name="layout"/> has it, the user's Default layout; null, the
-    /// defaults): every Pane Docker closed (5.4C; a Live Video Preview, holding no pane, stays).
+    /// Restores every pane to <paramref name="layout"/> (the Default layout; null = built-in defaults) and closes every Pane Docker
+    /// (Live Video Previews hold no panes and stay).
     /// </summary>
     public void Reset(DockLayoutState? layout = null)
     {
@@ -415,28 +398,25 @@ public sealed partial class DockManager
 
         _state = Validate(layout?.Copy() ?? _defaults(), [.. _sides.Select(s => s.State)]);
 
-        // As Load and Apply take a tree up: one laid out already (Reset twice; 5.4.4: or one that differs only in its shares and front tabs) is
-        // taken up in place, so the borders and tabs change the tree that is saved, not the one it replaced.
+        // Like Load/Apply: an equivalent tree (repeat Reset, or differing only in split shares and active tabs) is adopted in place,
+        // so splitters and tabs edit the saved tree, not a replaced one.
         RebindOrRebuild();
         Changed?.Invoke();
         RaiseSideChanged();
     }
 
     /// <summary>
-    /// A tree as it may be used: every pane known here in it exactly once (in the main window or a side window), panes no
-    /// longer known taken out, and panes not in it yet put where the mode starts with them. 5.4C: a side window keeps the panes
-    /// it holds (the main window's copy goes), a Live Video Preview holds none; with <paramref name="migrate"/> the single side
-    /// window of an arrangement saved before 5.4C joins <paramref name="sides"/> as a Pane Docker (its legacy members are cleared
-    /// in any case: they are never written again).
+    /// Normalises a tree: every known pane exactly once across main and side windows, unknown panes removed, missing panes homed.
+    /// Side windows keep their panes (the main copy is removed); Live Video Previews hold none. With <paramref name="migrate"/> a
+    /// legacy single side window joins <paramref name="sides"/> as a Pane Docker; legacy fields are always cleared.
     /// </summary>
     private DockLayoutState Validate(DockLayoutState state, List<SideWindowState> sides, bool migrate = false)
     {
-        // An older arrangement first takes the shape this HandPeg gives it (panes retired, their successors in their place).
+        // Migrate older layouts first (retired panes replaced by their successors).
         if (Upgrade is { } upgrade)
             state = upgrade(state);
 
-        // A pane that replaced another goes where the old one was (the Media pane where the Source pane was, from before
-        // Pass 1.5), unless the arrangement has it already.
+        // A renamed pane takes the old id's position (e.g. Media replacing Source) unless already present.
         foreach (var (old, replacement) in Replaced)
         {
             var groups = new[] { state.Main, state.Side, state.SideClosed }.Concat(sides.Select(s => s.Tree)).OfType<DockNode>().SelectMany(n => n.AllGroups()).ToList();
@@ -449,7 +429,7 @@ public sealed partial class DockManager
             PaneReplaced?.Invoke(old, replacement);
         }
 
-        // The single side window of before 5.4C: the first Pane Docker (or, not migrating, nothing: it is never written again).
+        // Legacy single side window becomes the first Pane Docker when migrating; otherwise dropped (never written again).
         if (migrate)
             SideWindowStates.Migrate(state, sides);
         else
@@ -462,13 +442,13 @@ public sealed partial class DockManager
         return state;
     }
 
-    /// <summary>Puts a pane into the main window where the mode's own arrangement has it: with a pane it is grouped with there, or beside one it neighbours.</summary>
+    /// <summary>Homes a pane in the main window per the mode default: into its default group-mate's group, or beside its default neighbour.</summary>
     private DockNode PlaceAsDefault(DockNode main, string pane)
     {
         var defaults = _defaults().Main;
         if (defaults.GroupOf(pane) is { } home)
         {
-            // In the group of a pane it shares a group with, there.
+            // Into the group of its default group-mate.
             foreach (var mate in home.Panes.Where(p => p != pane))
             {
                 if (main.GroupOf(mate) is { } group)
@@ -478,7 +458,7 @@ public sealed partial class DockManager
                 }
             }
 
-            // Beside the group of the pane next to its own, there.
+            // Beside the group of its default neighbour.
             var groups = defaults.AllGroups().ToList();
             var at = groups.IndexOf(home);
             foreach (var near in groups.Skip(at + 1).Concat(groups.Take(at).Reverse()))
@@ -488,7 +468,7 @@ public sealed partial class DockManager
                     var parent = defaults.ParentOf(home);
                     var zone = parent is { Vertical: true } ? DockZone.Top : DockZone.Left;
 
-                    // As much of the room as it has there, beside that neighbour.
+                    // Use its default share beside that neighbour.
                     var share = 0.5;
                     if (parent is not null && parent.Children.IndexOf(home) is var mine and >= 0
                         && parent.Children.FindIndex(c => c.AllGroups().Contains(near)) is var theirs and >= 0
@@ -499,7 +479,7 @@ public sealed partial class DockManager
             }
         }
 
-        // With the panes it is homed with (5.4C, a studio the mode's arrangement leaves out), as a tab of the first one's group.
+        // Studios absent from the mode default: tab into the first HomeWith mate's group.
         if (_panes.TryGetValue(pane, out var known))
         {
             foreach (var mate in known.HomeWith)
@@ -515,12 +495,11 @@ public sealed partial class DockManager
         return DockTree.InsertBeside(main, main, DockZone.Right, DockNode.Group(pane));
     }
 
-    /// <summary>Whether the arrangement holds the pane, in the main window or a side window (5.4C).</summary>
+    /// <summary>Whether the layout contains the pane (main or side window).</summary>
     public bool Contains(string pane) => GroupAnywhere(pane) is not null;
 
     /// <summary>
-    /// Shows a pane (5.4C, an optional studio): one the arrangement does not hold yet goes where the mode has it (or with its
-    /// <see cref="DockPane.HomeWith"/> mates), then it is brought forward in its group.
+    /// Opens an optional studio pane: homes it if absent (mode default or <see cref="DockPane.HomeWith"/> mates), then activates it.
     /// </summary>
     public void Open(string pane)
     {
@@ -536,7 +515,7 @@ public sealed partial class DockManager
         BringForward(pane);
     }
 
-    /// <summary>Takes a pane out of the arrangement (5.4C, an optional studio's close): it is shown again only by <see cref="Open"/>.</summary>
+    /// <summary>Removes an optional studio pane from the layout; only <see cref="Open"/> restores it.</summary>
     public void Close(string pane)
     {
         if (!Contains(pane))
@@ -568,7 +547,7 @@ public sealed partial class DockManager
         if (_dragging)
             return;
 
-        // Nothing to do when the windows would come out as they are: every rebuild moves every pane.
+        // Skip when the signature is unchanged: every rebuild re-parents every pane.
         var signature = Signature();
         if (signature == _builtSignature)
             return;
@@ -582,9 +561,8 @@ public sealed partial class DockManager
         _shapes.Clear();
         UnwatchShapes();
 
-        // Every pane out of where it was, and shown: a pane hidden behind another's tab stayed hidden in a place of its
-        // own (dragging Video out of "Media | Video" left Media's spot, and the header joined to it, empty). Floating
-        // panes stay on their layer; only their stand-ins move.
+        // Detach and unhide every pane first: a pane hidden behind another tab once stayed hidden in its new spot, leaving an
+        // empty group. Floating panes stay on their overlay; only their stand-ins move.
         foreach (var (id, content) in _made)
         {
             if (_floating.ContainsKey(id))
@@ -618,9 +596,8 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// Lays one side window out again (5.4C), and only it: its panes are taken out of where they were and put where its tree says;
-    /// the main window and the other side windows are not touched (a side window opened after the first frame never lays the main
-    /// window out again: Law 1's one dock build). A Live Video Preview holds no pane: only its picture is shown.
+    /// Lays out one side window only, leaving the main window untouched (Law 1: a single main-window dock build). A Live Video
+    /// Preview has no panes, only its picture.
     /// </summary>
     private void RebuildSide(SideHost side)
     {
@@ -661,11 +638,11 @@ public sealed partial class DockManager
         PlaceFloating();
         WatchShapes();
 
-        // This window is as the arrangement says: a rebuild asked for now has nothing to do for it.
+        // Record this window as matching the layout so a pending rebuild skips it.
         MarkSideBuilt(side);
     }
 
-    /// <summary>One side window's content: a Pane Docker's tree (its hint while it holds nothing), or nothing for a Live Video Preview.</summary>
+    /// <summary>A side window's content: a Pane Docker's tree (or empty-state hint), or null for a Live Video Preview.</summary>
     private void RenderSide(SideHost side)
     {
         if (side.Window is not { } window)
@@ -695,7 +672,7 @@ public sealed partial class DockManager
         _roots.Add((window.Host, side));
     }
 
-    /// <summary>Puts each floating pane's box on the layer of the window its stand-in is in now; one not laid out stays where it is, hidden.</summary>
+    /// <summary>Moves each floating host to the overlay of its stand-in's window; hosts without a stand-in stay put, hidden.</summary>
     private void PlaceFloating()
     {
         foreach (var (standIn, box) in _floating.Values)
@@ -717,13 +694,12 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// Watches the slot of each pane that can change its shape and was laid out as a row (the header among tabs, alone
-    /// in a window, or over nothing it can join): in a slot taller than wide, or too narrow for a row, it stands as a
-    /// column, and as a row again once the slot is wide enough.
+    /// Watches the slot of each reshapeable row pane (the header): switches to a column when the slot is taller than wide or too
+    /// narrow, and back to a row when it widens.
     /// </summary>
     private void WatchShapes()
     {
-        // Afresh each time (a side window laid out on its own keeps the main window's panes, and their watches, where they are).
+        // Rebuilt per layout (a side-window-only layout leaves main-window watches intact).
         UnwatchShapes();
         foreach (var (pane, shape) in _shapes.ToList())
         {
@@ -752,7 +728,7 @@ public sealed partial class DockManager
 
         SetShape(pane, shape);
 
-        // Its hover tab reads the way the pane stands now.
+        // Refresh the hover tab for the new shape.
         if (slot is Panel host && host.Children.OfType<FrameworkElement>().Any(c => c.Tag as string == "dock-hover")
             && _groupHosts.FirstOrDefault(g => g.Group.Panes.Contains(pane)).Group is { } group)
         {
@@ -761,11 +737,11 @@ public sealed partial class DockManager
         }
     }
 
-    // What the windows were last laid out from: the arrangement, which panes are shown, and the side windows.
+    // Inputs of the last layout: tree, visible panes and side windows.
     private string? _builtSignature;
 
-    // Which pane of a group is shown is not part of it: that is changed in place (see Activate), not by a rebuild.
-    // 5.4C: each side window's mode, tree and window too (not its place: moving it lays nothing out).
+    // Layout signature: excludes the active tab (changed in place by Activate) and side window bounds; includes side window
+    // mode, tree and window.
     private string Signature() => MainSignature() + string.Concat(_sides.Select(SideSignature));
 
     private string MainSignature() => ActiveAttribute.Replace(JsonSerializer.Serialize(_state, Services.AppSettingsJsonContext.Default.DockLayoutState), "") + "|"
@@ -774,7 +750,7 @@ public sealed partial class DockManager
     private static string SideSignature(SideHost side) => "|" + side.State.Id + ":" + side.State.Mode + ":" + (side.Window?.GetHashCode() ?? 0) + ":"
         + (side.State.Tree is { } tree ? ActiveAttribute.Replace(JsonSerializer.Serialize(tree, Services.AppSettingsJsonContext.Default.DockNode), "") : "");
 
-    // The parts of the last layout (5.4C): the main window's as it was last laid out, and each side window's.
+    // Signatures of the last layout: main window and each side window.
     private string? _builtMain;
     private readonly Dictionary<SideHost, string> _builtSides = [];
 
@@ -789,8 +765,8 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// One side window laid out on its own, or one gone (<paramref name="side"/> null): the main window counts as it was last laid
-    /// out, not as it may be now, so a layout of it still to come (a pane switched on) is never taken for done.
+    /// Records a side-window-only layout (or removal when <paramref name="side"/> is null) using the main window's last laid-out
+    /// signature, so a pending main relayout is never mistaken for done.
     /// </summary>
     private void MarkSideBuilt(SideHost? side)
     {
@@ -836,8 +812,8 @@ public sealed partial class DockManager
         foreach (var pane in shown.Where(p => !_shapes.ContainsKey(p)))
             SetShape(pane, PaneShape.Row);
 
-        // Right under the header, which joins it: a row of boxed tabs, as the main tab bar has, with the header at its end.
-        // A pane headerless when alone (5.4.4, the Timeline) is one with a hover tab while it is: no title row, nothing over its top edge.
+        // Below a joined header: a boxed tab row like the main tab bar, header at its end. A pane that is headerless when alone
+        // (Timeline) uses a hover tab instead: no title row over its top edge.
         var joined = ReferenceEquals(node, _joinUnder);
         var host = joined || shown.Any(p => _panes[p].Handle == PaneHandle.Tab) || (shown.Count > 1 && shown.Any(p => _panes[p].Handle == PaneHandle.Hover))
             ? RenderTabs(node, shown, active, side, joined)
@@ -849,20 +825,20 @@ public sealed partial class DockManager
         return host;
     }
 
-    // A group whose panes have titles: the one shown, with the tabs in its title's place (see FillTitleSlots).
+    // Titled group: shows the active pane with tabs in its title slot (FillTitleSlots).
     private FrameworkElement RenderPlain(string active) => new Border { Child = Placed(active), Background = Brushes.Transparent };
 
-    /// <summary>A pane with no title of its own: a tab with its name comes up over its top-left corner when the pointer goes there.</summary>
+    /// <summary>Titleless pane: its name tab appears over the top-left corner on hover.</summary>
     private FrameworkElement RenderHover(DockNode group, string pane)
     {
         var host = new Grid { Background = Brushes.Transparent };
         host.Children.Add(Placed(pane));
 
-        // A floating pane's lies over it, on the layer, with it.
+        // For floating panes the zone sits on the overlay with the host.
         (_floating.TryGetValue(pane, out var floating) ? floating.Box : host).Children.Add(HoverZone(group, pane));
 
-        // A pane under a native window (the player) has its zone on the window kept over that one too: the zone in the
-        // pane itself is only there to be used while the native window is hidden (nothing loaded).
+        // Panes under a native window (player) also get a hover zone on the overlay; the in-pane zone serves only while the
+        // native window is hidden (nothing loaded).
         if (_panes[pane].HoverHost is { } overlay)
             overlay.Children.Add(HoverZone(group, pane));
         return host;
@@ -877,12 +853,9 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A strip along the top-left of a pane, all but invisible, that shows the pane's tab while the pointer is on it. The
-    /// strip is exactly as wide as the tab it grows into, so the tab, once up, is still under the pointer: a wider strip
-    /// lost the pointer as its tab came up (narrower than it), took it back as the tab went, and so on, many times a
-    /// second, flickering the tab and whatever the pointer was over beneath it (the header's Add Media flyout). 5.4C (the user's): the
-    /// tab comes up only once the pointer has rested on the strip for <see cref="HoverTabRest"/>, so a pointer crossing it on its way to
-    /// what is beside it (the Timeline's tabs under Playback Controls) never has a tab put over its target.
+    /// Near-invisible hover strip at a pane's top-left that reveals its tab. It is exactly the tab's width so the pointer stays
+    /// over the tab once shown (a wider strip oscillated enter/leave and flickered). The tab appears only after the pointer rests
+    /// for <see cref="HoverTabRest"/>, so passing pointers never get a tab over their target.
     /// </summary>
     private FrameworkElement HoverZone(DockNode group, string pane)
     {
@@ -907,7 +880,7 @@ public sealed partial class DockManager
             strip = Math.Ceiling(tab.DesiredSize.Width);
             if (Mouse.GetPosition(zone).X > strip)
             {
-                // Past where the tab would be (the estimate was wide): the strip takes the tab's width, and nothing comes up.
+                // Pointer beyond the real tab width (estimate was wide): shrink the strip to the tab and show nothing.
                 tab.Visibility = Visibility.Collapsed;
                 zone.Width = strip;
                 return;
@@ -938,10 +911,10 @@ public sealed partial class DockManager
         return zone;
     }
 
-    /// <summary>How long the pointer rests on a pane's hover strip before its tab comes up (5.4C).</summary>
+    /// <summary>Pointer rest time on a hover strip before its tab appears.</summary>
     private static readonly TimeSpan HoverTabRest = TimeSpan.FromMilliseconds(350);
 
-    /// <summary>How wide a hover tab is (its words in the window's type, and MakeTab's padding and edge), before it is first shown.</summary>
+    /// <summary>Estimated hover tab width (text in the window font plus MakeTab padding and border) before first display.</summary>
     private double HoverTabWidth(string title, bool upright)
     {
         var words = new FormattedText(title, System.Globalization.CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
@@ -951,11 +924,9 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A group shown with a row of tabs above it (the settings tabs, any group with a pane that has no title of its own,
-    /// and the group the header joins): its tabs on one line (those that do not fit are listed in a menu at its end),
-    /// and below them every pane of the group made so far, kept in one grid with only the one shown visible. Switching
-    /// tabs then shows one and hides another, and moves nothing: a player among them keeps its window where it is (a
-    /// tab control would take the content of every other tab out of the window, and the player's with it).
+    /// A tabbed group (settings tabs, groups with titleless panes, the header's joined group): one tab row with an overflow menu,
+    /// and all realised panes stacked in one grid with only the active one visible. Switching toggles visibility without
+    /// re-parenting, so a native player window stays attached (a TabControl would detach inactive content).
     /// </summary>
     private sealed class TabGroupHost : DockPanel
     {
@@ -965,7 +936,7 @@ public sealed partial class DockManager
             Strip = new OverflowStrip();
             Body = new Grid { Margin = classic ? new Thickness(0) : new Thickness(10, 4, 10, 6) };
 
-            // The row of tabs, with room at its right-hand end for a pane joined to it (the header right above it).
+            // Tab row with a right-end host for the joined header.
             Trailing = new Border { VerticalAlignment = classic ? VerticalAlignment.Bottom : VerticalAlignment.Center, Margin = classic ? new Thickness(0, 0, 0, 4) : new Thickness(0) };
             var head = new DockPanel { Margin = classic ? new Thickness(0) : new Thickness(12, 6, 12, 2) };
             DockPanel.SetDock(Trailing, Dock.Right);
@@ -975,8 +946,7 @@ public sealed partial class DockManager
             Children.Add(head);
             if (classic)
             {
-                // Boxed tabs: the panel the shown tab joins, as the settings tabs have always looked in the main tab bar. Square
-                // (5.3-Stage2: edge to edge, no window showing at its corners).
+                // Boxed tabs: the active tab merges into the panel below; square corners so the layout stays edge to edge.
                 Frame = new Border { Child = Body, CornerRadius = new CornerRadius(0), Padding = TabPadding };
                 Frame.SetResourceReference(Border.BackgroundProperty, "PanelBrush");
                 Children.Add(Frame);
@@ -987,17 +957,17 @@ public sealed partial class DockManager
             }
         }
 
-        /// <summary>The panel's padding around a settings tab, as the tab bar has always had. A pane that is a panel of its own fills it.</summary>
+        /// <summary>Panel padding around a settings tab; panes that are panels themselves fill it.</summary>
         public static readonly Thickness TabPadding = new(16, 8, 16, 8);
 
         public DockNode Group { get; set; }
 
-        /// <summary>Whether its tabs are boxed over a panel (the main tab bar, and the group the header joins) rather than compact inline tabs.</summary>
+        /// <summary>Boxed tabs over a panel (main tab bar, header-joined group) instead of compact inline tabs.</summary>
         public bool Classic { get; }
 
         public OverflowStrip Strip { get; }
 
-        /// <summary>At the right-hand end of the row of tabs: where a joined pane's bar goes (see <see cref="PaneShape.Joined"/>).</summary>
+        /// <summary>Host at the right end of the tab row for a joined pane's bar (<see cref="PaneShape.Joined"/>).</summary>
         public Border Trailing { get; }
 
         /// <summary>The panel under boxed tabs; null for inline ones.</summary>
@@ -1008,15 +978,14 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// The main tab bar: the group of the main window holding the most settings tabs (where the mode starts them). Its
-    /// tabs keep the classic boxed look, as do the tabs of the group the header joins; every other group of tabs, a
-    /// settings tab dragged out of it included, has the compact inline ones.
+    /// The main tab bar: the main-window group with the most settings tabs. It and the header-joined group use boxed tabs; all
+    /// other groups use compact inline tabs.
     /// </summary>
     private DockNode? MainTabBar() => _state.Main.AllGroups()
         .Select(g => (Group: g, Count: g.Panes.Count(p => _panes[p].Handle == PaneHandle.Tab && _panes[p].IsShown())))
         .Where(g => g.Count > 0).OrderByDescending(g => g.Count).Select(g => g.Group).FirstOrDefault();
 
-    /// <param name="joined">Laid out right under the header, which joins its row of tabs: boxed tabs, wherever it is.</param>
+    /// <param name="joined">Directly under the header, which joins its tab row: always boxed tabs.</param>
     private FrameworkElement RenderTabs(DockNode group, List<string> shown, string active, bool side, bool joined = false)
     {
         var host = new TabGroupHost(group, classic: joined || (!side && ReferenceEquals(group, MainTabBar())));
@@ -1033,7 +1002,7 @@ public sealed partial class DockManager
         host.Shown[pane] = content;
     }
 
-    /// <summary>Shows one pane of a tab group: made and added when it was not yet, the others hidden; its tab marked as the one shown.</summary>
+    /// <summary>Activates a pane in a tab group: realises it if needed, hides the others and marks its tab active.</summary>
     private void ShowInTabs(TabGroupHost host, List<string> shown, string active)
     {
         if (!host.Shown.ContainsKey(active))
@@ -1041,8 +1010,7 @@ public sealed partial class DockManager
         foreach (var (pane, content) in host.Shown)
             content.Visibility = pane == active ? Visibility.Visible : Visibility.Collapsed;
 
-        // Under boxed tabs, a settings tab has the panel's padding; a pane that is a panel of its own (Media, Keyframes...)
-        // fills the panel, in its colour, so the two read as one.
+        // Under boxed tabs, settings tabs get panel padding; panel-style panes (Media, Keyframes) fill it in the panel colour.
         if (host.Frame is { } frame)
             frame.Padding = _panes[active].Handle == PaneHandle.Tab ? TabGroupHost.TabPadding : new Thickness(0);
 
@@ -1066,11 +1034,9 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A split: its parts side by side (or over each other), each with its share of the room, and borders between them to
-    /// drag. Side by side, a pane that can stand as a narrow column (the header) always does, as wide as its content
-    /// (never a row of buttons stretched to the part's height); over each other, a pane that joins the pane under it (the
-    /// header) goes at the end of that pane's row of tabs, boxed as the main tab bar's are, when the part right under it
-    /// has tabs or titles, and is a row of its own otherwise.
+    /// Builds a split with star shares and draggable borders. Horizontally, a column-capable pane (the header) is sized to its
+    /// content; vertically, a joining pane (the header) docks at the end of the tab row below when that part has tabs or
+    /// titles, else it is its own row.
     /// </summary>
     private FrameworkElement? RenderSplit(DockNode split, bool side)
     {
@@ -1146,16 +1112,11 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// The border between two parts of a split: dragged, it shares the room between them anew. Next to a part as tall as
-    /// its content (the Sequence Overview Scrubber, the playback controls) it shares the room between the nearest parts above
-    /// and below that are not (4.1.1: the player's row and the tabs; the timeline keeps the height its setting gives it);
-    /// with no such part on one side it is only a line, or, beside a pane that can be made taller, it makes it so. Right under
-    /// a pane that can be made taller (the Sequence Overview Scrubber), the border is that pane's lower edge: dragged, it makes
-    /// it taller or shorter, and Ctrl+drag shares the room instead (5.2-AuditB, the user's bug: the bar could no longer be
-    /// sized from its lower edge; the border there shared the room and moved it whole).
-    /// <para>5.4D (the user's bug: a border that would not move): every border that shares the room drags across its whole range, the move
-    /// taken from the part beside it and, once that one is at its least, from the parts beyond it (ShareColumns, ShareRows); a double-click
-    /// evens the two parts beside it (EvenOut), or, on the Sequence Overview Scrubber's edge, puts its height back (DockPane.ResetSize).</para>
+    /// A split border. Next to content-sized parts (Overview Scrubber, playback controls) it redistributes between the nearest
+    /// star-sized parts; with none on one side it is a plain line, or resizes an adjacent resizable pane. Directly below a
+    /// resizable pane (Overview Scrubber) a plain drag resizes that pane and Ctrl+drag redistributes instead.
+    /// <para>Sharing borders move across their full range, cascading past parts at minimum (ShareColumns, ShareRows); double-click
+    /// evens the two neighbours (EvenOut) or resets the scrubber height (DockPane.ResetSize).</para>
     /// </summary>
     private void AddBorder(SplitView view, int k)
     {
@@ -1164,15 +1125,13 @@ public sealed partial class DockManager
         UIElement border;
         var (above, under) = (parts.Take(k).LastOrDefault(p => !p.Fits).Element, parts.Skip(k).FirstOrDefault(p => !p.Fits).Element);
 
-        // Edge to edge (5.3-Stage2, the user's call): a border is a 1 px line (PaneSeamBrush) in a row or column of 1 px, and one
-        // that is dragged is grabbed over 7 px, reaching 3 px into each part beside it (drawn over them: ZIndex). Beside a floating
-        // pane (the player), whose native window covers what lies over its place, it reaches all 6 into the other part (SeamGrip).
+        // Edge to edge: a 1 px line (PaneSeamBrush) in a 1 px track with a 7 px grip overlapping 3 px into each side (ZIndex).
+        // Beside a floating pane, whose native window covers overlays, the grip extends 6 px into the other side (SeamGrip).
         var (beforeEdge, afterEdge) = split.Vertical ? (DockZone.Bottom, DockZone.Top) : (DockZone.Right, DockZone.Left);
         var (grip, seam) = SeamGrip(split.Vertical, FloatsAt(split.Children[before.Index], beforeEdge), FloatsAt(split.Children[after.Index], afterEdge));
         if ((before.Fits || after.Fits) && split.Vertical && above is not null && under is not null)
         {
-            // The pane beside it that fits its content is made taller or shorter (through its height setting), dragged away
-            // from it or towards it: by a plain drag of its lower edge, by Ctrl+drag above it (4.2B-2).
+            // Resizes the adjacent content-sized pane via its height setting: plain drag on its lower edge, Ctrl+drag above it.
             var (fitting, below) = before.Fits ? (split.Children[before.Index], false) : (split.Children[after.Index], true);
             var (resize, title) = Resizer(fitting);
             var edge = resize is not null && !below;
@@ -1185,7 +1144,7 @@ public sealed partial class DockManager
                     : $"Drag to share the room between the parts above and below (double-click: as tall as each other); Ctrl+drag to make the {title} taller or shorter",
                 DoubleClicked = reset ?? (() => EvenOut(view, k)),
 
-                // The scrubber's edge is its height's: the keyboard shares the room only from a border whose plain drag does.
+                // Keyboard nudges redistribute only on borders whose plain drag redistributes (not the scrubber edge).
                 Nudged = edge ? null : change => Nudge(view, k, change),
             };
             var moved = PointerMoves(thumb, grid);
@@ -1213,8 +1172,7 @@ public sealed partial class DockManager
             }
             else
             {
-                // Dragged towards the pane that fits its content, it makes it smaller; away from it, taller. Its edge either way: a
-                // double-click puts its height back (5.4D).
+                // Toward the content-sized pane shrinks it, away grows it; double-click resets its height.
                 var thumb = new SeamThumb
                 {
                     Vertical = true, Height = SeamGrab, Margin = grip, Cursor = Cursors.SizeNS, Template = SplitterLook(seam),
@@ -1232,10 +1190,8 @@ public sealed partial class DockManager
         }
         else
         {
-            // Between two parts that share the room (5.4D: a Thumb, where a GridSplitter traded room only between its two neighbours, so a
-            // part at its least next to it froze it): the move cascades past a part at its least (ShareColumns, ShareRows). It takes no
-            // keyboard focus, as the GridSplitter did not (a border taking it would take the arrow keys from the timeline); Nudged moves it
-            // 16 DIPs a step for a caller that asks.
+            // Sharing border: a Thumb (GridSplitter only traded between neighbours and froze at a minimum-size part) that cascades
+            // (ShareColumns, ShareRows). Not focusable, so the timeline keeps arrow keys; Nudged moves it 16 DIPs per step.
             var thumb = new SeamThumb
             {
                 Vertical = split.Vertical, Margin = grip, Cursor = split.Vertical ? Cursors.SizeNS : Cursors.SizeWE, Template = SplitterLook(seam),
@@ -1259,7 +1215,7 @@ public sealed partial class DockManager
             border = thumb;
         }
 
-        // Over the parts beside it (added to the grid after it, the next one would cover half of its grip).
+        // Raise above neighbours; the next part added would otherwise cover half the grip.
         Panel.SetZIndex(border, 1);
         if (split.Vertical)
         {
@@ -1275,7 +1231,7 @@ public sealed partial class DockManager
         grid.Children.Add(border);
     }
 
-    /// <summary>The pane of a part that the border beside it can make taller or shorter (DockPane.ResizeBy), and its title; none, (null, "").</summary>
+    /// <summary>The part's border-resizable pane (DockPane.ResizeBy) and its title; (null, "") if none.</summary>
     private (Action<double>? Resize, string Title) Resizer(DockNode part)
     {
         foreach (var pane in part.AllPanes())
@@ -1287,14 +1243,12 @@ public sealed partial class DockManager
         return (null, "");
     }
 
-    /// <summary>What a double-click on the edge of a part that can be made taller does (5.4D: DockPane.ResetSize, the Sequence Overview Scrubber's height put back).</summary>
+    /// <summary>Double-click handler on a resizable pane's edge (DockPane.ResetSize restores the scrubber height).</summary>
     private Action? ResetterOf(DockNode part) => part.AllPanes().Select(p => _panes[p].ResetSize).FirstOrDefault(r => r is not null);
 
     /// <summary>
-    /// During a border's drag, how far the pointer has moved down the split since the last time this was asked (since it was
-    /// pressed, the first time), in the split's own DIPs: they stay where they are while the border moves with the pane it
-    /// sizes, so that pane's edge keeps step with the pointer. A Thumb's own change is measured from the border, which has
-    /// moved since: a pane sized by it ran ahead of the pointer, then waited for it.
+    /// Pointer delta along the split since the previous call (or press), in split DIPs, which stay fixed while the border moves.
+    /// Thumb deltas are border-relative and made the resized pane overshoot then lag.
     /// </summary>
     private static Func<double> PointerMoves(Thumb thumb, IInputElement split)
     {
@@ -1310,9 +1264,8 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A split as laid out (5.4D): its grid, its parts (each a column or a row of it; Fits, as tall or as wide as its content), the side
-    /// window it is in (null: the main window) and where it is in that window's tree (the children's indexes from its top), so a load of
-    /// the same tree (Rebind) gives it the new tree's node and its borders change the arrangement that is saved.
+    /// A realised split: grid, parts (Fits = content-sized), side window (null = main) and tree path, so Rebind can attach a
+    /// reloaded equivalent tree's node and borders keep editing the saved layout.
     /// </summary>
     private sealed class SplitView(Grid grid, DockNode split, List<(FrameworkElement Element, int Index, bool Fits)> parts, SideHost? side, int[] path)
     {
@@ -1327,11 +1280,10 @@ public sealed partial class DockManager
         public int[] Path { get; } = path;
     }
 
-    // The splits laid out now, in every window (5.4D): their least sizes are set again in place (RefreshMinSizes), and a load of the
-    // same tree gives them its nodes (Rebind).
+    // Realised splits across all windows, for in-place minimum refresh (RefreshMinSizes) and Rebind.
     private readonly List<SplitView> _splitViews = [];
 
-    /// <summary>Where a node is in a tree: its children's indexes from the top (none for the top itself); null when it is not in it.</summary>
+    /// <summary>A node's child-index path from the root (empty for the root); null when absent.</summary>
     private static int[]? PathOf(DockNode root, DockNode node)
     {
         if (ReferenceEquals(root, node))
@@ -1360,25 +1312,22 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A border dragged by <paramref name="change"/> DIPs (5.4D, the user's bug: the borders that would not move), the k-th of a side-by-side
-    /// split: the part at its left gains what the parts at its right give up, the nearest first and, once that one is at its least, the next
-    /// beyond it; dragged left, the other way round. So a border moves across its whole range, however narrow the part beside it already is.
+    /// Moves the k-th border of a horizontal split by <paramref name="change"/> DIPs: the left side gains what the right side gives,
+    /// nearest part first, cascading past parts at minimum (and vice versa), so the border spans its full range.
     /// </summary>
     private static Dictionary<int, double> ShareColumns(Grid grid, List<(FrameworkElement Element, int Index, bool Fits)> parts, int k, double change) =>
         Share(grid, parts, k, change, vertical: false);
 
     /// <summary>
-    /// <see cref="ShareColumns"/> for a split of parts over each other: the part above the k-th border gains what the parts under it give up,
-    /// nearest first (4.1.1: the parts as tall as their content are skipped: they keep the height their setting gives them).
+    /// <see cref="ShareColumns"/> for vertical splits; content-sized parts are skipped and keep their setting-driven height.
     /// </summary>
     private static Dictionary<int, double> ShareRows(Grid grid, List<(FrameworkElement Element, int Index, bool Fits)> parts, int k, double change) =>
         Share(grid, parts, k, change, vertical: true);
 
     /// <summary>
-    /// The room of a split shared anew around its k-th border (the one before part k): every part with a share first has it put in DIPs (as
-    /// TakeSizes keeps them), so the parts the move does not reach keep their size; then what the parts on one side give up, each down to its
-    /// least, nearest first, goes to the nearest part on the other side. Whatever the move asks beyond what they can give is not moved.
-    /// Returns every sharing part's size now (DIPs, by its place among the parts): the screen catches up at the next layout.
+    /// Redistributes around border k (before part k): converts star shares to DIPs (as TakeSizes) so unaffected parts keep size,
+    /// then takes from one side nearest-first down to minimums and gives to the nearest part opposite; excess is dropped.
+    /// Returns every sharing part's new DIP size by index; the screen updates on the next layout.
     /// </summary>
     private static Dictionary<int, double> Share(Grid grid, List<(FrameworkElement Element, int Index, bool Fits)> parts, int k, double change, bool vertical)
     {
@@ -1406,11 +1355,11 @@ public sealed partial class DockManager
         return sizes;
     }
 
-    /// <summary>The parts from <paramref name="from"/> to before <paramref name="to"/> that have a share of the room (not as wide or as tall as their content), by their place among the parts.</summary>
+    /// <summary>Indexes of star-sized (not content-sized) parts in [<paramref name="from"/>, <paramref name="to"/>).</summary>
     private static IEnumerable<int> Sharing(List<(FrameworkElement Element, int Index, bool Fits)> parts, int from, int to) =>
         Enumerable.Range(from, Math.Max(to - from, 0)).Where(i => !parts[i].Fits);
 
-    /// <summary>Every part with a share put in DIPs, its size on screen as a pixel-star share (at least 1): its size, by its place among the parts.</summary>
+    /// <summary>Converts each star part to a pixel-star share equal to its on-screen size (min 1); returns sizes by index.</summary>
     private static Dictionary<int, double> InDips(Grid grid, List<(FrameworkElement Element, int Index, bool Fits)> parts, bool vertical)
     {
         var sizes = new Dictionary<int, double>();
@@ -1437,8 +1386,8 @@ public sealed partial class DockManager
         vertical ? grid.RowDefinitions[Grid.GetRow(element)].MinHeight : grid.ColumnDefinitions[Grid.GetColumn(element)].MinWidth;
 
     /// <summary>
-    /// A double-click on a border (5.4D): the two parts beside it that share the room (the nearest each side) each take half of what the two
-    /// have together, each kept to its least; the others keep their size. Kept at once (the shares written, Changed raised).
+    /// Border double-click: splits the combined size of the nearest star part on each side evenly (respecting minimums); others
+    /// unchanged. Persists immediately (shares written, Changed raised).
     /// </summary>
     private void EvenOut(SplitView view, int k)
     {
@@ -1455,14 +1404,14 @@ public sealed partial class DockManager
         KeepShares(view, sizes);
     }
 
-    /// <summary>A border moved by a step (5.4D, the GridSplitter's KeyboardIncrement): 16 DIPs a step, shared as a drag is, and kept. The borders take no keyboard focus, as before.</summary>
+    /// <summary>Moves a border by steps of 16 DIPs (like GridSplitter.KeyboardIncrement), shared as a drag and persisted. Borders are not focusable.</summary>
     private void Nudge(SplitView view, int k, double change) =>
         KeepShares(view, Share(view.Grid, view.Parts, k, change * BorderKeyStep, view.Split.Vertical));
 
     // How far a border moves for each step (Nudge), DIPs.
     private const double BorderKeyStep = 16;
 
-    /// <summary>The parts' sizes just given (in DIPs, by their place among the parts) as their shares, and the arrangement saved: the screen has not caught up yet, so they are not read from it (TakeSizes).</summary>
+    /// <summary>Writes the given DIP sizes as shares and saves; used instead of TakeSizes because the screen has not updated yet.</summary>
     private void KeepShares(SplitView view, Dictionary<int, double> sizes)
     {
         var wasBuilt = Signature() == _builtSignature;
@@ -1478,10 +1427,9 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A split's sizes just written from its borders (TakeSizes, KeepShares), the screen already showing them: when the windows were as the
-    /// arrangement said just before, they still are (5.4D), so a later Load, Apply or Reset back to the sizes from before the drag sees what
-    /// differs: its shares, set again in place (5.4.4, RebindOrRebuild; the whole layout again before). Not for a split a layout has replaced
-    /// since (a canceled drag's end can come after a rebuild), nor when a layout was still to come.
+    /// After border-driven share writes (TakeSizes, KeepShares) that the screen already shows, updates the last-layout signature so a
+    /// later Load/Apply/Reset to pre-drag sizes is detected and re-applied in place (RebindOrRebuild). Skipped for splits replaced
+    /// by a rebuild (a cancelled drag can end after one) or when a layout is pending.
     /// </summary>
     private void StillBuilt(SplitView view, bool wasBuilt)
     {
@@ -1495,18 +1443,18 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A border's grip (5.4D): a Thumb whose double-click is its own (taken on the second press, so no drag begins whose end would keep the
-    /// sizes from before it), and whose arrow keys move it should it ever have the keyboard (it is not focusable: Thumb's default, as before 5.4D).
+    /// Border grip Thumb: handles double-click on the second press (so no drag starts whose end would restore pre-click sizes) and
+    /// arrow keys if ever focused (not focusable by default).
     /// </summary>
     private sealed class SeamThumb : Thumb
     {
-        /// <summary>Across a split of parts over each other (Up and Down move it), rather than side by side (Left and Right).</summary>
+        /// <summary>Vertical split (Up/Down move it) rather than horizontal (Left/Right).</summary>
         public bool Vertical { get; init; }
 
         /// <summary>What a double-click does; null for nothing.</summary>
         public Action? DoubleClicked { get; init; }
 
-        /// <summary>An arrow key pressed while it has the keyboard: -1 (left or up) or 1 (right or down); null for nothing.</summary>
+        /// <summary>Raised on an arrow key: -1 (left/up) or 1 (right/down).</summary>
         public Action<double>? Nudged { get; init; }
 
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
@@ -1542,15 +1490,13 @@ public sealed partial class DockManager
         }
     }
 
-    // How wide a dragged border's grip is across it (5.3-Stage2): laid out in 1 px, reaching into the parts beside it (SeamGrip).
+    // Border grip thickness across a 1 px track, overlapping adjacent parts (SeamGrip).
     internal const double SeamGrab = 7;
 
     /// <summary>
-    /// Where a dragged border's grip lies (5.3-Stage2): <see cref="SeamGrab"/> px across the 1 px row (<paramref name="vertical"/>
-    /// split) or column it is laid out in, reaching 3 px into each part beside it; or all 6 into one part when the other is a
-    /// floating pane's (<paramref name="floatsBefore"/>: the part above or at its left; <paramref name="floatsAfter"/>: below or at
-    /// its right), whose native window covers whatever lies over its place, so that half of the grip would never take the pointer.
-    /// Its Margin, and where its 1 px line lies in it (the Thumb's line margin; App.xaml's QuietSplitter's Padding for a GridSplitter): on the seam either way.
+    /// Grip geometry: <see cref="SeamGrab"/> px across the 1 px track, 3 px into each side, or 6 px into one side when the other is a
+    /// floating pane (<paramref name="floatsBefore"/> above/left, <paramref name="floatsAfter"/> below/right) whose native window
+    /// would swallow input. Returns the Margin and the 1 px line's offset within it (Thumb line margin, or QuietSplitter Padding).
     /// </summary>
     internal static (Thickness Grip, Thickness Line) SeamGrip(bool vertical, bool floatsBefore, bool floatsAfter)
     {
@@ -1562,8 +1508,8 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A dragged border's look: a 1 px line (PaneSeamBrush) across its grip, on the seam (<paramref name="line"/>: SeamGrip's), in the
-    /// accent while the pointer is on it or it is dragged (5.4D: as App.xaml's QuietSplitter showed the borders that were GridSplitters).
+    /// Border template: a 1 px PaneSeamBrush line on the seam (<paramref name="line"/> from SeamGrip), accent-coloured on hover or
+    /// drag (matching App.xaml's QuietSplitter).
     /// </summary>
     private static ControlTemplate SplitterLook(Thickness line)
     {
@@ -1586,16 +1532,15 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// Whether a part's <paramref name="edge"/> is a floating pane's (DockPane.Floats: the player), shown: its native window covers
-    /// anything laid over its place, so a border along that edge reaches into the other part only (SeamGrip).
+    /// Whether a part's <paramref name="edge"/> belongs to a visible floating pane (DockPane.Floats), whose native window covers
+    /// overlays, so the border grip extends only into the other part (SeamGrip).
     /// </summary>
     private bool FloatsAt(DockNode node, DockZone edge) =>
         FloatsAt(node, edge, id => _panes.TryGetValue(id, out var pane) && pane.IsShown(), id => _panes.TryGetValue(id, out var pane) && pane.Floats);
 
     /// <summary>
-    /// <see cref="FloatsAt(DockNode, DockZone)"/> for the panes <paramref name="shown"/> and <paramref name="floats"/> say (window-free,
-    /// for the goldens: layout-edge-to-edge). A group: one of its panes shown floats; a split across the edge (side by side, for the
-    /// lower edge): any part's does; a split along it: the outermost part on that side showing anything.
+    /// Window-free <see cref="FloatsAt(DockNode, DockZone)"/> driven by <paramref name="shown"/>/<paramref name="floats"/> (golden
+    /// layout-edge-to-edge). Group: its visible pane floats; split across the edge: any part; split along it: the outermost visible part.
     /// </summary>
     internal static bool FloatsAt(DockNode node, DockZone edge, Func<string, bool> shown, Func<string, bool> floats)
     {
@@ -1611,7 +1556,7 @@ public sealed partial class DockManager
         return outer is not null && FloatsAt(outer, edge, shown, floats);
     }
 
-    /// <summary>After a border was dragged: the parts' sizes on screen become their shares (of the split as the arrangement has it now: SplitView).</summary>
+    /// <summary>After a border drag, writes on-screen part sizes as shares on the current split node (SplitView).</summary>
     private void TakeSizes(SplitView view)
     {
         var wasBuilt = Signature() == _builtSignature;
@@ -1634,10 +1579,9 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// A part's least width: a group's widest least among its panes shown; a split side by side, its parts' together; one over the other,
-    /// its widest part's. A group with a pane joined to its title row (the header over the media) is no narrower than the joined bar and the
-    /// tab shown beside it, up to <see cref="JoinedLeast"/> (5.4D: the whole bar, often 300 DIPs and more, held the column it was in at that
-    /// width and froze the border beside it; narrower, the strip puts the tab in its "more" menu, the bar kept whole).
+    /// A part's minimum width: group = widest visible pane minimum; horizontal split = sum; vertical split = max. A group with a
+    /// joined header is at least the bar plus active tab, capped at <see cref="JoinedLeast"/> over its own minimum (an uncapped
+    /// 300+ DIP bar froze the adjacent border); narrower, the tab moves to the overflow menu.
     /// </summary>
     private double MinWidthOf(DockNode node)
     {
@@ -1648,25 +1592,25 @@ public sealed partial class DockManager
         return _joined is { } joined && ReferenceEquals(joined.Under, node) ? Math.Max(least, Math.Min(_joinedWidth, Math.Max(least, JoinedLeast))) : least;
     }
 
-    // The least width of the group a pane is joined to: the joined bar, the tab shown, and the row's margins.
+    // Minimum width of the header-joined group: bar + active tab + row margins.
     private double _joinedWidth;
 
-    /// <summary>The most the joined bar holds its group's column at, beyond the group's own least (5.4D), DIPs.</summary>
+    /// <summary>Cap (DIPs) on the extra minimum width a joined bar adds to its group.</summary>
     internal const double JoinedLeast = 240;
 
-    /// <summary>The joined bar's own width with the tab shown beside it, as last laid out (5.4D, for the goldens: dock-splitter-range); 0 when no pane is joined.</summary>
+    /// <summary>Last laid-out joined bar width plus active tab (golden dock-splitter-range); 0 when nothing is joined.</summary>
     internal double JoinedWidth => _joined is null ? 0 : _joinedWidth;
 
     /// <summary>The one pane a part shows, when it is a group showing only one; null otherwise.</summary>
     private string? Alone(DockNode node) =>
         node.IsGroup && node.Panes.Where(p => _panes[p].IsShown()).Take(2).ToList() is [var only] ? only : null;
 
-    /// <summary>The one pane a part shows, a group or a split (whose other panes are all hidden); null when it shows none or several.</summary>
+    /// <summary>The single visible pane of a part (group or split); null for none or several.</summary>
     private string? AloneIn(DockNode node) => node.AllPanes().Where(p => _panes[p].IsShown()).Take(2).ToList() is [var only] ? only : null;
 
     /// <summary>
-    /// Whether a part right under the header can have it joined to its row of tabs: a group whose panes are shown with
-    /// tabs, or all have titles (in a title row). A pane with no title of its own alone there (the player) cannot.
+    /// Whether the part under the header can host it in its tab row: a tabbed group or one whose panes all have titles; a lone
+    /// titleless pane (the player) cannot.
     /// </summary>
     private bool CanJoin(DockNode node)
     {
@@ -1677,7 +1621,7 @@ public sealed partial class DockManager
             || shown.All(p => PaneTitleSlot.Of(p)?.Parent is PaneTitleRow);
     }
 
-    /// <summary>Gives a pane that can change its shape the one it has in this layout (see <see cref="DockPane.Reshape"/>).</summary>
+    /// <summary>Applies the layout's shape to a reshapeable pane (<see cref="DockPane.Reshape"/>).</summary>
     private void SetShape(string pane, PaneShape shape)
     {
         _shapes[pane] = shape;
@@ -1685,9 +1629,8 @@ public sealed partial class DockManager
     }
 
     /// <summary>
-    /// Puts a pane that joins the pane under it (the header) at the right-hand end of the row of boxed tabs the part just
-    /// laid out under it was given (see <see cref="CanJoin"/>): the two headers are one bar, the pane's own title row
-    /// (its controls) inside its panel under it.
+    /// Docks a joining pane (the header) at the right end of the boxed tab row below it (<see cref="CanJoin"/>), merging both
+    /// headers into one bar; the pane's own controls stay in its panel.
     /// </summary>
     private bool JoinTo(TabGroupHost tabs, DockNode under, string pane)
     {
@@ -1696,8 +1639,7 @@ public sealed partial class DockManager
         tabs.Trailing.Child = bar;
         _joined = (pane, bar, under);
 
-        // Room for the bar whole, any of its tabs in full when it is the one shown (the widest: choosing another tab
-        // never leaves the shown one no room, only the strip's "more" button), and the margins either side.
+        // Width for the whole bar plus the widest tab (so any active tab fits; others overflow) and both margins.
         var shown = under.Panes.Where(p => _panes[p].IsShown()).ToList();
         bar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         _joinedWidth = Math.Ceiling(bar.DesiredSize.Width + shown.Max(p => TitleWidth(_panes[p].Title)) + JoinedTabRoom);
@@ -1711,8 +1653,7 @@ public sealed partial class DockManager
         VisualTreeHelper.GetDpi(_main).PixelsPerDip).WidthIncludingTrailingWhitespace;
 
     /// <summary>
-    /// A joined pane's place in the row of tabs under it: a grip to drag it by (it has no tab of its own there, and no
-    /// room for one to come up over it), then the pane, kept whole at the row's right-hand end.
+    /// A joined pane's slot in the tab row: a drag grip (it has no tab there) followed by the pane, right-aligned and unclipped.
     /// </summary>
     private FrameworkElement JoinedBar(string pane)
     {

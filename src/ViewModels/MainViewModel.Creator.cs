@@ -20,11 +20,10 @@ public partial class MainViewModel
     private const int MaxIFrameMarks = 1500;
 
     // ----- Frame size -----
-    // The frame is whatever the Export tab's Resolution describes, in any shape: the GPU compositor composes every
-    // clip onto it, and the Arrange canvas draws it. Left blank, it is the Sequence's own size (5.2-AuditB: its natural size,
-    // given as the first file's picture landed on it; no clip's crop changes it afterwards).
+    // The output frame is the Export tab's Resolution (any aspect); the compositor and the Arrange canvas both use it.
+    // Blank means the Sequence's natural size, set by the first file placed; clip crops never change it.
 
-    // The Sequence's size while it has none of its own.
+    // Fallback Sequence size before one is set.
     private const int DefaultSourceWidth = 1920;
     private const int DefaultSourceHeight = 1080;
 
@@ -39,11 +38,11 @@ public partial class MainViewModel
         // While a preset or project is being applied the sizes arrive as they were saved, already the right way round.
         if (!_syncingDimensions)
         {
-            // Turned by hand: that is the Sequence's own turn now, which a preset that names no shape keeps (5.4D).
+            // A manual toggle becomes the Sequence's orientation; a preset with no shape keeps it.
             _turnBeforePreset = null;
             var (width, height) = (OutputWidth, OutputHeight);
 
-            // Blank boxes mean "the Sequence's size"; spelled out, so that there is something to turn over.
+            // Blank boxes mean the Sequence size; fill them in so there is something to transpose.
             if (value && string.IsNullOrWhiteSpace(width) && string.IsNullOrWhiteSpace(height) && GetSequenceSize() is { } natural)
                 (width, height) = (Text(Even(natural.Width)), Text(Even(natural.Height)));
 
@@ -71,34 +70,29 @@ public partial class MainViewModel
     }
 
     // ----- Crop -----
-    // A crop is each clip's own (4.4): its look's CropLeft..CropBottom (fractions of its picture) reframe the picture it plays, on
-    // every track (4.4-BugHunt, the user's Q2: one rule, Layer.HeldCrop; its box takes the shape the crop leaves). The Crop boxes
-    // (CropLeft..CropBottom here, percentages) and Interactive Crop show and set the clip they stand for (CropTarget: the selected
-    // picture, else the video at the playhead), a preset's crop every clip it goes on (TemplateTargets). Cropping a clip never
-    // resizes the Sequence (5.2-AuditB): its natural size is its own.
+    // Crops are per clip: the look's CropLeft..CropBottom (fractions) reframe its picture, clamped by Layer.HeldCrop, and the
+    // clip box takes the cropped aspect. The Crop boxes (percent) and Interactive Crop edit CropTarget; a preset's crop applies
+    // to every TemplateTargets clip. Cropping never resizes the Sequence.
 
-    // Something of the picture always has to remain.
+    // A crop must leave a non-empty picture.
     private const double LargestCropTotal = Layer.LargestCropTotal;
 
-    /// <summary>A crop as fractions (0 to 1) of a picture's width and height, held to what leaves a picture (the one rule: <see cref="Layer.HeldCrop(double, double, double, double)"/>).</summary>
+    /// <summary>A crop as fractions (0 to 1) of the picture, clamped by <see cref="Layer.HeldCrop(double, double, double, double)"/>.</summary>
     private static (double Left, double Top, double Right, double Bottom) HeldCrop(double left, double top, double right, double bottom) => Layer.HeldCrop(left, top, right, bottom);
 
-    /// <summary>A clip's crop, held to what leaves a picture.</summary>
+    /// <summary>A clip's crop, clamped to leave a non-empty picture.</summary>
     private static (double Left, double Top, double Right, double Bottom) CropOf(Layer view) => HeldCrop(view.CropLeft, view.CropTop, view.CropRight, view.CropBottom);
 
     /// <summary>What the Crop boxes say, as fractions.</summary>
     private (double Left, double Top, double Right, double Bottom) BoxCrop() => HeldCrop(CropLeft / 100, CropTop / 100, CropRight / 100, CropBottom / 100);
 
-    /// <summary>The crop of the clip the Crop boxes stand for (CropTarget), as fractions; the boxes' own while there is none.</summary>
+    /// <summary>CropTarget's crop as fractions; the boxes' own values when there is no target.</summary>
     private (double Left, double Top, double Right, double Bottom) TargetCrop() => CropTarget is { } target ? CropOf(target) : BoxCrop();
 
-    /// <summary>
-    /// The size of the picture the Crop boxes and Interactive Crop cut, in its pixels: the file of the clip they stand for (the file
-    /// last opened's while there is none); (0, 0) while neither is known.
-    /// </summary>
+    /// <summary>Source pixel size of CropTarget's file (else the last opened file); (0, 0) while neither is probed.</summary>
     public (int Width, int Height) CropPictureSize => CropTarget is { ImageWidth: > 0, ImageHeight: > 0 } target ? (target.ImageWidth, target.ImageHeight) : (SourceWidth, SourceHeight);
 
-    /// <summary>What the crop of the clip the Crop boxes stand for keeps of its picture, in its pixels: what Interactive Crop draws over the player.</summary>
+    /// <summary>CropTarget's kept rectangle in source pixels; the rectangle Interactive Crop draws over the player.</summary>
     public (int Left, int Top, int Width, int Height) GetTargetCropRect()
     {
         var crop = TargetCrop();
@@ -107,35 +101,31 @@ public partial class MainViewModel
         return ((int)(width * crop.Left), (int)(height * crop.Top), keptWidth, keptHeight);
     }
 
-    /// <summary>What a crop leaves of a picture of a size, in its pixels (even sides); 1920 x 1080 for a picture not known yet.</summary>
+    /// <summary>The cropped size in pixels (even sides); assumes 1920 x 1080 for an unknown picture.</summary>
     private static (int Width, int Height) CroppedSize((double Left, double Top, double Right, double Bottom) crop, int sourceWidth, int sourceHeight) =>
         sourceWidth > 0 && sourceHeight > 0
             ? (Math.Max((int)(sourceWidth * (1 - crop.Left - crop.Right) / 2) * 2, 2), Math.Max((int)(sourceHeight * (1 - crop.Top - crop.Bottom) / 2) * 2, 2))
             : (DefaultSourceWidth, DefaultSourceHeight);
 
-    // Set while the Crop boxes show a clip's crop (ShowCropTarget), and while what they say is written into clips; and while a
-    // preset's crop goes on every clip it goes on (ApplyPresetCrop).
+    // Re-entrancy guard: set while ShowCropTarget loads the boxes, while the boxes write into clips, and during ApplyPresetCrop.
     private bool _showingTarget, _takingCrop, _cropForAll;
 
-    // Interactive Crop being dragged, and whether its drag has taken its one undo step; when a crop was last typed (a box
-    // dragged or typed into sets it on every change: one undo step for changes within a second and a half).
+    // Interactive Crop drag state (one undo step per drag) and the last typed change (edits within 1.5 s merge into one step).
     private bool _cropDragging, _cropDragStepTaken;
 
-    /// <summary>Interactive Crop's drag begins: its first change of the crop takes one undo step for the whole drag.</summary>
+    /// <summary>Starts an Interactive Crop drag; its first change takes the drag's single undo step.</summary>
     public void BeginCropDrag() => (_cropDragging, _cropDragStepTaken) = (true, false);
 
-    /// <summary>Interactive Crop's drag is over.</summary>
+    /// <summary>Ends an Interactive Crop drag.</summary>
     public void EndCropDrag() => _cropDragging = false;
 
     /// <summary>
-    /// The Crop boxes changed (typed, dragged on the video, a preset's): unless they are only showing a clip's crop, what they
-    /// say is written into the clip they stand for (a preset's into every clip it goes on), whose box keeps its middle where it
-    /// was (Layer: a locked box grows about its anchor); one undo step for a drag or a run of typing. The Sequence keeps its size.
+    /// Writes changed Crop box values into CropTarget (or every preset target), keeping each box centred on its anchor.
+    /// One undo step per drag or typing run; ignored while the boxes are only displaying a clip's crop.
     /// </summary>
     private void TakeCropBoxes()
     {
-        // Not while a step is being put back, or its bindings settle (4.4-BugHunt): it brings every clip's crop with it, and
-        // what the boxes are told then is no one's request.
+        // Skipped during undo/redo and its binding settle: the restored document already carries every clip's crop.
         if (_showingTarget || _takingCrop || _placingViews || IsRestoringTimeline)
             return;
 
@@ -160,7 +150,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The undo step a change of the crop takes before it is made: the first of a drag, or of a run of typing.</summary>
+    /// <summary>Takes the undo checkpoint before a crop change: once per drag or typing run.</summary>
     private void TakeCropStep()
     {
         if (_isBackgroundWorker)
@@ -182,7 +172,7 @@ public partial class MainViewModel
             Checkpoint("crop the video");
     }
 
-    /// <summary>Sets the crop from distances in pixels of the picture the Crop boxes cut (<see cref="CropPictureSize"/>), as drawn on it.</summary>
+    /// <summary>Sets the crop from edge insets in source pixels of <see cref="CropPictureSize"/>.</summary>
     public void SetCropFromPixels(double left, double top, double right, double bottom)
     {
         var (width, height) = CropPictureSize;
@@ -198,8 +188,8 @@ public partial class MainViewModel
     private static double ToPercent(double pixels, double of) => Math.Round(Math.Clamp(pixels / of, 0, LargestCropTotal) * 100, 2);
 
     /// <summary>
-    /// A preset's crop, as percentages (left, top, right, bottom). Presets saved before the crop became relative hold
-    /// pixels; those are converted using the size of the file last opened, or 1920 x 1080 when there is none.
+    /// A preset's crop as percentages (left, top, right, bottom). Legacy presets store pixels, converted against the last
+    /// opened file's size (1920 x 1080 when none).
     /// </summary>
     private (double Left, double Top, double Right, double Bottom) PresetCropPercent(EncodingPreset preset)
     {
@@ -211,8 +201,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Takes the crop from a preset: every clip it goes on is cropped so (4.4: a crop is each clip's own; 5.2-AuditB: the selected
-    /// video clips, or every top-level one); with no clip yet, the Crop boxes keep it for the next file opened.
+    /// Applies a preset's crop to each target clip (selected video clips, else every top-level one); with no clips the Crop
+    /// boxes hold it for the next file opened.
     /// </summary>
     private void ApplyPresetCrop(EncodingPreset preset)
     {
@@ -227,10 +217,10 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>The Sequence's natural size (its own: given as the first file's picture landed on it), or null while it has none.</summary>
+    /// <summary>The Sequence's natural size (set by the first file placed), or null while unset.</summary>
     private (int Width, int Height)? GetSequenceSize() => Document.HasNaturalSize ? (Document.NaturalWidth, Document.NaturalHeight) : null;
 
-    /// <summary>The shape sizes are held to: the Sequence's natural size (1920 x 1080 while it has none), on its side with Use Vertical Resolution.</summary>
+    /// <summary>The reference aspect for sizes: the natural size (default 1920 x 1080), transposed under Use Vertical Resolution.</summary>
     private (int Width, int Height) GetNaturalSize() => NaturalOf(GetSequenceSize());
 
     /// <summary>A natural size (1920 x 1080 for none), on its side with Use Vertical Resolution.</summary>
@@ -241,8 +231,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The frame Resolution &amp; Cropping makes of a Sequence of a natural size (null: 1920 x 1080): what a project of 5.1 laid its old
-    /// boxes in, as it is converted (LegacyMainVideo.Migrate, ConvertLegacy).
+    /// The frame Resolution &amp; Cropping derives from a natural size (null: 1920 x 1080); the space legacy projects laid out
+    /// their boxes in during conversion (LegacyMainVideo.Migrate, ConvertLegacy).
     /// </summary>
     private (int Width, int Height) FrameSizeFor((int Width, int Height)? natural)
     {
@@ -251,8 +241,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The size Resolution & Cropping asks for, or null when it leaves the size to the Sequence. One box alone
-    /// is completed from the natural shape.
+    /// The size Resolution &amp; Cropping requests, or null to use the Sequence's. A single filled box is completed
+    /// from the natural aspect.
     /// </summary>
     private (int Width, int Height)? GetRequestedSize() => RequestedSizeFor(GetNaturalSize());
 
@@ -270,7 +260,7 @@ public partial class MainViewModel
         return UseVerticalResolution ? (Even(natural.Width), Even(natural.Height)) : null;
     }
 
-    /// <summary>Width of the output frame the engine composes: as asked for under Resolution & Cropping, otherwise the Sequence's own.</summary>
+    /// <summary>Output frame width the engine composes: the requested Resolution, else the Sequence's.</summary>
     public int FrameWidth => GetRequestedSize()?.Width ?? Even(GetNaturalSize().Width);
 
     public int FrameHeight => GetRequestedSize()?.Height ?? Even(GetNaturalSize().Height);
@@ -279,10 +269,8 @@ public partial class MainViewModel
 
     // ----- The layers on the frame -----
 
-    // The blur fill (5.2-AuditB: each video clip's own, Layer.BlurFill; these are its look, the sequence's one, BackgroundLayer):
-    // how far the blur reaches in pixels of the frame (5.0-Release: 0, sharp, to 64, continuously), how often it is applied (1 to
-    // 4), how much it is darkened, and how much it is enlarged about its middle (1 just covers the frame). Its own effects are
-    // BackgroundLayer.Effects.
+    // Blur fill (per video clip via Layer.BlurFill; these values are the Sequence-level BackgroundLayer look): radius in frame
+    // pixels (0..64, continuous), passes (1..4), dim, and zoom about the centre (1 = just covers). Effects: BackgroundLayer.Effects.
     public const double DefaultBlurRadius = 20, DefaultBackgroundDim = -0.15, MostBackgroundZoom = 4;
     public const int DefaultBlurPasses = 2, MostBlurPasses = 4;
 
@@ -312,13 +300,12 @@ public partial class MainViewModel
     [RelayCommand]
     private void ResetBlurSettings() => (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom) = (DefaultBlurRadius, DefaultBlurPasses, DefaultBackgroundDim, 1);
 
-    /// <summary>Cutouts of videos (a minimap, an ammo counter), videos, images (a logo), words: every clip's view.</summary>
+    /// <summary>All clip views: Cutouts (minimap, ammo counter), videos, images (logo) and text.</summary>
     public ViewList Layers { get; } = [];
 
     /// <summary>
-    /// Adds a region of a video (5.2-AuditB: a Cutout of the video clip the Crop boxes stand for, a child of it on its clock,
-    /// over its whole span): a quarter of its picture to begin with, in the middle of the frame. Where it is cut from is marked
-    /// afterwards with Draw Target. One step of Undo.
+    /// Adds a region Cutout of CropTarget (child on its clock, full span), initially a centred quarter of the picture; the
+    /// source rectangle is set later with Draw Target. One undo step.
     /// </summary>
     [RelayCommand]
     private void AddLayer()
@@ -338,15 +325,14 @@ public partial class MainViewModel
         if (!Edit($"add a region of {target.Name}", edit => SpawnCutouts(edit, clip, template, replace: false)))
             return;
 
-        // The first Cutout in a layout ties the layout to the shape of this video.
+        // The first Cutout binds the layout to this video's aspect.
         if (CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
         Log($"Added {state.Name}, a region of {target.Name}: use Draw Target to mark it on the video");
     }
 
     /// <summary>
-    /// Whether a clip is a Cutout (5.2-AuditB): a video clip of the same file as the clip it is a child of, on its clock (a Game
-    /// Preset's HUD, a region, one HUD element of a mask).
+    /// Whether a clip is a Cutout: a video child of a clip of the same file, on its clock (Game Preset HUD, region, mask part).
     /// </summary>
     public bool IsCutout(Layer view) => view is { IsVideoFile: true, IsDeleted: false } && ClipOf(view) is { } clip && IsCutout(clip);
 
@@ -356,9 +342,8 @@ public partial class MainViewModel
         && Document.FindClip(parentId) is { ContentKind: LayerKind.VideoFile } parent && SameFile(clip.SourcePath, parent.SourcePath ?? "");
 
     /// <summary>
-    /// Whether a clip is a Cutout, linked to its clip or freed from it (5.3, for the Timeline's effect lanes): a Cutout (<see cref="IsCutout(Layer)"/>),
-    /// or one its block's Lock switch unlocked (SetClipLocked) or a trim left wholly outside its clip: a video clip with no parent clip,
-    /// still on a Sub-Lane in another track's stack, a clip of which plays the same file.
+    /// Whether a clip is a linked or freed Cutout (Timeline effect lanes): <see cref="IsCutout(Layer)"/>, or a parentless video clip
+    /// (unlocked via SetClipLocked, or trimmed outside its clip) still on a Sub-Lane of a track playing the same file.
     /// </summary>
     public bool IsCutoutOrFreed(Layer view) => view is { IsVideoFile: true, IsDeleted: false } && ClipOf(view) is { } clip && IsCutoutOrFreed(clip);
 
@@ -371,30 +356,28 @@ public partial class MainViewModel
             && parentTrack.Clips.Any(c => c.ContentKind == LayerKind.VideoFile && SameFile(clip.SourcePath, c.SourcePath ?? "")));
 
     /// <summary>
-    /// Whether a Cutout hangs from one of the clips named (the clips Cutouts are being put on, which lose their own first): 5.5A, as one of
-    /// its pieces (<see cref="IsPiece"/>, wherever it lies), never a clip tethered to it.
+    /// Whether a Cutout is a piece (<see cref="IsPiece"/>) of one of the given clips, wherever it lies; tethered clips never count.
+    /// Used to clear existing Cutouts before new ones are applied.
     /// </summary>
     private bool IsCutoutOf(Layer view, IReadOnlyCollection<Guid> clips) =>
         ClipOf(view) is { ParentClipId: { } parent } clip && clips.Contains(parent) && IsPiece(clip);
 
     /// <summary>
-    /// Where a clip that 4.2.0 would have left "to the end" ends now that every clip has an end of its own: the end of the
-    /// timeline as it is, and a few seconds on when it is placed there or the timeline is empty.
+    /// End time for a clip placed "to the end": the current timeline end, extended a few seconds when the clip starts there
+    /// or the timeline is empty.
     /// </summary>
     private double ToTheEnd(double start) => Math.Max(SequenceSeconds, start + PictureSeconds);
 
-    /// <summary>Puts a new layer onto the timeline as one step of Undo (a track of its own on top of the pictures, or by the row given).</summary>
+    /// <summary>Adds a new layer as one undo step: on a new top picture track, or on the given row's track.</summary>
     private bool PlaceLayer(Layer element, double start, double end, string label, Layer? onRow = null, bool joins = false) =>
         Edit(label, edit => PlaceNew(edit, element, start, end, onRow, joins));
 
-    /// <summary>Adds a picture from a file as a layer. Returns false when the file is not a readable image.</summary>
+    /// <summary>Adds an image file as a layer. Returns false when the file is not a readable image.</summary>
     /// <param name="startSeconds">
-    /// When on the timeline the layer appears: from there to the end of the timeline, or (placed at its end) for a few
-    /// seconds of its own, which the timeline grows to hold.
+    /// Start time: runs to the timeline end, or (placed at the end) for a short default duration the timeline grows to hold.
     /// </param>
     /// <param name="onTrack">
-    /// The row it was dropped on, which decides its track (<see cref="PlaceNew"/>). Wherever it goes it is sized to the frame,
-    /// in its middle (4.4, <see cref="AppSettings.NewClipSizing"/>).
+    /// The drop row, which selects the track (<see cref="PlaceNew"/>). Sized and centred per <see cref="AppSettings.NewClipSizing"/>.
     /// </param>
     public bool AddImageLayer(string path, double startSeconds = 0, Layer? onTrack = null)
     {
@@ -413,7 +396,7 @@ public partial class MainViewModel
             ImageHeight = size.Height,
         };
 
-        // Sized to the frame (fitted, or filling it as Settings say), in its middle (4.4).
+        // Fit or fill the frame per Settings, centred.
         FitToFrame(element, AppSettings.Current.NewClipsFill);
 
         var start = Math.Max(startSeconds, 0);
@@ -426,8 +409,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Adds a track with nothing on it (the + Add Track button): a row of the timeline to drop clips onto. It draws
-    /// nothing and is kept in the project and in undo; the first clip dropped on it takes its place.
+    /// Adds an empty track (+ Add Track): renders nothing, persists in the project and undo, and is replaced by the first
+    /// clip dropped on it.
     /// </summary>
     [RelayCommand]
     private void AddEmptyTrack()
@@ -437,9 +420,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether a clip on the timeline can be dragged onto another track's row, to begin at a moment there: onto a track
-    /// that takes its kind of clip (an empty one too), where that track has nothing for the clip's whole length. Any clip,
-    /// a video of the file opened included; never onto the caption box or the blur fill's settings row.
+    /// Whether a clip can move to another track at a start time: the track must accept its kind (empty tracks do) and be free
+    /// for the clip's whole length. Never onto the caption box or the blur fill row.
     /// </summary>
     public bool CanMoveClipToTrack(Layer clip, Layer track, double start)
     {
@@ -452,11 +434,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Moves a clip to another track (a drag from its row onto another), beginning at <paramref name="start"/>. It keeps its own
-    /// look, place and timing (5.1-DogfoodPolish: a clip's look is its own), unless the track holds a template: it then takes
-    /// that clip's, with Cutouts of its own (<see cref="InheritTemplate"/>); onto a track with a Game Preset of its own (5.2A, a
-    /// Track Preset Node) it takes that preset, its Cutouts swapped for the preset's. Its old track goes when it was the only clip
-    /// on it. One step of Undo.
+    /// Moves a clip to another track starting at <paramref name="start"/>, keeping its look and timing unless the target holds a
+    /// template (<see cref="InheritTemplate"/>) or a Track Preset Node (its Cutouts are swapped for the preset's). An emptied
+    /// source track is removed. One undo step.
     /// </summary>
     public bool MoveClipToTrack(Layer clip, Layer track, double start)
     {
@@ -471,8 +451,7 @@ public partial class MainViewModel
 
         var name = target.Clips.Count == 0 ? "the empty track" : track.Name;
         var hadPreset = NodeOf(Document.TrackOf(model));
-        // Its stream sounds and Cutouts on its old track's lanes go onto lanes under the track it lands on (5.4A: they stayed in the old
-        // track's stack, drawn and heard with it, unless the clip was alone there).
+        // Move the clip's stream-audio and Cutout lanes under the destination track so they leave the old track's stack.
         var source = Document.TrackOf(model);
         if (!Edit($"move {clip.Name} to another track", edit =>
         {
@@ -490,10 +469,10 @@ public partial class MainViewModel
         return true;
     }
 
-    /// <summary>How long a picture placed at the end of the timeline (or on an empty one) is shown for, in seconds.</summary>
+    /// <summary>Default duration in seconds of a still placed at the timeline end or on an empty timeline.</summary>
     private const double PictureSeconds = 5;
 
-    /// <summary>Adds words as a layer, in the middle of the frame, and selects it so that its Text Settings are shown.</summary>
+    /// <summary>Adds a centred text layer and selects it so Text Settings show.</summary>
     [RelayCommand]
     private void AddTextLayer()
     {
@@ -505,7 +484,7 @@ public partial class MainViewModel
             SizeWidth = 0.25,
         };
 
-        // Its box is its words': as wide on the frame as they are at the font's size, and in the middle of it.
+        // Box = measured text at font size, centred on the frame.
         LayoutText(element, keepScale: false);
         var (_, _, width, height) = element.GetOutputRect(FrameWidth, FrameHeight, SourceWidth, SourceHeight);
         if (FrameWidth > 0 && FrameHeight > 0)
@@ -519,11 +498,10 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Measures a text layer's words again and makes its box theirs. The box keeps its middle where it was, and
-    /// the layer keeps how much it had been scaled: words set twice as large as their font's size stay twice as
-    /// large, whatever they now say. Its Scale keyframes are widths, so they are scaled by as much as the box.
+    /// Re-measures a text layer and resizes its box about the centre, preserving the scale relative to font size.
+    /// Scale keyframes store widths, so they are rescaled by the same factor as the box.
     /// </summary>
-    /// <param name="keepScale">False for a layer that is new: its box is exactly its words at the font's size.</param>
+    /// <param name="keepScale">False for a new layer: the box is exactly the text at font size.</param>
     private void LayoutText(Layer layer, bool keepScale = true)
     {
         if (!layer.IsText)
@@ -565,30 +543,25 @@ public partial class MainViewModel
     /// <summary>The fonts installed on this computer, for a text layer's font list.</summary>
     public IReadOnlyList<string> SystemFonts => TextLayout.SystemFonts;
 
-    /// <summary>Adds a video from a file as a clip: it plays over the clips under it.</summary>
+    /// <summary>Adds a video file as a clip composited over the clips beneath it.</summary>
     /// <param name="startSeconds">
-    /// When on the timeline the layer appears. Placed at a moment, it plays once through from there, for as long
-    /// as the file lasts (the timeline grows to hold it); left at the start, it runs to the end of the timeline,
-    /// starting again from its first frame each time it runs out.
+    /// Start time. Placed at a time it plays once for the file's length (the timeline grows); at 0 it loops to the timeline end.
     /// </param>
     /// <param name="onTrack">
-    /// The row of the timeline the file was dropped on, which decides its track (<see cref="PlaceNew"/>): an empty
-    /// track is filled; a video track it joins takes it in its place and with its look, never its mask (a mask is one clip's
-    /// own); a track with a template takes it too (the drop then gives it that template, <see cref="InheritTemplate"/>);
-    /// otherwise it gets a track of its own.
+    /// The drop row (<see cref="PlaceNew"/>): fills an empty track, joins a video track taking its look (never its mask), inherits
+    /// a track template (<see cref="InheritTemplate"/>), or otherwise gets a new track.
     /// </param>
     public async Task<bool> AddVideoLayerAsync(string path, double startSeconds = 0, Layer? onTrack = null) =>
         await AddVideoClipAsync(path, startSeconds, onTrack) is not null;
 
-    /// <summary>As <see cref="AddVideoLayerAsync"/>, and returns the clip once its file has been looked at; null when it could not be added.</summary>
-    /// <param name="playOnce">Plays once through even when placed at the very start (videos dropped together, one after another).</param>
-    /// <param name="follows">Goes on <paramref name="onTrack"/>'s track whatever Settings say: it follows the clip before it in one drop.</param>
-    /// <param name="sourceRange">Only this part of the file (5.4C, a sub-clip from the Media Browser's cutter), in seconds of its MediaOffset clock.</param>
+    /// <summary>As <see cref="AddVideoLayerAsync"/>, returning the clip once probed; null when it could not be added.</summary>
+    /// <param name="playOnce">Play once even at time 0 (multi-file drops placed end to end).</param>
+    /// <param name="follows">Force <paramref name="onTrack"/>'s track regardless of Settings: follows the previous clip of one drop.</param>
+    /// <param name="sourceRange">Sub-clip range from the Media Browser cutter, in seconds of the MediaOffset clock.</param>
     public async Task<Layer?> AddVideoClipAsync(string path, double startSeconds, Layer? onTrack, bool playOnce = false, bool follows = false, (double In, double Out)? sourceRange = null)
     {
-        // The block goes onto the timeline now, marked as loading: nothing is waited for before the drop is answered. What
-        // the file is (its size, its length, whether it has sound) is found out afterwards; until then it is a few seconds
-        // long (less, to fit before the next clip of a track it joins) and is not rendered.
+        // Insert a loading placeholder immediately (no wait on the drop); the probe fills size, length and audio later.
+        // Until then it has a short stand-in length (trimmed to fit before the next clip) and is not rendered.
         var start = Math.Max(startSeconds, 0);
         DevFlightRecorder.Record("media", string.Create(System.Globalization.CultureInfo.InvariantCulture, $"clip added at {start:0.000}s: {path}"));
         Layer element;
@@ -597,7 +570,7 @@ public partial class MainViewModel
                     && (follows || AppSettings.Current.DroppedClipsJoinTrack || TemplateClipOn(row, start) is not null);
         if (joins && onTrack!.IsVideoFile)
         {
-            // The track's look (place, size, filters) with nothing of the clip it was copied from, its mask included.
+            // Inherit the track's look (placement, size, filters) without any of the source clip's data, mask included.
             var state = onTrack.ToState();
             (state.Name, state.ImagePath, state.ImageWidth, state.ImageHeight, state.MediaDuration) = (Path.GetFileName(path), path, 0, 0, 0);
             (state.HasAudio, state.AudioCodec, state.AudioChannels) = (false, "", "");
@@ -610,7 +583,7 @@ public partial class MainViewModel
         }
         else
         {
-            // Until its shape is known, as wide as the frame and in its middle at 16:9 (fitted once it is, below).
+            // Placeholder: frame-wide, centred, 16:9 until the aspect is known (fitted below).
             element = new Layer
             {
                 Kind = LayerKind.VideoFile,
@@ -629,17 +602,16 @@ public partial class MainViewModel
             return null;
         StatusText = $"Loading {element.Name}...";
 
-        // Wherever it goes, sized to the frame (fitted, or filling it as Settings say) in its middle once its shape is known (4.4).
+        // Fit or fill the frame per Settings, centred, once the aspect is known.
         (int X, int Y, int Width, int Height)? box = FrameWidth > 0 && FrameHeight > 0 ? (0, 0, FrameWidth, FrameHeight) : null;
-        // A sub-clip (5.4C) always plays once: at 0 s it would otherwise take the whole file's loop rounds, and only the first be cut.
+        // Sub-clips always play once: at 0 s they would otherwise loop the whole file with only the first round cut.
         var add = new LoadingAdd(playOnce || start > 0 || onTrack is not null || sourceRange is not null, box, AppSettings.Current.NewClipsFill, sourceRange);
         return await FinishVideoAddAsync(element, add) ? element : null;
     }
 
     /// <summary>
-    /// A video clip just placed, still loading, filled in once its file has been looked at (<see cref="CompleteVideoLayerAsync"/>) and
-    /// finished as its add asked (<paramref name="add"/>). Counted as an add under way meanwhile (<see cref="HasPendingAdds"/>), and kept by
-    /// its tab if the tab goes behind first (5.4D-TabPerf review, P2): it is then finished the same way as the tab comes back (ViewFor).
+    /// Completes a loading video clip after its probe (<see cref="CompleteVideoLayerAsync"/>) and finishes it per <paramref name="add"/>.
+    /// Counted in <see cref="HasPendingAdds"/>; if its tab is backgrounded first, the tab completes it on activation (ViewFor).
     /// </summary>
     private async Task<bool> FinishVideoAddAsync(Layer element, LoadingAdd add)
     {
@@ -654,7 +626,7 @@ public partial class MainViewModel
             }
             finally
             {
-                // Its tab gone behind meanwhile took it (DetachForTab), and the map is another project's now.
+                // Tab backgrounded meanwhile (DetachForTab): the map now belongs to another project.
                 if (generation == _projectGeneration)
                     _loadingAdds.Remove(clipId);
             }
@@ -663,8 +635,7 @@ public partial class MainViewModel
         if (!filled)
             return false;
 
-        // A sub-clip plays only its part of the file (5.4C); a clip of the Clip Library starts and ends where it was saved (5.2C); two
-        // pictures side by side on one canvas are offered, never done unasked.
+        // Sub-clips play only their range; Clip Library clips keep their saved in/out. Side-by-side layout is offered, never automatic.
         if (add.SourceRange is { } range)
             FitToSourceRange(element, range.In, range.Out);
         else
@@ -674,9 +645,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Sizes and places a layer to fit inside a box of the frame (in the frame's pixels), in its middle, at its own shape;
-    /// or, <paramref name="fill"/>ing it, to cover the box (what reaches past it is off its edges). Nothing for a layer
-    /// whose shape is not known yet.
+    /// Fits a layer inside a frame-pixel box, centred at its own aspect, or covers it when <paramref name="fill"/>.
+    /// No-op while the layer's aspect is unknown.
     /// </summary>
     private void FitInto(Layer element, (int X, int Y, int Width, int Height) box, bool fill = false)
     {
@@ -685,7 +655,7 @@ public partial class MainViewModel
         if (tall <= 0 || box.Width <= 0 || box.Height <= 0 || frameWidth <= 0 || frameHeight <= 0)
             return;
 
-        // A picture's box takes the shape its crop leaves (4.4-BugHunt): that is what is fitted.
+        // Fit the cropped aspect.
         if (element.IsFile)
         {
             var (left, top, right, bottom) = element.CropFractions;
@@ -705,10 +675,7 @@ public partial class MainViewModel
         });
     }
 
-    /// <summary>
-    /// A clip's own shape, its height for each unit of its width in pixels: its picture's (a file's, its words' box), or a
-    /// Cutout's, its cut part's; 0 while it is not known.
-    /// </summary>
+    /// <summary>A clip's height/width ratio in pixels (file picture, text box, or Cutout source rect); 0 while unknown.</summary>
     private double ShapeOf(Layer element)
     {
         if (element.IsVideo)
@@ -722,9 +689,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Sizes a layer to the frame and puts its middle on the frame's (4.4): fitted (the whole picture shows, touching the
-    /// frame on one side) or filling it (the frame covered). Its aspect is locked: its own shape (as its crop leaves it) is
-    /// what is fitted. Nothing for a layer whose shape is not known yet.
+    /// Centres a layer and fits (letterboxed) or fills (covers) the frame at its locked, cropped aspect.
+    /// No-op while the layer's aspect is unknown.
     /// </summary>
     private void FitToFrame(Layer element, bool fill)
     {
@@ -737,7 +703,7 @@ public partial class MainViewModel
         FitInto(element, (0, 0, frameWidth, frameHeight), fill);
     }
 
-    /// <summary>Notes what a clip's sound is in its file (its first audio stream's codec and channels), for its row's heading.</summary>
+    /// <summary>Records the first audio stream's codec and channels for the clip's row header.</summary>
     private static void DescribeSound(Layer element, MediaInfo info)
     {
         if (info.Audio.FirstOrDefault() is not { } stream)
@@ -746,18 +712,17 @@ public partial class MainViewModel
         (element.AudioCodec, element.AudioChannels) = (stream.Codec, stream.ChannelLayout.Length > 0 ? stream.ChannelLayout : $"{stream.Channels} ch");
     }
 
-    /// <summary>Raised when a layer that was loading has been filled in: its box in the layout pane has its real shape now.</summary>
+    /// <summary>Raised when a loading layer is completed and its layout box has its real aspect.</summary>
     public event Action? LayerLoaded;
 
     /// <summary>
-    /// Looks at a video layer's file, away from the interface, and fills the layer in with what it finds: then its block
-    /// has its real length and its frames are fetched. A file that turns out not to be a video is taken off the timeline
-    /// again (an empty track it filled stays). None of this is an undo step of its own: the drop was.
+    /// Probes a video layer's file off the UI thread and fills in length and frames. A non-video file is removed again (an
+    /// empty track it filled stays). Not an undo step: the drop already was.
     /// </summary>
-    /// <param name="playOnce">Whether the layer was placed at a moment: it then plays once through from there; otherwise to the end of the timeline, round and round.</param>
-    /// <param name="fitInto">A box of the frame, in its pixels, that the layer is fitted inside once its shape is known; null to leave it where it is.</param>
-    /// <param name="keepLength">A clip brought back unfinished (an undo step, a project): its length stays, held to its file.</param>
-    /// <param name="fill">The layer covers <paramref name="fitInto"/> instead of fitting inside it.</param>
+    /// <param name="playOnce">Placed at a time: play once; otherwise loop to the timeline end.</param>
+    /// <param name="fitInto">Frame-pixel box to fit into once the aspect is known; null leaves placement unchanged.</param>
+    /// <param name="keepLength">A restored unfinished clip (undo, project load): keep its length, clamped to the file.</param>
+    /// <param name="fill">Cover <paramref name="fitInto"/> instead of fitting inside it.</param>
     private async Task<bool> CompleteVideoLayerAsync(Layer element, bool playOnce, (int X, int Y, int Width, int Height)? fitInto = null, bool keepLength = false, bool fill = false)
     {
         var path = element.ImagePath;
@@ -766,24 +731,21 @@ public partial class MainViewModel
         MediaInfo? info = null;
         try
         {
-            // A clip just dropped is what the user waits on (4.3E): its probe starts at once, never behind the media
-            // browser's posters and strips in the Interactive lane, and is answered from memory when the browser has
-            // already inspected the file. A clip brought back unfinished waits its turn.
+            // A fresh drop probes immediately, ahead of Media Browser posters/strips in the Interactive lane, and reuses the
+            // browser's cached probe when present. A restored unfinished clip queues normally.
             var token = _shutdown.Token;
             info = await Task.Run(() => MediaProbe.ProbeAsync(path, token, urgent: !keepLength), token);
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            // Not readable: dealt with below, as a file that is not a video.
+            // Unreadable: handled below like a non-video file.
         }
 
-        // Its tab gone behind while it was being looked at (5.4D-TabPerf review, P1): nothing is filled in or edited here, whichever
-        // tab is in front (a duplicate shares its clip ids). Its tab finishes it as it comes back (ViewFor).
+        // Tab backgrounded during the probe: edit nothing here (a duplicate tab shares clip ids); ViewFor finishes it on activation.
         if (generation != _projectGeneration)
             return false;
 
-        // Undone, or removed, while it was being looked at: there is nothing left to fill in. Undone and done again, the clip
-        // is back with a view of its own, which is the one filled in.
+        // Undone or removed during the probe: nothing to fill. After undo+redo the clip has a new view, which is the one filled.
         if (Document.FindClip(clipId) is not { } clip || Document.TrackOf(clip) is not { } track)
             return false;
         element = ViewOf(clip) ?? element;
@@ -806,13 +768,13 @@ public partial class MainViewModel
             if (fitInto is { } box)
                 FitInto(element, box, fill);
 
-            // What the file is, which is not an edit: its length and its sound.
+            // Probe results (length, audio) are not an edit.
             (clip.SourceDuration, clip.AudioStreamIndex) = (Math.Max(info.DurationSeconds, 0), info.Audio.Count > 0 ? 0 : -1);
-            // Placed at a moment, it plays once through (a file's length, however short); at the start, to the end, round and round.
-            // Its length is its picture's (5.4A): a container's sound padded past the last frame adds no frozen or black tail.
+            // Placed at a time: play once for the file's length; at 0: loop to the end. Length is the video stream's, so audio
+            // padded past the last frame adds no frozen or black tail.
             var file = VideoSeconds(info, Math.Max(info.DurationSeconds, 0));
-            // The whole-file tests' picture length (5.4A); a clip brought back keeps what it was saved with (a project from before
-            // 5.4A ended at the container's end, and is still the whole file).
+            // Whole-file checks use the video length; a restored clip keeps its saved length (legacy projects ended at the
+            // container end and still count as whole-file).
             if (!keepLength)
                 clip.PictureDuration = PictureDurationOf(file, clip.SourceDuration);
             var end = keepLength ? clip.End : playOnce || file <= 0.05 ? clip.Start + (file > 0.05 ? file : PictureSeconds) : Math.Max(wanted, clip.Start + file);
@@ -823,7 +785,7 @@ public partial class MainViewModel
             GenerateCommand();
         }
 
-        // Its sound, when it has any, is heard from now on: at the clip's place, for its length.
+        // Audio, if any, becomes audible now at the clip's position and length.
         RefreshLayerRows();
         LayerLoaded?.Invoke();
         _ = LoadLayerPicturesAsync(element);
@@ -833,16 +795,13 @@ public partial class MainViewModel
         return true;
     }
 
-    // Empty tracks a loading clip was dropped onto: a file that turns out not to be a video gives the track back, empty.
+    // Empty tracks filled by loading clips; restored empty if the file is not a video.
     private readonly HashSet<Guid> _filledEmptyTracks = [];
 
     /// <summary>
-    /// A video clip dropped with a stand-in length, given its own: to <paramref name="end"/>, or to its file's end, and
-    /// past that (a clip running to the end of the timeline) as rounds of its file from its first frame, silent after the
-    /// first (4.2.0's loop). One that would run over a clip of its track goes onto a track of its own just above, first:
-    /// nothing is laid over a clip already on the timeline. Every round is as long as the file's picture
-    /// (<see cref="TimelineClip.WholeDuration"/>, 5.4A), not its container: sound padded past the last frame shows no frozen or
-    /// black tail at a seam, nor at the end.
+    /// Replaces a dropped clip's stand-in length: up to <paramref name="end"/> or the file end, then (running to the timeline end)
+    /// as silent loop rounds from frame 0. A clip that would overlap its track moves to a new track just above first.
+    /// Each round lasts <see cref="TimelineClip.WholeDuration"/> (video stream length), so seams show no frozen or black tail.
     /// </summary>
     private void LayOut(ITimelineTransaction edit, TimelineClip clip, double end)
     {
@@ -867,16 +826,15 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Adds the sound of a file (a song, a recording, or the sound of a video) to the timeline as a clip of its
-    /// own: it has no picture, starts where it is put, and is mixed into the first audio track of the output.
+    /// Adds a file's audio (music, recording, or a video's soundtrack) as an audio-only clip mixed into output audio track 1.
     /// </summary>
-    /// <param name="isVoice">Whether the sound is a voice (a voiceover): the sounds set to Auto-Duck make room for it.</param>
-    /// <param name="name">What the clip is called, when that is not its file's name.</param>
-    /// <param name="sourceRange">Only this part of the file (5.4C, a sub-clip from the Media Browser's cutter), in seconds of the file.</param>
+    /// <param name="isVoice">Marks a voiceover: Auto-Duck clips duck under it.</param>
+    /// <param name="name">Clip name override; defaults to the file name.</param>
+    /// <param name="sourceRange">Sub-clip range from the Media Browser cutter, in file seconds.</param>
     public async Task<bool> AddAudioLayerAsync(string path, double startSeconds = 0, bool isVoice = false, string? name = null, (double In, double Out)? sourceRange = null)
     {
-        // Its block waits on this probe, so it is urgent (4.3E): it never queues behind the media browser's work. An add under way
-        // meanwhile (the tabs do not change); one whose tab went behind all the same is placed nowhere (5.4D-TabPerf review, P1).
+        // Urgent probe: never queued behind Media Browser work. Counted as a pending add; if its tab is backgrounded anyway,
+        // the clip is not placed.
         var generation = _projectGeneration;
         MediaInfo? info;
         using (BeginAdd())
@@ -903,8 +861,7 @@ public partial class MainViewModel
         };
         DescribeSound(element, info);
 
-        // Its block is as long as the sound is, unless that runs past the end of the timeline. Dropped after the end,
-        // in the room there, it plays all of itself, and the timeline grows to hold it.
+        // Length = audio length, clipped to the timeline end; dropped past the end it plays in full and the timeline grows.
         var start = Math.Max(startSeconds, 0);
         var sequence = SequenceSeconds;
         var afterEnd = start > 0.01 && start >= sequence - 0.05;
@@ -927,24 +884,20 @@ public partial class MainViewModel
 
     // ----- Stacking order -----
 
-    /// <summary>
-    /// Whether the timeline's checkboxes (snapping, I-frames) and the cut buttons sit under the timeline. They are up in
-    /// the transport row instead, while there is one.
-    /// </summary>
+    /// <summary>Whether the snapping/I-frame toggles and cut buttons sit under the timeline (false while a transport row hosts them).</summary>
     public bool ShowTimelineOptionsBelow => !ShowAdvancedPlayback;
 
-    /// <summary>Raised when something about the layers has changed that their time bars may have to be drawn again for.</summary>
+    /// <summary>Raised when a layer change may require the time bars to redraw.</summary>
     public event Action? TimelineChanged;
 
-    // The blur fill's settings row (5.0-Release; 5.2-AuditB: every video clip's own blur fill is drawn with its look). The
-    // sequence's, not a clip of the document: its row stands for it, and it carries its own effect stack (Look effects only);
-    // its blur and zoom are the view model's (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom).
+    // Blur fill settings row: a Sequence-level pseudo-layer (not a document clip) with its own Look-only effect stack;
+    // its blur and zoom live on the VM (BlurRadius, BlurPasses, BackgroundDim, BackgroundZoom).
     private readonly Layer _backgroundRow = new() { Kind = LayerKind.Background, Name = "Background Blur" };
 
-    /// <summary>The pictures, bottom first: every clip's view on the picture tracks. Sounds have no place in it.</summary>
+    /// <summary>Picture-track clip views, bottom first; audio excluded.</summary>
     private List<Layer> GetStack() => Layers.Where(l => !l.IsAudio).ToList();
 
-    /// <summary>The stack as tracks, bottom first: the clips of one track lie together, and move together.</summary>
+    /// <summary>Picture views grouped by track, bottom first.</summary>
     private List<List<Layer>> GetStackTracks()
     {
         var tracks = new List<List<Layer>>();
@@ -965,7 +918,7 @@ public partial class MainViewModel
     [RelayCommand]
     private void MoveLayerDown(Layer? layer) => MoveLayer(layer, -1);
 
-    /// <summary>Moves a layer's track one place towards the front (+1) or the back (-1), past the next picture track that way.</summary>
+    /// <summary>Moves a layer's track up (+1) or down (-1) past the adjacent picture track.</summary>
     private void MoveLayer(Layer? layer, int by)
     {
         if (TrackOfRow(layer) is not { } track || track.Kind is TimelineTrackKind.Audio or TimelineTrackKind.Subtitle)
@@ -985,11 +938,7 @@ public partial class MainViewModel
 
     // ----- Splitting: the razor -----
 
-    /// <summary>
-    /// Cuts a clip in two at a time: the first part ends there and a second clip, the same in everything
-    /// else, begins there, on the same track. Each can then be moved in time, trimmed or deleted on its own.
-    /// Any clip.
-    /// </summary>
+    /// <summary>Splits any clip at a time into two otherwise identical clips on the same track.</summary>
     public bool SplitLayer(Layer layer, double seconds)
     {
         if (ClipOf(layer) is not { } clip || seconds <= clip.Start + TimelineDocument.MinimumClipSeconds || seconds >= clip.End - TimelineDocument.MinimumClipSeconds)
@@ -1008,9 +957,8 @@ public partial class MainViewModel
     // ----- HUD layers -----
 
     /// <summary>
-    /// The file of a video clip at a moment of the timeline and the moment of it shown there (5.2-AuditB: the still the mask tools
-    /// and the frame preview draw on), on the file's own clock as FFmpeg seeks it: the selected video when it is on then, else the
-    /// lowest shown one on then, else the one the Crop boxes stand for (<see cref="CropTarget"/>); null while there is none to read.
+    /// The source file and file-clock time shown at a timeline time (the still for mask tools and frame preview): the selected
+    /// video if active, else the lowest visible one, else <see cref="CropTarget"/>; null when none.
     /// </summary>
     public (string Path, double Seconds)? FileMomentAt(double sequenceSeconds)
     {
@@ -1026,12 +974,11 @@ public partial class MainViewModel
         return (path, Math.Max(clip.MediaOffset + (at - clip.Start) * clip.Speed + shift, 0));
     }
 
-    /// <summary>Whether a timeline drag is held (the window's): background work's result waits for it, as every other change to the project does.</summary>
+    /// <summary>Whether a timeline drag is in progress; background results defer until it ends, like other project changes.</summary>
     public Func<bool>? IsTimelineDragHeld { get; set; }
 
     /// <summary>
-    /// The clips a set of Cutouts goes on (a mask's, the Cutout Studio's), with a status line said when there is none (5.2-AuditB:
-    /// a Cutout is a clip's child, on its clock: <see cref="TemplateTargets"/>).
+    /// Target clips for a Cutout set (mask, Cutout Studio) via <see cref="TemplateTargets"/>; posts a status line when none.
     /// </summary>
     private List<Guid> CutoutTargets(string what)
     {
@@ -1042,11 +989,10 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Cutouts from a Mask: one Cutout per part of a mask of the whole frame, each cut out of the video where the part is and
-    /// sharing the mask, laid back where it was or out for a tall frame; a set of them over each video clip they go on (the
-    /// selected ones, or every top-level one), each a child of its clip on its clock, in front of it. One step of Undo.
+    /// Creates one Cutout per mask region (sharing the mask), placed in situ or re-laid for a vertical frame, as children above
+    /// each target clip (selected, else every top-level video). One undo step.
     /// </summary>
-    /// <param name="replace">Takes the Cutouts already cut from those clips away first (into the recycle bin).</param>
+    /// <param name="replace">Moves the targets' existing Cutouts to the recycle bin first.</param>
     public void AddMaskLayers(string maskPath, IReadOnlyList<System.Windows.Rect> pieces, bool vertical, bool replace)
     {
         if (pieces.Count == 0 || CutoutTargets("HUD Cutouts") is not { Count: > 0 } targets)
@@ -1074,7 +1020,7 @@ public partial class MainViewModel
         if (vertical && !UseVerticalResolution)
             UseVerticalResolution = true;
 
-        // Named after where they are, and numbered where two would have the same name.
+        // Named by region, numbered on name collisions.
         var names = pieces.Select(MaskStore.PlaceName).ToList();
         var states = pieces.Select((piece, i) => new LayerState
         {
@@ -1105,15 +1051,14 @@ public partial class MainViewModel
     // ----- Stream copy -----
 
     /// <summary>
-    /// Copy passes one file's picture through untouched (SequenceSpans.CopyCutOf: the file the Sequence shows most of, its clips
-    /// joined end to end). When there are filters or a look set that it will therefore leave out, or clips it does not copy, this
-    /// says so; otherwise it is empty.
+    /// Warning for Copy exports (SequenceSpans.CopyCutOf passes the dominant file's clips through unencoded): lists dropped
+    /// filters/looks and uncopied clips; empty when nothing is lost.
     /// </summary>
     public string CopyBypassWarning
     {
         get
         {
-            // An Audio Only export (5.4C) copies no picture: nothing to warn of.
+            // Audio Only exports copy no picture.
             if (VideoEncoder.Family != EncoderFamily.Copy || IsAnimatedOutput || IsAudioOnlyExport)
                 return "";
 
@@ -1127,7 +1072,7 @@ public partial class MainViewModel
 
             // Copy cuts without encoding: the file's clips are joined end to end from the I-frames at or before their starts.
             var file = copy is null ? "" : System.IO.Path.GetFileName(copy.Path);
-            // (The two that cannot be made are refused as an export starts, 5.2-Arm64AndNpu: EncoderCommand.WhyCopyCannotCut.)
+            // Impossible copy cuts are refused at export start (EncoderCommand.WhyCopyCannotCut).
             var cut = copy is null ? " No clip on the timeline shows a file's picture: Copy has nothing to write, so its export is refused."
                 : copy.Pieces.Count == 0 ? $" The clips of {file} play at another speed: Copy cannot cut them without encoding, so its export is refused."
                 : copy.IsCut ? $" The clips of {file} are joined end to end, each from the I-frame at or before its start (gaps and moves are closed up)."
@@ -1138,7 +1083,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>Takes a clip off the timeline (no recycle bin: the layer tools' Remove), its time left empty. One step of Undo.</summary>
+    /// <summary>Removes a clip (layer tools' Remove, no recycle bin), leaving a gap. One undo step.</summary>
     [RelayCommand]
     private void RemoveLayer(Layer? element)
     {
@@ -1147,11 +1092,10 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Gives every other Cutout of the same file's picture the mask this one has (its picture, its drawn outlines, whether it is
-    /// turned inside out, how far it is grown). Each then takes its own part of it and stays a clip of its own; their crops and
-    /// outlines are their own and are left as they are.
+    /// Copies this Cutout's mask (image, outlines, invert, grow) to every other Cutout of the same file; their crops and
+    /// own outlines are left unchanged.
     /// </summary>
-    /// <returns>How many Cutouts were given it.</returns>
+    /// <returns>The number of Cutouts updated.</returns>
     public int ShareFrameMask(Layer from)
     {
         var count = 0;
@@ -1165,7 +1109,7 @@ public partial class MainViewModel
         return count;
     }
 
-    /// <summary>The clips on the same track as a row's clip, in time; the row alone when it stands for no track's clips (a stand-in, an empty track).</summary>
+    /// <summary>The row clip's track-mates in time order; just the row for a stand-in or empty track.</summary>
     public List<Layer> GetTrackClips(Layer layer) =>
         TrackOfRow(layer) is { Clips.Count: > 0 } track ? track.Clips.Select(ViewOf).OfType<Layer>().ToList() : [layer];
 
@@ -1176,12 +1120,12 @@ public partial class MainViewModel
         if (sender is not Layer source)
             return;
 
-        // A clip's timing and switches are the document's: one changed here (a box bound to it) is made an edit of the
-        // clip, and anything else is its look, newer now than the clip's (MainViewModel.Document.cs).
+        // Timing and switches belong to the document and become a clip edit; any other property is a look change
+        // (MainViewModel.Document.cs).
         if (NoteViewChange(source, e.PropertyName) || _syncingViews)
             return;
 
-        // Its crop set elsewhere (the layer tools): the Crop boxes show it when they stand for this clip (4.4).
+        // Crop changed elsewhere (layer tools): refresh the Crop boxes if this clip is CropTarget.
         if (!_takingCrop && !_placingViews && e.PropertyName is nameof(Layer.CropLeft) or nameof(Layer.CropTop) or nameof(Layer.CropRight) or nameof(Layer.CropBottom)
             && ReferenceEquals(source, CropTarget))
         {
@@ -1193,29 +1137,29 @@ public partial class MainViewModel
         if (e.PropertyName == nameof(Layer.LockAspectRatio) && source is { LockAspectRatio: false })
             source.StartFreeHeight(FrameWidth, FrameHeight, SourceWidth, SourceHeight);
 
-        // Marked again on the video that is loaded: the layout now fits this shape.
+        // Re-marked on the loaded video: the layout now uses this aspect.
         if (e.PropertyName is nameof(Layer.SourceWidth) or nameof(Layer.SourceHeight) && CurrentSourceAspect > 0)
             _layoutSourceAspect = CurrentSourceAspect;
 
-        // Not a change of the user's. (A clip's look is its own, 5.1-DogfoodPolish: nothing is copied along its track.)
+        // Derived change, not user input. Looks are per clip: nothing propagates along the track.
         if (_settingQuietly || _applyingKeys)
             return;
 
         if (e.PropertyName == Layer.KeysChanged)
             RefreshAnyKeys();
 
-        // Moved, sized or turned by hand: what that does to its keyframes. (Not a place written into it as the frame changed shape.)
+        // Manual move/resize/rotate updates keyframes; placement rewritten by a frame-shape change does not.
         if (!_placingViews)
             RecordKey(source, e.PropertyName);
 
-        // An effect parameter's value (its text, its keyframes) changes pixels or sound only (Layer.RaisingEffectValue): look-only.
-        // Clip pictures are not layer properties (ClipPictures), so every change here reaches the command.
+        // Effect parameter values (text, keyframes) affect only pixels/sound (Layer.RaisingEffectValue): look-only.
+        // Clip pictures live in ClipPictures, not on the layer, so every change here reaches the command.
         var change = source.RaisingEffectValue ? PreviewChange.Look : PreviewChange.Rows;
         var batched = DeferToLookBatch(change, command: true);
         if (!batched)
             RaiseTimelineChanged(change);
 
-        // Different words, or a different font: its box is measured again.
+        // Text or font changed: re-measure the box.
         if (source.IsText && Layer.IsTextShapeProperty(e.PropertyName))
             LayoutText(source);
 
@@ -1223,7 +1167,7 @@ public partial class MainViewModel
             GenerateCommand(change);
     }
 
-    // Set while a layer is written to by what follows from a change (a text box measured, a placement given), not by the user.
+    // Set while a layer is written by derived updates (text re-measure, automatic placement), not by user input.
     private bool _settingQuietly;
 
     // ----- Timeline I-frame lines -----
@@ -1231,18 +1175,17 @@ public partial class MainViewModel
     /// <summary>Whether the I-frame lines are drawn on the timeline. Remembered between sessions.</summary>
     [ObservableProperty] private bool _showIFrames = AppSettings.Current.ShowIFrames;
 
-    // Set while ShowIFrames follows a save of the Settings window (OnSettingsSaved, 5.3): the saved settings already hold the lines and
-    // the timeline thumb's snap the user left there, so switching the lines writes nothing and leaves that snap alone.
+    // Set while ShowIFrames syncs from a Settings save (OnSettingsSaved): the saved settings already hold both the lines and
+    // the thumb snap, so the toggle writes nothing and leaves the snap unchanged.
     private bool _resyncingShowIFrames;
 
     partial void OnShowIFramesChanged(bool value)
     {
-        // The change is still raised (the Scrubber and the Timeline Settings menu show it); only what a switch by hand does is skipped.
+        // Still raise the change (Scrubber and Timeline Settings menu bind to it); only the manual-toggle side effects are skipped.
         if (_resyncingShowIFrames)
             return;
 
-        // Optionally the pull of the timeline thumb towards I-frames goes on and off with the lines.
-        // Snapping of the cut points is a separate matter and is not touched.
+        // Optionally toggle thumb snapping to I-frames with the lines; cut-point snapping is independent.
         AppSettings.Update(current =>
         {
             current.ShowIFrames = value;
@@ -1258,8 +1201,8 @@ public partial class MainViewModel
     // ----- Taskbar progress -----
 
     /// <summary>
-    /// Shows an encode's progress on the taskbar button of the window that owns this view model (set by the window; null without one).
-    /// The state is set explicitly: from None the taskbar draws nothing whatever the value is. Fraction 0 to 1.
+    /// Taskbar progress sink set by the owning window (null without one). State is set explicitly since None draws nothing
+    /// regardless of value; fraction 0..1.
     /// </summary>
     public ITaskbarProgress? TaskbarProgress { get; set; }
 
@@ -1269,7 +1212,7 @@ public partial class MainViewModel
             TaskbarProgress?.Show(state, Math.Clamp(fraction, 0, 1));
     }
     // ----- Encoder presets -----
-    // Each kind of encoder has its own speed/quality steps, and its own FFmpeg option for them.
+    // Each encoder family has its own speed/quality steps and FFmpeg option.
 
     private static readonly string[] SoftwarePresets = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
     private static readonly string[] QsvPresets = ["veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
@@ -1278,9 +1221,8 @@ public partial class MainViewModel
     private static readonly string[] NvencPresets = ["p1", "p2", "p3", "p4", "p5", "p6", "p7"];
 
     /// <summary>
-    /// The step a hardware encoder starts at: its slowest and best (5.1-DogfoodPolish, the user's directive: NVENC's p7, AMF's high_quality
-    /// (5.4B: slower than quality, in the FFmpeg HandPeg ships), and QSV's veryslow, which is its target usage 1); null for an encoder that
-    /// has no such default.
+    /// Default (slowest, highest-quality) step of a hardware family: NVENC p7, AMF high_quality (slower than quality in the
+    /// bundled FFmpeg), QSV veryslow (target usage 1); null for families without one.
     /// </summary>
     public static string? BestStepOf(EncoderFamily family) => family switch
     {
@@ -1291,17 +1233,15 @@ public partial class MainViewModel
     };
 
     /// <summary>
-    /// The step an encoder starts at (5.4B, CLAUDE.md 8: the highest quality): a hardware one's best (<see cref="BestStepOf(EncoderFamily)"/>),
-    /// veryslow for x264 and x265; null for one with no steps here (Media Foundation, SVT-AV1, VP9, the editing codecs, Copy). A
-    /// software encoder that keeps a step chosen by hand keeps it (UpdateEncoderPresets).
+    /// Default (highest-quality) step of an encoder: <see cref="BestStepOf(EncoderFamily)"/> for hardware, veryslow for x264/x265;
+    /// null for encoders without steps (MF, SVT-AV1, VP9, editing codecs, Copy). Software keeps a manual choice (UpdateEncoderPresets).
     /// </summary>
     public static string? BestStepOf(EncoderOption encoder) =>
         encoder.Name is "libx264" or "libx265" ? "veryslow" : BestStepOf(encoder.Family);
 
     /// <summary>
-    /// The fastest step of a hardware family (5.4D, Q2 b: a speed-first preset, Fast Proxy, the one exception to CLAUDE.md 8's slowest
-    /// step): NVENC's p1, QuickSync's veryfast, AMF's speed; null for one with no steps here (Media Foundation's fastest is its
-    /// -compression_level 0, MediaFoundationEncoder.FastestStepArgument).
+    /// Fastest step of a hardware family, used only by the speed-first Fast Proxy preset: NVENC p1, QSV veryfast, AMF speed;
+    /// null otherwise (MF uses -compression_level 0 via MediaFoundationEncoder.FastestStepArgument).
     /// </summary>
     public static string? FastestStepOf(EncoderFamily family) => family switch
     {
@@ -1311,7 +1251,7 @@ public partial class MainViewModel
         _ => null,
     };
 
-    /// <summary>The fastest step of an encoder (5.4D): a hardware family's (<see cref="FastestStepOf(EncoderFamily)"/>), ultrafast for x264 and x265.</summary>
+    /// <summary>Fastest step of an encoder: <see cref="FastestStepOf(EncoderFamily)"/> for hardware, ultrafast for x264/x265.</summary>
     public static string? FastestStepOf(EncoderOption encoder) =>
         encoder.Name is "libx264" or "libx265" ? "ultrafast" : FastestStepOf(encoder.Family);
 
@@ -1355,8 +1295,8 @@ public partial class MainViewModel
             foreach (var preset in presets)
                 EncoderPresets.Add(preset);
 
-            // Another kind of encoder: a hardware one starts at its best step, whatever the last one's was (QSV has a "medium" too).
-            // Software keeps its choice when it has it, else its best (5.4B: veryslow).
+            // Family changed: hardware resets to its best step even if the old name exists (QSV also has "medium");
+            // software keeps its choice when available, else veryslow.
             EncoderPreset = BestStepOf(VideoEncoder.Family) is { } best ? best
                 : presets.Contains(previous) ? previous
                 : BestStepOf(VideoEncoder) is { } own && presets.Contains(own) ? own
@@ -1374,8 +1314,7 @@ public partial class MainViewModel
     }
 
     // ----- Drawing on the video -----
-    // One overlay over the player serves three jobs, one at a time: setting the crop,
-    // marking where a UI layer is in the source, and arranging the layers on the output frame.
+    // One player overlay, one mode at a time: crop, mark a UI layer's source rect, or arrange layers on the output frame.
 
     /// <summary>While on, a rectangle can be dragged over the video to set the crop.</summary>
     [ObservableProperty] private bool _isInteractiveCropActive;
@@ -1423,15 +1362,14 @@ public partial class MainViewModel
 
     private CancellationTokenSource? _spriteCancellation;
 
-    // The file the sheet up now was made of.
+    // Source file of the current sheet.
     private string? _spriteSource;
 
-    // The GPU engine could not draw the sequence's own Sequence Overview Scrubber pictures this session: the key frames of the file last opened stand in.
+    // Set when GpuProgramStrip failed this session: the Overview Scrubber falls back to the last file's key frames.
     private bool _sourceThumbnails;
 
     /// <summary>
-    /// The Sequence Overview Scrubber's pictures cannot be the sequence's (GpuProgramStrip gave up): the key frames of the file last opened are made
-    /// instead, now and for every file opened after.
+    /// Switches the Overview Scrubber to key-frame sheets of the last opened file (now and for later files) after GpuProgramStrip fails.
     /// </summary>
     public void UseSourceThumbnails()
     {
@@ -1441,8 +1379,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Builds the hover-preview sheet of the key frames of the file last opened in the background: only where the GPU engine does not
-    /// draw the sequence's own (<see cref="GpuProgramStrip"/>), and not while the setting is off.
+    /// Builds the last opened file's key-frame hover sheet in the background, only when <see cref="GpuProgramStrip"/> is unavailable
+    /// and the setting is on.
     /// </summary>
     private async Task GenerateSpriteSheetAsync(string videoPath)
     {
@@ -1453,8 +1391,7 @@ public partial class MainViewModel
             return;
         }
 
-        // The sheet up stays until the new one is ready when it is of the same file (made again at another spacing, or the
-        // file opened again): the strip along the timeline never blinks out. A sheet of another file goes at once.
+        // Same file: keep the current sheet until the new one is ready so the strip never blanks; another file: drop it now.
         if (!string.Equals(_spriteSource, videoPath, StringComparison.OrdinalIgnoreCase))
             (SpriteSheetPath, _spriteSource) = (null, null);
 
@@ -1468,16 +1405,15 @@ public partial class MainViewModel
 
         var cancellation = _spriteCancellation = new CancellationTokenSource();
 
-        // One sheet holds a fixed number of thumbnails; for a long video they are spread further apart
-        // so that the sheet still covers all of it. The strip behind the timeline is cut from the same
-        // sheet, and wants enough pictures to fill its length even for a short video.
+        // Fixed thumbnail count per sheet: spacing grows with duration to cover the whole file, while short files still
+        // get enough thumbnails to fill the timeline strip cut from the same sheet.
         var capacity = FfmpegRunner.SpriteGridSize * FfmpegRunner.SpriteGridSize;
         var wanted = Math.Max(settings.ThumbnailIntervalSeconds, 1.0);
         if (ShowTimelineThumbnails)
             wanted = Math.Min(wanted, Math.Max(duration / FilmstripPictures, 0.2));
         var interval = Math.Max(wanted, duration / capacity);
 
-        // Made before, for this file as it is and at this spacing: taken from the cache.
+        // Cache hit for this file version and spacing.
         var kind = string.Create(System.Globalization.CultureInfo.InvariantCulture, $"sprite{interval:0.###}");
         if (PreviewCache.Timeline.Find(videoPath, kind, ".jpg") is { } kept)
         {
@@ -1501,7 +1437,7 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            // Previews are a nicety; the app works without them.
+            // Previews are optional; failures are ignored.
         }
         finally
         {
@@ -1511,7 +1447,7 @@ public partial class MainViewModel
         }
     }
 
-    /// <summary>How many pictures the strip along the timeline is given to choose from, at least.</summary>
+    /// <summary>Minimum thumbnail count for the timeline strip.</summary>
     private const int FilmstripPictures = 40;
 
     /// <summary>Whether a strip of pictures from the video is drawn along the timeline, behind the waveform.</summary>

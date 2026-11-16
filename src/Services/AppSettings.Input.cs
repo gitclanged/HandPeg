@@ -1,14 +1,12 @@
 namespace HandPegApp.Services;
 
 /// <summary>
-/// One slice of the Lightning Dial's top level (4.4; 5.1-Polish, the user's directive: a slice is an action or a category):
-/// either an action run the moment it is chosen (<see cref="Action"/>, a KeybindManager id: the dial HandPeg comes with is
-/// eight of them), or a category, its name and glyph on the top level and the actions (ids, "" for an empty slice) its
-/// seven slices run when it opens.
+/// Lightning Dial top-level slice: either an immediate action (<see cref="Action"/>, a KeybindManager id; the default dial has eight)
+/// or a category with name, glyph and seven sub-slice action ids ("" = empty).
 /// </summary>
 public sealed class DialCategoryState
 {
-    /// <summary>The action the slice runs at once (5.1-Polish); "" for a category of <see cref="Actions"/>.</summary>
+    /// <summary>Immediate action id; "" for a category (<see cref="Actions"/>).</summary>
     public string Action { get; set; } = "";
 
     public string Name { get; set; } = "";
@@ -25,7 +23,7 @@ public sealed class DialCategoryState
     public DialCategoryState Clone() => new() { Action = Action, Name = Name, Glyph = Glyph, Actions = [.. Actions] };
 }
 
-// Keybinds, the Lightning Dial and the Quick-Start Tour (4.4): their settings, read by KeybindManager.
+// Keybind, Lightning Dial and Quick-Start Tour settings (read by KeybindManager).
 public sealed partial class AppSettings
 {
     /// <summary>The key map every other preset is a set of changes to.</summary>
@@ -35,53 +33,46 @@ public sealed partial class AppSettings
     public string KeybindPreset { get; set; } = DefaultKeybindPreset;
 
     /// <summary>
-    /// The user's own changes to the preset, by action id: the chords ("Ctrl+Alt+S", "Shift+Mouse5", "Tab") that action has
-    /// now (an empty list unbinds it). Null while the preset is used as it is.
+    /// Per-action overrides of the keymap preset: chords ("Ctrl+Alt+S", "Shift+Mouse5", "Tab"); an empty list unbinds. Null = unmodified.
     /// </summary>
     public Dictionary<string, List<string>>? CustomKeybinds { get; set; }
 
     /// <summary>
-    /// The pan keys (A and D as HandPeg comes) held over a Canvas or a player that is not zoomed in pan the timeline instead
-    /// of doing nothing (4.4.0, the user's B7; off by default: the keys act on what is under the pointer).
+    /// When on, pan keys (default A/D) over an unzoomed Canvas or player pan the Timeline instead. Off by default (keys target the hovered pane).
     /// </summary>
     public bool PanTimelineWhenNotZoomed { get; set; }
 
     /// <summary>
-    /// Momentum (coasting) after a flick or a fast wheel on the Timeline, the Subtitle Studio's strip and the Media Browser's lists and
-    /// filmstrip (5.4C; <see cref="MomentumScroller"/>): only from 250 DIP/s, never after a pause of 40 ms before letting go, and any
-    /// press stops it. On by default; also in the Timeline Settings menu.
+    /// Momentum scrolling after flicks or fast wheels (Timeline, Subtitle Studio strip, Media Browser; <see cref="MomentumScroller"/>):
+    /// starts at 250 DIP/s, not after a 40 ms pause before release, stopped by any press. On by default; also in Timeline Settings.
     /// </summary>
     public bool EnableMomentumScrolling { get; set; } = true;
 
     /// <summary>
-    /// The developer flight recorder (<see cref="DevFlightRecorder"/>, 4.4.0), also on while %AppData%\HandPeg\dev-verbose.flag exists:
-    /// Settings > General > Diagnostics > Verbose flight recorder (5.2.0's re-cut, the user's answer), off by default. Never written
-    /// unless set: "devVerboseLogging": true in appsettings.json.
+    /// Developer flight recorder (<see cref="DevFlightRecorder"/>; also on while %AppData%\HandPeg\dev-verbose.flag exists). Settings >
+    /// General > Diagnostics > Verbose flight recorder, off by default; serialized only when true.
     /// </summary>
     [System.Text.Json.Serialization.JsonPropertyName("devVerboseLogging")]
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool DevVerboseLogging { get; set; }
 
-    /// <summary>The Lightning Dial's eight slices (5.1-Polish: each an action, or a category of seven); null for the dial HandPeg comes with.</summary>
+    /// <summary>Lightning Dial's eight slices (action or seven-slot category); null for the default dial.</summary>
     public List<DialCategoryState>? LightningDial { get; set; }
 
     /// <summary>
-    /// The Quick-Start Tour was had: offered by itself (it counts as soon as it starts), finished or skipped. While false it
-    /// is offered once, on any install (4.4-BugHunt: existing ones too, not only after the first-run window); Settings still
-    /// shows it whenever wanted.
+    /// True once the Quick-Start Tour was auto-offered (counted at start), finished or skipped. While false it is offered once on any
+    /// install; Settings can always reopen it.
     /// </summary>
     public bool QuickStartTourDone { get; set; }
 
     /// <summary>
-    /// Whether this session began with the first-run window to come (no settings yet, or settings that never went through
-    /// it). Never true for a PC that only lacks its engines. (The Quick-Start Tour no longer waits for it, 4.4-BugHunt.)
+    /// True when this session shows the first-run window (no settings, or first run never completed); never just for missing engines.
     /// </summary>
     internal static bool FirstRunThisSession { get; private set; }
 
     /// <summary>
-    /// Load-time cleanup of the input settings: a shortcut that can never work (Ctrl+Shift+S, which graphics software takes
-    /// for its instant-replay hotkey before HandPeg sees it, a Windows key chord, Alt+F4...) is dropped and logged, and an
-    /// action that is no longer HandPeg's is forgotten. Costs nothing while the user has changed no key.
+    /// Load-time input cleanup: drops and logs unusable chords (Ctrl+Shift+S taken by GPU instant-replay hotkeys, Win chords, Alt+F4, ...)
+    /// and unknown action ids. Free when no keys were customized.
     /// </summary>
     internal void CleanUpInput()
     {
@@ -97,7 +88,7 @@ public sealed partial class AppSettings
             CustomKeybinds = null;
     }
 
-    /// <summary>A first start (no settings file, or one that could not be read): the first-run window comes before the main one.</summary>
+    /// <summary>First start (no or unreadable settings): the first-run window precedes the main window.</summary>
     private static void NoteFirstRun() => FirstRunThisSession = true;
 
     /// <summary>Deep copies of the input settings into a <see cref="Clone"/>.</summary>

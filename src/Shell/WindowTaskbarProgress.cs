@@ -4,7 +4,7 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp.Shell;
 
-/// <summary>A window's <see cref="Window.TaskbarItemInfo"/> as the view model's <see cref="ITaskbarProgress"/>; nothing while it has none.</summary>
+/// <summary><see cref="ITaskbarProgress"/> over a window's <see cref="Window.TaskbarItemInfo"/>; no-op when absent.</summary>
 internal sealed class WindowTaskbarProgress(Window window) : ITaskbarProgress
 {
     public void Show(TaskbarItemProgressState state, double fraction)

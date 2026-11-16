@@ -3,39 +3,36 @@ using System.Text;
 
 namespace HandPegApp.Compositor.Native;
 
-// ----- DXCore: every adapter Windows has, graphics cards and NPUs alike (Pass 5.2-Arm64AndNpu) -----
+// ----- DXCore adapter enumeration (GPUs and NPUs) -----
 //
-// DXGI lists graphics cards only; DXCore (dxcore.dll, Windows 10 2004 and later) lists every adapter with a WDDM or MCDM
-// driver, among them the NPUs (a Snapdragon X's Hexagon, an Intel or AMD NPU), and says of a card whether it shares the
-// computer's memory (IsIntegrated). The library is loaded when first asked for, never linked: a Windows without it (or a
-// call that fails) gives an empty list, never an exception. COM by hand as the rest of Native: the method tables'
-// places are dxcore_interface.h's declaration order (IUnknown 0-2, then the interface's own), checked on the Snapdragon X
-// Elite by calling them (the factory's CreateAdapterList with the NPU attribute listed the Hexagon NPU; the adapter's
-// IsAttributeSupported, IsPropertySupported, GetProperty and GetPropertySize gave its name, driver and memory).
+// DXGI lists graphics adapters only; DXCore (dxcore.dll, Windows 10 2004+) lists every WDDM/MCDM adapter, NPUs included, and reports
+// IsIntegrated (unified memory). Loaded lazily, never linked: a missing DLL or failed call yields an empty list, never an exception.
+// Hand-rolled COM like the rest of Native; vtable slots follow dxcore_interface.h declaration order (IUnknown 0-2, then the
+// interface's own), verified on Snapdragon X Elite hardware.
 
-/// <summary>One adapter as DXCore lists it.</summary>
-/// <param name="Luid">Its LUID (the same number DXGI gives a graphics card).</param>
-/// <param name="IsIntegrated">Shares the computer's memory (a unified-memory SoC's graphics); null when the driver does not say.</param>
-/// <param name="IsNpu">DXCORE_HARDWARE_TYPE_ATTRIBUTE_NPU, or (a Windows that does not know that attribute) a hardware adapter for machine learning that draws no graphics.</param>
-/// <param name="IsGraphics">It runs Direct3D 11 or 12 graphics: a graphics card.</param>
-/// <param name="GenericMl">DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML: DirectML and ONNX Runtime can run models on it.</param>
+/// <summary>One adapter as listed by DXCore.</summary>
+/// <param name="Luid">Adapter LUID (the same value DXGI reports).</param>
+/// <param name="IsIntegrated">Unified memory (SoC graphics); null when the driver does not report it.</param>
+/// <param name="IsNpu">DXCORE_HARDWARE_TYPE_ATTRIBUTE_NPU, or (older Windows without that attribute) a hardware ML adapter without graphics.</param>
+/// <param name="IsGraphics">Supports D3D11 or D3D12 graphics.</param>
+/// <param name="GenericMl">DXCORE_ADAPTER_ATTRIBUTE_D3D12_GENERIC_ML: DirectML and ONNX Runtime can target it.</param>
 internal sealed record DxCoreAdapter(
     long Luid, string Description, ulong DriverVersion, uint VendorId, uint DeviceId, bool IsHardware, bool? IsIntegrated,
     long DedicatedAdapterMemory, long SharedSystemMemory, bool IsNpu, bool IsGraphics, bool GenericMl)
 {
-    /// <summary>The driver's version as Windows writes it (four parts of 16 bits).</summary>
+    /// <summary>Driver version as Windows formats it (four 16-bit parts).</summary>
     public string DriverVersionText => DriverVersion == 0 ? ""
         : string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{DriverVersion >> 48}.{(DriverVersion >> 32) & 0xFFFF}.{(DriverVersion >> 16) & 0xFFFF}.{DriverVersion & 0xFFFF}");
 }
 
 internal static unsafe class DxCore
 {
-    // The interfaces (dxcore_interface.h).
+    // Interface ids (dxcore_interface.h).
     private static readonly Guid AdapterFactoryId = new("78ee5945-c36e-4b13-a669-005dd11c0f06");
     private static readonly Guid AdapterListId = new("526c7776-40e9-459b-b711-f32ad76dfc28");
     private static readonly Guid AdapterId = new("f0db4c7f-fe5a-42a2-bd62-f2a6cf6fc83e");
 
-    // The attributes an adapter list is filtered by, and an adapter asked about.
+    // Attributes for filtering adapter lists and querying adapters.
     public static readonly Guid D3D11Graphics = new("8c47866b-7583-450d-f0f0-6bada895af4b");
     public static readonly Guid D3D12Graphics = new("0c9ece4d-2f6e-4f01-8c96-e89e331b47b1");
     public static readonly Guid D3D12CoreCompute = new("248e2800-a793-4724-abaa-23a6de1be090");
@@ -50,7 +47,7 @@ internal static unsafe class DxCore
     private static bool _loaded;
     private static delegate* unmanaged<Guid*, nint*, int> _createFactory;
 
-    /// <summary>Whether dxcore.dll is there and gives its factory (loaded the first time this is asked, once).</summary>
+    /// <summary>True when dxcore.dll loads and exports its factory (probed once, lazily).</summary>
     public static bool IsAvailable
     {
         get
@@ -73,9 +70,8 @@ internal static unsafe class DxCore
     }
 
     /// <summary>
-    /// The NPUs (and the other hardware adapters for machine learning that draw no graphics): every adapter of the NPU list and
-    /// of the machine learning list that is one, each once. Empty without DXCore, or with none. Not on the UI thread: a driver
-    /// may take its time to answer.
+    /// NPUs and other non-graphics hardware ML adapters from the NPU and generic-ML lists, deduplicated by LUID; empty without DXCore.
+    /// Avoid the UI thread: drivers may respond slowly.
     /// </summary>
     public static List<DxCoreAdapter> Npus()
     {
@@ -89,7 +85,7 @@ internal static unsafe class DxCore
         return found;
     }
 
-    /// <summary>Every adapter DXCore lists with <paramref name="attribute"/>; empty without DXCore or when the call fails (an attribute this Windows does not know).</summary>
+    /// <summary>Adapters with <paramref name="attribute"/>; empty without DXCore or when the call fails (attribute unknown to this Windows).</summary>
     public static List<DxCoreAdapter> AdaptersWith(Guid attribute)
     {
         var adapters = new List<DxCoreAdapter>();
@@ -103,7 +99,7 @@ internal static unsafe class DxCore
             if (_createFactory(&factoryId, &factory) < 0 || factory == 0)
                 return adapters;
 
-            // IDXCoreAdapterFactory::CreateAdapterList (3), IDXCoreAdapterList::GetAdapterCount (4) and GetAdapter (3).
+            // IDXCoreAdapterFactory::CreateAdapterList, then IDXCoreAdapterList::GetAdapterCount / GetAdapter.
             var listId = AdapterListId;
             if (((delegate* unmanaged<nint, uint, Guid*, Guid*, nint*, int>)Com.Table(factory)[IDXCoreAdapterFactorySlot.CreateAdapterList])(factory, 1, &attribute, &listId, &list) < 0 || list == 0)
                 return adapters;
@@ -126,7 +122,7 @@ internal static unsafe class DxCore
         }
         catch (Exception ex) when (ex is SEHException or AccessViolationException or InvalidOperationException)
         {
-            // A driver that misbehaves is no adapter worth naming: what was read stands.
+            // A misbehaving driver ends enumeration; adapters read so far stand.
         }
         finally
         {
@@ -137,10 +133,7 @@ internal static unsafe class DxCore
         return adapters;
     }
 
-    /// <summary>
-    /// Whether the graphics card of <paramref name="luid"/> shares the computer's memory (IsIntegrated); null when DXCore is not
-    /// there or its driver does not say.
-    /// </summary>
+    /// <summary>IsIntegrated (unified memory) for the adapter with <paramref name="luid"/>; null without DXCore or when the driver does not report it.</summary>
     public static bool? IsIntegratedCard(long luid)
     {
         if (!IsAvailable)
@@ -153,7 +146,7 @@ internal static unsafe class DxCore
             if (_createFactory(&factoryId, &factory) < 0 || factory == 0)
                 return null;
 
-            // IDXCoreAdapterFactory::GetAdapterByLuid (4): the LUID by reference, as DXGI's.
+            // IDXCoreAdapterFactory::GetAdapterByLuid takes the LUID by pointer.
             var adapterId = AdapterId;
             if (((delegate* unmanaged<nint, long*, Guid*, nint*, int>)Com.Table(factory)[IDXCoreAdapterFactorySlot.GetAdapterByLuid])(factory, &luid, &adapterId, &adapter) < 0 || adapter == 0)
                 return null;
@@ -188,19 +181,19 @@ internal static unsafe class DxCore
             Number(adapter, DedicatedAdapterMemory), Number(adapter, SharedSystemMemory), npu, graphics, ml);
     }
 
-    // IDXCoreAdapter::IsAttributeSupported (4): a C++ bool, one byte.
+    // IDXCoreAdapter::IsAttributeSupported returns a one-byte C++ bool.
     private static bool Has(nint adapter, Guid attribute) =>
         ((delegate* unmanaged<nint, Guid*, byte>)Com.Table(adapter)[IDXCoreAdapterSlot.IsAttributeSupported])(adapter, &attribute) != 0;
 
-    // IDXCoreAdapter::IsPropertySupported (5).
+    // IDXCoreAdapter::IsPropertySupported.
     private static bool Supported(nint adapter, uint property) =>
         ((delegate* unmanaged<nint, uint, byte>)Com.Table(adapter)[IDXCoreAdapterSlot.IsPropertySupported])(adapter, property) != 0;
 
-    // IDXCoreAdapter::GetProperty (6): the property's bytes into a buffer of the size given.
+    // IDXCoreAdapter::GetProperty: copies the property into a buffer of the given size.
     private static bool Get(nint adapter, uint property, void* buffer, nuint size) =>
         ((delegate* unmanaged<nint, uint, nuint, void*, int>)Com.Table(adapter)[IDXCoreAdapterSlot.GetProperty])(adapter, property, size, buffer) >= 0;
 
-    // IDXCoreAdapter::GetPropertySize (7).
+    // IDXCoreAdapter::GetPropertySize.
     private static nuint Size(nint adapter, uint property)
     {
         nuint size = 0;

@@ -1,0 +1,6 @@
+# The close-gap pill before a track's first clip: found on a top-level row from 0 s; closing it brings the track's clips to the start, the other tracks kept.
+ok: a top-level row: a pill for the gap before its first clip (0 to 2 s) and for the one between its clips (4 to 6 s)
+ok: a first clip 0.1 s in leaves too little room for the pill: none
+ok: a locked track's row closes no gap, before its first clip either
+ok: closed: the track's first clip starts at 0 s and the one after it moves back as far (2 s)
+ok: the other track is kept as it was (Ripple All Tracks off), and the Sequence is sound

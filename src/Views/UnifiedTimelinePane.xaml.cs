@@ -7,20 +7,17 @@ using System.Windows.Threading;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The timeline pane (4.4): the drawn surface of every track (<see cref="Surface"/>), its ruler, scroll bars, zoom, tools and
-/// the inspector of what is selected. It edits nothing itself: every button goes out through <see cref="ToolClick"/>, its
-/// Tag saying what it is, to the main window, which holds the selection and the view (MainWindow.UnifiedTimeline.cs).
-/// What is its own: the rows' scroll bar following the surface, the Add Track and Quick FX flyouts and the recycle bin's popup.
-/// Made before the first frame in every layout, so making it does nothing but lay out its parts: the surface is empty
-/// until the window gives it rows. The row of tools is made with it (5.0, the user's Q5: zero pop-in); what is hidden at
-/// the first frame (Text Settings, the inspector, the Add Track and recycle bin flyouts: DetailsTemplate) is not made at
-/// all until the window is on screen (<see cref="RealizeTools"/>).
+/// Timeline pane: track surface (<see cref="Surface"/>), ruler, scroll bars, zoom, tool row and selection inspector. It edits nothing
+/// itself: every button raises <see cref="ToolClick"/> with a Tag, handled by the main window, which owns selection and view
+/// (MainWindow.UnifiedTimeline.cs). Owns only the row scroll bar sync, the Add Track and Quick FX flyouts and the recycle bin popup.
+/// Constructed before Frame 1 in every layout with an empty surface. The tool row is built with it (zero pop-in); parts hidden at
+/// Frame 1 (Text Settings, inspector, Add Track and bin flyouts: DetailsTemplate) are deferred until on screen (<see cref="RealizeTools"/>).
 /// </summary>
 public partial class UnifiedTimelinePane : UserControl
 {
     private bool _showingRowScroll;
 
-    // What is hidden under the tracks, found in DetailsTemplate as it is made (RealizeTools); nothing touches them before.
+    // Deferred parts resolved from DetailsTemplate in RealizeTools; untouched before then.
     private bool _toolsMade;
     private HoverFlyout? _addLayerHover;
     private FrameworkElement _addLayerFlyoutPanel = null!;
@@ -31,12 +28,11 @@ public partial class UnifiedTimelinePane : UserControl
     private FrameworkElement _textSettingsPanel = null!;
     private ComboBox _fontBox = null!;
 
-    // What the inspector was asked to show before it was made: shown as it is made.
+    // Inspect request received before RealizeTools; applied once built.
     private (string Name, object? Picture, object? Sound, object? Background)? _inspectLater;
 
-    // Quick FX (5.3-Stage2): its flyout of the Creator Hotbar's slots, made with DetailsTemplate (RealizeTools); the slots' names as the
-    // settings last gave them (ShowHotbar, before the first frame too), put on the slots once they are made; and whether a slot's
-    // right-click menu is open, which keeps the flyout open under it.
+    // Quick FX flyout of Creator Hotbar slots (built with DetailsTemplate in RealizeTools); slot definitions from ShowHotbar (may arrive
+    // before Frame 1) applied once built; and a flag holding the flyout open while a slot's context menu is open.
     private HoverFlyout? _quickFxHover;
     private FrameworkElement _quickFxPanel = null!;
     private Panel? _slotsPanel;
@@ -47,9 +43,8 @@ public partial class UnifiedTimelinePane : UserControl
     {
         InitializeComponent();
 
-        // The ruler and the time's scroll bar begin where the rows' headers end; the zoom's corner beside the ruler is as wide
-        // as the headers (the tracks' height is on the row of tools, with the other timeline tools). A hairline apart from the
-        // tracks (5.3-Stage2: 1, from 2).
+        // Ruler and horizontal scroll bar start where row headers end; the zoom corner matches the header width (track height lives
+        // on the tool row). 1 DIP gap from the tracks.
         var headers = Surface.HeaderWidth;
         ZoomCorner.Width = headers;
         Ruler.Margin = new Thickness(headers, 0, 0, 1);
@@ -59,22 +54,19 @@ public partial class UnifiedTimelinePane : UserControl
         Surface.VerticalOffsetChanged += UpdateRowScroll;
         Surface.SizeChanged += (_, _) => UpdateRowScroll();
 
-        // Left out of a narrow row, Add Track is still in the "more" menu: as a menu of its kinds; Quick FX as a menu of its slots.
+        // Overflowed tools stay reachable from "more": Add Track as a kinds menu, Quick FX as a slots menu.
         Toolbar.MenuEntryFor = element => ReferenceEquals(element, AddLayerHost) ? ("Add Track", new Action(OpenKindsMenu))
             : ReferenceEquals(element, QuickFxHost) ? ("Quick FX", new Action(OpenHotbarMenu)) : null;
     }
 
-    /// <summary>
-    /// Makes what is under the tracks and hidden at the first frame (5.0, the user's Q5; DetailsTemplate): Text Settings, the
-    /// inspector, and the flyouts of the row of tools (Add Track's kinds, Quick FX's slots, the recycle bin's list). The window
-    /// calls it once it is on screen (at ContextIdle after ContentRendered), so the first frame never waits for them; they start hidden and
-    /// DetailsHost takes no room until something is selected, so nothing moves when they come. The row of tools itself is
-    /// made with the pane. Once: again does nothing. Anything that needs them before (the "more" menu's Add Track, resting on
-    /// the bin) makes them at once.
-    /// </summary>
-    /// <summary>The inspector's place among the row's priorities: above every tool (Add Track is 100).</summary>
+    /// <summary>Inspector overflow priority on the tool row: above every tool (Add Track is 100).</summary>
     private const int InspectorPriority = 1000;
 
+    /// <summary>
+    /// Builds the deferred DetailsTemplate parts: Text Settings, inspector, and tool-row flyouts (Add Track kinds, Quick FX slots, bin list).
+    /// Called once on screen (ContextIdle after ContentRendered) so Frame 1 never waits; parts start hidden and DetailsHost takes no space
+    /// until a selection exists, so nothing shifts. Idempotent; early consumers ("more" menu Add Track, bin hover) trigger it on demand.
+    /// </summary>
     public void RealizeTools()
     {
         if (_toolsMade)
@@ -95,13 +87,13 @@ public partial class UnifiedTimelinePane : UserControl
         _textSettingsPanel = Part<FrameworkElement>("TextSettingsPanel");
         _fontBox = Part<ComboBox>("FontBox");
 
-        // Add Track's kinds open as the Settings button's do: resting on it, and close a moment after the pointer leaves. The
-        // flyouts' targets are in the pane's own name scope, so they are given here, not by ElementName.
+        // Add Track kinds open on hover and close shortly after leave (like Settings). PlacementTargets are set here because the
+        // template's name scope cannot reach the pane's elements by ElementName.
         var addLayer = Part<Popup>("AddLayerPopup");
         addLayer.PlacementTarget = AddLayerHost;
         _addLayerHover = new HoverFlyout(AddLayerHost, addLayer, _addLayerFlyoutPanel) { HoldsWhileFocused = true };
 
-        // The bin's list opens with its button (a click on it before the list was made is let go of).
+        // Bin popup bound two-way to its toggle (a click before the list existed is reset).
         var bin = Part<Popup>("BinPopup");
         bin.PlacementTarget = BinButton;
         BinButton.IsChecked = false;
@@ -114,7 +106,7 @@ public partial class UnifiedTimelinePane : UserControl
         bin.Closed += BinPopup_Closed;
         _textSettingsPanel.IsVisibleChanged += TextSettings_IsVisibleChanged;
 
-        // Quick FX's slots open as Add Track's kinds do, over its button, and stay open while a slot's right-click menu is (HoldQuickFxFor).
+        // Quick FX slots: hover flyout like Add Track, held open while a slot's context menu is open (HoldQuickFxFor).
         var quickFx = Part<Popup>("QuickFxPopup");
         quickFx.PlacementTarget = QuickFxHost;
         _quickFxPanel = Part<FrameworkElement>("QuickFxFlyoutPanel");
@@ -122,13 +114,13 @@ public partial class UnifiedTimelinePane : UserControl
         _quickFxHover = new HoverFlyout(QuickFxHost, quickFx, _quickFxPanel) { HoldsWhileFocused = true, HoldsWhile = () => _slotMenuOpen };
         LabelSlots();
 
-        // The inspector's groups are bound to nothing until something is selected (never to the window's view model, by inheritance).
+        // Null DataContext until a selection exists (never inherit the window's view model).
         _pictureGroup.DataContext = _soundGroup.DataContext = _backgroundGroup.DataContext = null;
 
         DetailsHost.Child = tools;
 
-        // The inspector is part of the row of tools (the user's call, 5.0-Verify: "a single row bottom toolbar"): after the
-        // tools, before "more", and the most wanted thing on it, so a narrow row lets tools go into "more" first.
+        // The inspector joins the single-row toolbar after the tools and before "more", with the highest priority so tools overflow
+        // into "more" first.
         if (_inspector.Parent is Panel holder)
             holder.Children.Remove(_inspector);
         OverflowStrip.SetPriority(_inspector, InspectorPriority);
@@ -141,8 +133,8 @@ public partial class UnifiedTimelinePane : UserControl
         }
     }
 
-    // The font list is every font installed on the computer: read the first time Text Settings are shown, never while the
-    // window is being made. The choice is bound only once the list is there, so a font never reads as "none" meanwhile.
+    // System font list loads on first Text Settings show (never during window construction); the selection binds after ItemsSource
+    // so it never transiently reads as none.
     private void TextSettings_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         if (!_textSettingsPanel.IsVisible)
@@ -153,16 +145,15 @@ public partial class UnifiedTimelinePane : UserControl
         _fontBox.SetBinding(Selector.SelectedItemProperty, new System.Windows.Data.Binding("FontFamily"));
     }
 
-    /// <summary>A tool was used: a button of the tools' row, the inspector, the corners or the bin, known by its Tag (sender).</summary>
+    /// <summary>Raised by any tool (tool row, inspector, corners, bin); the sender's Tag identifies it.</summary>
     public event RoutedEventHandler? ToolClick;
 
     private void Tool_Click(object sender, RoutedEventArgs e) => ToolClick?.Invoke(sender, e);
 
     /// <summary>
-    /// Shows the values of what is selected in the inspector under the tracks: a picture clip's (<paramref name="picture"/>,
-    /// a Layer), a sound's (<paramref name="sound"/>: a clip that carries sound), the blur fill's settings
-    /// (<paramref name="background"/>: what holds them, the view model). Each group edits what it is given;
-    /// with none of them the inspector is hidden. Asked before the inspector is made (RealizeTools), it is shown as it is.
+    /// Shows the selection in the inspector: visual clip (<paramref name="picture"/>, a Layer), audio clip (<paramref name="sound"/>), blur
+    /// fill settings (<paramref name="background"/>, the view model). Each group edits its target; all null hides the inspector. Calls
+    /// before RealizeTools are deferred.
     /// </summary>
     public void Inspect(string name, object? picture, object? sound, object? background)
     {
@@ -176,31 +167,30 @@ public partial class UnifiedTimelinePane : UserControl
         Show(_soundGroup, sound);
         Show(_backgroundGroup, background);
         _soundSpeedHost.Visibility = picture is null ? Visibility.Visible : Visibility.Collapsed;
-        // The captions are deleted from their own menu (they are words, not a clip): no Delete for their box.
+        // Captions are deleted from their own menu (not a clip), so no inspector Delete for them.
         _inspectorDelete.Visibility = picture is not Models.Layer { IsCaptions: true } && (picture is not null || sound is not null) ? Visibility.Visible : Visibility.Collapsed;
         _inspectedName.Text = name;
         _inspector.Visibility = picture is not null || sound is not null || background is not null ? Visibility.Visible : Visibility.Collapsed;
 
         static void Show(FrameworkElement group, object? target)
         {
-            // What a group is bound to is changed only when it is something else: a box being typed in keeps its value.
+            // Rebind only on target change so a box being edited keeps its text.
             if (!ReferenceEquals(group.DataContext, target))
                 group.DataContext = target;
             group.Visibility = target is null ? Visibility.Collapsed : Visibility.Visible;
         }
     }
 
-    // ----- The Creator Hotbar (5.2.1), behind the Quick FX button (5.3-Stage2) -----
+    // ----- Creator Hotbar (Quick FX flyout) -----
 
-    /// <summary>A slot's right-click (or the menu key on it): the window opens the menu choosing what it holds, at that slot.</summary>
+    /// <summary>Slot context-menu request (right-click or menu key): (slot index, anchor); the window opens the assignment menu.</summary>
     public event Action<int, FrameworkElement>? HotbarMenuRequested;
 
-    // The slots, once the flyout is made (RealizeTools); none before.
+    // Slot buttons after RealizeTools; empty before.
     private IEnumerable<Button> HotbarSlots => _slotsPanel?.Children.OfType<Button>() ?? [];
 
     /// <summary>
-    /// The Quick FX button shown or hidden, and its slots named for what they hold (their tooltips what they do). Cheap: before the
-    /// first frame too, when only the button is there; the names go on the slots as the flyout is made.
+    /// Sets Quick FX visibility and slot labels/tooltips. Cheap before Frame 1 (button only); labels apply when the flyout is built.
     /// </summary>
     public void ShowHotbar(IReadOnlyList<Models.HotbarSlot> slots, bool shown)
     {
@@ -221,12 +211,12 @@ public partial class UnifiedTimelinePane : UserControl
         }
     }
 
-    /// <summary>The Undo and Redo buttons on the row of tools shown or not (AppSettings.ShowTimelineUndoRedo, off by default: 5.3-Stage2).</summary>
+    /// <summary>Shows or hides tool-row Undo/Redo (AppSettings.ShowTimelineUndoRedo, off by default).</summary>
     public void ShowUndoRedo(bool shown) => UndoButton.Visibility = RedoButton.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
 
     /// <summary>
-    /// Keeps Quick FX's flyout open while a slot's right-click menu is (the pointer crossing into the menu leaves the flyout, which
-    /// would close it under the menu); it closes a moment after the menu does, unless the pointer is back on it.
+    /// Holds the Quick FX flyout open while a slot context menu is open (moving into the menu leaves the flyout); releases on menu close,
+    /// after which it closes shortly unless hovered.
     /// </summary>
     public void HoldQuickFxFor(ContextMenu menu)
     {
@@ -238,10 +228,9 @@ public partial class UnifiedTimelinePane : UserControl
         };
     }
 
-    // A slot's click: what it holds goes on (the window, by its Tag: Tool_Click's way). Clicked with the pointer, the keyboard goes
-    // back to the Quick FX button first: the slot took it as it was pressed, and the flyout, held open while it has the keyboard (for
-    // Down and Escape), would then stay open over the tracks after the pointer left it and the button. From the keyboard (Space or
-    // Enter on a slot) it stays on the slots.
+    // Slot click forwards via ToolClick (by Tag). For pointer clicks, return focus to the Quick FX button first: the slot took focus on
+    // press, and the flyout (held open while focused, for Down/Escape) would otherwise linger after the pointer left. Keyboard
+    // activation (Space/Enter) keeps focus on the slots.
     private void HotbarSlot_Click(object sender, RoutedEventArgs e)
     {
         if (InputManager.Current.MostRecentInputDevice is not KeyboardDevice && _quickFxPanel.IsKeyboardFocusWithin)
@@ -256,14 +245,14 @@ public partial class UnifiedTimelinePane : UserControl
             HotbarMenuRequested?.Invoke(index, button);
     }
 
-    // A click on Quick FX opens its slots at once (resting on it opens them too: HoverFlyout).
+    // Click opens the slots immediately (hover also opens them via HoverFlyout).
     private void QuickFx_Click(object sender, RoutedEventArgs e)
     {
         RealizeTools();
         _quickFxHover?.Open();
     }
 
-    // From the keyboard: Down (or Alt+Down) on the button opens the slots, the first one focused; Escape closes them again.
+    // Keyboard: Down/Alt+Down opens the slots and focuses the first; Escape closes.
     private void QuickFx_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if ((e.Key == Key.System ? e.SystemKey : e.Key) != Key.Down)
@@ -285,7 +274,7 @@ public partial class UnifiedTimelinePane : UserControl
         Keyboard.Focus(QuickFxButton);
     }
 
-    /// <summary>The slots as a menu at the pointer: Quick FX's entry of the "more" menu, when the tools' row has no room for it.</summary>
+    /// <summary>Slots as a pointer context menu (Quick FX entry in "more" when overflowed).</summary>
     private void OpenHotbarMenu()
     {
         RealizeTools();
@@ -300,7 +289,7 @@ public partial class UnifiedTimelinePane : UserControl
         menu.IsOpen = true;
     }
 
-    // ----- The rows' scroll bar: it follows the surface, and moves it -----
+    // ----- Row scroll bar (two-way sync with the surface) -----
 
     private void UpdateRowScroll()
     {
@@ -318,7 +307,7 @@ public partial class UnifiedTimelinePane : UserControl
             _showingRowScroll = false;
         }
 
-        // Hidden rather than collapsed while every row is in sight: it keeps its room, so the ruler never moves sideways.
+        // Hidden (not collapsed) when nothing scrolls, so its width is kept and the ruler never shifts.
         RowScroll.Visibility = room > 0.5 ? Visibility.Visible : Visibility.Hidden;
     }
 
@@ -328,9 +317,9 @@ public partial class UnifiedTimelinePane : UserControl
             Surface.VerticalOffset = RowScroll.Value;
     }
 
-    // ----- Add Track: a click adds an empty track; resting on the button opens the kinds -----
+    // ----- Add Track: click adds an empty track; hover opens the kinds flyout -----
 
-    // From the keyboard: Down (or Alt+Down) on the button opens the kinds, the first one focused; Escape closes them again.
+    // Keyboard: Down/Alt+Down opens the kinds and focuses the first; Escape closes.
     private void AddLayerButton_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if ((e.Key == Key.System ? e.SystemKey : e.Key) != Key.Down)
@@ -352,14 +341,14 @@ public partial class UnifiedTimelinePane : UserControl
         Keyboard.Focus(AddLayerButton);
     }
 
-    // A kind chosen: the flyout closes first (what it adds may open a window), then the window adds it.
+    // Close the flyout before forwarding, since the action may open a dialog.
     private void AddLayerItem_Click(object sender, RoutedEventArgs e)
     {
         _addLayerHover?.Close();
         ToolClick?.Invoke(sender, e);
     }
 
-    /// <summary>The kinds of clip as a menu at the pointer: Add Track's entry of the "more" menu, when the tools' row has no room for it.</summary>
+    /// <summary>Add Track kinds as a pointer context menu ("more" entry when overflowed).</summary>
     private void OpenKindsMenu()
     {
         RealizeTools();
@@ -381,9 +370,9 @@ public partial class UnifiedTimelinePane : UserControl
         menu.IsOpen = true;
     }
 
-    // ----- The recycle bin -----
+    // ----- Recycle bin -----
 
-    // While its list is open the button does not take the click that closes it (it would open it again at once).
+    // Disable the toggle's hit-testing while open so the closing click does not immediately reopen it.
     private void BinPopup_Opened(object? sender, EventArgs e) => BinButton.IsHitTestVisible = false;
 
     private void BinPopup_Closed(object? sender, EventArgs e) =>

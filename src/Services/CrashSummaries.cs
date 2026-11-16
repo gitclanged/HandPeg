@@ -8,14 +8,12 @@ using HandPegApp.Models.Timeline;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// What a crash report may say about the work in hand, made from it: the kind of thing and its numbers (container,
-/// codecs, sizes, rates, lengths, counts, the names of the filters in a graph), never a path, a title or any of the
-/// media's own words. These go to <see cref="CrashReporter.SetContext"/> and <see cref="CrashReporter.Note"/>; the
-/// sanitizer still goes over them when a report is written.
+/// Anonymous crash context summaries: categories and numbers (container, codecs, sizes, rates, durations, counts, filter names), never
+/// paths, titles or media text. Fed to <see cref="CrashReporter.SetContext"/> / <see cref="CrashReporter.Note"/>; still sanitized on write.
 /// </summary>
 public static partial class CrashSummaries
 {
-    /// <summary>"mkv (matroska,webm), 1h02m03.4s, h264 1920x1080 29.97 fps yuv420p, 2 audio (aac 2ch 48000 Hz, ac3 6ch 48000 Hz), 1 subtitle (subrip), 3 clips".</summary>
+    /// <summary>Media summary, e.g. "mkv (matroska,webm), 1h02m03s, h264 1920x1080 29.97 fps yuv420p, 2 audio (...), 1 subtitle, 3 clips".</summary>
     public static string Media(string path, MediaInfo? info, int layers = 0)
     {
         var text = new StringBuilder(Extension(path));
@@ -46,7 +44,7 @@ public static partial class CrashSummaries
         return text.ToString();
     }
 
-    /// <summary>"format 5, mkv source, mp4 out, 4 tracks, 12 clips, 2 audio streams, 4 markers, subtitles" (the format when it is known).</summary>
+    /// <summary>Project summary, e.g. "mkv source, mp4 out, 4 tracks, 12 clips, 2 audio streams, 4 markers, subtitles" (plus format if known).</summary>
     public static string Project(ProjectState state, int? format = null)
     {
         var source = Extension(state.LocalMediaPath.Length > 0 ? state.LocalMediaPath : state.SourcePath);
@@ -58,8 +56,8 @@ public static partial class CrashSummaries
     }
 
     /// <summary>
-    /// The files a project uses (its source, the file actually read, its output, the captions' sound, and the file of every
-    /// clip, on the timeline and in the recycle bin, and of every track's shared look), for <see cref="CrashReporter.KeepOut(IEnumerable{string?})"/>.
+    /// All project file paths (source, opened file, output, caption audio, timeline and bin clips, track looks) for
+    /// <see cref="CrashReporter.KeepOut(IEnumerable{string?})"/>.
     /// </summary>
     public static IEnumerable<string?> FilesIn(ProjectState state) =>
     [
@@ -70,9 +68,8 @@ public static partial class CrashSummaries
     ];
 
     /// <summary>
-    /// An FFmpeg command as its kind: the video and audio encoders, the output's container, its frame size when the
-    /// command says it, how long the output should be, and the filter graph's size (or that it is read from a script
-    /// file). "libx265, aac, to .mp4, 1920x1080, 10m00.0s, graph 12345 chars". Only names and numbers are read.
+    /// FFmpeg command summary: encoders, container, frame size, duration and filter graph size (or script file), e.g.
+    /// "libx265, aac, to .mp4, 1920x1080, 10m00s, graph 12345 chars". Names and numbers only.
     /// </summary>
     public static string Command(string command, TimeSpan expected)
     {
@@ -87,8 +84,8 @@ public static partial class CrashSummaries
     }
 
     /// <summary>
-    /// A filter graph as its size and the filters in it, most used first: "4120 chars, 37 filters: overlay 6, scale 5,
-    /// setpts 5, movie 3, trim 3...". Only names are read: what is in quotes, and every option's value, is skipped.
+    /// Filter graph summary: size and filter counts by frequency ("4120 chars, 37 filters: overlay 6, scale 5, ..."); quoted text and
+    /// option values are skipped.
     /// </summary>
     public static string Graph(string graph)
     {
@@ -117,9 +114,8 @@ public static partial class CrashSummaries
     }
 
     /// <summary>
-    /// The filter names of a graph, in order. A filter starts the graph, or follows a "," or ";" outside quotes, after
-    /// any [pad] labels; its name runs to "@", "=", "[", "," or ";". Quoted text ('...') and escaped characters are
-    /// stepped over, so nothing inside an option is ever taken for a name.
+    /// Filter names in order: each follows the start, "," or ";" (outside quotes) and any [pad] labels, ending at "@", "=", "[", ","
+    /// or ";". Quoted and escaped text is skipped so option contents are never read as names.
     /// </summary>
     public static IEnumerable<string> FilterNames(string graph)
     {

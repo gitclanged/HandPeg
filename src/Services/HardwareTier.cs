@@ -2,12 +2,12 @@ using System.Globalization;
 
 namespace HandPegApp.Services;
 
-/// <summary>A performance grade (5.6.0), from the lowest to the highest: F, D, C, B, A, S.</summary>
+/// <summary>Performance grade, lowest to highest: F, D, C, B, A, S.</summary>
 public enum TierGrade { F, D, C, B, A, S }
 
 /// <summary>
-/// A measured performance score, 0 to 100, and its grade (5.6.0): S 75 and up, A 55-74, B 38-54, C 22-37, D 10-21, F under 10.
-/// (Not named HardwareTier: the memory tier's golden case is called hardware-tier.)
+/// Measured score 0-100 and grade: S &gt;= 75, A 55-74, B 38-54, C 22-37, D 10-21, F &lt; 10.
+/// (Not named HardwareTier: that name belongs to the memory tier's golden case.)
 /// </summary>
 public readonly record struct PerformanceTier(int Score, TierGrade Grade)
 {
@@ -23,7 +23,7 @@ public readonly record struct PerformanceTier(int Score, TierGrade Grade)
     public override string ToString() => string.Create(CultureInfo.InvariantCulture, $"{Letter} ({Score})");
 }
 
-/// <summary>The GPU and NPU roles by name (5.6.0): the role cards' keys, the menus' and the tier pills'.</summary>
+/// <summary>GPU and NPU role names: keys for role cards, menus and tier pills.</summary>
 public static class HardwareRoles
 {
     public const string Compositor = "Compositor", Decode = "Decode", Background = "Background", Export = "Export", Npu = "NPU";
@@ -33,20 +33,16 @@ public static class HardwareRoles
 }
 
 /// <summary>
-/// The S-F performance tiers (5.6.0), pure: each from measured values only (the hardware benchmark's), never from a card's name.
-/// Every metric goes through a ladder of anchors (value, score) interpolated in the logarithm of the value, so that twice as fast is the
-/// same step wherever it falls; the anchors and weights are kept in the arrays below, so that recalibrating is one edit (the golden case
-/// hardware-tier-badges pins the machines each must place).
+/// Pure S-F performance tiers from benchmark measurements only (never adapter names). Each metric maps through log-interpolated
+/// (value, score) anchors so doubling speed is a constant step; anchors and weights live in the arrays below for one-edit recalibration
+/// (golden hardware-tier-badges pins reference placements).
 /// <para>
-/// Why these inputs and weights. The benchmark's hardware decode is a serial, latency-bound run of one 1080p60 H.264 clip: it barely tells
-/// cards apart (a GTX 1070 decodes it as fast as a Snapdragon X Elite's Adreno, 608-734 against 623-687 fps; an RX 7900 XTX
-/// 1,161-1,188), so it cannot carry the system grade alone. What tells them apart is what HandPeg leans on beside it: the processor's
-/// decode (FFmpeg decodes what Media Foundation cannot: the Snapdragon 782 fps, a 7950X3D 657-710 (one serial stream: no measure of its
-/// cores), a Ryzen 5 2600 387-481), the all-slots compositor frame (RX 7900 XTX 0.551 ms, GTX 1070 2.84, Adreno 5.09) and the codec breadth
-/// of the hardware decode (a codec only counts when the card decodes it AND Media Foundation has a decoder for it here: Windows 11 IoT
-/// LTSC has no HEVC decoder, so its HEVC is decoded by the processor). Breadth scales the hardware decode term (a card that decodes H.264
-/// alone keeps <see cref="BreadthFloor"/> of it). That places the Snapdragon laptop in B, the GTX 1070 machine in C and the RX 7900 XTX
-/// machine in S although the Adreno composites slower than the GTX 1070. Bus speed is shown, never scored: a unified-memory readback is a memcpy.
+/// Rationale: the hardware decode test (serial, latency-bound 1080p60 H.264) barely separates GPUs (GTX 1070 ~608-734 fps, Adreno
+/// ~623-687, RX 7900 XTX ~1,161-1,188), so it cannot grade alone. Also weighted: CPU decode (FFmpeg fallback for codecs MF lacks; one
+/// serial stream, ~387-782 fps), the all-slots compositor frame (~0.5 to 5 ms), and hardware decode breadth (a codec counts only if the
+/// GPU decodes it AND an MF decoder exists, e.g. LTSC lacks HEVC). Breadth scales the decode term (H.264-only keeps
+/// <see cref="BreadthFloor"/>). Result: Adreno laptop B, GTX 1070 C, RX 7900 XTX S. Bus speed is shown but unscored (unified-memory
+/// readback is a memcpy).
 /// </para>
 /// </summary>
 public static class PerformanceTiers
@@ -62,20 +58,20 @@ public static class PerformanceTiers
     internal static readonly (double Value, double Score)[] SoftwareDecodeLadder =
         [(30, 0), (120, 10), (250, 21), (450, 32), (800, 52), (1400, 85), (2400, 100)];
 
-    /// <summary>The all-slots compositor frame (1920 x 1080, every shader slot), milliseconds, against a score: lower is better.</summary>
+    /// <summary>Compositor all-slots frame anchors (1080p, every shader slot; ms, lower is better).</summary>
     internal static readonly (double Value, double Score)[] CompositorLadder =
         [(0.20, 100), (0.70, 90), (1.5, 50), (2.8, 37), (5, 31), (10, 19), (40, 0)];
 
-    /// <summary>The system score's weights: the compositor card's hardware decode (breadth-scaled), the processor's decode, the compositor.</summary>
+    /// <summary>System weights: compositor-adapter hardware decode (breadth-scaled), CPU decode, compositor frame.</summary>
     internal static readonly double[] SystemWeights = [0.35, 0.20, 0.45];
 
-    /// <summary>The share of the hardware decode term a card keeps that decodes none of <see cref="BreadthCodecs"/> in hardware.</summary>
+    /// <summary>Fraction of the hardware decode term retained with zero <see cref="BreadthCodecs"/> coverage.</summary>
     internal const double BreadthFloor = 0.4;
 
     /// <summary>The codecs beyond H.264 a hardware decode's breadth counts, each with its share of the breadth.</summary>
     internal static readonly (string Codec, double Share)[] BreadthCodecs = [("HEVC", 0.5), ("AV1", 0.5)];
 
-    /// <summary>The Export pill's cap by the best hardware encoder of its card: AV1 none, HEVC an A at most, H.264 a B at most.</summary>
+    /// <summary>Export pill cap by best hardware encoder: AV1 uncapped, HEVC max A, H.264 max B.</summary>
     internal static readonly (string Codec, double Cap)[] EncoderCaps = [("AV1", 100), ("HEVC", 74), ("H.264", 54)];
 
     /// <summary>The grade of a whole score.</summary>
@@ -88,8 +84,8 @@ public static class PerformanceTiers
     }
 
     /// <summary>
-    /// A ladder read at a value: interpolated in log(value) between the anchors either side, the first or last anchor's score beyond
-    /// them (the anchors go up in value; their scores may go either way). NaN for a value that is not positive.
+    /// Evaluates an anchor ladder: log(value) interpolation, clamped to end scores (values ascend; scores may rise or fall). NaN for
+    /// non-positive values.
     /// </summary>
     public static double Ladder(ReadOnlySpan<(double Value, double Score)> ladder, double value)
     {
@@ -117,7 +113,7 @@ public static class PerformanceTiers
     /// <summary>The processor's decode as the result measured it (once, on every card's row); 0 when it was not.</summary>
     public static double SoftwareDecodeFps(HardwareBenchmarkResult result) => result.Adapters.Count == 0 ? 0 : result.Adapters.Max(a => a.SoftwareDecodeFps);
 
-    /// <summary>The processor's decode tier; null when it was not measured (the quick check never decodes on the processor).</summary>
+    /// <summary>CPU decode tier; null when unmeasured (quick checks skip CPU decode).</summary>
     public static PerformanceTier? SoftwareDecode(HardwareBenchmarkResult result) =>
         SoftwareDecodeFps(result) is var fps and > 0 ? PerformanceTier.Of(Ladder(SoftwareDecodeLadder, fps)) : null;
 
@@ -126,8 +122,8 @@ public static class PerformanceTiers
         card.CompositorMs > 0 ? PerformanceTier.Of(Ladder(CompositorLadder, card.CompositorMs)) : null;
 
     /// <summary>
-    /// A card's hardware decode breadth, 0 to 1: the shares of <see cref="BreadthCodecs"/> it decodes in hardware where Media Foundation
-    /// has a decoder for the codec too (when the result lists Media Foundation's decoders; else the card's own list alone).
+    /// Hardware decode breadth 0..1: weighted share of <see cref="BreadthCodecs"/> decoded in hardware with an MF decoder present (adapter
+    /// list alone when MF decoders were not listed).
     /// </summary>
     public static double Breadth(HardwareBenchmarkResult result, HardwareBenchmarkAdapter card)
     {
@@ -141,7 +137,7 @@ public static class PerformanceTiers
         return Math.Min(breadth, 1);
     }
 
-    /// <summary>The card the compositor runs on as the result's roles name it, else the first-listed card with the most video memory.</summary>
+    /// <summary>Compositor adapter from the result's roles, else the first adapter with the most VRAM.</summary>
     public static HardwareBenchmarkAdapter? CompositorCard(HardwareBenchmarkResult result)
     {
         var cards = result.Adapters.Where(a => a.SameCardAs < 0).ToList();
@@ -157,10 +153,9 @@ public static class PerformanceTiers
     }
 
     /// <summary>
-    /// The system tier: the compositor card's hardware decode scaled by its breadth, the processor's decode and the compositor frame, by
-    /// <see cref="SystemWeights"/>, over the metrics the result measured (a quick check has no processor decode; a run with no test clip
-    /// has the compositor alone). A hardware decode is counted (0 when the card could not) once the result decoded the clip anywhere.
-    /// Null when nothing was measured (an estimate).
+    /// System tier: breadth-scaled compositor-adapter decode, CPU decode and compositor frame, weighted by <see cref="SystemWeights"/>
+    /// over measured metrics only (quick checks lack CPU decode; clip-less runs have the compositor only). Hardware decode counts (0 on
+    /// failure) once any adapter decoded the clip. Null when nothing was measured (estimate).
     /// </summary>
     public static PerformanceTier? System(HardwareBenchmarkResult result)
     {
@@ -182,7 +177,7 @@ public static class PerformanceTiers
         return weights > 0 ? PerformanceTier.Of(sum / weights) : null;
     }
 
-    /// <summary>The system tier's tooltip: "System B (44): 687 fps GPU, 782 fps CPU, 5.09 ms" (the parts measured).</summary>
+    /// <summary>System tier tooltip listing measured parts, e.g. "System B (44): 687 fps GPU, 782 fps CPU, 2.84 ms".</summary>
     public static string SystemTip(HardwareBenchmarkResult result, PerformanceTier tier)
     {
         var card = CompositorCard(result);
@@ -197,8 +192,8 @@ public static class PerformanceTiers
     }
 
     /// <summary>
-    /// The Export pill: the card's hardware decode score capped by its best hardware encoder (<see cref="EncoderCaps"/>); with no hardware
-    /// encoder, exports encode on the processor: its decode tier stands for it. Null when neither was measured.
+    /// Export pill: adapter hardware decode score capped by its best encoder (<see cref="EncoderCaps"/>); without a hardware encoder the
+    /// CPU decode tier stands in. Null when neither was measured.
     /// </summary>
     public static PerformanceTier? Export(HardwareBenchmarkResult result, HardwareBenchmarkAdapter? card)
     {
@@ -209,10 +204,8 @@ public static class PerformanceTiers
     }
 
     /// <summary>
-    /// A role's pill and its tooltip ("Decode 687 fps · A (59)"), from a result's measurements, for the card the role holds: a card's
-    /// number, <see cref="HardwareRoles.Auto"/> (the compositor's card; the Compositor's own Auto, its card), or Background's
-    /// <see cref="HardwareRoles.ProcessorOnly"/> (the processor's decode). The NPU has none (nothing is measured on it). Null pill: nothing
-    /// measured for that role on that card.
+    /// Role pill and tooltip ("Decode 687 fps · A (59)") for the role's adapter: an index, <see cref="HardwareRoles.Auto"/> (compositor
+    /// adapter), or Background's <see cref="HardwareRoles.ProcessorOnly"/> (CPU decode). NPU has none (unmeasured). Null pill: no measurement.
     /// </summary>
     public static (PerformanceTier? Tier, string Tip) ForRole(HardwareBenchmarkResult? result, string role, int card)
     {

@@ -5,7 +5,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace HandPegApp.Services;
 
-/// <summary>Who is waiting for a piece of work, from the most to the least: each lane has its own limit of work at once.</summary>
+/// <summary>Work lanes in priority order; each lane has its own concurrency limit.</summary>
 public enum WorkLane
 {
     /// <summary>Exports, the queue and the Squisher.</summary>
@@ -23,25 +23,25 @@ public enum WorkLane
 
 public enum WorkState { Queued, Running, Done, Failed, Cancelled }
 
-/// <summary>What a piece of work is: its name in the progress flyout, its lane, and what tells two requests for the same work apart.</summary>
-/// <param name="Title">Shown in the progress chip and flyout: "Thumbnails of clip.mp4".</param>
+/// <summary>Work descriptor: flyout title, lane, and dedup key.</summary>
+/// <param name="Title">Progress chip/flyout text, e.g. "Thumbnails of clip.mp4".</param>
 public sealed record WorkSpec(string Title, WorkLane Lane)
 {
-    /// <summary>Two requests with the same key while the first is waiting or running are one piece of work: the second gets the first's result.</summary>
+    /// <summary>Dedup key: a request matching a queued or running item joins it and shares its result.</summary>
     public string? Key { get; init; }
 
     /// <summary>Whether the flyout offers to cancel it.</summary>
     public bool Cancellable { get; init; } = true;
 
-    /// <summary>Shown in the progress chip and flyout. Short chores (a probe) run through the lanes without being listed.</summary>
+    /// <summary>Listed in the progress UI; short chores (probes) run unlisted.</summary>
     public bool Visible { get; init; } = true;
 
     /// <summary>Its tools are stopped where they are while the player plays, and go on after (a proxy being made).</summary>
     public bool SuspendWhilePlaying { get; init; }
 
     /// <summary>
-    /// What a user's action is waiting on this moment (4.3E: the probe of a file just dropped): it starts at once, ahead
-    /// of everything waiting and past its lane's limit, and is never paused or held. For short work, once per action.
+    /// Urgent work a user action is blocked on (e.g. probing a dropped file): starts immediately, bypassing the queue and lane limit,
+    /// never paused or held. Use for short work, once per action.
     /// </summary>
     public bool Urgent { get; init; }
 }
@@ -69,8 +69,8 @@ public sealed class WorkContext
 }
 
 /// <summary>
-/// One piece of work, as the progress flyout shows it. Its bindable properties are touched on the UI thread only:
-/// the work itself writes into plain fields, which the scheduler's timer copies across ten times a second.
+/// Work item shown in the progress flyout. Bindable properties are UI-thread only; workers write plain fields that the
+/// scheduler timer copies at 10 Hz.
 /// </summary>
 public sealed partial class WorkItem : ObservableObject
 {
@@ -79,19 +79,17 @@ public sealed partial class WorkItem : ObservableObject
 
     internal bool SuspendWhilePlaying { get; }
 
-    // The project tab in front as it was asked for (5.4.1-M3): while another tab is in front, it waits behind that tab's work in its lane.
+    // Owning tab at request time; while another tab is active, this item queues behind that tab's work in its lane.
     internal string? Tab { get; init; }
 
-    // What a user's action waits on this moment: started at once, past its lane's limit (see WorkSpec.Urgent). Set again
-    // when an urgent request finds the same work already asked for.
+    // Urgent (WorkSpec.Urgent): starts immediately past the lane limit; also set when an urgent request joins existing work.
     internal bool Urgent { get; set; }
 
     // The tools started for it that are running, and whether they are stopped now.
     internal readonly List<int> Processes = [];
     internal bool Suspended;
 
-    // Its lane's slot given back while what it draws in pieces is stopped between them (5.4.4, WorkScheduler.WhenBackgroundMayRunAsync);
-    // taken back through WorkScheduler.Pump, within the lane's limit. Under WorkScheduler's gate.
+    // Lane slot released while paused between pieces (WhenBackgroundMayRunAsync); reacquired via Pump within the lane limit. Guarded by the gate.
     internal bool SlotGivenBack;
 
     public string Title { get; }
@@ -104,12 +102,10 @@ public sealed partial class WorkItem : ObservableObject
     internal Task? Task { get; set; }
     internal Func<Task>? Start { get; set; }
 
-    // Asked for by foreground or interactive work that may be waiting for it, or urgent: it does not wait for a pause to
-    // end, and its tools are never held (see WorkScheduler.HoldBackground).
+    // Requested by foreground/interactive work (or urgent): ignores pauses and its tools are never held (HoldBackground).
     internal bool BypassPause { get; set; }
 
-    // Where it was asked for: it is started there (the UI thread, for work that works with the window), or on
-    // the thread pool when it was asked for from there.
+    // Captured context: UI-thread requests start on the UI thread; pool requests start on the pool.
     internal SynchronizationContext? Context { get; init; }
 
     [ObservableProperty] private string _detail = "";
@@ -171,7 +167,7 @@ public sealed partial class WorkItem : ObservableObject
     /// <summary>The flyout's Cancel (only for cancellable work).</summary>
     public void Cancel() => Cancel(evenIfNotCancellable: false);
 
-    /// <summary>Cancels the work; <paramref name="evenIfNotCancellable"/> when no caller is waiting for it any more.</summary>
+    /// <summary>Cancels the work; <paramref name="evenIfNotCancellable"/> when no caller waits any longer.</summary>
     internal void Cancel(bool evenIfNotCancellable)
     {
         if (!Cancellable && !evenIfNotCancellable)
@@ -186,7 +182,7 @@ public sealed partial class WorkItem : ObservableObject
         }
     }
 
-    // How many callers wait on this keyed work (WorkScheduler.Join): when the last one that can cancel has, the work is cancelled.
+    // Joined caller count (Join); the work is cancelled when the last cancellable caller cancels.
     internal int Waiters;
 }
 
@@ -206,28 +202,21 @@ public sealed partial class WorkSummary : ObservableObject
     /// <summary>One line per piece of work, for the chip's tooltip.</summary>
     [ObservableProperty] private string _toolTip = "";
 
-    /// <summary>Why background work is waiting, when it is: "Background work waits while the player plays." Empty otherwise.</summary>
+    /// <summary>Reason background work is waiting (e.g. playback), or empty.</summary>
     [ObservableProperty] private string _pausedNote = "";
 }
 
 /// <summary>
-/// Every tool HandPeg runs, and every long piece of work it does, goes through here. Work is put in a lane by who
-/// is waiting for it, and each lane has a limit of work at once:
-///   - Foreground (exports, the queue, the Squisher): 2;
+/// Central scheduler for every external tool and long-running task. Lanes and limits:
+///   - Foreground (exports, queue, Squisher): 2;
 ///   - Interactive (loading, probes, captions, Dead Air): 2;
-///   - Background (thumbnails, waveforms, I-frame lists, proxies): Settings, Auto = one for every three processors not reserved, at most 8;
-///   - Idle (indexing, purges, the encoder probe, update checks): 1.
-/// Background and Idle work waiting to start waits while the player plays and while foreground work runs (both
-/// Settings, on by default), and while the user has paused its lane in the progress flyout; work already running
-/// carries on, but for work drawn in pieces, which stops between them (5.4.4: <see cref="PausePoint"/>, also while a scrub holds background
-/// work back). While a file is dragged and dropped (4.3E, <see cref="HoldBackground()"/>) it waits too, and the tools of
-/// the background and idle work running are stopped where they are until the drop's own work is done. Urgent work (what
-/// a user's action waits on this moment) starts at once, whatever is waiting and whatever the limits. Work asked for
-/// twice under one key is done once. The tools started for a piece of work go into the job for its lane (see
-/// <see cref="JobObjects"/>).
-///
-/// Work asked for from inside a running piece of work, at its own priority or above, is done right there, in that
-/// piece's place: waiting for a place of its own in a lane its caller already fills could wait for ever.
+///   - Background (thumbnails, waveforms, I-frame lists, proxies): Settings; Auto = one per three unreserved cores, max 8;
+///   - Idle (indexing, purges, encoder probe, update checks): 1.
+/// Queued Background/Idle work waits during playback and foreground work (Settings, default on) and while paused in the flyout;
+/// running work continues except piecewise work, which stops between pieces (<see cref="PausePoint"/>, also during scrub holds).
+/// During drag-and-drop (<see cref="HoldBackground()"/>) it also waits and running background tools are suspended until the drop
+/// completes. Urgent work bypasses queue and limits. Keyed requests dedupe. Spawned tools join the lane's job (<see cref="JobObjects"/>).
+/// Nested requests at the caller's priority or higher run inline to avoid deadlocking on the caller's own lane slot.
 /// </summary>
 public static class WorkScheduler
 {
@@ -248,22 +237,19 @@ public static class WorkScheduler
     public static WorkSummary Summary { get; } = new();
 
     /// <summary>
-    /// How many tools may decode on a graphics card at once for background work (a strip of thumbnails is one,
-    /// however many inputs it opens): cards and drivers limit the decoding sessions they will open.
+    /// Concurrent GPU-decoding background tools (one per thumbnail strip regardless of inputs); drivers cap decode sessions.
     /// </summary>
     public static SemaphoreSlim GpuDecodeGate { get; } = new(4, 4);
 
     /// <summary>
-    /// How many FFmpeg runs that decode for background pictures and sound (a strip of thumbnails, a poster, hover previews, a waveform
-    /// FFmpeg reads) are under way at once, whatever the lanes allow (5.4.2A): two. A strip opens a decoder for each of its frames (fifteen
-    /// HEVC decoders in one FFmpeg, some hundreds of MB), and eighteen tabs' work at once had twelve FFmpegs running. Taken inside any
-    /// <see cref="GpuDecodeGate"/>, never around one (ProcessPipes.RunGatedAsync).
+    /// Global cap (2) on background decoding FFmpeg runs (strips, posters, hover previews, waveforms) regardless of lane limits: a strip
+    /// opens one decoder per frame (15 HEVC decoders, hundreds of MB), and many tabs could otherwise run a dozen FFmpegs. Acquired inside
+    /// <see cref="GpuDecodeGate"/>, never around it (ProcessPipes.RunGatedAsync).
     /// </summary>
     public static SemaphoreSlim ToolGate { get; } = new(2, 2);
 
     /// <summary>
-    /// The project tab in front, by id (5.4.1-M3, ProjectTabs.Active): work asked for while another tab was in front waits, in each lane,
-    /// behind the work of this one (Priority 3: the tabs behind). Null before any tab: no work told apart.
+    /// Active tab id (ProjectTabs.Active); other tabs' work queues behind it in each lane. Null before any tab (no distinction).
     /// </summary>
     public static string? FrontTab
     {
@@ -277,7 +263,7 @@ public static class WorkScheduler
 
     private static string? _frontTab;
 
-    /// <summary>Starts the scheduler's interface side (the summary and its timer), and applies the settings. On the UI thread, once.</summary>
+    /// <summary>Starts the UI side (summary and timer) and applies settings. UI thread, once.</summary>
     public static void Attach(Dispatcher dispatcher)
     {
         _ui = dispatcher;
@@ -294,9 +280,8 @@ public static class WorkScheduler
     }
 
     /// <summary>
-    /// Work that may start now does; then work stopped between its pieces looks again whether it may go on (5.4.4): "Pause background work
-    /// while playing" turned off mid-play lets the stopped strips go on and gives back the room kept for them, which nothing else does until
-    /// the play ends. Outside the gate: a stopped piece's look only completes a task whose continuation runs on the pool (never inline).
+    /// Starts eligible work, then re-evaluates paused piecewise work (e.g. disabling "Pause background work while playing" mid-play
+    /// resumes strips). Runs outside the gate; resumptions complete tasks whose continuations run on the pool, never inline.
     /// </summary>
     internal static void TakeSettings()
     {
@@ -315,16 +300,14 @@ public static class WorkScheduler
     };
 
     /// <summary>
-    /// Auto's background lane (5.4.1-M4, high-core scaling): one job for every three processors not reserved, at least 1 and at most
-    /// <see cref="MostAutoBackgroundJobs"/> (6 to 8 on a 12- to 16-core processor's 24 to 32 threads).
+    /// Auto background limit: one per three unreserved logical cores, clamped to 1..<see cref="MostAutoBackgroundJobs"/> (6-8 on 24-32 threads).
     /// </summary>
     public static int AutoBackgroundJobs(int processors, int reserved) => Math.Clamp((processors - reserved) / 3, 1, MostAutoBackgroundJobs);
 
     public const int MostAutoBackgroundJobs = 8;
 
     /// <summary>
-    /// A file's path as a work key holds it (5.4.1-M4): full and in one case, so one file asked for under two spellings (a relative
-    /// path, another case) is read once while the first is in flight.
+    /// Canonical path for work keys (full, case-normalized) so differently spelled requests for one file dedupe.
     /// </summary>
     public static string PathKey(string path)
     {
@@ -338,7 +321,7 @@ public static class WorkScheduler
         }
     }
 
-    /// <summary>Whether the player is playing: background work waits meanwhile (Settings), and work that asked for it is stopped where it is.</summary>
+    /// <summary>Playback state: queued background work waits (Settings) and opted-in running work is suspended.</summary>
     public static bool IsPlaying
     {
         get => _playing;
@@ -354,16 +337,15 @@ public static class WorkScheduler
         }
     }
 
-    // ----- Background work stopped between its pieces (5.4.4: the strip workers while the player plays or a scrub is held) -----
-    // Work already running carried on through playback (only work waiting to start waited). Background and idle work that draws in pieces
-    // (GpuProgramStrip's pictures, GpuFilmstrips' strips) asks between pieces whether to stop: while the player plays (the "Pause
-    // background work while playing" setting, on by default) and while background work is held back (a scrub's moves, a drag and drop).
-    // Stopped, it gives back its lane's slot and its decoding permit and waits for PauseChanged; work the user waits on never stops.
+    // ----- Cooperative pausing of piecewise background work -----
+    // Piecewise background/idle work (GpuProgramStrip, GpuFilmstrips) checks between pieces whether to pause: during playback ("Pause
+    // background work while playing", default on) and while background is held (scrub, drag-and-drop). Paused work releases its lane
+    // slot and decode permit and waits for PauseChanged; work a user is waiting on never pauses.
 
-    /// <summary>Whether background work that can stop between its pieces stops now: the player plays (as Settings asks) or background work is held back.</summary>
+    /// <summary>True when piecewise background work should pause (playback per Settings, or a background hold).</summary>
     public static bool BackgroundPaused => IsHeld || (_playing && AppSettings.Current.PauseBackgroundWhilePlaying);
 
-    /// <summary>Raised (on any thread) when <see cref="BackgroundPaused"/> may have changed: play or pause, a hold begun or ended.</summary>
+    /// <summary>Raised on any thread when <see cref="BackgroundPaused"/> may have changed.</summary>
     public static event Action? PauseChanged;
 
     private static void RaisePauseChanged()
@@ -379,8 +361,8 @@ public static class WorkScheduler
     }
 
     /// <summary>
-    /// The question background work asks between its pieces, captured inside the work (5.4.4): true while it should stop (it is background
-    /// or idle work the user does not wait on, and <see cref="BackgroundPaused"/>). Outside any work (the goldens, tools) it is always false.
+    /// Between-piece pause check bound to the current work item: true for background/idle work nobody waits on while
+    /// <see cref="BackgroundPaused"/>. Always false outside scheduled work (goldens, tools).
     /// </summary>
     internal static Func<bool> PausePoint()
     {
@@ -390,11 +372,9 @@ public static class WorkScheduler
     }
 
     /// <summary>
-    /// Waits (inside background work that stopped between its pieces) until <see cref="BackgroundPaused"/> is over; meanwhile the work's lane
-    /// slot is given back (5.4.4: nothing held while it waits). The slot is taken back only when the lane has room (Pump: before any work not
-    /// started yet, which never starts in the room kept for it), so work that started meanwhile never takes the lane over its limit; several
-    /// pieces of one work stopped at once give back and take back its one slot. Cancelled, it throws with the slot still given back (the
-    /// work's end does not give it back twice). Returns at once when nothing pauses it.
+    /// Awaits the end of <see cref="BackgroundPaused"/> from paused piecewise work, releasing its lane slot meanwhile. The slot is reacquired
+    /// only when the lane has room (Pump serves resumptions before unstarted work, which never takes reserved room), so the limit holds;
+    /// concurrent pieces share one slot. On cancellation it throws with the slot released (never released twice). Returns immediately when not paused.
     /// </summary>
     public static async Task WhenBackgroundMayRunAsync(CancellationToken token)
     {
@@ -441,7 +421,7 @@ public static class WorkScheduler
         if (item is null)
             return;
 
-        // The lane's room back (5.4.4), unless another piece of the same work took it back already.
+        // Reacquire the lane slot unless another piece of the same work already did.
         var room = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (Gate)
         {
@@ -462,13 +442,13 @@ public static class WorkScheduler
         }
     }
 
-    // Work stopped between its pieces that may go on, each piece waiting for its lane's room (5.4.4): Pump serves them first. Under the gate.
+    // Resumable paused work awaiting lane room; Pump serves these first. Guarded by the gate.
     private static readonly List<(WorkItem Item, TaskCompletionSource Room)> Resuming = [];
 
-    // By lane, the work whose slot is given back while it is stopped between its pieces (5.4.4): room kept for it once the pause is over.
+    // Per lane: paused work whose slot is released; room is reserved for it when the pause ends.
     private static readonly int[] Stopped = new int[4];
 
-    /// <summary>The goldens: a lane's work holding its slots, and the work stopped between its pieces with its slot given back. Never called by HandPeg.</summary>
+    /// <summary>Golden-test probe: slot-holding work and paused work per lane. Not used by the app.</summary>
     internal static (int Running, int Stopped) LaneForTests(WorkLane lane)
     {
         lock (Gate)
@@ -476,8 +456,8 @@ public static class WorkScheduler
     }
 
     /// <summary>
-    /// Work stopped between its pieces holds its lane's slot again (<paramref name="counted"/>; not when it ended stopped) and every piece of
-    /// it waiting for the room goes on (5.4.4). Under the gate.
+    /// Reassigns the lane slot to paused work (<paramref name="counted"/>; not when it ended while paused) and resumes its waiting pieces.
+    /// Under the gate.
     /// </summary>
     private static void GoOnLocked(WorkItem item, bool counted)
     {
@@ -498,10 +478,8 @@ public static class WorkScheduler
     }
 
     /// <summary>
-    /// Stops the tools of the work running where they are, or lets them go on, as things stand now: those of work that
-    /// asked for it while the player plays, and those of background and idle work while it is held back for a drag and
-    /// drop (never those of work that foreground or interactive work waits for). Each piece of work's state is worked out
-    /// under its own lock from what is true now, so the last call, whichever thread makes it, leaves things right.
+    /// Suspends or resumes running tools per current state: opted-in work during playback, background/idle work during a drop hold
+    /// (never work foreground/interactive work waits on). Each item recomputes under its own lock, so the last call on any thread wins.
     /// </summary>
     private static void ApplySuspensions()
     {
@@ -532,8 +510,7 @@ public static class WorkScheduler
     }
 
     /// <summary>
-    /// A tool was started (or has ended) for the work running now: it is the work's, to be stopped with it while the
-    /// player plays when the work asked for that, and while background work is held back when it is background work.
+    /// Registers (or unregisters) a tool process with the current work so it is suspended with it during playback or background holds.
     /// </summary>
     internal static void NoteProcess(int processId, bool running)
     {
@@ -557,7 +534,7 @@ public static class WorkScheduler
     /// <summary>The job a tool started now goes into: the one for the lane of the work it is started for.</summary>
     public static ProcessClass CurrentProcessClass => Current.Value?.Lane is WorkLane.Background or WorkLane.Idle ? ProcessClass.Background : ProcessClass.Foreground;
 
-    /// <summary>Whether the code running now is background or idle work (whose tools are given fewer threads and the background card).</summary>
+    /// <summary>True inside background/idle work (tools get fewer threads and the background adapter).</summary>
     public static bool InBackground => CurrentProcessClass == ProcessClass.Background;
 
     public static bool IsPausedByUser(WorkLane lane) => UserPaused[(int)lane];
@@ -571,16 +548,12 @@ public static class WorkScheduler
         return IsHeld || (_playing && settings.PauseBackgroundWhilePlaying) || (Running[(int)WorkLane.Foreground] > 0 && settings.PauseBackgroundWhileExporting);
     }
 
-    // ----- Held back while a file is dragged and dropped (4.3E) -----
-    // From the moment a file is dragged out of the media browser (or over the window from elsewhere) until what its drop
-    // needs is done (placing the clip, its probe): background and idle work waiting to start waits, and the tools of what
-    // is running are stopped where they are, then go on. They share the disk with the drop's probe (often a hard drive
-    // the folder indexer is reading a strip from, 25 seeks at a time), and the drop is never answered behind them.
+    // ----- Background hold during drag-and-drop -----
+    // From drag start until the drop's work (placement, probe) completes, queued background/idle work waits and running tools are
+    // suspended, so the drop's probe never competes for disk I/O (e.g. an HDD the indexer is seeking 25 times per strip).
 
-    // Holds taken until they are given back (a drag out of the browser, a drop's work), and a hold that ends by itself at a
-    // moment (a drag from another program, renewed as it moves; the moment between a drop and its work). A hold given back
-    // late holds nothing past HoldsAtMost after it was taken (each its own): a drop whose probe never comes back (a share that
-    // does not answer) must not keep every background tool stopped, nor stretch the holds taken after it.
+    // Explicit holds (browser drag, drop work) and a timed hold (external drag, renewed on move; drop-to-work gap). Each explicit hold
+    // expires HoldsAtMost after acquisition, so a hung probe (unresponsive share) cannot suspend background work indefinitely.
     private const long HoldsAtMost = 10_000;
     private static readonly List<Hold> Holds = [];
     private static long _heldUntil;
@@ -590,7 +563,7 @@ public static class WorkScheduler
     private static readonly System.Threading.Timer HoldTimer = new(_ => HoldTimer_Tick());
     private static long _wakeAt = long.MaxValue;
 
-    /// <summary>Whether background and idle work is held back now: a file is being dragged, or what its drop needs is being done.</summary>
+    /// <summary>True while a drag or drop hold is active.</summary>
     public static bool IsHeld
     {
         get
@@ -605,9 +578,8 @@ public static class WorkScheduler
     }
 
     /// <summary>
-    /// Holds background and idle work back until the hold returned is disposed (on any thread, once), for ten seconds at
-    /// most: waiting work does not start, and the tools of what is running are stopped where they are, and go on after.
-    /// Work that foreground, interactive or urgent work waits for is never held.
+    /// Holds background/idle work until the returned token is disposed (any thread, once), max 10 s: queued work waits and running tools
+    /// are suspended. Work needed by foreground, interactive or urgent work is exempt.
     /// </summary>
     public static IDisposable HoldBackground()
     {
@@ -619,7 +591,7 @@ public static class WorkScheduler
         return hold;
     }
 
-    /// <summary>Holds background and idle work back for a while from now, or longer when it already is held that long: cheap to call at every move of a drag.</summary>
+    /// <summary>Extends the timed hold (never shortens it); cheap enough to call on every drag move.</summary>
     public static void HoldBackground(TimeSpan span)
     {
         var until = Environment.TickCount64 + (long)Math.Max(span.TotalMilliseconds, 0);
@@ -651,7 +623,7 @@ public static class WorkScheduler
         }
     }
 
-    // A hold may have ended by itself: the timer is set again for the next end still ahead, and things are made as they are now.
+    // A hold may have expired: rearm the timer for the next expiry and reapply the current state.
     private static void HoldTimer_Tick()
     {
         lock (HoldGate)
@@ -675,7 +647,7 @@ public static class WorkScheduler
         HoldChanged();
     }
 
-    // A hold began or ended: the running tools are stopped or let go on, and work that may start now does.
+    // Hold changed: suspend/resume running tools and start eligible work.
     private static void HoldChanged()
     {
         ApplySuspensions();
@@ -716,8 +688,7 @@ public static class WorkScheduler
         }, token);
 
     /// <summary>
-    /// Does a piece of work in its lane: now, when the lane has room and is not paused; otherwise when it has. The
-    /// task ends as the work does (cancelled when it was cancelled, here or in the flyout).
+    /// Runs work in its lane when it has room and is not paused. The task completes with the work (cancelled if cancelled here or in the flyout).
     /// </summary>
     public static Task<T> Run<T>(WorkSpec spec, Func<WorkContext, Task<T>> work, CancellationToken token = default)
     {
@@ -731,8 +702,7 @@ public static class WorkScheduler
         {
             if (spec.Key is { } key && Live.FirstOrDefault(i => i.Key == key && i.Task is Task<T> && !i.Cancellation.IsCancellationRequested) is { Task: Task<T> same } twin)
             {
-                // Asked for again by what a user's action waits on: the one asked for first is urgent from now on (it
-                // starts at once, and its tools are let go on). The gate is taken again inside, by this same thread.
+                // Urgent re-request: promote the existing item (start now, resume its tools). Re-enters the gate on this thread.
                 if (spec.Urgent && !twin.Urgent)
                 {
                     (twin.Urgent, twin.BypassPause) = (true, true);
@@ -743,9 +713,8 @@ public static class WorkScheduler
                 return Join(twin, same, token);
             }
 
-            // Keyed work is shared by everyone who asks for it under its key, so it has a cancellation of its own: each caller's token
-            // ends only that caller's wait (Join), and the work is cancelled once every caller that can cancel has (or from the
-            // flyout). Unkeyed work belongs to its one caller and is cancelled with it.
+            // Keyed work is shared, so it owns its cancellation: a caller token ends only that caller's wait (Join); the work cancels when
+            // all cancellable callers have (or from the flyout). Unkeyed work uses its single caller's token.
             var cancellation = spec.Key is null ? CancellationTokenSource.CreateLinkedTokenSource(token) : new CancellationTokenSource();
             item = new WorkItem(spec, cancellation)
             {
@@ -807,8 +776,8 @@ public static class WorkScheduler
     }
 
     /// <summary>
-    /// One caller's wait on shared (keyed) work: <paramref name="token"/> cancels this wait only. The work itself is cancelled when the
-    /// last caller able to cancel has cancelled; a caller whose token can never be cancelled keeps it running to the end.
+    /// A caller's wait on keyed work; <paramref name="token"/> cancels only this wait. The work cancels when the last cancellable caller
+    /// cancels; a non-cancellable caller keeps it running.
     /// </summary>
     private static Task<T> Join<T>(WorkItem item, Task<T> work, CancellationToken token)
     {
@@ -837,7 +806,7 @@ public static class WorkScheduler
             item.Cancel();
     }
 
-    /// <summary>Starts whatever may start now: urgent work first, whatever the limits; then lane by lane, the tab in front's first.</summary>
+    /// <summary>Starts eligible work: urgent first (ignoring limits), then per lane with the active tab's work first.</summary>
     private static void Pump()
     {
         lock (Gate)
@@ -850,14 +819,13 @@ public static class WorkScheduler
             {
                 var index = (int)lane;
 
-                // Work stopped between its pieces goes on first, within the lane's limit as the rest (urgent work past it) (5.4.4).
+                // Resume paused piecewise work first, within the lane limit (urgent work may exceed it).
                 while (Resuming.Find(r => r.Item.Lane == lane && (r.Item.Urgent || Running[index] < LaneLimit(lane))).Item is { } resumed)
                     GoOnLocked(resumed, counted: true);
 
                 while (Running[index] < LaneLimit(lane))
                 {
-                    // The tab in front's work first (5.4.1-M3); then the tabs behind's, in the order asked for. The room of work stopped
-                    // between its pieces is kept for it (5.4.4): only work that does not wait for a pause starts in it meanwhile.
+                    // Active tab's work first, then others FIFO. Reserved room for paused work is only used by pause-exempt work.
                     var front = FrontTab;
                     var kept = Running[index] + Stopped[index] >= LaneLimit(lane);
                     var next = Waiting.FirstOrDefault(i => i.Lane == lane && (i.Tab is null || i.Tab == front) && !UserPaused[index] && (i.BypassPause || !kept && !PausedByRule(lane)))
@@ -871,7 +839,7 @@ public static class WorkScheduler
         }
     }
 
-    /// <summary>Starts a piece of work that was waiting, where it was asked for: the UI thread's work stays on the UI thread. Under the gate.</summary>
+    /// <summary>Starts queued work on its captured context (UI-thread work stays on the UI thread). Under the gate.</summary>
     private static void StartLocked(WorkItem item)
     {
         var lane = (int)item.Lane;
@@ -894,7 +862,7 @@ public static class WorkScheduler
         {
             lock (Gate)
             {
-                // Its slot given back already when it ended stopped between its pieces (5.4.4: cancelled while it waited), never twice.
+                // Slot already released if it ended while paused (cancelled during wait); never release twice.
                 if (item.SlotGivenBack)
                     GoOnLocked(item, counted: false);
                 else
@@ -932,7 +900,7 @@ public static class WorkScheduler
         });
     }
 
-    /// <summary>Copies the work's progress into what is shown, lets finished work go after a while, and works out the chip. UI thread.</summary>
+    /// <summary>Copies progress to bindable state, expires finished items, and updates the chip. UI thread.</summary>
     private static void Refresh()
     {
         var settings = AppSettings.Current;

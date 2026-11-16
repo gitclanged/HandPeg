@@ -7,46 +7,40 @@ using HandPegApp.Services;
 
 namespace HandPegApp.ViewModels;
 
-// ----- Project tabs (Pass 5.4A, MainWindow.ProjectTabs.cs) -----
-// The title bar's tabs keep one view model and one Sequence: only the tab in front lives here. A tab put behind is written to the
-// cache as a project file of its own (ProjectTabs, %Cache%\project-tabs\<session>\<id>.hptab) with its undo and redo history, and brought
-// back the way a project is opened (RestoreStateAsync), so every per-project field is reset as an open resets it. The clipboard
-// (_copied) is the view model's, not the project's: what was copied in one tab pastes in the next.
-// Pass 5.4D-TabPerf (the user's U1): a tab brought to the front this session stays in memory as it goes behind (DetachForTab: its live
-// Sequence, its undo and redo history by reference, its saved state's fingerprints as they are, what was opened of its file), and comes
-// back by a swap of references (AttachTab), with no file read, no probe, no open and no fingerprint: the same steps an open takes to put
-// a project's settings and timeline in place (ApplyProjectSettings, InstallProjectTimeline), on its own Sequence. Work left running in
-// the background for the tab put behind (its I-frames, waveforms, hover sheet, its streams unpacked) is cancelled and never lands in
-// the next tab (_projectGeneration); what it left unfinished starts again as the tab comes back (all of it cached on the disk).
+// ----- Project tabs (see MainWindow.ProjectTabs.cs) -----
+// One VM and one Sequence serve all title-bar tabs; only the active tab lives here. A backgrounded tab is cached as its own project
+// file with history (ProjectTabs, %Cache%\project-tabs\<session>\<id>.hptab) and restored like an open (RestoreStateAsync), resetting
+// per-project fields. The clipboard (_copied) is VM-wide, so copy/paste works across tabs.
+// Tabs activated this session stay in memory when backgrounded (DetachForTab: live Sequence, history by reference, fingerprints,
+// probed file) and return by reference swap (AttachTab) with no file read, probe or fingerprint, reusing ApplyProjectSettings and
+// InstallProjectTimeline. Background work for the departing tab is cancelled via _projectGeneration and restarts (disk-cached) on return.
 public partial class MainViewModel
 {
     /// <summary>
-    /// Which project the view model holds (Pass 5.4D-TabPerf): moved on as a tab goes behind, so a continuation of work started for it
-    /// (UnpackProjectStreamsAsync) that comes back later sees it is another tab's and does nothing.
+    /// Project generation, bumped when a tab is backgrounded so late continuations (UnpackProjectStreamsAsync) detect a stale project and no-op.
     /// </summary>
     private int _projectGeneration;
 
-    /// <summary>The project generation (<see cref="_projectGeneration"/>), for the window's adds that span awaits of their own (a drop of several files).</summary>
+    /// <summary>Current <see cref="_projectGeneration"/>, for window-side adds spanning their own awaits (multi-file drops).</summary>
     internal int ProjectGeneration => _projectGeneration;
 
-    // How many unpackings of a project's streams are under way for the project held now (UnpackProjectStreamsAsync).
+    // In-flight stream unpack count for the current project (UnpackProjectStreamsAsync).
     private int _unpacking;
 
-    // ----- Adds under way (Pass 5.4D-TabPerf review, P1) -----
-    // A clip added from a file is placed once its file has been looked at (AddAudioLayerAsync) or filled in then (AddVideoClipAsync):
-    // an await the user can switch tabs during. The window refuses a switch while any is under way (MainWindow.MayChangeTabs reads
-    // HasPendingAdds), and each add takes the project generation before its await and places or edits nothing once it has moved on.
+    // ----- Pending adds -----
+    // File adds await a probe (AddAudioLayerAsync, AddVideoClipAsync) during which a tab switch could occur. The window blocks switches
+    // while HasPendingAdds (MainWindow.MayChangeTabs), and each add captures the generation and no-ops if it changed.
 
-    // How many adds from a file are under way (a drop's files, a voiceover being placed): the view model's, whichever tab is in front.
+    // VM-wide count of in-flight file adds (drop files, voiceover placement).
     private int _pendingAdds;
 
-    /// <summary>Whether a clip is being added from a file (its probe still running, a drop's files still to come, a voiceover being placed): the tabs may not change meanwhile.</summary>
+    /// <summary>Whether a file add is in flight (probe, remaining drop files, voiceover); tab switches are blocked meanwhile.</summary>
     public bool HasPendingAdds => _pendingAdds > 0;
 
-    /// <summary>How many adds from a file are under way (<see cref="HasPendingAdds"/>).</summary>
+    /// <summary>In-flight file add count (<see cref="HasPendingAdds"/>).</summary>
     internal int PendingAdds => _pendingAdds;
 
-    /// <summary>An add from a file under way until the result is disposed (the window's thread): counted in <see cref="HasPendingAdds"/>.</summary>
+    /// <summary>Scope counting a file add in <see cref="HasPendingAdds"/> until disposed (UI thread).</summary>
     internal IDisposable BeginAdd()
     {
         _pendingAdds++;
@@ -66,23 +60,20 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// How a video clip just dropped is finished once its file has been looked at (Pass 5.4D-TabPerf review, P2): played once or to the
-    /// end, fitted inside (or filling) a box of the frame, cut to a sub-clip. Kept with its tab when the tab goes behind before then, so the
-    /// add is finished the same way as the tab comes back.
+    /// Completion parameters for a dropped video once probed: play-once vs loop, fit/fill box, sub-clip range. Travels with a
+    /// backgrounded tab so the add completes identically on return.
     /// </summary>
     internal readonly record struct LoadingAdd(bool PlayOnce, (int X, int Y, int Width, int Height)? FitInto, bool Fill, (double In, double Out)? SourceRange);
 
-    // The video clips of the project held now still being filled in after their add, by clip id (FinishVideoAddAsync).
+    // Current project's video adds awaiting completion, by clip id (FinishVideoAddAsync).
     private readonly Dictionary<Guid, LoadingAdd> _loadingAdds = [];
 
-    // The adds a tab coming back had still loading as it went behind, while its views are made (AttachTab -> ViewFor); null otherwise.
+    // A returning tab's pending adds, consumed while its views are built (AttachTab -> ViewFor); null otherwise.
     private Dictionary<Guid, LoadingAdd>? _addsToResume;
 
     /// <summary>
-    /// The project as a tab put behind keeps it: <see cref="CaptureState"/> with the undo and redo history (packed steps, shared:
-    /// a packed step is never changed) and the last thumbnail taken. Never waits for a fresh thumbnail (<see cref="ThumbnailForSave"/>
-    /// can hold this thread for a moment): a switch is never held up by the engine. The state is a copy of its own, so it may be
-    /// written away from this thread.
+    /// Backgrounded tab snapshot: <see cref="CaptureState"/> plus shared immutable history and the last thumbnail. Never waits for a
+    /// fresh thumbnail (<see cref="ThumbnailForSave"/> can block), so switches never stall on the engine. Safe to write off-thread.
     /// </summary>
     public ProjectState CaptureStateForTab(string name)
     {
@@ -92,39 +83,37 @@ public partial class MainViewModel
         return state;
     }
 
-    /// <summary>What the project looked like when it was last saved or opened (what tells whether it has changed since): kept with a tab put behind that has unsaved changes, so it comes back with them.</summary>
+    /// <summary>Saved-state fingerprint, kept with a dirty backgrounded tab so it returns still dirty.</summary>
     public string SavedFingerprintForTab => _savedFingerprint;
 
     /// <summary>
-    /// Whether the project may have unsaved changes, cheaply: something was opened, touched since the last save or open, and has a
-    /// saved state to differ from. False means <see cref="HasUnsavedChanges"/> is false without making the fingerprint; true asks it.
+    /// Cheap dirty pre-check (content present, touched since save/open, baseline exists). False implies <see cref="HasUnsavedChanges"/>
+    /// is false without fingerprinting; true requires the full check.
     /// </summary>
     public bool MayHaveUnsavedChanges => _touchedSinceSaved && _savedFingerprint.Length > 0;
 
     /// <summary>
-    /// Whether the project holds nothing worth keeping as a tab goes behind (5.4.0): no file or clip, no undo or redo history (a
-    /// project whose clips were all deleted can still have them back), no frame or rate chosen on purpose (the New Project studio,
-    /// Project Settings), no name from the studio, no Game Preset waiting for a first file and nothing in Project Media (5.4.0: the New
-    /// Project studio's picks go there with no step of Undo). Only such a tab is released as empty; every other one is written to the cache.
+    /// Whether a backgrounding tab is empty: no file or clips, no history (deleted clips may be undoable), no explicit frame/rate,
+    /// no studio name, no pending Game Preset and empty Project Media (studio picks land there without undo). Only empty tabs are
+    /// released; others are cached.
     /// </summary>
     public bool HoldsNothingForTab => !HasSource && _undo.Count == 0 && _redo.Count == 0 && !Document.ExplicitFrame && !Document.ExplicitFrameRate
         && NewProjectName.Length == 0 && _templateToCome is null && Document.MediaPool.Count == 0;
 
-    /// <summary>The Game Preset waiting for the first file (null for none), opaque: a tab put behind keeps it with its header, in memory only.</summary>
+    /// <summary>Opaque pending Game Preset (null for none), kept in memory with a backgrounded tab's header.</summary>
     public object? TemplateWaitingForTab => _templateToCome;
 
     /// <summary>
-    /// A tab brought back to the front: its state put in place as a project is opened (<see cref="OpenShowingCaptionsAsync"/>, never
-    /// written back over a file: the state is the cache's copy), the file it was opened from or saved to as the file Save writes, and
-    /// its unsaved changes still unsaved (<see cref="RestoreUnsavedState"/>). Its videos' streams are shown in the background, and its
-    /// files kept out of crash reports, as an open does.
+    /// Restores a cached tab like an open (<see cref="OpenShowingCaptionsAsync"/>; never written back, the state is a cache copy), sets its
+    /// Save path and re-applies its dirty state (<see cref="RestoreUnsavedState"/>). Streams unpack in the background and files are
+    /// excluded from crash reports, as for an open.
     /// </summary>
-    /// <param name="projectPath">The tab's project file; null or empty for work never saved.</param>
-    /// <param name="dirty">Whether the tab had unsaved changes as it was put behind.</param>
-    /// <param name="savedFingerprint">The fingerprint of its saved state (<see cref="SavedFingerprintForTab"/>), for a dirty tab; null when unknown.</param>
-    /// <param name="newProjectName">The name the New Project studio gave the tab ("" for none): the last tab's never stays.</param>
-    /// <param name="newProjectFolder">The folder the studio chose for the tab's first save (null: the Projects folder).</param>
-    /// <param name="waitingTemplate">The Game Preset the tab had waiting for its first file (<see cref="TemplateWaitingForTab"/>); null for none.</param>
+    /// <param name="projectPath">Project file; null or empty when never saved.</param>
+    /// <param name="dirty">Whether the tab was dirty when backgrounded.</param>
+    /// <param name="savedFingerprint">Saved-state fingerprint (<see cref="SavedFingerprintForTab"/>) for a dirty tab; null when unknown.</param>
+    /// <param name="newProjectName">New Project studio name ("" for none); never inherited from the previous tab.</param>
+    /// <param name="newProjectFolder">Studio-chosen folder for the first save (null = Projects folder).</param>
+    /// <param name="waitingTemplate">Pending Game Preset (<see cref="TemplateWaitingForTab"/>); null for none.</param>
     public async Task ResumeTabAsync(ProjectState state, string? projectPath, bool dirty, string? savedFingerprint,
         string newProjectName = "", string? newProjectFolder = null, object? waitingTemplate = null)
     {
@@ -135,12 +124,12 @@ public partial class MainViewModel
         var before = Document;
         await OpenShowingCaptionsAsync(state, name.Length > 0 ? $"Switched to {name}" : "Switched project tabs");
 
-        // Not put in place (its media not found, another operation running): nothing of the tab is taken on, so the Sequence still
-        // here is never saved as the tab's (the window empties it, or goes back to the tab it came from).
+        // Restore failed (media missing, busy): adopt nothing, so the current Sequence is never saved as this tab's (the window clears
+        // it or returns to the previous tab).
         if (ReferenceEquals(before, Document))
             return;
 
-        // The open keeps the last tab's studio name, folder and waiting Game Preset: always this tab's own instead.
+        // Open would keep the previous tab's studio name, folder and pending preset: override with this tab's.
         KeepNewProjectName(newProjectName, newProjectFolder);
         _templateToCome = waitingTemplate as ClipTemplate;
         CurrentProjectPath = projectPath ?? "";
@@ -151,8 +140,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The project's file renamed on the disk (Pass 5.4B, the tab's Rename Project...: MainWindow moved the file): Save writes to
-    /// <paramref name="newPath"/> from now on. Nothing is saved and the unsaved changes stay as they were. A line for the status bar.
+    /// After Rename Project moved the file (MainWindow), retargets Save to <paramref name="newPath"/> without saving or changing dirty
+    /// state. Returns a status line.
     /// </summary>
     public string RenameProjectFile(string newPath)
     {
@@ -164,9 +153,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// After a tab's state was put in place (which takes it as the saved one: <see cref="MarkSaved"/>), the changes it had that were
-    /// not saved are unsaved again: the saved state is the one it was compared with before it went behind, or (unknown) one nothing
-    /// matches. A tab that had none stays as the open left it. A false "unsaved" only asks once too often; a false "saved" would lose work.
+    /// After restore (which calls <see cref="MarkSaved"/>), re-applies the tab's dirty state: the baseline becomes its pre-background
+    /// saved fingerprint, or an unmatchable one when unknown. Errs toward dirty: a false "unsaved" costs a prompt, a false "saved" loses work.
     /// </summary>
     internal void RestoreUnsavedState(string? savedFingerprint, bool dirty)
     {
@@ -177,14 +165,12 @@ public partial class MainViewModel
         _touchedSinceSaved = true;
     }
 
-    // ----- A tab kept in memory (Pass 5.4D-TabPerf) -----
+    // ----- In-memory backgrounded tabs -----
 
     /// <summary>
-    /// Everything of a project tab put behind that lives in the view model (Pass 5.4D-TabPerf), held in memory until it comes back to the
-    /// front (<see cref="AttachTab"/>) or is let go to its cache file. <see cref="State"/> is <see cref="CaptureState(string)"/>'s notion of
-    /// the project with its Timeline the live Sequence itself, detached (no Committed handler: <see cref="Document"/> is the only timeline);
-    /// <see cref="Frozen"/> is a copy of its own (<see cref="CaptureStateForTab"/>: the history and thumbnail with it) for the cache file
-    /// written on the thread pool, a save or a duplicate. Nothing of the project changes while the tab is behind.
+    /// VM-held state of a backgrounded tab, kept until <see cref="AttachTab"/> or eviction to its cache file. <see cref="State"/> references
+    /// the detached live Sequence (no Committed handler; <see cref="Document"/> stays the only timeline); <see cref="Frozen"/> is an isolated
+    /// copy with history and thumbnail (<see cref="CaptureStateForTab"/>) for pool-thread cache writes, saves and duplicates. Immutable while backgrounded.
     /// </summary>
     public sealed class TabProjectContext
     {
@@ -194,33 +180,33 @@ public partial class MainViewModel
             Frozen = frozen;
         }
 
-        /// <summary>The project as the tab left it; its Timeline is the tab's own live Sequence.</summary>
+        /// <summary>The tab's state; its Timeline is the tab's live Sequence.</summary>
         public ProjectState State { get; }
 
-        /// <summary>A copy of the project with its undo history and thumbnail, never reached by the live Sequence: what the cache file is written from.</summary>
+        /// <summary>Isolated copy with history and thumbnail; the source for cache file writes.</summary>
         public ProjectState Frozen { get; }
 
-        /// <summary>The tab's own Sequence (the one <see cref="MainViewModel.Document"/> was, and is again as it comes back).</summary>
+        /// <summary>The tab's Sequence (reinstalled as <see cref="MainViewModel.Document"/> on return).</summary>
         public TimelineDocument Document => State.Timeline;
 
-        /// <summary>The project's file ("" for work never saved): set by a save of the tab while it is behind (MainWindow.SaveTabInPlace).</summary>
+        /// <summary>Project file ("" if never saved); updated by background saves (MainWindow.SaveTabInPlace).</summary>
         public string ProjectPath { get; set; } = "";
 
-        /// <summary>The New Project studio's name and folder for its first save (cleared by a save while it is behind).</summary>
+        /// <summary>New Project studio name and first-save folder (cleared by a background save).</summary>
         public string NewProjectName { get; set; } = "";
 
         public string? NewProjectFolder { get; set; }
 
-        /// <summary>Saved while it was behind (MainWindow.SaveTabInPlace): taken as saved as it comes back (one fingerprint then).</summary>
+        /// <summary>Saved while backgrounded (MainWindow.SaveTabInPlace); marked saved on return (one fingerprint).</summary>
         public bool MarkSavedOnAttach { get; set; }
 
-        /// <summary>Whether it may have unsaved changes (cheaply: <see cref="MayHaveUnsavedChanges"/> as it went behind).</summary>
+        /// <summary><see cref="MayHaveUnsavedChanges"/> at background time.</summary>
         public bool MayBeDirty { get; init; }
 
-        /// <summary>Its saved state's fingerprint (<see cref="SavedFingerprintForTab"/>) as it went behind; "" for none.</summary>
+        /// <summary>Saved-state fingerprint (<see cref="SavedFingerprintForTab"/>) at background time; "" for none.</summary>
         public string SavedFingerprint { get; init; } = "";
 
-        /// <summary>How many steps it has to undo and to redo.</summary>
+        /// <summary>Undo and redo step counts.</summary>
         public int UndoDepthNow => Undo.Count;
 
         public int RedoDepthNow => Redo.Count;
@@ -229,7 +215,7 @@ public partial class MainViewModel
         internal List<(string What, byte[] State)> Redo { get; init; } = [];
         internal bool TouchedSinceSaved { get; init; }
 
-        /// <summary>How many of its undo steps predate its last save or open (Pass 5.5A: what its recovery copy may lag through).</summary>
+        /// <summary>Undo steps predating the last save/open (bounds recovery-copy lag).</summary>
         internal int SavedDepth { get; init; }
 
         internal string AutosavedFingerprint { get; init; } = "";
@@ -253,27 +239,24 @@ public partial class MainViewModel
         internal Layer? KeyLayer { get; init; }
         internal List<Layer> SelectedClips { get; init; } = [];
 
-        /// <summary>Its video clips still being filled in after their add as it went behind, by clip id: finished as their add would have finished them as it comes back (P2).</summary>
+        /// <summary>Pending video adds by clip id, completed with their original parameters on return.</summary>
         internal Dictionary<Guid, LoadingAdd> LoadingAdds { get; init; } = [];
 
-        /// <summary>Its clips' views, taken up again as it comes back: none made anew for its unchanged Sequence (MainViewModel.KeptViews).</summary>
+        /// <summary>Clip views reused on return for the unchanged Sequence (MainViewModel.KeptViews).</summary>
         internal KeptViews? Views { get; init; }
     }
 
     /// <summary>
-    /// The tab in front goes behind and stays in memory (Pass 5.4D-TabPerf; the window's thread, at once: the window has stopped playback
-    /// and holds no operation or recording, MainWindow.MayChangeTabs): everything of its project the view model holds is taken into a
-    /// context (its Sequence by reference, detached; its history moved; its fingerprints as they are; its clips' views, let go of by the
-    /// view model: <see cref="LetGoOfViews"/>), the background work started for it cancelled, and the view model left holding no project's
-    /// Sequence: an empty one stands in (with no views) until the next tab is put in place, so nothing done meanwhile ever reaches the tab
-    /// put behind.
+    /// Backgrounds the active tab in memory (UI thread; caller ensures no playback, operation or recording via MainWindow.MayChangeTabs):
+    /// moves its project state into a context (detached Sequence, history, fingerprints, views via <see cref="LetGoOfViews"/>), cancels its
+    /// background work, and installs an empty stand-in Sequence so nothing before the next install can touch the backgrounded tab.
     /// </summary>
     public TabProjectContext DetachForTab(string title)
     {
         var frozen = CaptureStateForTab(title);
         var state = CaptureState(title, liveTimeline: true);
 
-        // Its views go with it (the looks are in its clips now: CaptureState), out of the view model's maps before anything else runs.
+        // Detach views first (looks already flushed by CaptureState), before anything else runs.
         var views = LetGoOfViews();
         var tab = new TabProjectContext(state, frozen)
         {
@@ -313,9 +296,8 @@ public partial class MainViewModel
         CancelProjectBackgroundWork();
         ParkDocument();
 
-        // The views list as the stand-in Sequence has it (none), and the selection of clips (the context keeps it): the tab's views are
-        // in no list of the view model while it is behind. The Inspector and Keyframes pane let go of its selected view too (P3): one
-        // nudged while the next tab is read would change a view listened to by nothing, which its clip would take later.
+        // Empty the views list and selection (kept in the context). Inspector and Keyframes also drop the selected view: a nudge while
+        // the next tab loads would edit an unobserved view whose clip would later absorb it.
         Layers.Clear();
         KeyLayer = null;
         _selectedClips.Clear();
@@ -326,10 +308,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// The work started in the background for the project held now, cancelled as its tab goes behind (Pass 5.4D-TabPerf): the I-frame scan,
-    /// the waveforms, the hover sheet (each checks its own cancellation after its wait), and the generation moved on for what has none (the
-    /// streams' unpacking, the adds from a file). What was cut short starts again as the tab comes back (<see cref="AttachTab"/>; a tab put
-    /// behind has taken its adds still loading first).
+    /// Cancels the current project's background work on backgrounding: I-frame scan, waveforms, hover sheet (each checks its token after
+    /// awaiting), and bumps the generation for untokened work (stream unpack, file adds). Interrupted work restarts in <see cref="AttachTab"/>.
     /// </summary>
     private void CancelProjectBackgroundWork()
     {
@@ -343,9 +323,8 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// An empty Sequence stands in for the one a tab put behind took with it (Pass 5.4D-TabPerf): put in place without its views made
-    /// again (the next project's are, at once, as it is installed), so what the next project's settings change as they are put in place,
-    /// and anything done while the next tab is read from its file, reaches this one and never the tab put behind.
+    /// Installs an empty stand-in Sequence (no views; the next project builds its own) so settings applied during the next install and
+    /// anything done while its file loads hit the stand-in, never the backgrounded tab.
     /// </summary>
     internal void ParkDocument()
     {
@@ -356,19 +335,16 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// A tab kept in memory brought back to the front (Pass 5.4D-TabPerf; the window's thread, at once): its project put in place as an
-    /// open puts one (<see cref="ApplyProjectSettings"/>, <see cref="InstallProjectTimeline"/>) but on its own live Sequence, with the file it
-    /// had open as it was probed, its history, fingerprints, file, New Project name and folder and waiting Game Preset as they were (no
-    /// fingerprint is made: its unsaved changes are as unsaved as they were), its I-frames, waveforms and hover sheet as it left them, its
-    /// own views taken up again (none made anew: <see cref="TakeUpViews"/>), and its selection with them. False when an operation or a
-    /// recording holds the view model (nothing changed).
+    /// Re-activates an in-memory tab (UI thread) via <see cref="ApplyProjectSettings"/> and <see cref="InstallProjectTimeline"/> on its live
+    /// Sequence, restoring probed file info, history, fingerprints (no new fingerprint), file, studio name/folder, pending preset, I-frames,
+    /// waveforms, hover sheet, views (<see cref="TakeUpViews"/>) and selection. False (no change) while an operation or recording is active.
     /// </summary>
     public bool AttachTab(TabProjectContext tab)
     {
         if (IsBusy || HoldsRecording)
             return false;
 
-        // Whatever was still under way for the project held now (one closed in front: AttachTab follows it) never lands in this one.
+        // Cancel work of the outgoing project (e.g. a just-closed tab) so it cannot land in this one.
         CancelProjectBackgroundWork();
         var state = tab.State;
         EditingJob = null;
@@ -379,12 +355,12 @@ public partial class MainViewModel
         DownloadResolution = Pick(DownloadResolutions, state.DownloadResolution, "Best");
         DownloadSubtitles = state.DownloadSubtitles;
 
-        // HasSource is told once, as the tab's own Sequence is in place (P12): until then it reads the stand-in Sequence, and a false
-        // told on the way (its file set before its Sequence, or its settings' shape note) would have the window let go of the engine.
+        // Hold HasSource until the tab's Sequence is installed: a transient false (file set before Sequence, shape note) would make the
+        // window release the engine.
         _holdingSource = true;
         try
         {
-            // The file it had open, as it was probed then (no probe, no write test of its folder: LoadMediaAsync's part of an open).
+            // Restore the previously probed file info (skipping LoadMediaAsync's probe and folder write test).
             ResetForNewSource();
             LocalMediaPath = tab.LocalMediaPath;
             SetMediaInfo(tab.MediaInfo);
@@ -397,14 +373,14 @@ public partial class MainViewModel
                     DestinationPath = Path.Combine(GetDefaultOutputFolder(LocalMediaPath), $"{Path.GetFileNameWithoutExtension(LocalMediaPath)}_HandPeg.{Container}");
             }
 
-            // Its selection, as its views of before: followed by their clips' ids into the views the install makes (FollowSelection, RemapClipSelection).
+            // Remap the saved selection by clip id onto installed views (FollowSelection, RemapClipSelection).
             KeyLayer = tab.KeyLayer;
             _selectedClips.Clear();
             _selectedClips.AddRange(tab.SelectedClips);
             _selectedClipSet.Clear();
             _selectedClipSet.UnionWith(tab.SelectedClips);
 
-            // Its clips still loading after their add are finished as the add would have finished them as their views are made (P2, ViewFor).
+            // Complete pending adds with their original parameters as views are built (ViewFor).
             _addsToResume = tab.LoadingAdds.Count > 0 ? tab.LoadingAdds : null;
             ApplyProjectSettings(state, legacyMixing: false);
             InstallProjectTimeline(state, tab.Document, tab.Views);
@@ -416,7 +392,7 @@ public partial class MainViewModel
             ReleaseSourceNote();
         }
 
-        // Its history and saved state as they were (no MarkSaved: no fingerprint), unless it was saved while behind.
+        // Restore history and saved baseline without MarkSaved (no fingerprint), unless saved while backgrounded.
         ForgetHistory();
         _undo.AddRange(tab.Undo);
         _redo.AddRange(tab.Redo);
@@ -431,7 +407,7 @@ public partial class MainViewModel
         if (CurrentProjectPath.Length > 0)
             DevFlightRecorder.Record("project", "path " + CurrentProjectPath);
 
-        // What was made of its file in the background, as it left it; what was cut short starts again (cached on the disk).
+        // Restore completed background results; restart interrupted work (disk-cached).
         SetSourceIFrames(tab.IFrames);
         IFrameStatusText = tab.IFrameStatus;
         (SpriteSheetPath, _spriteSource, SpriteIntervalSeconds) = (tab.SpriteSheetPath, tab.SpriteSource, tab.SpriteIntervalSeconds);
@@ -441,7 +417,7 @@ public partial class MainViewModel
 
         if (tab.TimelineWaveform is not null && !tab.WaveformsPending)
         {
-            // Its tracks' actions put back asked for the mix's picture again (OnTrackChanged): it is the one kept.
+            // Restoring track actions re-requested the mix picture (OnTrackChanged); keep the saved one.
             _timelineWaveformCancellation?.Cancel();
             TimelineWaveform = tab.TimelineWaveform;
         }
@@ -466,11 +442,11 @@ public partial class MainViewModel
         return true;
     }
 
-    // HasSource held while a tab comes back (AttachTab, P12), and whether it was to be told meanwhile.
+    // HasSource notification hold during AttachTab, and whether a notification is pending.
     private bool _holdingSource;
     private bool _sourceHeld;
 
-    /// <summary>The hold on HasSource let go (AttachTab): told once, now that the tab's own Sequence is in place, if it was to be told meanwhile.</summary>
+    /// <summary>Releases the HasSource hold after AttachTab, raising once if a notification was pending.</summary>
     private void ReleaseSourceNote()
     {
         _holdingSource = false;
@@ -482,18 +458,16 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Whether a tab put behind has unsaved changes (Pass 5.4D-TabPerf, any thread: the thread pool, as its cache file is written): the
-    /// fingerprint (<see cref="Fingerprint"/>'s JSON) of its frozen state against its saved state's. The frozen state is only read (5.4D-TabPerf
-    /// review, P4/P7/P17: a save, the crash writer or the hover card may read it meanwhile): its name, its Settings' name and the time it was
-    /// saved are written as a fingerprint has them ("", "", none: <see cref="FingerprintOptions"/>); its history and thumbnail are never in
-    /// the JSON.
+    /// Dirty check for a backgrounded tab (thread-safe; runs on the pool during cache writes): compares <see cref="Fingerprint"/> JSON of
+    /// the frozen state with the saved baseline. Read-only (saves, crash writer and hover card may read concurrently); name, settings name
+    /// and save time serialize blank via <see cref="FingerprintOptions"/>; history and thumbnail are excluded.
     /// </summary>
     internal static bool FrozenStateDiffers(ProjectState frozen, string savedFingerprint) =>
         savedFingerprint.Length > 0 && JsonSerializer.Serialize(frozen, FingerprintOptions) != savedFingerprint;
 
     /// <summary>
-    /// The JSON of a project state as a fingerprint is made (<see cref="Fingerprint"/>: no name, no Settings name, no time saved) without
-    /// changing the state: the default serializer's, with those three read as blank. Built once; safe on any thread.
+    /// Serializer options producing <see cref="Fingerprint"/> JSON without mutating the state: default options with name, settings
+    /// name and save time read as blank. Built once; thread-safe.
     /// </summary>
     private static readonly JsonSerializerOptions FingerprintOptions = new()
     {

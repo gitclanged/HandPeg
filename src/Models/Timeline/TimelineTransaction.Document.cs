@@ -3,10 +3,9 @@ using HandPegApp.Models.Effects;
 namespace HandPegApp.Models.Timeline;
 
 /// <summary>
-/// The Sequence's document-level values as transaction operations (markers, the Sequence Output's effects, the natural frame and the
-/// frame rate), so they change through a transaction like everything else of the document: rolled back with it, raising
-/// <see cref="TimelineDocument.Committed"/> on their own. The view model's mirrors (FlushLooks) still copy markers and effects in before
-/// the document is read; these are for the changes made to the document itself.
+/// Transactional operations for document-level values (markers, Sequence Output effects, natural frame, frame rate) so they roll back
+/// with the transaction and raise <see cref="TimelineDocument.Committed"/>. View-model mirrors (FlushLooks) still copy markers and
+/// effects in before reads; these cover direct document changes.
 /// </summary>
 internal sealed partial class TimelineTransaction
 {
@@ -56,7 +55,7 @@ internal sealed partial class TimelineTransaction
         return true;
     });
 
-    /// <summary>The document-level values as they are before this change writes one; the change is the innermost transaction's to report.</summary>
+    /// <summary>Snapshots document-level values before a write; the innermost transaction reports the change.</summary>
     private void RememberDocumentFields()
     {
         foreach (var open in _doc.OpenTransactions)
@@ -68,7 +67,7 @@ internal sealed partial class TimelineTransaction
         _doc.OpenTransactions[^1]._documentTouched = true;
     }
 
-    /// <summary>A rollback's part: the document-level values put back (the lists are replaced, never changed in place).</summary>
+    /// <summary>Rollback step restoring document-level values (lists replaced, never mutated).</summary>
     private void RestoreDocumentFields()
     {
         if (_documentFieldsBefore is not { } before)

@@ -5,7 +5,7 @@ using System.Windows;
 namespace HandPegApp;
 
 /// <summary>
-/// Interaction logic for App.xaml
+/// Application lifetime: start-up service wiring (crash reporting, work lanes, scaling, theme), first-run gating, and clean-exit handling.
 /// </summary>
 public partial class App : Application
 {
@@ -13,27 +13,26 @@ public partial class App : Application
     {
         Services.StartupTrace.Mark("App.OnStartup");
 
-        // Exceptions that escape the window's thread are reported (and still end the process, as they always have).
+        // Report unhandled UI-thread exceptions (they still terminate the process).
         Services.CrashReporter.WatchDispatcher(Dispatcher);
         LogBindingErrors();
         if (Environment.GetEnvironmentVariable("HANDPEG_LOG_STALLS") == "1")
             WatchForStalls(Dispatcher);
 
-        // The lanes for background work, the jobs its tools run in, and this thread's place among the processors.
+        // Background work lanes, tool job objects, and the UI thread's processor placement.
         Services.WorkScheduler.Attach(Dispatcher);
 
-        // No menu beeps from any window (5.0-Release); Windows' accessibility settings are left alone (5.1-AutoHud-Part1).
+        // Suppress menu beeps in every window without altering Windows accessibility settings.
         Services.QuietKeys.Follow();
 
-        // Every window at the monitor's own pixels unless Windows' scaling is followed (5.1-Polish, the user's directive).
+        // Render windows at native monitor pixels unless the Windows-scaling setting is enabled.
         Services.UiScale.Follow();
 
-        // Before any window is made, so that the first thing drawn already has the theme and the Windows accent colour.
+        // Apply theme and Windows accent before any window exists, so Frame 1 is already themed.
         Services.ThemeManager.Follow(this);
 
-        // A first start, or one whose settings never went through the first-run window, or settings brought to a PC
-        // that has neither FFmpeg nor the player: ask for the theme, the workspace and the components before the main
-        // window (named as StartupUri) is created with them.
+        // First run, settings that never completed first-run, or settings migrated to a PC without FFmpeg: show the first-run
+        // window (theme, workspace, components) modally before the StartupUri main window is created.
         if (!Services.AppSettings.Current.FirstRunComplete || CoreEnginesMissing())
         {
             Services.CrashReporter.Note("app", "first-run window");
@@ -47,9 +46,9 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// FFmpeg is not on this PC (the settings came from another one, or the tools folder was deleted): nothing could be
-    /// opened (inspected, drawn as a filmstrip) or exported. At most two File.Exists in the local tools folder; an FFmpeg
-    /// of the user's own, named in the settings, counts as there without being looked for.
+    /// True when FFmpeg is missing on this PC (settings copied from another machine, or tools folder deleted), which blocks probing,
+    /// filmstrips and export. Costs at most two File.Exists in the local tools folder; a custom FFmpeg path in settings counts as present
+    /// without a check.
     /// </summary>
     private static bool CoreEnginesMissing() =>
         Services.DependencyUpdater.GetLocalState(Services.DependencyUpdater.Ffmpeg) == Services.DependencyState.Missing;
@@ -59,14 +58,14 @@ public partial class App : Application
         Services.CrashReporter.Note("app", "exit");
         Services.Notifier.Dispose();
 
-        // A settings change still inside its debounce is written before the process ends.
+        // Flush any debounced settings save before exit.
         Services.AppSettings.FlushPendingSave();
 
-        // An update that was downloaded but not restarted into goes in once this process has gone.
+        // Apply a downloaded, not-yet-installed update after this process exits.
         Services.AppUpdater.ApplyOnExit();
         base.OnExit(e);
 
-        // An ordinary way out (the window closed, or a restart into an update): the crash sentinel has nothing to write.
+        // Normal exit (window closed or update restart): tell the crash sentinel there is nothing to report.
         Services.CrashReporter.MarkCleanExit();
     }
 
@@ -74,7 +73,7 @@ public partial class App : Application
     {
         base.OnSessionEnding(e);
 
-        // Windows is signing out or shutting down, and may end HandPeg before OnExit is reached: that is no crash.
+        // Sign-out or shutdown may terminate the process before OnExit; record it as a clean exit, not a crash.
         if (!e.Cancel)
         {
             Services.CrashReporter.Note("app", "session ending: " + e.ReasonSessionEnding);
@@ -83,9 +82,8 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// HANDPEG_LOG_STALLS=1: a thread of its own asks the UI thread, twenty times a second, to answer at input
-    /// priority, and writes to the log every time the answer took longer than two frames. What was running then is
-    /// for the rest of the log (and a profiler) to say; this says when, and for how long.
+    /// HANDPEG_LOG_STALLS=1: a background thread pings the UI thread at Input priority every 50 ms and logs each response slower
+    /// than 32 ms (two frames). It records when and how long; the rest of the log (or a profiler) shows what was running.
     /// </summary>
     private static void WatchForStalls(System.Windows.Threading.Dispatcher dispatcher)
     {
@@ -113,10 +111,9 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Debug builds write XAML binding errors to binding-errors.log in the logs folder. They are otherwise
-    /// only visible in a debugger's output window, where a mistyped property name is easy to miss. A second copy started while
-    /// the first holds that file writes binding-errors.&lt;process id&gt;.log; with neither, the errors go unlogged: never a fault
-    /// (5.2E: crash report 236eaf85, an IOException out of OnStartup when two development copies started).
+    /// Debug builds log XAML binding errors to binding-errors.log in the logs folder (otherwise only visible in a debugger's output,
+    /// where a mistyped property is easy to miss). A second instance falls back to binding-errors.&lt;process id&gt;.log; if neither
+    /// opens, errors go unlogged, never throwing (an IOException from OnStartup once crashed two concurrent development instances).
     /// </summary>
     [Conditional("DEBUG")]
     internal static void LogBindingErrors()
@@ -133,7 +130,7 @@ public partial class App : Application
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // In use by another copy (or not writable): the next name, or none.
+                // Locked by another instance or not writable: try the next name.
             }
         }
 

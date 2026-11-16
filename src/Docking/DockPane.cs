@@ -3,114 +3,108 @@ using System.Windows.Controls;
 
 namespace HandPegApp.Docking;
 
-/// <summary>How a pane is grabbed to be moved.</summary>
+/// <summary>Drag handle style of a pane.</summary>
 public enum PaneHandle
 {
-    /// <summary>By its title, which its content shows in a <see cref="PaneTitleSlot"/>: the tab is put there, in the title's place.</summary>
+    /// <summary>Tab placed in the content's <see cref="PaneTitleSlot"/>, replacing the title.</summary>
     TitleSlot,
 
-    /// <summary>By a tab that appears when the pointer comes to the pane's top-left corner (a pane with no title of its own).</summary>
+    /// <summary>Hover tab at the top-left corner (titleless panes).</summary>
     Hover,
 
-    /// <summary>By a tab in a row of tabs above it: one of the settings tabs (Summary, Video, ...), which have always had one.</summary>
+    /// <summary>Tab in a tab row above (settings tabs).</summary>
     Tab,
 }
 
-/// <summary>How a pane that can change its shape (the header) is laid out where the arrangement has put it.</summary>
+/// <summary>Layout shape of a reshapeable pane (the header).</summary>
 public enum PaneShape
 {
-    /// <summary>A row across its part: in a column of panes, or a part of its own.</summary>
+    /// <summary>Horizontal row across its part.</summary>
     Row,
 
-    /// <summary>A narrow column standing beside other parts (docked to a side), or given a slot taller than wide: an upright strip of icons.</summary>
+    /// <summary>Narrow vertical icon strip (side-docked, or in a tall/narrow slot).</summary>
     Column,
 
-    /// <summary>At the right-hand end of the row of boxed tabs of the pane right under it (the two headers joined into one bar).</summary>
+    /// <summary>Joined to the right end of the boxed tab row of the pane below (one combined bar).</summary>
     Joined,
 }
 
-/// <summary>A pane the windows can arrange: what it is called, what it shows, and how it behaves.</summary>
+/// <summary>Dockable pane descriptor: id, title, content factory and layout behaviour.</summary>
 public sealed class DockPane
 {
     public required string Id { get; init; }
     public required string Title { get; init; }
 
-    /// <summary>Makes the pane's content, or gives the one made before: called once, when the pane is first shown.</summary>
+    /// <summary>Content factory, invoked once on first show (lazy creation).</summary>
     public required Func<FrameworkElement> Content { get; init; }
 
     public PaneHandle Handle { get; init; } = PaneHandle.TitleSlot;
 
     /// <summary>
-    /// Alone in its group (5.4.4, the Timeline): no title row at all, the pane up to its part's top edge; it is grabbed by the tab that
-    /// comes up when the pointer rests on its top-left corner (<see cref="PaneHandle.Hover"/>'s). With another pane in the group, its
-    /// tabs are shown as <see cref="Handle"/> has them.
+    /// When alone in its group (Timeline): no title row, content to the top edge, dragged via the hover tab (<see cref="PaneHandle.Hover"/>).
+    /// With group-mates, tabs follow <see cref="Handle"/>.
     /// </summary>
     public bool HeaderlessAlone { get; init; }
 
-    /// <summary>As tall as what is in it, in a column of panes (the Sequence Overview Scrubber, the playback controls...), rather than a share of the room.</summary>
+    /// <summary>Content-sized height in a vertical split (Overview Scrubber, playback controls) instead of a star share.</summary>
     public bool FitsContent { get; init; }
 
-    /// <summary>Whether the pane is to be shown now (its own setting, and the mode); hidden, it keeps its place.</summary>
+    /// <summary>Current visibility (own setting and mode); hidden panes keep their tree position.</summary>
     public Func<bool> IsShown { get; init; } = () => true;
 
-    /// <summary>Hides the pane (its setting off); null for one that cannot be closed.</summary>
+    /// <summary>Close action (turns its setting off); null when not closable.</summary>
     public Action? Close { get; init; }
 
     /// <summary>
-    /// A pane sized to its content that can still be made taller or shorter by the borders beside it (a plain drag of the one
-    /// under it, Ctrl+drag of the one above): told by how many pixels the pointer moved since it last was.
+    /// Resize callback for content-sized panes adjustable via adjacent borders (plain drag below, Ctrl+drag above), given the pointer
+    /// delta in pixels since the last call.
     /// </summary>
     public Action<double>? ResizeBy { get; init; }
 
     /// <summary>
-    /// What a double-click on the border that makes it taller or shorter does instead of evening the parts beside it (5.4D: the
-    /// Sequence Overview Scrubber's lower edge puts its height back, as a double-click on its own grip does); null for nothing.
+    /// Border double-click override instead of EvenOut (e.g. the Overview Scrubber's lower edge resets its height); null for default.
     /// </summary>
     public Action? ResetSize { get; init; }
 
     /// <summary>
-    /// The least width the pane can be given. 5.4D: 180 unless a pane says otherwise (it was 120; MainWindow's own default was 160),
-    /// low enough that every border has room to move in a 1280 DIP window and high enough that a pane's title row and its tools stay whole.
+    /// Minimum pane width (default 180 DIP): small enough for every border to move in a 1280 DIP window, large enough to keep title
+    /// rows and tools intact.
     /// </summary>
     public Func<double> MinWidth { get; init; } = () => 180;
 
     public double MinHeight { get; init; } = 60;
 
-    /// <summary>The overlay the pane's hover tab is put in, when the pane draws it itself (the player: its tab has to lie over the video).</summary>
+    /// <summary>Pane-owned overlay for its hover tab (the player, so the tab sits above the native video).</summary>
     public Panel? HoverHost { get; init; }
 
     /// <summary>
-    /// Told the pane's shape each time the windows are laid out, before its width is asked for, and again when its slot
-    /// changes shape; null for a pane with one shape. Alone in a part of a side-by-side split it is a
-    /// <see cref="PaneShape.Column"/> (as narrow as its content), as it is in any slot taller than wide or too narrow for
-    /// a row; with <see cref="JoinsPaneBelow"/>, right above a pane with a title row (or a row of tabs), it is
-    /// <see cref="PaneShape.Joined"/> to the row of boxed tabs that pane is then given.
+    /// Shape callback, invoked each layout before width measurement and on slot reshape; null for fixed-shape panes. Alone in a
+    /// horizontal split or in a tall/narrow slot: <see cref="PaneShape.Column"/>; with <see cref="JoinsPaneBelow"/> above a titled/tabbed
+    /// pane: <see cref="PaneShape.Joined"/> to its boxed tab row.
     /// </summary>
     public Action<PaneShape>? Reshape { get; init; }
 
-    /// <summary>Goes into the row of tabs of the pane right under it (at its right-hand end) instead of being a row of its own.</summary>
+    /// <summary>Joins the right end of the tab row below instead of being its own row.</summary>
     public bool JoinsPaneBelow { get; init; }
 
     /// <summary>
-    /// Holds a native window (the player): its content is never taken out of its window when the windows are laid out
-    /// again (taken out, the native window is put away for a moment, a black flash), but lies on a layer over the
-    /// panes, kept exactly over a stand-in that goes wherever the arrangement puts the pane.
+    /// Hosts a native HWND (player): never re-parented on relayout (that flashes black); it lives on an overlay tracking a stand-in
+    /// placed wherever the layout puts the pane.
     /// </summary>
     public bool Floats { get; init; }
 
     /// <summary>
-    /// Shown exactly while the arrangement holds it (5.4C, the studios): never put back by a load or a layout that leaves it out,
-    /// placed by <see cref="DockManager.Open"/> and taken out by <see cref="DockManager.Close"/>.
+    /// Optional studio pane: visible only while in the layout; never re-added by loads, placed by <see cref="DockManager.Open"/> and
+    /// removed by <see cref="DockManager.Close"/>.
     /// </summary>
     public bool Optional { get; init; }
 
-    /// <summary>Panes to go in with (as a tab of the first one's group found) when the mode's own arrangement has no place for it (5.4C).</summary>
+    /// <summary>Fallback group-mates (tab into the first found) when the mode default has no slot for it.</summary>
     public IReadOnlyList<string> HomeWith { get; init; } = [];
 }
 
 /// <summary>
-/// Where a pane's tab goes, in the pane's own content: where its title used to be. The dock manager puts the tabs of
-/// the pane's group here (one tab, for a pane on its own), so moving a pane adds nothing to its height.
+/// Title placeholder in pane content where the dock manager places the group's tabs (one tab when alone), so docking adds no height.
 /// </summary>
 public sealed class PaneTitleSlot : ContentControl
 {
@@ -129,20 +123,19 @@ public sealed class PaneTitleSlot : ContentControl
         VerticalAlignment = VerticalAlignment.Center;
     }
 
-    /// <summary>The pane the slot belongs to.</summary>
+    /// <summary>Owning pane id.</summary>
     public string PaneId
     {
         get => (string)GetValue(PaneIdProperty);
         set => SetValue(PaneIdProperty, value);
     }
 
-    /// <summary>The slot of a pane, when its content has one.</summary>
+    /// <summary>Registered title slot of a pane, if its content has one.</summary>
     public static PaneTitleSlot? Of(string pane) => Slots.TryGetValue(pane, out var slot) && slot.TryGetTarget(out var found) ? found : null;
 
     /// <summary>
-    /// Gives a pane its slot back (5.4A): a second copy of a pane's content made outside the dock (the Media Browser as the New Project
-    /// studio's picker) takes the pane's slot as its XAML sets its id, and would have the dock put the pane's tab in the dialog. Null
-    /// forgets the pane's slot (it had none before).
+    /// Restores a pane's slot registration after a second content instance outside the dock (Media Browser picker in New Project)
+    /// claimed it via its XAML id, which would otherwise route the pane's tab into the dialog. Null clears the registration.
     /// </summary>
     internal static void Restore(string pane, PaneTitleSlot? slot)
     {

@@ -14,12 +14,11 @@ using HandPegApp.Services;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Voiceover Studio as a dock pane (5.4C; the Voiceover Studio window until then): where the voiceover is made, recorded from
-/// a microphone with Record, Pause and Stop, or brought in from a file, then trimmed, placed and set to a level. The voiceover
-/// belongs to the main window's settings, and the encode takes it as a second input. The recording lives in the view model, so it
-/// goes on while the pane is behind another tab; closing the pane finishes it (<see cref="FinishRecording"/>). Every dock rebuild
-/// takes the pane out and puts it back, so it listens to the view model only while it is loaded, and attaching twice does nothing.
-/// Its keys are the main window's (in a side window too: the window hands them on).
+/// Voiceover Studio dock pane: record from a microphone (Record, Pause, Stop) or import a file, then trim, place and set level. The
+/// voiceover is part of the main window's settings and the encode takes it as a second input. Recording state lives in the view model,
+/// so it continues while the pane is a background tab; closing the pane finishes it (<see cref="FinishRecording"/>). Dock rebuilds
+/// detach and re-attach the pane, so it subscribes only while loaded and Attach is idempotent. Shortcuts route through the main
+/// window (side windows forward them).
 /// </summary>
 public partial class VoiceoverStudioPane : UserControl
 {
@@ -35,7 +34,7 @@ public partial class VoiceoverStudioPane : UserControl
         Unloaded += (_, _) => Detach();
     }
 
-    /// <summary>The bar follows the recording and the cuts for as long as the pane is in a window.</summary>
+    /// <summary>Subscribes while loaded so the record bar tracks recording state and cuts.</summary>
     private void Attach()
     {
         if (_attached)
@@ -45,7 +44,7 @@ public partial class VoiceoverStudioPane : UserControl
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         _viewModel.TimelineChanged += RedrawRecordBar;
 
-        // The microphones are looked for the first time the studio is shown (not when HandPeg starts).
+        // Enumerate microphones lazily on first show (not at start-up).
         if (!_microphonesAsked && _viewModel.Microphones.Count == 0)
             _viewModel.RefreshMicrophonesCommand.Execute(null);
         _microphonesAsked = true;
@@ -64,23 +63,23 @@ public partial class VoiceoverStudioPane : UserControl
         _viewModel.TimelineChanged -= RedrawRecordBar;
     }
 
-    /// <summary>The pane is closed in the middle of a recording: it is finished, so that nothing said is lost.</summary>
+    /// <summary>Finishes an active recording when the pane closes, so nothing recorded is lost.</summary>
     public void FinishRecording()
     {
         if (_viewModel.StopVoiceoverCommand.CanExecute(null))
             _viewModel.StopVoiceoverCommand.Execute(null);
     }
 
-    // ----- The recording timeline -----
-    // A bar as long as the finished video, with a mark at every cut and a line that moves along it while
-    // recording, so it can be seen how much of the video is still to be talked over.
+    // ----- Recording timeline -----
+    // A bar spanning the output duration, with a tick at every cut and a cursor advancing during recording,
+    // showing how much video remains to be narrated.
 
     private readonly Stopwatch _recordClock = new();
     private readonly DispatcherTimer _timer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(33) };
     private readonly Rectangle _recordedFill = new() { Opacity = 0.35 };
     private readonly Rectangle _cursor = new() { Width = 2, Fill = Brushes.OrangeRed };
 
-    // A recording that was paused carries on from where its clock stopped; a new one starts from nothing.
+    // True after a pause: resuming continues the clock; a new recording resets it.
     private bool _resuming;
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -93,7 +92,7 @@ public partial class VoiceoverStudioPane : UserControl
 
     private void RecordBar_SizeChanged(object sender, SizeChangedEventArgs e) => RedrawRecordBar();
 
-    /// <summary>Starts, holds or resets the clock behind the moving line, following what the recorder is doing.</summary>
+    /// <summary>Starts, pauses or resets the cursor clock to match the recorder state.</summary>
     private void SyncRecordClock()
     {
         if (_viewModel.IsRecording)
@@ -119,7 +118,7 @@ public partial class VoiceoverStudioPane : UserControl
         UpdateCursor();
     }
 
-    /// <summary>Draws the bar: the marks where the cuts fall, and the line and the stretch recorded so far.</summary>
+    /// <summary>Rebuilds the bar: cut ticks, the recorded-span fill and the cursor.</summary>
     private void RedrawRecordBar()
     {
         var total = _viewModel.OutputDurationSeconds;
@@ -151,7 +150,7 @@ public partial class VoiceoverStudioPane : UserControl
         UpdateCursor();
     }
 
-    /// <summary>Puts the line where the recording has got to, and says how much time is left.</summary>
+    /// <summary>Positions the cursor at the recorded time and updates the remaining-time readout.</summary>
     private void UpdateCursor()
     {
         var total = _viewModel.OutputDurationSeconds;
@@ -187,7 +186,7 @@ public partial class VoiceoverStudioPane : UserControl
             Title = "Choose the voiceover",
             Filter = "Audio|*.wav;*.mp3;*.m4a;*.aac;*.flac;*.ogg;*.opus;*.wma|All files|*.*",
         };
-        // Owned by the window the pane is in (the main window, or a side window).
+        // Owner is the hosting window (main or side window).
         var owner = Window.GetWindow(this);
         if ((owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner)) == true)
             await _viewModel.ImportVoiceoverAsync(dialog.FileName);

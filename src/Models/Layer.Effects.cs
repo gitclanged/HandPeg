@@ -4,12 +4,10 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Models;
 
-// ----- The effect stack -----
-// A clip's effects are in one list, in the order they are applied (within their zone: see EffectZone). The
-// filters that were the clip's own before stacks (flips, LUT, denoise, colour, hue, blur, sharpen) are now views onto
-// the effects: Clip Properties and the Filters tools read and write the stack through them. The key, the mask, the
-// edges and the shadow keep their values on the clip (the layout pane and the mask tools use them); their effect says
-// where in the stack they work and whether they are on.
+// ----- Effect stack -----
+// Effects are one ordered list (within zones: EffectZone). Legacy per-clip filters (flips, LUT, denoise, colour, hue, blur, sharpen)
+// are view properties over the stack used by Clip Properties and the Filters tools. Key, mask, edges and shadow keep their values on
+// the clip (layout pane, mask tools); their effect sets stack position and enabled state.
 public sealed partial class Layer
 {
     /// <summary>Raised (as a property name) when anything in the stack changed: an effect, its values, its order.</summary>
@@ -21,7 +19,7 @@ public sealed partial class Layer
     private ObservableCollection<EffectInstance>? _effects;
     private EffectStackWatcher? _effectWatcher;
 
-    /// <summary>Every effect set aside at once (Bypass All on the Effects pane): nothing of the stack is compiled, and nothing is lost.</summary>
+    /// <summary>Bypass All: the stack is not compiled but preserved.</summary>
     [ObservableProperty] private bool _effectsBypassed;
 
     partial void OnEffectsBypassedChanged(bool value) => OnPropertyChanged(EffectsChanged);
@@ -36,8 +34,8 @@ public sealed partial class Layer
     // ----- Effect changes the layer announces -----
 
     /// <summary>
-    /// True while this layer announces a change of its effect stack that no view property wrote (a card's value, switch or range set
-    /// directly): the view model takes no look step for the property notifications it raises then.
+    /// True while raising notifications for a direct stack change (card value, switch or range) not made via a view property; the view
+    /// model skips look-undo steps for them.
     /// </summary>
     internal bool RaisingEffectChange => _raisingEffect > 0;
 
@@ -51,7 +49,7 @@ public sealed partial class Layer
 
     // ----- The views onto the cards -----
 
-    // The properties that were the layer's own before stacks, each the value of a card. FilterDenoise is the card being there.
+    // Legacy view properties, each backed by a card value (FilterDenoise = card present).
     private static readonly (string Property, string Type, string Key)[] Views =
     [
         (nameof(FlipHorizontal), EffectRegistry.Flip, "h"), (nameof(FlipVertical), EffectRegistry.Flip, "v"),
@@ -175,8 +173,8 @@ public sealed partial class Layer
     }
 
     /// <summary>
-    /// True while this layer announces a change of an effect parameter's value, text or keyframes (not a card added, removed, switched or
-    /// re-ranged): the view model treats it as look-only (<see cref="ViewModels.PreviewChange.Look"/>), which no Timeline row shows.
+    /// True while raising notifications for a parameter value, text or keyframe change (not add/remove/toggle/range); treated as
+    /// look-only (<see cref="ViewModels.PreviewChange.Look"/>), with no Timeline row redraw.
     /// </summary>
     internal bool RaisingEffectValue => _raisingEffectValue > 0;
 
@@ -230,16 +228,15 @@ public sealed partial class Layer
         return null;
     }
 
-    /// <summary>Whether a card's work is done: it is switched on (or there is no card, for a property that has none) and the stack is not bypassed.</summary>
+    /// <summary>True when the card is enabled (or absent for cardless properties) and the stack is not bypassed.</summary>
     public bool FxOn(string type) => !EffectsBypassed && (Find(type)?.Enabled ?? true);
 
-    /// <summary>The blend mode the layer is laid on with, as FFmpeg's blend names it; "normal" for an ordinary overlay.</summary>
+    /// <summary>Blend mode name (FFmpeg blend naming); "normal" for a plain overlay.</summary>
     public string BlendModeName => FxOn(EffectRegistry.BlendMode) && Find(EffectRegistry.BlendMode) is { } blend ? blend.GetText("mode") : "normal";
 
     /// <summary>
-    /// Whether an effect can go on this clip (the Effects pane's Add Effect and a track's): an adjustment layer and the blurred
-    /// background take the Look effects; any other clip what its kind allows, and an effect it may have once (a key, a mask,
-    /// the edges, the shadow, the blend) only while it has none, unless <paramref name="ignorePresent"/>.
+    /// True when the effect may be added (Add Effect on clip or track): adjustment layers and blur fill accept Look effects; others per
+    /// kind, with single-instance effects (key, mask, edges, shadow, blend) only if absent unless <paramref name="ignorePresent"/>.
     /// </summary>
     public bool CanTake(EffectDefinition definition, bool ignorePresent = false)
     {
@@ -259,8 +256,7 @@ public sealed partial class Layer
     }
 
     /// <summary>
-    /// A layer with a picture and no sound of its own, made to go with a video (5.0-Release): the blurred background, and the
-    /// pieces cut out of the main video's frame (HUD cut-outs, a mask's pieces). Their menus offer nothing about sound.
+    /// True for video-only companion layers (blur fill, HUD Cutouts, mask pieces); their menus omit audio items.
     /// </summary>
     public bool IsVideoOnlyChild => IsBackground || IsVideo;
 
@@ -287,8 +283,7 @@ public sealed partial class Layer
     }
 
     /// <summary>
-    /// Takes a card off. A card that is a switch of the layer's (the key, the mask, the edges, the shadow) switches it
-    /// off as well, as Layer Properties would.
+    /// Removes a card; feature-bound cards (key, mask, edges, shadow) also disable their feature, matching Layer Properties.
     /// </summary>
     public void RemoveEffect(EffectInstance effect)
     {
@@ -303,7 +298,7 @@ public sealed partial class Layer
         Effects.Remove(effect);
     }
 
-    /// <summary>The effect of a switch of the clip's that has just been switched on, at the bottom of its zone if there is none yet.</summary>
+    /// <summary>Ensures a just-enabled feature has its effect, appending at the end of its zone if missing.</summary>
     private void EnsureEffect(string type)
     {
         if (_effects is not null && !_loadingEffects && Find(type) is null)
@@ -340,7 +335,7 @@ public sealed partial class Layer
             EnsureEffect(EffectRegistry.Shadow);
     }
 
-    /// <summary>Whether a switch of the clip's is on: the property a bound effect's <see cref="EffectDefinition.Feature"/> names.</summary>
+    /// <summary>True when the feature named by <see cref="EffectDefinition.Feature"/> is enabled on the clip.</summary>
     private bool FeatureIsOn(string? feature) => feature switch
     {
         nameof(ChromaKey) => ChromaKey,
@@ -384,8 +379,8 @@ public sealed partial class Layer
     }
 
     /// <summary>
-    /// Takes up a saved stack; one saved before stacks is made from the old properties, in the order they were
-    /// applied: flips, LUT, denoise, colour, hue, blur, sharpen, then the key, the mask, the edges and the shadow.
+    /// Loads a saved stack, or builds one from legacy properties in their original order: flips, LUT, denoise, colour, hue, blur,
+    /// sharpen, key, mask, edges, shadow.
     /// </summary>
     private void LoadEffects(LayerState state)
     {
@@ -445,9 +440,8 @@ public sealed partial class Layer
     private static readonly LayerBinding[] MaskExtras = [.. new[] { nameof(MaskPath), nameof(MaskShapes), nameof(MaskFrame) }.Select(LayerBinding.Of).OfType<LayerBinding>()];
 
     /// <summary>
-    /// An effect as Copy Stack and presets keep it: a bound effect's values (the key colour, the mask's file and shapes)
-    /// are written into it, so that pasting it gives another clip the same look. Read through the parameters'
-    /// <see cref="EffectParam.Binding"/>, without reflection (4.3-0B).
+    /// Captures an effect for Copy Stack and presets, embedding bound clip values (key colour, mask file and shapes) so pasting
+    /// reproduces the look. Uses <see cref="EffectParam.Binding"/>, no reflection.
     /// </summary>
     public EffectState CaptureEffect(EffectInstance effect)
     {
@@ -472,9 +466,8 @@ public sealed partial class Layer
     }
 
     /// <summary>
-    /// A captured effect made into one of this clip's: the values it carries for the clip are set on it, and its switch
-    /// is turned on. Only the bindable properties (<see cref="LayerBinding"/>) are set: a name a preset carries that is
-    /// not one of them is dropped.
+    /// Applies a captured effect: sets its carried clip values and enables its feature. Only <see cref="LayerBinding"/> properties are
+    /// applied; unknown names are dropped.
     /// </summary>
     public EffectInstance AdoptEffect(EffectState state)
     {

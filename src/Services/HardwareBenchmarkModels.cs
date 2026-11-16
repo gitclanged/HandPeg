@@ -2,14 +2,13 @@ using System.Text.Json.Serialization;
 
 namespace HandPegApp.Services;
 
-// ----- The hardware benchmark's results (Pass 5.0-Core, micro-step 5.0-0) -----
+// ----- Hardware benchmark results -----
 //
-// Measured by HandPeg.exe --hw-benchmark (Compositor/HardwareBenchmark.cs, a process of its own: a driver that falls
-// over takes only it down), which writes one JSON object per line on its standard output: progress lines while it
-// works, and the result last. Read by HardwareBenchmarkService, kept in hardware-benchmark.json, drawn by the Settings
-// stage. The names are the JSON's (camelCase), append-only.
+// Produced by HandPeg.exe --hw-benchmark (Compositor/HardwareBenchmark.cs, isolated so driver crashes stay contained) as JSON lines on
+// stdout: progress lines, then the result. Read by HardwareBenchmarkService, stored in hardware-benchmark.json, shown in Settings.
+// Property names are camelCase and append-only.
 
-/// <summary>One line of the benchmark's output: <see cref="Type"/> "progress" (with <see cref="Progress"/>) or "result" (with <see cref="Result"/>).</summary>
+/// <summary>One output line: <see cref="Type"/> "progress" (<see cref="Progress"/>) or "result" (<see cref="Result"/>).</summary>
 public sealed class HardwareBenchmarkLine
 {
     public string Type { get; set; } = "";
@@ -17,10 +16,10 @@ public sealed class HardwareBenchmarkLine
     public HardwareBenchmarkResult? Result { get; set; }
 }
 
-/// <summary>Where the benchmark is: a stage, the card it is on, how far through the whole run, and the results so far.</summary>
+/// <summary>Progress: stage, current adapter, overall fraction and partial results.</summary>
 public sealed class HardwareBenchmarkProgress
 {
-    /// <summary>"adapters", "decode-hw", "decode-sw", "seek", "accuracy", "transfer", "cross-adapter", "done".</summary>
+    /// <summary>"adapters", "decode-hw", "decode-sw", "seek", "accuracy", "transfer", "compositor", "cross-adapter", "done".</summary>
     public string Stage { get; set; } = "";
 
     /// <summary>The card's DXGI index; -1 when the stage is not about one card.</summary>
@@ -53,29 +52,27 @@ public sealed class HardwareBenchmarkResult
     /// <summary>Decoding on the second card and handing the frames to the first; null on a machine with one card.</summary>
     public HardwareBenchmarkCrossAdapter? CrossAdapter { get; set; }
 
-    /// <summary>The four roles the results point to (applied by the auto-tune, each still the user's to change).</summary>
+    /// <summary>Recommended GPU roles (applied by auto-tune; user-editable).</summary>
     public HardwareBenchmarkRoles Recommended { get; set; } = new();
 
-    /// <summary>The codecs Media Foundation has a decoder for on this computer, any kind (the card's, the processor's, the Store's): "H.264", "HEVC", "VP9", "AV1" (5.2-Arm64AndNpu).</summary>
+    /// <summary>Codecs with any Media Foundation decoder here (hardware, software or Store): "H.264", "HEVC", "VP9", "AV1".</summary>
     public List<string> MediaFoundationDecodeCodecs { get; set; } = [];
 
     /// <summary>
-    /// The codecs Media Foundation has no decoder for that the GPU compositor decodes with FFmpeg instead (FfmpegVideoDecoder:
-    /// on the processor, its pictures uploaded), as the FFmpeg in use lists its decoders; empty without FFmpeg. HEVC on a PC
-    /// without the HEVC Video Extensions (a Snapdragon X laptop as it comes).
+    /// Codecs lacking an MF decoder that the compositor decodes via FFmpeg on the CPU with upload (FfmpegVideoDecoder), per FFmpeg's
+    /// decoder list; empty without FFmpeg (e.g. HEVC without the HEVC Video Extensions).
     /// </summary>
     public List<string> FfmpegFallbackCodecs { get; set; } = [];
 
-    /// <summary>The NPUs DXCore lists (5.2-Arm64AndNpu), with what each is used for.</summary>
+    /// <summary>NPUs enumerated by DXCore and their uses.</summary>
     public List<HardwareBenchmarkNpu> Npus { get; set; } = [];
 
     /// <summary>Why the benchmark stopped short, when it did; empty otherwise.</summary>
     public string Error { get; set; } = "";
 
     /// <summary>
-    /// What made it (5.5A): "" the full test (Test &amp; Auto-Tune Hardware, and every file from before 5.5A), <see cref="KindEstimate"/>
-    /// the first-run window's instant look at the cards (nothing measured, never saved), <see cref="KindQuick"/> its quick background
-    /// check (decoding and the bus on the cards that hold a role only).
+    /// Result kind: "" full test (Test &amp; Auto-Tune Hardware; also legacy files), <see cref="KindEstimate"/> first-run enumeration only
+    /// (unmeasured, never saved), <see cref="KindQuick"/> first-run quick check (decode and bus on role adapters only).
     /// </summary>
     public string Kind { get; set; } = "";
 
@@ -96,8 +93,8 @@ public sealed class HardwareBenchmarkAdapter
     public long SharedSystemMemoryMb { get; set; }
 
     /// <summary>
-    /// It shares the computer's memory (a unified-memory SoC's graphics: DXCore's IsIntegrated, else DXGI's sizes): the frame
-    /// cache's Auto budget is then a share of the computer's memory (MemoryTier, 5.2-Arm64AndNpu).
+    /// True for unified-memory GPUs (DXCore IsIntegrated, else DXGI sizes); the frame cache's Auto budget then derives from system
+    /// memory (MemoryTier).
     /// </summary>
     public bool UnifiedMemory { get; set; }
 
@@ -110,7 +107,7 @@ public sealed class HardwareBenchmarkAdapter
     /// <summary>The hardware encoders Media Foundation lists for it: "H.264", "HEVC", "AV1".</summary>
     public List<string> EncodeCodecs { get; set; } = [];
 
-    /// <summary>Frames per second decoded into video memory (Media Foundation with Direct3D 11); 0 when it could not.</summary>
+    /// <summary>MF + D3D11 decode-to-VRAM rate (fps); 0 on failure.</summary>
     public double HardwareDecodeFps { get; set; }
 
     /// <summary>Median time from a seek to the frame at that moment, hardware decoding, ms.</summary>
@@ -121,7 +118,7 @@ public sealed class HardwareBenchmarkAdapter
 
     public double SoftwareSeekMs { get; set; }
 
-    /// <summary>The hardware frames against the processor's, luma and chroma: 99 when they are the same to the bit.</summary>
+    /// <summary>Hardware vs. software decode PSNR (luma, chroma); 99 when bit-identical.</summary>
     public double PsnrDb { get; set; }
 
     /// <summary>The structural similarity of the same frames (luma), 0 to 1.</summary>
@@ -137,8 +134,8 @@ public sealed class HardwareBenchmarkAdapter
     public double UploadMBps { get; set; }
 
     /// <summary>
-    /// DXGI can list one physical card more than once (two LUIDs, the same vendor and device: seen on an RX 7900 XTX): the
-    /// index of the first listing when this one repeats it, else -1. Roles are given to first listings only.
+    /// DXGI may list one physical GPU twice (two LUIDs, same vendor/device): index of the first listing if this repeats it, else -1.
+    /// Roles go to first listings only.
     /// </summary>
     public int SameCardAs { get; set; } = -1;
 
@@ -146,9 +143,8 @@ public sealed class HardwareBenchmarkAdapter
     public string Note { get; set; } = "";
 
     /// <summary>
-    /// 5.6.0: the compositor's all-slots frame on this card, GPU ms (1920 x 1080, every shader slot on test patterns, the best of four
-    /// frames after 90 that raise its clocks: the compositor-parity golden's Timing scene, HardwareBenchmark.Compositor.cs); 0 when it
-    /// was not timed (only the cards that hold a role are).
+    /// All-slots compositor frame time on this adapter (GPU ms, 1080p, every shader slot on test patterns, best of four after 90 warm-up
+    /// frames; the compositor-parity golden's Timing scene, HardwareBenchmark.Compositor.cs). 0 when untimed (only role adapters are).
     /// </summary>
     public double CompositorMs { get; set; }
 
@@ -163,7 +159,7 @@ public sealed class HardwareBenchmarkCrossAdapter
 
     public int CompositeAdapter { get; set; }
 
-    /// <summary>Decoding on the decode card and copying each frame across to the composite card, frames per second.</summary>
+    /// <summary>Cross-adapter rate (fps): decode on the decode adapter, copy to the compositor adapter.</summary>
     public double CrossDecodeFps { get; set; }
 
     /// <summary>Decoding on the composite card itself, frames per second.</summary>
@@ -178,7 +174,7 @@ public sealed class HardwareBenchmarkCrossAdapter
     public bool CrossIsFaster { get; set; }
 }
 
-/// <summary>One NPU the benchmark found (DXCore, 5.2-Arm64AndNpu): nothing is measured on it yet.</summary>
+/// <summary>An NPU found via DXCore (not yet measured).</summary>
 public sealed class HardwareBenchmarkNpu
 {
     public string Name { get; set; } = "";

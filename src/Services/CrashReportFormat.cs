@@ -7,13 +7,11 @@ using System.Text.RegularExpressions;
 
 namespace HandPegApp.Services;
 
-// ----- The crash report file (.hpcrash), format 1 -----
-// Written by HandPeg (CrashReporter in the process itself, or its sentinel process when the process died of a native
-// fault) into the crashes folder (AppPaths), and read by HandPeg.CrashDesk, which links this file: the two never disagree
-// on the layout. Nothing in a report may tell who made it or what they were working on: no paths, file names, user or
-// machine names, URLs, or words from the media (subtitles, text layers). Every string is sanitized before it is put here;
-// what is kept is the kind of thing (container, codec, size, rate, length), the code's own names, and numbers. The one
-// exception is a developer's own (DevVerbose), written only on a PC with the flight recorder on.
+// ----- Crash report file (.hpcrash), format 1 -----
+// Written by CrashReporter (in-process, or by the sentinel after a native fault) to the crashes folder (AppPaths) and read by
+// HandPeg.CrashDesk, which links this file so the layout is shared. Reports must be anonymous: no paths, file/user/machine
+// names, URLs or media text. All strings are sanitized; only categories (container, codec, size, rate, length), code
+// identifiers and numbers remain. Exception: DevVerbose, written only when the developer flight recorder is enabled.
 
 /// <summary>A crash report as it is written to disk: JSON, camelCase, enums by name.</summary>
 public sealed class CrashReport
@@ -26,33 +24,33 @@ public sealed class CrashReport
     public string? Format { get; set; }
     public int Version { get; set; }
 
-    /// <summary>What crashed, as 16 hex digits: the same fault gives the same signature on any machine and in any build (see <see cref="CrashSignature"/>).</summary>
+    /// <summary>16-hex-digit fault signature, stable across machines and builds (<see cref="CrashSignature"/>).</summary>
     public string Signature { get; set; } = "";
 
-    /// <summary>HandPeg's version, as its project file numbers it ("4.1.0").</summary>
+    /// <summary>HandPeg version from the project file (major.minor.patch).</summary>
     public string AppVersion { get; set; } = "";
 
     public DateTime CrashedAtUtc { get; set; }
 
     public CrashKind Kind { get; set; }
 
-    /// <summary>Whether the process ended with it. A dispatcher exception the window survived, or an unobserved task, is not.</summary>
+    /// <summary>True when the process terminated (false for survived dispatcher exceptions or unobserved tasks).</summary>
     public bool Fatal { get; set; }
 
-    /// <summary>The exception's full type name ("System.NullReferenceException"), or for a native fault its code and name ("0xC0000005 EXCEPTION_ACCESS_VIOLATION").</summary>
+    /// <summary>Exception full type name, or native code and name ("0xC0000005 EXCEPTION_ACCESS_VIOLATION").</summary>
     public string ExceptionType { get; set; } = "";
 
     /// <summary>The exception's message, sanitized.</summary>
     public string Message { get; set; } = "";
 
-    /// <summary>The managed frames, innermost first, each normalized (<see cref="CrashSignature.NormalizeFrame"/>): "HandPegApp.Services.Gpu.GpuScenePlan+Maker.File".</summary>
+    /// <summary>Managed frames, innermost first, normalized by <see cref="CrashSignature.NormalizeFrame"/>.</summary>
     public List<string> Stack { get; set; } = [];
 
-    /// <summary>The exceptions inside it (an AggregateException's, a TargetInvocationException's), outermost first, each as type and message.</summary>
+    /// <summary>Inner exceptions (type and message), outermost first.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<CrashInnerException>? Inner { get; set; }
 
-    /// <summary>For a native fault: the file name (never the path) of the module it happened in ("d3d11.dll"), when it is known.</summary>
+    /// <summary>Native fault module file name (never a path), e.g. "d3d11.dll", when known.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? NativeModule { get; set; }
 
@@ -70,17 +68,14 @@ public sealed class CrashReport
     public List<CrashBreadcrumb> Breadcrumbs { get; set; } = [];
 
     /// <summary>
-    /// What HandPeg was doing, by name: "mode" (Editor / Encoder), "media" (the main video's container, codecs, size,
-    /// rate, length, and how many layers), "graph" (the live graph's size and the filters in it), "export"... Values are
-    /// sanitized summaries, never paths or text.
+    /// Named context entries ("mode", "media", "graph", "export", ...) holding sanitized summaries, never paths or text.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public Dictionary<string, string>? Context { get; set; }
 
     /// <summary>
-    /// Only on a developer's PC with the hidden flight recorder on (<see cref="DevFlightRecorder"/>, 4.4.0): the unredacted
-    /// project and media paths, the timeline as JSON, the whole exception and the recorder's newest lines. Never in a
-    /// report from anyone else's PC.
+    /// Developer-only (requires <see cref="DevFlightRecorder"/>): unredacted project/media paths, timeline JSON, full exception and recent
+    /// recorder lines. Never present in end-user reports.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CrashDevVerbose? DevVerbose { get; set; }
@@ -117,7 +112,7 @@ public enum CrashKind
     /// <summary>A task's exception nobody looked at (TaskScheduler.UnobservedTaskException).</summary>
     UnobservedTask,
 
-    /// <summary>A native fault (an access violation in a driver or a system library), recorded by the process's unhandled-exception filter.</summary>
+    /// <summary>Native fault (e.g. access violation in a driver) captured by the unhandled-exception filter.</summary>
     Native,
 
     /// <summary>Written by the sentinel process: the process ended abnormally and wrote nothing itself.</summary>
@@ -141,7 +136,7 @@ public sealed class CrashEnvironment
 
     public int ProcessorCount { get; set; }
 
-    /// <summary>Each graphics card by its model and driver version ("NVIDIA GeForce RTX 3080 (driver 32.0.15.6094)").</summary>
+    /// <summary>GPU model and driver version per adapter.</summary>
     public List<string> Gpus { get; set; } = [];
 
     public long WorkingSetMb { get; set; }
@@ -157,13 +152,13 @@ public sealed class CrashEnvironment
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Ffmpeg { get; set; }
 
-    // Since 4.1.0 (Pass 4.1B), each left out when it could not be learnt. Old reports have none of them.
+    // Optional hardware fields: omitted when unavailable (absent in older reports).
 
-    /// <summary>The processor's model as it names itself ("AMD Ryzen 9 7950X 16-Core Processor").</summary>
+    /// <summary>CPU brand string.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Cpu { get; set; }
 
-    /// <summary>Its cores, beside <see cref="ProcessorCount"/> (its logical processors): fewer cores than processors is SMT on.</summary>
+    /// <summary>Physical cores (fewer than <see cref="ProcessorCount"/> logical processors means SMT is on).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? PhysicalCores { get; set; }
 
@@ -171,7 +166,7 @@ public sealed class CrashEnvironment
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double? RamGb { get; set; }
 
-    /// <summary>The speed the memory runs at, in MT/s, and the modules' rated speed (higher when XMP / EXPO is off).</summary>
+    /// <summary>Configured memory speed (MT/s) and module rated speed (higher when XMP/EXPO is off).</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? RamMts { get; set; }
 
@@ -190,7 +185,7 @@ public sealed class CrashEnvironment
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Theme { get; set; }
 
-    /// <summary>"Balanced, Best performance, on AC": Windows' power plan (by its well-known GUID, else "custom plan"), its power mode, the power source.</summary>
+    /// <summary>Power plan (well-known GUID name, else "custom plan"), power mode and source, e.g. "Balanced, Best performance, on AC".</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? PowerPlan { get; set; }
 
@@ -228,7 +223,7 @@ public sealed class CrashDisplay
     public int ScalePercent { get; set; }
 }
 
-/// <summary>One moment before the crash: when (seconds after the process started), what kind of thing, and what (sanitized).</summary>
+/// <summary>Pre-crash breadcrumb: seconds since process start, category and sanitized detail.</summary>
 public sealed class CrashBreadcrumb
 {
     public double At { get; set; }
@@ -248,7 +243,7 @@ public static class CrashReportJson
 
     public static string Serialize(CrashReport report) => JsonSerializer.Serialize(report, Options);
 
-    /// <summary>Reads a report from its text. Anything that is not a format 1 crash report is refused, with the reason.</summary>
+    /// <summary>Parses a report; rejects anything not format 1 with a reason.</summary>
     public static CrashReport Deserialize(string json)
     {
         var report = JsonSerializer.Deserialize<CrashReport>(json, Options) ?? throw new InvalidDataException("The crash report is empty.");
@@ -261,10 +256,8 @@ public static class CrashReportJson
 }
 
 /// <summary>
-/// A crash's signature: the same fault, wherever and whenever it happens, hashes the same, so reports can be grouped and
-/// a fault seen again after it was fixed can be told apart from a new one. Made from the exception's type and the first
-/// frames of HandPeg's own code (or, with none, the first frames at all), normalized so that a rebuild, a line moved or
-/// a compiler-made name renumbered does not change it; for a native fault, from its code and module.
+/// Stable crash signature for grouping reports and spotting regressions: hash of the exception type and the first HandPeg frames (or
+/// first frames overall), normalized against rebuilds, moved lines and renumbered compiler names; native faults use code and module.
 /// </summary>
 public static partial class CrashSignature
 {
@@ -290,9 +283,8 @@ public static partial class CrashSignature
     }
 
     /// <summary>
-    /// One frame as a signature and a report carry it: the method's full name without its parameters, file, line or
-    /// offset, and with the numbers the compiler puts into the names it makes (lambdas, local functions, state machines)
-    /// taken out. "   at HandPegApp.X.&lt;Run&gt;b__12_0(Object o) in C:\src\X.cs:line 40" is "HandPegApp.X.&lt;Run&gt;b__".
+    /// Normalizes a frame: full method name without parameters, file, line or offset, and with compiler-generated numbering removed.
+    /// "   at HandPegApp.X.&lt;Run&gt;b__12_0(Object o) in C:\src\X.cs:line 40" becomes "HandPegApp.X.&lt;Run&gt;b__".
     /// </summary>
     public static string NormalizeFrame(string frame)
     {

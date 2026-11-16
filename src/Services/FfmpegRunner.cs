@@ -11,8 +11,7 @@ using static HandPegApp.Native.Kernel32;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// An FFmpeg command that could not be started as it was written (too long for Windows, say): the same with another
-/// encoder would fail the same way, so the hardware fallback leaves it alone.
+/// FFmpeg command that cannot be started as written (e.g. too long for Windows); encoder fallback is skipped since it would fail identically.
 /// </summary>
 public sealed class FfmpegCommandException(string message) : InvalidOperationException(message);
 
@@ -33,10 +32,8 @@ public static partial class FfmpegRunner
     private static partial Regex DurationRegex();
 
     /// <summary>
-    /// Runs an FFmpeg command line exactly as written. A bare "ffmpeg" resolves to the
-    /// local copy in the deps folder when there is one, otherwise to whatever is on PATH.
-    /// FFmpeg is given the very arguments the line spells out (5.2-Arm64AndNpu: HandPeg writes no filter graph for an export,
-    /// so none is handed over in a file any more; a graph typed into a command by hand reaches FFmpeg on its command line).
+    /// Runs an FFmpeg command line verbatim. A bare "ffmpeg" resolves to the deps folder copy, else PATH. Arguments pass through
+    /// unchanged (hand-typed filter graphs stay on the command line).
     /// </summary>
     public static async Task RunAsync(string commandLine, IProgress<FfmpegProgress> progress, CancellationToken cancellationToken)
     {
@@ -46,11 +43,9 @@ public static partial class FfmpegRunner
     }
 
     /// <summary>
-    /// The program a command line may run as FFmpeg: a bare <c>ffmpeg</c> or <c>ffmpeg.exe</c> (the deps folder's copy when there is one,
-    /// else PATH), or exactly the FFmpeg HandPeg uses (<see cref="DependencyUpdater.FfmpegPath"/>: the one set in Settings, else the deps
-    /// copy, which generated commands name in full). Anything else is refused. A command can come from a project file (one edited by hand
-    /// and saved with it, or one in a shared bundle), so a path in it (a network share, a bundle's media folder, a batch file) must
-    /// never choose the program that runs.
+    /// Resolves the executable a command may run: bare <c>ffmpeg</c>/<c>ffmpeg.exe</c> (deps copy, else PATH) or exactly
+    /// <see cref="DependencyUpdater.FfmpegPath"/>. Anything else is refused: commands can come from project files or shared bundles, so
+    /// an embedded path (network share, bundle folder, batch file) must never choose the program.
     /// </summary>
     /// <exception cref="InvalidOperationException">The command names another program.</exception>
     public static string ResolveExecutable(string token)
@@ -69,17 +64,15 @@ public static partial class FfmpegRunner
         var arguments = SplitArguments(argumentText);
         var command = Cli.Wrap(executable).WithArguments(arguments);
 
-        // CliWrap quotes each argument for the command line, and FFmpeg splits that line again: what it gets back
-        // has to be what was meant, to the character. Proven by the golden tests; checked here as well, because an
-        // argument that arrived changed would be an export that is quietly wrong.
+        // CliWrap quotes and FFmpeg re-splits; verify the round trip is exact (golden-tested too) since a mangled argument silently
+        // corrupts the export.
         if (!SplitArguments(command.Arguments).SequenceEqual(arguments, StringComparer.Ordinal))
         {
             AppLog.Write("The FFmpeg command's arguments did not survive quoting, so the command line is passed on exactly as written.");
             command = Cli.Wrap(executable).WithArguments(argumentText);
         }
 
-        // Windows starts nothing from a command line longer than this (the terminating null counts): say so plainly,
-        // rather than as the system's "The filename or extension is too long".
+        // Windows command-line limit (including the null): report it clearly instead of "The filename or extension is too long".
         var length = executable.Length + 3 + command.Arguments.Length;
         if (length > MaxCommandLineLength)
         {
@@ -126,20 +119,17 @@ public static partial class FfmpegRunner
         }
     }
 
-    // ----- The command line -----
-    // The arguments are split exactly as FFmpeg splits them (CommandLineToArgvW), so that what it is handed is checked to be
-    // what was meant. (5.2-Arm64AndNpu: the filter graphs HandPeg once wrote, and handed over in files when they grew past what
-    // Windows starts a program with, are gone with the graph builder; so is asking each FFmpeg how it takes a graph's file.)
+    // ----- Command line -----
+    // Arguments are split exactly as FFmpeg splits them (CommandLineToArgvW) to verify what it receives.
 
-    /// <summary>The longest command line Windows starts a program from, in characters (32,767 with its terminating null).</summary>
+    /// <summary>Windows maximum command-line length in characters (32,767 including the null).</summary>
     public const int MaxCommandLineLength = 32766;
 
     [LibraryImport("shell32.dll", EntryPoint = "CommandLineToArgvW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
     private static partial IntPtr CommandLineToArgv(string commandLine, out int count);
 
     /// <summary>
-    /// The arguments a command line gives a program, split exactly as FFmpeg splits its own: its Windows build reads
-    /// them with CommandLineToArgvW, as this does, so quotes and the backslashes before them mean here what they mean to it.
+    /// Splits a command line via CommandLineToArgvW, matching FFmpeg's Windows parsing of quotes and backslashes.
     /// </summary>
     public static List<string> SplitArguments(string arguments)
     {
@@ -168,14 +158,11 @@ public static partial class FfmpegRunner
     public const int SpriteThumbnailWidth = 160;
 
     /// <summary>
-    /// Writes one image holding a grid of thumbnails taken every <paramref name="intervalSeconds"/> seconds.
-    /// Only I-frames are decoded, which makes this quick even for long videos; each thumbnail is the
-    /// I-frame nearest its time. Background work (see WorkScheduler), decoded on the background card where there
-    /// is one; on the processor when that does not work out.
+    /// Writes a thumbnail grid sampled every <paramref name="intervalSeconds"/> s, decoding only the nearest I-frames (fast for long
+    /// videos). Background work (WorkScheduler) on the background adapter, CPU fallback.
     /// </summary>
     /// <remarks>
-    /// Like the posters and strips below, asked for from the thread pool whoever asks (4.3E): work asked for on the
-    /// interface's thread is started there, and FFmpeg's start took it for tens of milliseconds.
+    /// Like the posters and strips below, launched from the thread pool (FFmpeg startup blocked the UI thread for tens of ms).
     /// </remarks>
     public static Task<bool> GenerateSpriteSheetAsync(string videoPath, string imagePath, double intervalSeconds, CancellationToken cancellationToken) =>
         Task.Run(() => WorkScheduler.Run(new WorkSpec($"Hover previews of {Path.GetFileName(videoPath)}", WorkLane.Background) { Key = $"sprite|{videoPath}|{intervalSeconds}" }, async work =>
@@ -214,10 +201,8 @@ public static partial class FfmpegRunner
         }, cancellationToken));
 
     /// <summary>
-    /// One frame of a video as a JPEG <paramref name="height"/> pixels tall: a media browser tile's poster, before its strip
-    /// is made (4.2D). The thumbnail compositor's (5.1-CleanupStudioAndFfmpegPurge: decoded on the card, the key frame nearest the
-    /// moment, GpuFilmstrips); else Media Foundation's in this process (5.4.2A, Compositor.MfPoster: the same key frame, no tool
-    /// started); FFmpeg only for what neither can decode.
+    /// Single-frame JPEG poster <paramref name="height"/> px tall for a Media Browser tile (before its strip). Tries the GPU thumbnail
+    /// compositor (nearest key frame, GpuFilmstrips), then in-process Media Foundation (Compositor.MfPoster), then FFmpeg.
     /// </summary>
     public static Task<bool> GeneratePosterFrameAsync(string videoPath, string imagePath, double atSeconds, int height, CancellationToken cancellationToken,
         WorkLane lane = WorkLane.Interactive) =>
@@ -243,15 +228,11 @@ public static partial class FfmpegRunner
         }, cancellationToken));
 
     /// <summary>
-    /// A strip of frames from a video, evenly spread over its length and set side by side in one picture:
-    /// what a video's block on the timeline (and the Sequence Overview Scrubber) is drawn with, and the media browser's frames.
-    /// A compositor draws it (5.0D, <see cref="GpuFilmstrips"/>: one decode per frame on the card, read back), the same
-    /// picture frame for frame; with Background GPU set to Processor Only, and whenever that does not work out, FFmpeg
-    /// makes it. The background graphics card decodes where it can; when that does not work out (a format the card
-    /// does not take, a driver that will not open eight decoders at once) the strip is made again by the processor.
-    /// Background work (the media browser's: Idle).
+    /// Horizontal filmstrip of evenly spaced frames for Timeline blocks, the Sequence Overview Scrubber and the Media Browser. Rendered by
+    /// the GPU compositor (<see cref="GpuFilmstrips"/>, identical output); FFmpeg when Background GPU is Processor Only or the GPU path
+    /// fails, retrying on CPU if hardware decode fails (unsupported format, too many decoders). Background work (Media Browser: Idle).
     /// </summary>
-    /// <param name="height">How tall each frame is made, in pixels: 54 for a block on the timeline.</param>
+    /// <param name="height">Frame height in px (54 for Timeline blocks).</param>
     public static Task<bool> GenerateFilmstripAsync(string videoPath, string imagePath, int count, double durationSeconds, CancellationToken cancellationToken,
         int height = 54, WorkLane lane = WorkLane.Background) =>
         Task.Run(() => WorkScheduler.Run(new WorkSpec($"Thumbnails of {Path.GetFileName(videoPath)}", lane) { Key = $"strip|{WorkScheduler.PathKey(videoPath)}|{count}|{height}|{imagePath}" }, async work =>
@@ -292,20 +273,16 @@ public static partial class FfmpegRunner
         count = GpuFilmstrips.FrameCount(count, durationSeconds);
         height = GpuFilmstrips.FrameHeight(height);
 
-        // One frame from each of as many moments, evenly spread: the file is opened once per frame, already
-        // wound forward to it, so that only that frame is decoded. Reading a long video from end to end for
-        // a dozen pictures is the difference between a moment and a minute. The last moment stays clear of the
-        // end: a file's length is often a little more than its picture's, and an input wound past its last frame
-        // has none to give, which loses the whole strip.
+        // One input per frame, pre-seeked so only that frame decodes (vs. reading the whole file). The last sample stays clear of the
+        // end: container duration often exceeds the video's, and an input seeked past the last frame yields nothing, losing the strip.
         var arguments = new List<string> { "-hide_banner", "-loglevel", "error", "-y" };
         foreach (var at in GpuFilmstrips.Moments(count, durationSeconds))
         {
             if (hardware)
                 arguments.AddRange(GpuAdapters.BackgroundDecodeArguments);
 
-            // Each input is a decoder of its own, and there are as many as there are frames in the strip. So
-            // each is kept small: one thread, and the first frame it can give (the I-frame the seek lands on)
-            // rather than decoding on from there to the exact moment. A thumbnail does not need the exact moment.
+            // One decoder per frame, so keep each light: one thread and the first frame after the seek (the landing I-frame) rather
+            // than the exact time; thumbnails do not need frame accuracy.
             arguments.AddRange(["-threads", "1", "-noaccurate_seek", "-ss", at.ToString("0.###", CultureInfo.InvariantCulture), "-i", videoPath]);
         }
 
@@ -338,7 +315,7 @@ public static partial class FfmpegRunner
         if (MediaProbe.KnownIFrames(path) is { } known)
             return [.. known];
 
-        // Read from the file's own index in C# (5.4.1-M4: an MP4's stss, an MKV's Cues), no ffprobe and nothing decoded.
+        // Parse the container index directly (MP4 stss, MKV Cues): no ffprobe, no decoding.
         if (await Task.Run(() => NativeKeyFrames.Read(path), cancellationToken) is { Length: > 0 } native)
         {
             MediaProbe.NoteIFrames(path, native);
@@ -356,10 +333,8 @@ public static partial class FfmpegRunner
             return listed;
         }
 
-        // Read from the packets' flags, with nothing decoded: the demuxer marks every packet that starts an I-frame
-        // (K). The same list as decoding the I-frames gives, in a fraction of the time (a 4.5-hour 1440p recording
-        // in about half a minute, bound by the disk), and read line by line as it comes, not held whole. Background
-        // work (see WorkScheduler): asked for twice, it is read once.
+        // Fallback: packet keyframe flags (K) via ffprobe, no decoding; same result much faster (4.5 h 1440p in ~30 s, disk-bound),
+        // streamed line by line. Background work (WorkScheduler) deduplicates concurrent requests.
         return await WorkScheduler.Run(new WorkSpec($"I-frames of {Path.GetFileName(path)}", WorkLane.Background) { Key = $"iframes|{WorkScheduler.PathKey(path)}" }, async work =>
         {
             var iFrames = new List<double>();

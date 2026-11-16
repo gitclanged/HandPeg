@@ -4,29 +4,27 @@ using HandPegApp.Services;
 namespace HandPegApp.Compositor;
 
 /// <summary>
-/// The camera of the 3D exploded layer stack (Pass 5.0-AudioAnd3D, 5.0D), the one piece of maths the worker draws with and
-/// HandPeg picks with, so a press lands on exactly the plane under it. Pure C#, nothing allocated.
-/// <para><b>The world</b> is the canvas: x right and y down in canvas pixels, z towards the viewer. Each layer is a plane at
-/// z = <see cref="GpuLayerDescriptor.ZDepth"/> x <see cref="FrameSceneHeader.ExplodedZSpread"/> (canvas pixels per place
-/// in the stack), its box where the flat picture has it (rotation and anchor included).</para>
-/// <para><b>The camera</b> orbits the canvas's middle at half the stack's depth: <see cref="FrameSceneHeader.CameraYaw"/>
-/// degrees round the vertical (positive: from the right), <see cref="FrameSceneHeader.CameraPitch"/> degrees up (positive:
-/// from above), at <see cref="FrameSceneHeader.CameraZoom"/> times the fitted distance. The fitted distance is where the
-/// canvas, seen straight on, is exactly the size the flat player fits it to (centred, as FlagLetterbox has it at no zoom),
-/// so at yaw 0, pitch 0, zoom 1 and no spread the 3D picture is the 2D one, and the animation in and out of 3D has no
-/// jump. The player's own zoom and pan (ViewScale, ViewPan) are not part of the 3D view: it always covers the whole output,
-/// with no bars.</para>
-/// <para><b>Screen</b> points are output pixels (the worker's render target, the player's pixel size), from the top left.</para>
+/// Camera for the 3D exploded layer stack: the single source of maths for worker rendering and editor picking, so a click hits exactly
+/// the plane under it. Pure C#, allocation-free.
+/// <para><b>World</b> = canvas space: x right, y down in canvas pixels, z toward the viewer. Each layer is a plane at
+/// z = <see cref="GpuLayerDescriptor.ZDepth"/> x <see cref="FrameSceneHeader.ExplodedZSpread"/> (canvas pixels per stack step) with its
+/// flat box (rotation and anchor included).</para>
+/// <para><b>Camera</b> orbits the canvas centre at half the stack depth: <see cref="FrameSceneHeader.CameraYaw"/> degrees about the
+/// vertical (positive = from the right), <see cref="FrameSceneHeader.CameraPitch"/> degrees up (positive = from above), at
+/// <see cref="FrameSceneHeader.CameraZoom"/> x the fitted distance, where the head-on canvas matches the flat player's letterboxed fit.
+/// At yaw 0, pitch 0, zoom 1 and no spread the 3D image equals the 2D one, so the transition has no jump. Player zoom/pan (ViewScale,
+/// ViewPan) do not apply: the 3D view always fills the output.</para>
+/// <para><b>Screen</b> points are output pixels (render target size) from the top-left.</para>
 /// </summary>
 public readonly struct ExplodedCamera
 {
-    /// <summary>The vertical field of view: a gentle perspective, a lens of about 70 mm on a full frame.</summary>
+    /// <summary>Vertical field of view: gentle perspective (~70 mm full-frame equivalent).</summary>
     public const float FieldOfViewDegrees = 34;
 
-    /// <summary>How far the camera may turn either way, in degrees (never edge on).</summary>
+    /// <summary>Maximum yaw/pitch either way, degrees (never edge-on).</summary>
     public const float MaxTurnDegrees = 85;
 
-    /// <summary>The camera's distance, as a factor of the fitted distance.</summary>
+    /// <summary>Camera distance limits as a factor of the fitted distance.</summary>
     public const float MinZoom = 0.3f, MaxZoom = 8;
 
     private ExplodedCamera(int canvasWidth, int canvasHeight, int outputWidth, int outputHeight, float spread, float fit, float focal, float amount,
@@ -43,45 +41,44 @@ public readonly struct ExplodedCamera
     public int OutputWidth { get; }
     public int OutputHeight { get; }
 
-    /// <summary>Canvas pixels from one place in the stack to the next.</summary>
+    /// <summary>Canvas pixels between adjacent stack planes.</summary>
     public float Spread { get; }
 
-    /// <summary>Output pixels per canvas pixel of the flat, fitted picture (the size each plane's picture is drawn at).</summary>
+    /// <summary>Output pixels per canvas pixel of the flat fitted image (each plane's render scale).</summary>
     public float Fit { get; }
 
-    /// <summary>The lens's focal length, in output pixels.</summary>
+    /// <summary>Focal length in output pixels.</summary>
     public float Focal { get; }
 
     /// <summary>
-    /// How far out of the flat picture the view is, 0 to 1 (from the turn, the spread and the distance): the backdrop, the
-    /// frame, the planes' edges and the outlines come in by it, so the flat end of the animation is the 2D picture itself.
+    /// Departure from the flat view, 0..1 (largest of the turn, spread and distance terms): backdrop, frame, plane edges and outlines
+    /// fade in by it, so the flat end of the animation is exactly the 2D image.
     /// </summary>
     public float Amount { get; }
 
-    /// <summary>Where the camera is, and its right, down and backward (from what it looks at towards itself) directions.</summary>
+    /// <summary>Camera position and its right, down and back (target-to-camera) unit vectors.</summary>
     public Vector3 Position { get; }
     public Vector3 Right { get; }
     public Vector3 Down { get; }
     public Vector3 Back { get; }
 
-    /// <summary>World (row vector, w 1) to clip space, w the depth before the camera: as HLSL's row_major float4x4 reads it.</summary>
+    /// <summary>World (row vector, w = 1) to clip space with w = view depth; matches HLSL row_major float4x4.</summary>
     public Matrix4x4 ViewProjection { get; }
 
     /// <summary>
-    /// The camera a scene is drawn with (the worker, and HandPeg picking from what it last published): its stack as deep as
-    /// the scene's plan (<see cref="FrameSceneHeader.ExplodedDepth"/>), else as the layers drawn.
+    /// Camera for a scene (worker rendering, and editor picking from the last published scene): stack depth from the plan
+    /// (<see cref="FrameSceneHeader.ExplodedDepth"/>), else the drawn layer count.
     /// </summary>
     public static ExplodedCamera From(in FrameSceneHeader header, int outputWidth, int outputHeight) =>
         Create(header.CanvasWidth, header.CanvasHeight, outputWidth, outputHeight, header.CameraYaw, header.CameraPitch, header.CameraZoom,
             header.ExplodedZSpread, StackDepthOf(header));
 
-    /// <summary>How many places the stack of a scene has: its plan's depth, or (none given) its layers' count.</summary>
+    /// <summary>Stack depth of a scene: the plan's depth, else its active layer count.</summary>
     public static int StackDepthOf(in FrameSceneHeader header) => header.ExplodedDepth > 0 ? header.ExplodedDepth : header.ActiveLayerCount;
 
     /// <summary>
-    /// The camera for a canvas seen on an output: turned by <paramref name="yawDegrees"/> and <paramref name="pitchDegrees"/>,
-    /// <paramref name="zoom"/> times the fitted distance (0 counts as 1), the planes <paramref name="spread"/> canvas pixels
-    /// apart, <paramref name="layerCount"/> of them (the orbit's middle is half their depth).
+    /// Camera for a canvas on an output: rotated by <paramref name="yawDegrees"/>/<paramref name="pitchDegrees"/>, at <paramref name="zoom"/> x the
+    /// fitted distance (0 = 1), with <paramref name="layerCount"/> planes <paramref name="spread"/> canvas pixels apart (orbit at half their depth).
     /// </summary>
     public static ExplodedCamera Create(int canvasWidth, int canvasHeight, int outputWidth, int outputHeight, float yawDegrees, float pitchDegrees,
         float zoom, float spread, int layerCount)
@@ -98,7 +95,7 @@ public readonly struct ExplodedCamera
         var distance = focal / fit * distanceFactor;
         var pivot = new Vector3(cw / 2f, ch / 2f, Math.Max(layerCount - 1, 0) * gap / 2);
 
-        // The camera's frame: back (from the middle towards the camera), right, and down (the screen's down).
+        // Camera basis: back (centre toward camera), right, and down (screen down).
         var (sy, cy) = MathF.SinCos(yaw * MathF.PI / 180f);
         var (sp, cp) = MathF.SinCos(pitch * MathF.PI / 180f);
         var back = new Vector3(sy * cp, -sp, cy * cp);
@@ -106,15 +103,15 @@ public readonly struct ExplodedCamera
         var down = new Vector3(sp * sy, cp, sp * cy);
         var position = pivot + back * distance;
 
-        // World to camera: x along right, y along down, z the depth in front of it.
+        // World to camera: x along right, y along down, z = depth in front.
         var view = new Matrix4x4(
             right.X, down.X, -back.X, 0,
             right.Y, down.Y, -back.Y, 0,
             right.Z, down.Z, -back.Z, 0,
             -Vector3.Dot(position, right), -Vector3.Dot(position, down), Vector3.Dot(position, back), 1);
 
-        // Camera to clip: x and y by the lens over the output, w the depth, z from the near to the far plane (0 to 1). There
-        // is no depth buffer (the planes are drawn back to front); the near plane only cuts what is behind the camera.
+        // Camera to clip: x, y scaled by focal over output size, w = depth, z mapped near..far to 0..1. There is no depth buffer
+        // (planes draw back to front); the near plane only culls what is behind the camera.
         var near = Math.Max(distance * 0.01f, 0.5f);
         var far = distance * 50 + gap * Math.Max(layerCount, 1) * 4 + 10_000;
         var a = far / (far - near);
@@ -124,7 +121,7 @@ public readonly struct ExplodedCamera
             0, 0, a, 1,
             0, 0, -near * a, 0);
 
-        // Out of the flat picture by the turn, the spread and the distance, whichever is the most.
+        // Departure from flat: the largest of the turn, spread and distance terms.
         var spreadShare = gap / Math.Max(cw, ch);
         var amount = Math.Clamp(Math.Max(Math.Max(MathF.Abs(yaw) / 6f, MathF.Abs(pitch) / 6f), Math.Max(spreadShare / 0.012f, MathF.Abs(distanceFactor - 1) / 0.06f)), 0, 1);
 
@@ -133,28 +130,27 @@ public readonly struct ExplodedCamera
 
     private static float Finite(float value) => float.IsFinite(value) ? value : 0;
 
-    /// <summary>A place in the stack (a layer's ZDepth, fractions too while one is dragged in depth) as a world z.</summary>
+    /// <summary>World z for a stack position (a layer's ZDepth; fractional while dragged in depth).</summary>
     public float DepthOf(float zDepth) => zDepth * Spread;
 
     /// <summary>
-    /// How far a plane at <paramref name="z"/> is from the camera along the planes' normal: the painter's key (the planes are
-    /// parallel, so the one farther along it is drawn first, whichever way the camera looks).
+    /// Distance from the camera to the plane at <paramref name="z"/> along the plane normal: the painter's sort key (planes are parallel,
+    /// so the farther one draws first whatever the view direction).
     /// </summary>
     public float DistanceTo(float z) => MathF.Abs(z - Position.Z);
 
     /// <summary>
-    /// A box's quad corner (0..1, 0..1, 0, 1) to clip space: the box of the flat picture (canvas pixels, turned degrees
-    /// clockwise about its anchor, as Matrix4.Box has it) laid at depth <paramref name="z"/>, seen by this camera. Tilted (5.2B, the
-    /// user's Q4: <paramref name="tiltX"/> its Pitch, <paramref name="tiltY"/> its Yaw, in degrees) it is also turned out of its plane about
-    /// its anchor as Matrix4.Tilted turns it (the same turns in the same order, Matrix4.Turned), with no perspective of its own: this camera
-    /// gives it its perspective. Untilted, the matrix is the flat one, number for number.
+    /// Quad corner (0..1, 0..1, 0, 1) to clip space for a flat box (canvas pixels, rotated clockwise about its anchor as in Matrix4.Box)
+    /// placed at depth <paramref name="z"/>. With tilt (<paramref name="tiltX"/> = pitch, <paramref name="tiltY"/> = yaw, degrees) it also
+    /// rotates out of plane exactly as Matrix4.Tilted does (shared Matrix4.Turned) but without its own perspective: this camera supplies it.
+    /// Untilted it is exactly the flat matrix.
     /// </summary>
     public Matrix4x4 PlaneMatrix(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float z,
         float tiltX = 0, float tiltY = 0)
     {
         if (tiltX != 0 || tiltY != 0)
         {
-            // The turned columns' depth is away from the viewer; the world's z comes towards it.
+            // Turned columns measure depth away from the viewer; world z points toward it.
             var (u, v, o) = Matrix4.Turned(width, height, rotationDegrees, anchorX, anchorY, tiltX, tiltY);
             var (pivotX, pivotY) = (x + anchorX * width, y + anchorY * height);
             var turned = new Matrix4x4(
@@ -176,7 +172,7 @@ public readonly struct ExplodedCamera
         return place * ViewProjection;
     }
 
-    /// <summary>A hairline between two world points: a quad's corner to clip space, facing the camera, about <paramref name="pixels"/> output pixels wide at its middle.</summary>
+    /// <summary>Camera-facing hairline quad between two world points, about <paramref name="pixels"/> output pixels wide at its midpoint.</summary>
     public Matrix4x4 LineMatrix(Vector3 from, Vector3 to, float pixels)
     {
         var way = to - from;
@@ -194,10 +190,10 @@ public readonly struct ExplodedCamera
         return place * ViewProjection;
     }
 
-    /// <summary>Where a world point is on the output; false when it is not in front of the camera.</summary>
+    /// <summary>Projects a world point to output pixels; false when it is not in front of the camera.</summary>
     public bool TryProject(Vector3 world, out Vector2 screen)
     {
-        // (System.Numerics' four-vector: the compositor's own Vector4 is the constant buffer's.)
+        // System.Numerics.Vector4: the compositor's own Vector4 is the constant-buffer type.
         var clip = System.Numerics.Vector4.Transform(new System.Numerics.Vector4(world, 1), ViewProjection);
         if (clip.W <= 1e-3f)
         {
@@ -209,10 +205,10 @@ public readonly struct ExplodedCamera
         return true;
     }
 
-    /// <summary>Where a canvas point at depth <paramref name="z"/> is on the output (NaN, NaN when behind the camera): the labels' places.</summary>
+    /// <summary>Output position of a canvas point at depth <paramref name="z"/> (NaN, NaN when behind the camera); used for labels.</summary>
     public Vector2 Project(float x, float y, float z) => TryProject(new Vector3(x, y, z), out var screen) ? screen : new Vector2(float.NaN, float.NaN);
 
-    /// <summary>The ray from the camera through an output point (its direction of length 1).</summary>
+    /// <summary>Ray from the camera through an output point (unit direction).</summary>
     public void Ray(float screenX, float screenY, out Vector3 origin, out Vector3 direction)
     {
         origin = Position;
@@ -222,8 +218,8 @@ public readonly struct ExplodedCamera
     }
 
     /// <summary>
-    /// Where the ray through an output point meets the plane at depth <paramref name="z"/>, in canvas pixels; false when it
-    /// meets it behind the camera or not at all (seen edge on).
+    /// Intersection of the ray through an output point with the plane at depth <paramref name="z"/>, in canvas pixels; false when behind
+    /// the camera or parallel (edge-on).
     /// </summary>
     public bool HitPlane(float screenX, float screenY, float z, out Vector2 canvas)
     {
@@ -247,10 +243,9 @@ public readonly struct ExplodedCamera
     }
 
     /// <summary>
-    /// Where the ray through an output point meets a box's plane as <see cref="PlaneMatrix"/> lays it at depth <paramref name="z"/> (tilted
-    /// by <paramref name="tiltX"/> / <paramref name="tiltY"/> about its anchor, 5.2C: the user's Q4): the place on the box (<paramref name="uv"/>,
-    /// 0 to 1 across and down it, the box's own whatever it is turned or tilted to) and the world point there. False when the ray meets
-    /// that plane behind the camera or not at all (seen edge on). Untilted, it is <see cref="HitPlane"/>'s point.
+    /// Intersection of the ray through an output point with a box's plane as <see cref="PlaneMatrix"/> places it (tilted by
+    /// <paramref name="tiltX"/>/<paramref name="tiltY"/> about its anchor): <paramref name="uv"/> in the box's own 0..1 frame and the world
+    /// point. False when behind the camera or edge-on. Untilted it matches <see cref="HitPlane"/>.
     /// </summary>
     public bool HitBox(float screenX, float screenY, float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY,
         float z, float tiltX, float tiltY, out Vector2 uv, out Vector3 world)
@@ -258,7 +253,7 @@ public readonly struct ExplodedCamera
         (uv, world) = (default, default);
         Ray(screenX, screenY, out var origin, out var direction);
 
-        // The plane's corner (cu, cv) is at P + cu * U + cv * V (PlaneMatrix's rows): solved with the ray, origin + t * direction.
+        // Plane corner (cu, cv) = P + cu * U + cv * V (PlaneMatrix rows), solved against origin + t * direction.
         Vector3 u3, v3, p;
         if (tiltX != 0 || tiltY != 0)
         {
@@ -274,7 +269,7 @@ public readonly struct ExplodedCamera
             p = new Vector3(corner.X, corner.Y, z);
         }
 
-        // a U + b V - t D = O - P, by Cramer's rule (the determinant of three columns is the first dotted with the others' cross).
+        // Solve a U + b V - t D = O - P by Cramer's rule (3x3 determinant = first column dotted with the cross of the others).
         var against = -direction;
         var determinant = Vector3.Dot(u3, Vector3.Cross(v3, against));
         if (MathF.Abs(determinant) < 1e-6f * MathF.Max(u3.Length() * v3.Length(), 1))
@@ -289,7 +284,7 @@ public readonly struct ExplodedCamera
         return true;
     }
 
-    /// <summary>A world point on a box's (tilted) plane as <see cref="PlaneMatrix"/> lays it: its corner (u, v) at depth <paramref name="z"/>.</summary>
+    /// <summary>World point at box coordinate (u, v) on a (tilted) box plane at depth <paramref name="z"/>, as <see cref="PlaneMatrix"/> places it.</summary>
     public static Vector3 OnBox(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float z,
         float tiltX, float tiltY, float u, float v)
     {
@@ -303,7 +298,7 @@ public readonly struct ExplodedCamera
         return new Vector3(x + anchorX * width + o.X + u * cu.X + v * cv.X, y + anchorY * height + o.Y + u * cu.Y + v * cv.Y, z - o.Z - u * cu.Z - v * cv.Z);
     }
 
-    /// <summary>A point of a box (u, v from 0 to 1 across and down it) on the canvas, the box turned about its anchor as drawn.</summary>
+    /// <summary>Canvas point at box coordinate (u, v in 0..1), the box rotated about its anchor as drawn.</summary>
     public static Vector2 BoxPoint(float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY, float u, float v)
     {
         var (sin, cos) = MathF.SinCos(rotationDegrees * MathF.PI / 180f);
@@ -312,13 +307,13 @@ public readonly struct ExplodedCamera
         return new Vector2(ax + ox * cos - oy * sin, ay + ox * sin + oy * cos);
     }
 
-    /// <summary>Whether a canvas point is inside a box turned about its anchor (a box of negative size counts as its mirror).</summary>
+    /// <summary>True when a canvas point lies inside a box rotated about its anchor (negative sizes count as mirrored).</summary>
     public static bool InBox(Vector2 point, float x, float y, float width, float height, float rotationDegrees, float anchorX, float anchorY)
     {
         var (sin, cos) = MathF.SinCos(rotationDegrees * MathF.PI / 180f);
         var (dx, dy) = (point.X - (x + anchorX * width), point.Y - (y + anchorY * height));
 
-        // Turned back (anticlockwise), into the box's own frame, from its top left corner.
+        // Rotate back (counter-clockwise) into the box frame, measured from its top-left corner.
         var u = dx * cos + dy * sin + anchorX * width;
         var v = -dx * sin + dy * cos + anchorY * height;
         return u >= Math.Min(0, width) && u <= Math.Max(0, width) && v >= Math.Min(0, height) && v <= Math.Max(0, height);

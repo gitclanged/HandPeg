@@ -3,6 +3,44 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.6.0 — Color Studio, Speed & Pitch With Smooth Slow-Mo, Hardware Performance Tiers, and a Hardened Core
+
+### User-Facing Highlights
+- **Color Studio.** The Color tab (in place of Filters) grades on the graphics card: lift, gamma and gain wheels, curves, a LUT
+  with a mix amount, and a live Vectorscope. Color Match grades one clip to look like another, and an eyedropper with a magnifier
+  picks a colour from anywhere on screen. Hold `\` to see the picture before the grade, or press the eye for a split view
+  (Fit to window moved to `Shift+\`). The old Grade card is now Brightness & Contrast.
+- **Speed & Pitch.** The Speed & Time card plays a clip from 0.10x to 16x, and Ripple Timeline moves the clips after it to fit.
+  Smooth Slow-Mo makes the in-between frames by optical flow instead of repeating frames. The sound keeps its pitch (Keep Pitch),
+  or Spectral Audio stretches it smoothly for very slow speeds; with both off it plays like tape.
+- **Hardware performance tiers.** The welcome and Settings rate the PC from S to F for each job (compositing, decoding,
+  background work, export) on cards that show what each graphics card and the NPU are used for.
+- **Smoother playback on very fast displays.** Every track's decoder now shares one pacing budget (100 frames a second) instead of
+  fixed time slices; on the reference desktop's 500 Hz display the picture no longer falls up to 140 ms behind.
+- **Voiceovers record straight from Windows.** The Voiceover Studio captures the microphone itself (WASAPI) instead of through
+  FFmpeg, so microphones and virtual inputs that FFmpeg could not open (such as a streaming mixer's) now record. Each take is
+  written as it goes, so a crash keeps what was said. If Windows blocks microphone access, the Studio says where to allow it.
+- **Close the gap before the first clip.** The gap pill now also appears in the empty space at the start of a track: click it
+  and the track's clips move to 0 s.
+- **Cutout Studio opens with all of a preset's pieces.** Opened from the Timeline toolbar or a clip's menu, with nothing, a video or
+  one of its Cutouts selected, it shows every Cutout of that video with its outline, its place on the tall frame and the preset's
+  name. Pieces from older Game Presets, masked by a picture, are traced into outlines you can edit. It also opens with a picture
+  straight away instead of a black view while the full still loads.
+
+### Under the Hood & Fixes
+- Projects and settings are written safely: a write goes to a temporary file first, the last good copy is kept as `.prev`, and a
+  damaged file is set aside and reported instead of being lost. Settings from every earlier version upgrade step by step.
+- A project saved by a newer HandPeg opens in this one and keeps the settings this version does not know about when saved again.
+- Downloaded tools and models are checked against their SHA-256 hashes, and are not run when a hash does not match.
+- Background threads stop in a fixed order when a tab or the editor closes; the timeline finds clips by index instead of
+  searching, and the preview redraws only what an edit changed.
+- Dragging a slider or a handle is one undo step, the same in every pane. Tooltips show a short name first and the details after
+  a moment.
+- Fixed: a clip slowed to 0.10x with Keep Pitch could stop the sound with an error near its start; its first frames now play.
+- Fixed: with the taskbar set to hide itself, a maximized window left a thin strip of the desktop wallpaper showing at that
+  edge. The strip is now covered in the window's colour, and the taskbar still slides up when the pointer reaches it.
+- The source code's comments were rewritten by hand throughout, and the build treats every warning as an error.
+
 ## HandPeg v5.5.2 — A Playback & A/V Sync Test, Picture and Sound in Step From the First Frame, and Touchpad Panning in Cutout Studio
 
 ### User-Facing Highlights

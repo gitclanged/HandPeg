@@ -3,9 +3,7 @@ using System.Text.Json.Serialization;
 namespace HandPegApp.Models;
 
 /// <summary>
-/// The processing applied to one audio track before it is encoded: each filter can be switched on by
-/// itself, and the ones that are on run in a fixed, sensible order (the sound engine's effects made of them:
-/// Services/Audio/AudioEffects.cs, AudioChainBuilder).
+/// Per-track audio processing: independently toggled filters run in a fixed order (Services/Audio/AudioEffects.cs, AudioChainBuilder).
 /// </summary>
 public sealed class TrackAudioFilters
 {
@@ -46,24 +44,23 @@ public sealed class TrackAudioFilters
     public bool StereoWidener { get; set; }
     public double StereoWidth { get; set; } = 1.5;
 
-    // Studio Voice (Pass 5.2B): the one-click vocal chain, blended with the dry sound (Services/Audio/StudioVoice.cs).
+    // Studio Voice: one-click vocal chain blended with the dry signal (Services/Audio/StudioVoice.cs).
     public bool StudioVoice { get; set; }
 
     /// <summary>How much of the chain's sound is heard, in percent (0 the dry sound, 100 the chain's alone).</summary>
     public double StudioVoiceMix { get; set; } = 85;
 
     /// <summary>
-    /// The mix's keyframes (percent values), or null (or none) for the plain <see cref="StudioVoiceMix"/>. Times are seconds from the start of
-    /// what the filters belong to: a clip's filters from the clip's Start on the Sequence, a track's from the Sequence's 0. Left out of the
-    /// file while null.
+    /// Mix keyframes (percent), or null/empty for static <see cref="StudioVoiceMix"/>. Times in seconds from the owner's start (clip Start,
+    /// or Sequence 0 for tracks). Omitted when null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<Keyframe>? StudioVoiceMixKeys { get; set; }
 
-    /// <summary>Two Studio Voice mix keys closer than this (seconds) are the same moment: a key there takes the new value.</summary>
+    /// <summary>Keys closer than this (s) are merged; setting one there replaces its value.</summary>
     public const double MixKeyTolerance = 0.001;
 
-    /// <summary>A Studio Voice mix key at <paramref name="at"/> with the mix as it is set now (replacing one at that moment), kept in time order.</summary>
+    /// <summary>Sets a mix key at <paramref name="at"/> to the current mix (replacing any there), keeping time order.</summary>
     public void PutMixKey(double at)
     {
         var keys = StudioVoiceMixKeys ??= [];
@@ -72,35 +69,35 @@ public sealed class TrackAudioFilters
         keys.Sort((a, b) => a.Time.CompareTo(b.Time));
     }
 
-    // De-Esser (5.2.0): a split-band compressor on 5.5 to 9 kHz, how hard it works in percent.
+    // De-Esser: split-band compressor on the sibilance band (5500-9000 Hz); amount in percent.
     public bool DeEsser { get; set; }
     public double DeEsserAmount { get; set; } = 50;
 
     /// <summary>
-    /// The parametric equalizer (Pass 5.2B): where each of the ten bands is, in Hz (each held to 20..20000), or null for the octave centres
-    /// (<see cref="EqualizerBands"/>), as before. Left out of the file while null.
+    /// Parametric EQ centre frequencies for ten bands (Hz, clamped 20-20000), or null for octave centres (<see cref="EqualizerBands"/>).
+    /// Omitted when null.
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double[]? EqualizerFrequencies { get; set; }
 
-    /// <summary>How wide each band is, in octaves (each held to 0.1..4), or null for one octave each, as before. Left out of the file while null.</summary>
+    /// <summary>Band widths in octaves (clamped 0.1-4), or null for one octave each. Omitted when null.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public double[]? EqualizerWidths { get; set; }
 
     public bool IsActive => Compressor || NoiseGate || DeNoise || BassTreble || HighPass || Limiter || Equalizer || PitchTempo || StereoWidener || StudioVoice || DeEsser;
 
     /// <summary>
-    /// Whether Studio Voice is in the chain (5.2B): switched on, with mix keys or a mix above 0 (to the four decimals the chain writes it
-    /// with). At a mix of 0 with no keys AudioChainBuilder leaves it out, so the dry sound is untouched. Not written to the file.
+    /// True when Studio Voice is enabled with keys or a mix above 0 (at chain precision); otherwise AudioChainBuilder omits it so dry
+    /// audio is untouched. Not serialized.
     /// </summary>
     [JsonIgnore]
     public bool StudioVoiceInChain =>
         StudioVoice && (StudioVoiceMixKeys is { Count: > 0 } || Math.Round(Math.Clamp(StudioVoiceMix, 0, 100), 4, MidpointRounding.AwayFromZero) > 0);
 
     /// <summary>
-    /// Whether the filters change the sound at all (5.2B): <see cref="IsActive"/>, with Studio Voice counted only while it is in the chain
-    /// (<see cref="StudioVoiceInChain"/>). What the sound engine decides by: a clip's strip of its own, a sound copied as it is, the chain
-    /// itself. <see cref="IsActive"/> and <see cref="ActiveCount"/> stay for the button's badge (a switch the user turned on). Not written to the file.
+    /// True when the filters alter audio: <see cref="IsActive"/> with Studio Voice counted only when <see cref="StudioVoiceInChain"/>.
+    /// Drives audio-engine decisions (own strip, stream copy, chain); <see cref="IsActive"/> and <see cref="ActiveCount"/> feed the button
+    /// badge. Not serialized.
     /// </summary>
     [JsonIgnore]
     public bool Processes =>
@@ -111,8 +108,8 @@ public sealed class TrackAudioFilters
         new[] { Compressor, NoiseGate, DeNoise, BassTreble, HighPass, Limiter, Equalizer, PitchTempo, StereoWidener, StudioVoice, DeEsser }.Count(on => on);
 
     /// <summary>
-    /// Whether every setting is still the default one (switches and values alike). Saving, undo steps and a cold tab keep a filter
-    /// set that is not, even with every filter switched off: a compressor turned off to compare keeps its threshold. Not written to the file.
+    /// True when every switch and value is default. Non-default sets persist through saves, undo and cold tabs even with all filters
+    /// off (e.g. a bypassed compressor keeps its threshold). Not serialized.
     /// </summary>
     [JsonIgnore]
     public bool IsDefault => System.Text.Json.JsonSerializer.Serialize(this) == DefaultJson;

@@ -8,25 +8,21 @@ using HandPegApp.Services.Gpu;
 
 namespace HandPegApp.Services;
 
-// ----- The export's FFmpeg command: an encoder and a muxer, nothing else (Pass 5.2-Audit) -----
-// FFmpeg's filter graphs are gone: the GPU compositor draws every frame (GpuExport), the sound engine renders every sound track
-// (ExportSoundPlan), and HandPeg writes GIFs itself (GifEncoder). What is left for FFmpeg is what only an encoder and a muxer do:
-// the frames piped in raw (NV12 as the card converted them, I420 for an encoder that wants its chroma planar, RGB for one that
-// takes RGB), each sound track's render read as raw float, a file's own streams copied where they are kept as they are (a
-// passthrough track from its file; soft subtitles and chapters from the stream source while the Sequence is that whole file), the
-// chapters list, the encoders and the container's flags. No -vf, -af or -filter_complex is ever written; the only change FFmpeg
-// makes to a frame is the pixel format an encoder needs.
+// ----- Export FFmpeg command: encode and mux only -----
+// The compositor renders frames (GpuExport), the audio engine renders tracks (ExportSoundPlan), GifEncoder writes GIFs. FFmpeg receives
+// raw piped frames (GPU NV12, I420 for planar-chroma encoders, RGB for RGB encoders), raw float audio renders, stream copies (passthrough
+// tracks; soft subtitles and chapters while the Sequence is the whole source), the chapters list, encoders and container flags.
+// Never -vf, -af or -filter_complex; FFmpeg only performs the pixel-format conversion an encoder requires.
 
 /// <summary>
-/// Which frames an export draws and pipes: the sequence's canvas ticks at its rate (as long as the sequence, its length as
-/// FFmpeg read times, to the millisecond), and an export at another rate shows, at each of its slots, the last canvas frame
-/// whose time rounded to the output's clock is not after the slot (FFmpeg's fps rule, which the frames have always followed).
-/// The GPU export draws only the canvas frames shown, and pipes each as often as it is shown.
+/// Export frame timing: the canvas ticks at its rate over the Sequence length (ms precision); at a different output rate each slot shows
+/// the last canvas frame whose time, rounded to the output clock, is not after the slot (FFmpeg fps rule). Only shown canvas frames are
+/// rendered, each piped as many times as shown.
 /// </summary>
-/// <param name="CanvasNumerator">The canvas's rate, frames a second: <c>CanvasNumerator / CanvasDenominator</c>.</param>
-/// <param name="CanvasFrames">How many frames the canvas makes: those whose time, in microseconds, is before the duration.</param>
-/// <param name="OutputNumerator">The export's rate (the canvas's when no other is chosen).</param>
-/// <param name="OutputFrames">How many frames the export has: the fps rule's count at the end of the canvas.</param>
+/// <param name="CanvasNumerator">Canvas rate numerator (fps = <c>CanvasNumerator / CanvasDenominator</c>).</param>
+/// <param name="CanvasFrames">Canvas frame count: frames whose microsecond time precedes the duration.</param>
+/// <param name="OutputNumerator">Output rate numerator (canvas rate when unspecified).</param>
+/// <param name="OutputFrames">Output frame count per the fps rule at the canvas end.</param>
 public readonly record struct GpuExportTiming(long CanvasNumerator, long CanvasDenominator, long CanvasFrames, long OutputNumerator, long OutputDenominator, long OutputFrames)
 {
     /// <summary>Whether the export's rate is the canvas's (every canvas frame is piped once).</summary>
@@ -42,21 +38,20 @@ public readonly record struct GpuExportTiming(long CanvasNumerator, long CanvasD
     public double CanvasSeconds(long frame) => (double)frame * CanvasDenominator / CanvasNumerator;
 
     /// <summary>
-    /// The latest moment a frame is sampled at (5.4A, no trailing black frame): half a canvas frame before the Sequence's last picture
-    /// ends (<see cref="SequenceSpans.ProgramSeconds"/>), so the last frame never asks for a moment at or past a clip's end, whatever
-    /// the millisecond rounding of the length or an end off the frame grid made of the count. No limit (infinity) when none is set.
+    /// Latest sample time: half a canvas frame before the last picture ends (<see cref="SequenceSpans.ProgramSeconds"/>), preventing a
+    /// trailing black frame from ms rounding or off-grid ends. Infinity when unset.
     /// </summary>
     public double SampleLimitSeconds { get; init; } = double.PositiveInfinity;
 
-    /// <summary>The moment a canvas frame is sampled at: its time and <paramref name="hair"/> (GpuExport.FrameHair), never past <see cref="SampleLimitSeconds"/>.</summary>
+    /// <summary>Sample time for a canvas frame: frame time + <paramref name="hair"/> (GpuExport.FrameHair), capped at <see cref="SampleLimitSeconds"/>.</summary>
     public double SampleSeconds(long frame, double hair) => Math.Min(CanvasSeconds(frame) + hair, SampleLimitSeconds);
 
     /// <summary>Where an output frame is in the export, in seconds.</summary>
     public double OutputSeconds(long frame) => (double)frame * OutputDenominator / OutputNumerator;
 
     /// <summary>
-    /// The canvas frame the export shows at output frame <paramref name="slot"/>: the last canvas frame whose time, rounded to
-    /// the output's clock (to the nearest, halves away from zero), is not after the slot.
+    /// Canvas frame shown at output <paramref name="slot"/>: last canvas frame whose time rounded to the output clock (half away from zero)
+    /// is not after the slot.
     /// </summary>
     public long CanvasFrameOf(long slot)
     {
@@ -104,28 +99,26 @@ public enum ExportEncoder
     Gif,
 
     /// <summary>
-    /// FFmpeg encodes the engine's sound only (5.4C, an Audio Only export: FLAC, WAV, MP3): no frames are piped, no compositor is
-    /// started; its one input is the sound's render (<see cref="EncoderCommand.BuildAudioOnly"/>).
+    /// Audio Only export (FLAC, WAV, MP3): no piped frames or compositor; the single input is the audio render (<see cref="EncoderCommand.BuildAudioOnly"/>).
     /// </summary>
     Sound,
 }
 
 /// <summary>
-/// An export's encode (<see cref="EncoderCommand.Build"/>): the program and its arguments (each sound track's render named by a
-/// token, <see cref="EncoderCommand.SoundToken"/>, until it is made), the frames it reads from its standard input (their size and
-/// pixels, rows packed), and which frames those are.
+/// Export encode (<see cref="EncoderCommand.Build"/>): executable and arguments (audio renders as <see cref="EncoderCommand.SoundToken"/>
+/// placeholders), stdin frame format (size, pixel format, packed rows) and frame timing.
 /// </summary>
-/// <param name="Width">The frames piped, in pixels: the sequence's frame (or smaller, the canvas drawn into it).</param>
-/// <param name="UsesChaptersFile">The command reads its chapters from <see cref="SequenceExportState.ChaptersFilePath"/>, which has to be written first.</param>
+/// <param name="Width">Piped frame width in pixels (Sequence frame, or smaller canvas).</param>
+/// <param name="UsesChaptersFile">Reads chapters from <see cref="SequenceExportState.ChaptersFilePath"/>, which must be written first.</param>
 public sealed record GpuExportCommand(string Executable, IReadOnlyList<string> Arguments, int Width, int Height, GpuExportTiming Timing, bool UsesChaptersFile)
 {
-    /// <summary>The compositor draws the sequence's fades: always, since 5.2-Audit (nothing is left to FFmpeg).</summary>
+    /// <summary>Always true: the compositor renders Sequence fades.</summary>
     public bool FadesOnGpu { get; init; } = true;
 
     /// <summary>The compositor draws the captions (from the words beside their caption file, or the file's lines).</summary>
     public bool CaptionsOnGpu { get; init; }
 
-    /// <summary>The pixels piped: <see cref="EncoderCommand.PipeNv12"/>, <see cref="EncoderCommand.PipeI420"/>, <see cref="EncoderCommand.PipeRgb"/>, or BGRA for a GIF.</summary>
+    /// <summary>Piped pixel format: <see cref="EncoderCommand.PipeNv12"/>, <see cref="EncoderCommand.PipeI420"/>, <see cref="EncoderCommand.PipeRgb"/>, or BGRA for GIF.</summary>
     public string PipeFormat { get; init; } = EncoderCommand.PipeNv12;
 
     /// <summary>What encodes the frames.</summary>
@@ -134,7 +127,7 @@ public sealed record GpuExportCommand(string Executable, IReadOnlyList<string> A
     /// <summary>The file written (the GIF's, for HandPeg's own encoder).</summary>
     public string OutputPath { get; init; } = "";
 
-    /// <summary>The sound tracks the command reads (their renders made before it runs, the copies mapped from the file).</summary>
+    /// <summary>Audio tracks read by the command (renders produced beforehand; copies mapped from files).</summary>
     public IReadOnlyList<ExportSoundTrack> Sound { get; init; } = [];
 
     /// <summary>The sequence's frame the picture is drawn from: the frames piped are it, or it drawn smaller.</summary>
@@ -142,55 +135,55 @@ public sealed record GpuExportCommand(string Executable, IReadOnlyList<string> A
 
     public int CanvasHeight { get; init; }
 
-    /// <summary>Whether the frames are read back as NV12 (FlagReadbackNv12): NV12 piped, or I420 made from it as it is piped.</summary>
+    /// <summary>True for NV12 readback (FlagReadbackNv12), piped as NV12 or converted to I420.</summary>
     public bool PipesNv12 => PipeFormat is EncoderCommand.PipeNv12 or EncoderCommand.PipeI420;
 
-    /// <summary>Whether the frames are read back as 10-bit P010 (FlagReadbackP010, 5.4B: an HDR project kept HDR).</summary>
+    /// <summary>True for 10-bit P010 readback (FlagReadbackP010) when exporting HDR.</summary>
     public bool PipesP010 => PipeFormat == EncoderCommand.PipeP010;
 
     /// <summary>The bytes of one piped frame.</summary>
     public long FrameBytes => PipesP010 ? CompositorProtocol.P010Bytes(Width, Height) : PipesNv12 ? CompositorProtocol.Nv12Bytes(Width, Height) : (long)Width * Height * 4;
 
-    /// <summary>The command as one line (the command box, the log, the golden tests): each argument quoted where it has to be.</summary>
+    /// <summary>Single-line command with required quoting (command box, log, goldens).</summary>
     public string CommandLine => Encoder == ExportEncoder.Gif
         ? $"HandPeg GIF encoder: {Width} x {Height} at {Timing.OutputRate} (one palette, dithered) -> \"{OutputPath}\""
         : Executable + " " + string.Join(" ", Arguments.Select(EncoderCommand.QuoteArgument));
 }
 
-/// <summary>A Copy export's command: a file's own streams, cut by a list beside it where the Sequence plays it in several clips (or trimmed).</summary>
-/// <param name="UsesCutsFile">The command reads the copied file's clips from <see cref="SequenceExportState.CutsFilePath"/>, which has to be written first.</param>
-/// <param name="UsesChaptersFile">The command reads its chapters from <see cref="SequenceExportState.ChaptersFilePath"/>.</param>
+/// <summary>Copy export command: stream-copies one file, via a concat cuts list when the Sequence uses several clips or trims.</summary>
+/// <param name="UsesCutsFile">Reads clip ranges from <see cref="SequenceExportState.CutsFilePath"/>, which must be written first.</param>
+/// <param name="UsesChaptersFile">Reads chapters from <see cref="SequenceExportState.ChaptersFilePath"/>.</param>
 public sealed record ExportCommand(string CommandLine, bool UsesCutsFile, bool UsesChaptersFile);
 
 /// <summary>Builds the FFmpeg commands that encode and mux an export (see the top of this file).</summary>
 public static class EncoderCommand
 {
-    /// <summary>The piped frames' pixels: 4:2:0 BT.709, limited range, converted on the card (62 % fewer bytes than BGRA).</summary>
+    /// <summary>NV12 4:2:0 BT.709 limited range, GPU-converted (62 % fewer bytes than BGRA).</summary>
     public const string PipeNv12 = "nv12";
 
-    /// <summary>10-bit 4:2:0, each sample in the top 10 bits of 16 (5.4B: HDR passthrough).</summary>
+    /// <summary>P010: 10-bit 4:2:0, MSB-aligned in 16 bits (HDR).</summary>
     public const string PipeP010 = "p010le";
 
-    /// <summary>The same, its chroma made planar as it is piped: for an encoder that takes yuv420p and not NV12 (x265, SVT-AV1, VP9...).</summary>
+    /// <summary>I420: NV12 with chroma de-interleaved while piping, for yuv420p-only encoders (x265, SVT-AV1, VP9, ...).</summary>
     public const string PipeI420 = "yuv420p";
 
-    /// <summary>The compositor's BGRA readback, its alpha ignored (the finished picture is opaque): for an encoder that takes RGB.</summary>
+    /// <summary>BGRA readback (alpha ignored; output is opaque) for RGB encoders.</summary>
     public const string PipeRgb = "bgr0";
 
     /// <summary>The compositor's BGRA readback for HandPeg's GIF encoder.</summary>
     public const string PipeBgra = "bgra";
 
-    /// <summary>The largest frame the compositor renders on a side (its output textures are clamped to it), and the smallest.</summary>
+    /// <summary>Maximum and minimum compositor frame side (output textures are clamped to it).</summary>
     public const int LargestSide = 8192, SmallestSide = 16;
 
-    /// <summary>The token a sound track's render is named by in a command until it is made: {sound:1} for the first.</summary>
+    /// <summary>Placeholder for an audio render path until produced ({sound:1} for the first).</summary>
     public const string SoundToken = "{sound:";
 
     // The software encoders that take NV12 as it comes, and those that take RGB.
     private static readonly HashSet<string> TakesNv12 = new(StringComparer.Ordinal) { "libx264" };
     private static readonly HashSet<string> RgbFormats = new(StringComparer.Ordinal) { "rgb24", "bgr24", "rgba", "bgra", "argb", "abgr", "gbrp", "gbrp10le", "rgb48le", "bgr0", "rgb0" };
 
-    /// <summary>The kind of file the output's name says (its extension, or the container chosen when it has none), lower case.</summary>
+    /// <summary>Lower-case output container from the extension, else the chosen container.</summary>
     public static string Extension(SequenceExportState state)
     {
         var extension = Path.GetExtension(state.OutputPath).TrimStart('.').ToLowerInvariant();
@@ -200,13 +193,13 @@ public static class EncoderCommand
     /// <summary>Whether the output is a picture alone, never with sound (GIF, WebP).</summary>
     public static bool IsPictureOnly(SequenceExportState state) => state.IsAnimatedOutput || Extension(state) is "gif" or "webp";
 
-    /// <summary>Whether the output is sound alone, never a picture (5.4C: FLAC, WAV, MP3): no frame is drawn or piped (<see cref="BuildAudioOnly"/>).</summary>
+    /// <summary>True for audio-only outputs (FLAC, WAV, MP3); no frames rendered (<see cref="BuildAudioOnly"/>).</summary>
     public static bool IsAudioOnly(SequenceExportState state) => IsAudioOnlyExtension(Extension(state));
 
-    /// <summary>Whether a file of this kind (its extension, lower case, no dot) holds sound alone: "flac", "wav", "mp3".</summary>
+    /// <summary>True for audio-only extensions (lower case, no dot): "flac", "wav", "mp3".</summary>
     public static bool IsAudioOnlyExtension(string extension) => extension is "flac" or "wav" or "mp3";
 
-    /// <summary>The encoder an audio-only file of this kind is written with: FLAC, 16-bit PCM in a WAV, LAME's MP3.</summary>
+    /// <summary>Encoder for an audio-only kind: FLAC, 16-bit PCM WAV, or LAME MP3.</summary>
     public static string AudioOnlyCodec(string extension) => extension switch
     {
         "flac" => "flac",
@@ -215,8 +208,7 @@ public static class EncoderCommand
     };
 
     /// <summary>
-    /// Why an audio-only export of the state cannot be made (5.4C); null when it can. No frame is rendered, so the frame's size and the
-    /// compositor's tables do not matter: an empty Sequence, or one with nothing to hear.
+    /// Reason an audio-only export is impossible (empty or silent Sequence); null when possible. Frame size and tables are irrelevant.
     /// </summary>
     public static string? WhyNotAudio(SequenceExportState state, ExportSoundPlan sound) =>
         TimelineLowering.Lowering(state).SequenceSeconds <= 0 ? "the sequence is empty"
@@ -224,8 +216,8 @@ public static class EncoderCommand
         : null;
 
     /// <summary>
-    /// Why an export of the state cannot be made, in plain words; null when it can (a Copy export is <see cref="BuildCopy"/>'s).
-    /// What is left: a frame the compositor cannot render, a rate the frames cannot follow, nothing on the sequence.
+    /// Reason an export is impossible (unrenderable frame size, unsupported rate, empty Sequence); null when possible. Copy exports use
+    /// <see cref="BuildCopy"/>.
     /// </summary>
     public static string? WhyNot(SequenceExportState state)
     {
@@ -237,7 +229,7 @@ public static class EncoderCommand
         return timing.OutputFrames <= 0 ? "the sequence is empty" : null;
     }
 
-    /// <summary>The frames an export of the state has: its canvas (the sequence's length, to the millisecond) at the export's rate.</summary>
+    /// <summary>Frame timing for the state: canvas over the Sequence length (ms precision) at the export rate.</summary>
     public static GpuExportTiming? Timing(SequenceExportState state)
     {
         var output = ParseFrameRate(state.TargetFramerate);
@@ -251,18 +243,16 @@ public static class EncoderCommand
     }
 
     /// <summary>
-    /// The latest moment a Sequence that ends at <paramref name="programSeconds"/> is sampled at (5.4A): half a canvas frame before
-    /// its end (<see cref="GpuExportTiming.SampleLimitSeconds"/>); never before its start.
+    /// Latest sample time for a Sequence ending at <paramref name="programSeconds"/>: half a canvas frame earlier
+    /// (<see cref="GpuExportTiming.SampleLimitSeconds"/>), floored at 0.
     /// </summary>
     public static double SampleLimitOf(double programSeconds, FrameRate canvas) => Math.Max(programSeconds - 0.5 * canvas.FrameDuration, 0);
 
     /// <summary>
-    /// The export's encode: the frames piped (the format its encoder takes), each sound track (its render's token, or a file's
-    /// stream copied), the chapters (the list beside it, or the stream source's own while the whole Sequence is one clip of that
-    /// file as it is), soft subtitles carried over (likewise), the video encoder and its options, colour tagged BT.709. A GIF is
-    /// HandPeg's own. An export that keeps the project's HDR (5.4B, <see cref="SequenceExportState.HdrTransfer"/>) pipes 10-bit P010,
-    /// tagged BT.2020nc / BT.2020 / its transfer in and out, and its encoder is handed 10 bits (p010le, or yuv420p10le for a software
-    /// one); every SDR command is as it was.
+    /// Builds the encode: piped frames in the encoder's preferred format, audio tracks (render tokens or stream copies), chapters (list,
+    /// or the source's own when the Sequence is that whole file), soft subtitles likewise, video encoder options, BT.709 tags. GIFs use
+    /// GifEncoder. HDR exports (<see cref="SequenceExportState.HdrTransfer"/>) pipe P010 tagged BT.2020nc/BT.2020/transfer and feed the
+    /// encoder 10-bit (p010le hardware, yuv420p10le software); SDR commands are unchanged.
     /// </summary>
     public static GpuExportCommand Build(SequenceExportState state, ExportSoundPlan sound, GpuExportTiming timing, bool captionsOnGpu)
     {
@@ -303,8 +293,8 @@ public static class EncoderCommand
             renderInput[n] = inputs++;
         }
 
-        // The files themselves, for what is kept as it is: each copied track's file, and the stream source's (its soft subtitles,
-        // its own chapters) while the whole Sequence is one clip of it as it is, their times being its own. One input a file.
+        // File inputs for stream copies: each copied track's file, plus the source file for soft subtitles/chapters when the Sequence is
+        // that whole file (times match). One input per file.
         var streamSource = Clean(state.StreamSourcePath);
         var whole = streamSource.Length > 0 && SequenceSpans.WholeFiles(state.Timeline).Contains(streamSource);
         var softSubtitles = pictureOnly || !whole ? [] : state.SoftSubtitleStreams.ToList();
@@ -382,8 +372,7 @@ public static class EncoderCommand
                 args.AddRange([$"-metadata:s:a:{k}", $"title={track.Title.Trim()}"]);
         }
 
-        // A file's sound copied as it is runs to the end of its stream, which can be past the last picture (a container whose sound is
-        // padded past its video): the output ends with the picture (5.4A; -t is the muxer's, no filter is written).
+        // Copied audio can run past the video (padded containers): -t ends the output with the picture (muxer option, not a filter).
         if (tracks.Any(t => t.IsCopy))
             args.AddRange(["-t", timing.OutputSeconds(timing.OutputFrames).ToString("0.######", CultureInfo.InvariantCulture)]);
         if (pictureOnly)
@@ -402,9 +391,8 @@ public static class EncoderCommand
     }
 
     /// <summary>
-    /// An Audio Only export's encode (5.4C): the engine's one rendered sound track (<see cref="ExportSoundPlan.For(SequenceExportState, bool, bool)"/>)
-    /// read as raw float, encoded as the file's kind wants it: FLAC in 16 bits, 16-bit PCM in a WAV, MP3 at the track's bitrate. No
-    /// picture: nothing piped (no pipe:0, no rawvideo), no colour tags, no chapters, no -movflags; never a -vf, -af or -filter_complex.
+    /// Audio Only encode: one raw-float render (<see cref="ExportSoundPlan.For(SequenceExportState, bool, bool)"/>) encoded as 16-bit FLAC,
+    /// 16-bit PCM WAV or MP3 at the track bitrate. No pipe:0/rawvideo, colour tags, chapters or -movflags; never a filter.
     /// </summary>
     public static GpuExportCommand BuildAudioOnly(SequenceExportState state, ExportSoundPlan sound, GpuExportTiming timing)
     {
@@ -421,7 +409,7 @@ public static class EncoderCommand
             "-map", "0:a:0", "-map_chapters", "-1", "-c:a", track.Codec,
         };
 
-        // FLAC is asked for 16 bits outright (never left to FFmpeg's choice from float); PCM's codec names its 16; MP3 keeps its bitrate.
+        // Force 16-bit FLAC (FFmpeg would otherwise derive depth from float); PCM codec implies 16-bit; MP3 uses the track bitrate.
         if (extension == "flac")
             args.AddRange(["-sample_fmt", "s16"]);
         if (!AudioTrack.IsLossless(track.Codec) && track.Bitrate.Length > 0)
@@ -435,11 +423,8 @@ public static class EncoderCommand
     }
 
     /// <summary>
-    /// Why a Copy export of a Sequence cannot be made, in words for the status bar; null when it can (5.2-Arm64AndNpu, the user's
-    /// call: such an export is refused before it starts, with this reason, rather than warned of and handed to FFmpeg to fail). The
-    /// two ways (<see cref="SequenceSpans.CopyCutOf"/>): no clip shows a file's picture, so there is nothing to copy; or every clip
-    /// of the file it would copy plays at another speed, which a stream copy cannot cut (its pieces are none). A file cut into
-    /// clips at speed 1 is copied through its cuts list, and is no reason.
+    /// Reason a Copy export is refused up front (status text), or null: no clip shows a file's picture, or every clip of the target
+    /// file plays at a non-1x speed, which stream copy cannot cut (<see cref="SequenceSpans.CopyCutOf"/>). Multi-clip 1x files are fine (cuts list).
     /// </summary>
     public static string? WhyCopyCannotCut(TimelineDocument document) => SequenceSpans.CopyCutOf(document) switch
     {
@@ -451,24 +436,19 @@ public static class EncoderCommand
     };
 
     /// <summary>
-    /// A Copy export (5.2-AuditB): the picture (and sound) of the file the Sequence plays most (<see cref="SequenceSpans.CopyCutOf"/>)
-    /// copied as it is, packet for packet; that file in several clips (or trimmed, or moved) read through the concat list of its
-    /// clips (<see cref="BuildCutsList"/>), which lays them end to end. Only that file's own streams are in it: nothing can be laid
-    /// on a copied picture, and every other clip is left out (<see cref="CopyCut.LeftOut"/>, which the view model warns of). Its
-    /// sound: the streams its clips play on the Sub-Lanes, by stream place, as each place's choice says (no choice: copied); a file
-    /// without Sub-Lanes, the stream its first clip plays. A Sequence with no clip of a file's picture copies "&lt;source&gt;", which
-    /// FFmpeg cannot open.
+    /// Copy export: packet-copies the most-used file (<see cref="SequenceSpans.CopyCutOf"/>), through a concat list for multiple, trimmed
+    /// or moved clips (<see cref="BuildCutsList"/>). Only that file's streams are included; other clips are omitted (<see cref="CopyCut.LeftOut"/>,
+    /// warned by the view model). Audio: Sub-Lane streams by ordinal per each choice (default copy), else the first clip's stream. With no
+    /// picture clip the input is the literal "&lt;source&gt;" (FFmpeg will fail).
     /// </summary>
     public static ExportCommand BuildCopy(SequenceExportState state)
     {
-        // (A Sequence a copy cannot cut, WhyCopyCannotCut, is refused before this is run; the command for it is still written,
-        // as the Command Preview shows it.)
+        // Uncuttable Sequences (WhyCopyCannotCut) are refused before running; the command is still built for Command Preview.
         var copy = SequenceSpans.CopyCutOf(state.Timeline);
         var input = copy is { Path.Length: > 0 } ? copy.Path : "<source>";
         var cut = copy is { IsCut: true };
 
-        // One item per argument: a title (from the user, a project or the media file's own stream tag) is one argument however it is
-        // written, and the line is made of them with QuoteArgument, which FFmpeg splits back exactly.
+        // One list item per argument (titles stay single arguments); joined with QuoteArgument, which FFmpeg splits back exactly.
         var args = new List<string> { "-hide_banner", "-y" };
         if (cut)
             args.AddRange(["-f", "concat", "-safe", "0", "-i", state.CutsFilePath]);
@@ -509,9 +489,7 @@ public static class EncoderCommand
         if (soft.Count > 0)
             args.AddRange(["-c:s", "copy"]);
 
-        // The whole file copied (no cuts list to end it) while its sound runs on past its picture (5.4.0: a padded container, its clip
-        // ending with the picture, TimelineClip.PictureDuration): the output ends with the picture, as a GPU export's does (-t is the
-        // muxer's; nothing is filtered).
+        // Whole-file copy with audio longer than video (TimelineClip.PictureDuration): -t ends at the picture like a GPU export (muxer option).
         if (!cut && tracks.Count > 0 && copy is { Pieces: [var only] } && state.Timeline.FindClip(only.ClipId) is { PictureDuration: > 0 } held
             && held.SourceDuration - only.Duration > 0.001)
             args.AddRange(["-t", string.Create(CultureInfo.InvariantCulture, $"{only.Duration:0.######}")]);
@@ -522,9 +500,8 @@ public static class EncoderCommand
         return new ExportCommand(state.FfmpegExecutable + " " + string.Join(" ", args.Select(QuoteArgument)), cut, chaptersFromList);
     }
 
-    // The copied file's sound tracks in a Copy export, by stream place: the stream of the file that a Sub-Lane of each place plays
-    // (the place's choice: left out, copied, or encoded; no choice, copied), titled by the choice or the lane; a file played on no
-    // Sub-Lane, the stream its first clip plays (stream place 0's choice).
+    // Copy export audio by stream ordinal: each Sub-Lane's stream per its choice (drop, copy, encode; default copy), titled by choice or
+    // lane; without Sub-Lanes, the first clip's stream (ordinal 0's choice).
     private static List<(int Stream, string Title, string Codec, string Bitrate)> CopiedStreams(SequenceExportState state, CopyCut copy)
     {
         var choices = new Dictionary<int, AudioOutputChoice>();
@@ -564,9 +541,8 @@ public static class EncoderCommand
     }
 
     /// <summary>
-    /// The concat demuxer's list a Copy export reads its file's clips through (<see cref="SequenceSpans.CopyCutOf"/>): each clip a
-    /// stretch of the file (its inpoint and outpoint, on the file's own clock: the clips' media time, which counts from the first
-    /// video frame, moved to the container's), in the order the sequence plays them.
+    /// Concat demuxer list for a Copy export (<see cref="SequenceSpans.CopyCutOf"/>): per clip, inpoint/outpoint converted from media time
+    /// (first video frame = 0) to the container clock, in playback order.
     /// </summary>
     public static string BuildCutsList(SequenceExportState state)
     {
@@ -587,9 +563,8 @@ public static class EncoderCommand
         return list.ToString();
     }
 
-    // How far a file's picture starts after its container starts (an MPEG-TS or Matroska recording's: the clips' media time counts
-    // from the first video frame, the concat list's from the container's start): the state's, else what MediaProbe learnt this
-    // session; 0 while either is not known.
+    // Video start offset from container start (MPEG-TS/Matroska), converting media time to concat time: from state, else MediaProbe's
+    // session cache; 0 when unknown.
     private static double ContainerShift(SequenceExportState state, string path)
     {
         var video = state.MediaStarts.TryGetValue(path, out var start) ? start : MediaProbe.KnownVideoStart(path);
@@ -599,7 +574,7 @@ public static class EncoderCommand
 
     private static string Number(double value) => value.ToString("0.###", CultureInfo.InvariantCulture);
 
-    /// <summary>A command's arguments with each sound token replaced by its track's render (in the command's track order).</summary>
+    /// <summary>Substitutes audio render paths for sound tokens, in track order.</summary>
     public static List<string> WithRenders(IEnumerable<string> arguments, IReadOnlyList<ExportSoundTrack> rendered)
     {
         var result = new List<string>();
@@ -621,7 +596,7 @@ public static class EncoderCommand
         return result;
     }
 
-    /// <summary>A frame rate as the view model writes it ("30", "59.94", "30000/1001") as a fraction (59.94 is 2997/50).</summary>
+    /// <summary>Parses "30", "59.94" or "30000/1001" to a fraction (59.94 = 2997/50).</summary>
     public static (long Numerator, long Denominator)? ParseFrameRate(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -689,15 +664,14 @@ public static class EncoderCommand
     private static readonly string[] ColourTags = ["-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
 
     /// <summary>
-    /// HDR kept (5.4B): BT.2020 non-constant luminance, BT.2020 primaries, limited range, and the project's transfer ("smpte2084" PQ or
-    /// "arib-std-b67" HLG): what the card's P010 readback is (FlagReadbackP010), on the pipe and on the encoded stream.
+    /// HDR tags matching the P010 readback (FlagReadbackP010): BT.2020 NCL, BT.2020 primaries, limited range, and the project transfer
+    /// ("smpte2084" PQ or "arib-std-b67" HLG), applied to input and output.
     /// </summary>
     public static string[] HdrColourTags(string transfer) => ["-color_range", "tv", "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", transfer];
 
     /// <summary>
-    /// The HDR part of an encode, or null for SDR: the tags, and the 10-bit pixel format the encoder is handed when its options name none
-    /// (p010le for a hardware encoder, yuv420p10le for a software one: FFmpeg turns the piped P010 planar without a filter). Only for a
-    /// state that keeps HDR (<see cref="SequenceExportState.HdrTransfer"/>), never an animated output.
+    /// HDR encode settings or null for SDR: tags plus a default 10-bit encoder pixel format (p010le hardware, yuv420p10le software; FFmpeg
+    /// converts without a filter). Only when <see cref="SequenceExportState.HdrTransfer"/> is set; never for animated outputs.
     /// </summary>
     private static (string[] Tags, string? PixelFormat)? HdrTail(SequenceExportState state, string extension, string codec, string? pixelFormat)
     {
@@ -711,7 +685,7 @@ public static class EncoderCommand
         return (HdrColourTags(transfer), tenBits);
     }
 
-    // The video encoder the options name, and the pixel format they ask of it (the extra options', a hardware encoder's, 10-bit).
+    // Video encoder named by the options and its requested pixel format (extra options, hardware default, 10-bit).
     private static (string Codec, string? PixelFormat) VideoCodec(SequenceExportState state, string extension)
     {
         if (extension == "webp")
@@ -730,8 +704,8 @@ public static class EncoderCommand
         return (codec, format ?? state.EncoderPixelFormat);
     }
 
-    // The pixels to pipe for an encoder: what it takes as it comes, so FFmpeg converts nothing where it can (NV12 for x264 and the
-    // hardware encoders, I420 for the rest of the 4:2:0 ones, RGB for an RGB format), else I420 for FFmpeg to convert from.
+    // Pipe format avoiding FFmpeg conversion where possible: NV12 for x264 and hardware encoders, I420 for other 4:2:0, RGB for RGB;
+    // otherwise I420.
     private static string PipeFor(string codec, string? pixelFormat)
     {
         if (pixelFormat is { } format)

@@ -6,29 +6,27 @@ using HandPegApp.Models;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- A strip's processing (Pass 5.0-AudioAnd3D, 5.0C) -----
+// ----- Strip processing -----
 //
-// Each effect mirrors the FFmpeg filter the graph used for the same setting until 5.2-Audit, with the filter's own defaults
-// for everything HandPeg leaves out, so that what is heard while editing is what the export encodes (the export is the
-// engine's render too): highpass / bass / treble / equalizer are af_biquads' RBJ biquads (bass and treble with FFmpeg's own
-// width, a Q times the square root of two: measured against HandPeg's pinned build to the last bit), acompressor and the
-// ducking are af_sidechaincompress, agate is af_agate, extrastereo and volume are what they are, alimiter is af_alimiter line
-// for line (its 239-sample delay at 48 kHz taken back by the mixer since Pass 5.2D: alimiter with latency=1).
-// afftdn is the engine's own spectral noise reduction (DenoiseEffect, 5.2-Audit: nothing is FFmpeg's).
+// Each effect reproduces the corresponding FFmpeg filter, using the filter's defaults for unspecified parameters, so editing playback
+// matches the export (which uses this engine's render): highpass/bass/treble/equalizer are af_biquads RBJ biquads (bass and treble
+// with FFmpeg's width, Q x sqrt(2): bit-exact against the pinned build), acompressor and ducking are af_sidechaincompress, agate is
+// af_agate, extrastereo and volume as named, alimiter is af_alimiter line for line (its 239-sample delay at 48 kHz compensated by the
+// mixer: alimiter with latency=1). Noise reduction is the engine's own spectral denoiser (DenoiseEffect).
 //
-// A strip's chain is made of a track's settings (TrackAudioFilters) by AudioChainBuilder (5.2-AuditB: typed, no filter text
-// in between): one source of truth, the settings themselves. Studio Voice and the De-Esser (5.2B) are HandPeg's own, in
-// StudioVoice.cs; a keyed effect follows the Sequence by the moments the mixer hands it before each block (AudioEffect.Moment).
+// AudioChainBuilder builds a strip's chain directly from track settings (TrackAudioFilters, typed, no filter text): the settings are
+// the single source of truth. Studio Voice and the De-Esser are native (StudioVoice.cs); keyed effects follow the sequence via the time
+// span the mixer passes before each block (AudioEffect.Moment).
 
 public enum AudioEffectKind
 {
-    /// <summary>P1: the factor.</summary>
+    /// <summary>P1: linear factor.</summary>
     Gain,
 
     /// <summary>
-    /// Biquads. P1: frequency (Hz), P2: width, P3: width type (FFmpeg's numbers: 1 Hz, 2 octaves, 3 Q, 4 slope, 5 kHz), P4:
-    /// gain (dB), P5: 1 for FFmpeg's bass and treble, whose bandwidth term (the cookbook's alpha) is divided by the square
-    /// root of two (a Q of 0.5 is heard as 0.707); 0 for lowshelf and highshelf, the cookbook's own.
+    /// Biquads. P1: frequency (Hz), P2: width, P3: width type (FFmpeg: 1 Hz, 2 octaves, 3 Q, 4 slope, 5 kHz), P4: gain (dB), P5: 1 for
+    /// FFmpeg bass/treble, whose bandwidth term (cookbook alpha) is divided by sqrt(2) (Q 0.5 behaves as 0.707); 0 for cookbook
+    /// lowshelf/highshelf.
     /// </summary>
     HighPass,
     LowPass,
@@ -42,29 +40,29 @@ public enum AudioEffectKind
     /// <summary>agate. P1: threshold (factor), P2: ratio, P3: attack (ms), P4: release (ms), P5: range (factor), P6: knee, P7: makeup, P8: level in.</summary>
     Gate,
 
-    /// <summary>alimiter. P1: limit (factor), P2: attack (ms), P3: release (ms), P4: level in, P5: the output's factor (level_out, over the limit with auto level).</summary>
+    /// <summary>alimiter. P1: limit (factor), P2: attack (ms), P3: release (ms), P4: level in, P5: output factor (level_out; over the limit with auto level).</summary>
     Limiter,
 
-    /// <summary>extrastereo. P1: m (the difference's factor), P2: clip (1 on).</summary>
+    /// <summary>extrastereo. P1: m (side factor), P2: clip (1 = on).</summary>
     Widener,
 
-    /// <summary>afftdn's place (5.2-Audit): spectral noise reduction. P1: the most it takes away, dB (afftdn's nr).</summary>
+    /// <summary>Spectral noise reduction. P1: maximum reduction, dB (afftdn nr equivalent).</summary>
     Denoise,
 
     /// <summary>
-    /// Studio Voice (5.2B, StudioVoice.cs): the one-click vocal chain blended with the dry sound. P1: the mix (0 to 1); or, keyed,
-    /// <see cref="AudioEffectSpec.Keys"/> (percent, on the Sequence's clock from their origin).
+    /// Studio Voice (StudioVoice.cs): one-click vocal chain blended with the dry signal. P1: mix (0 to 1); or keyed via
+    /// <see cref="AudioEffectSpec.Keys"/> (percent, sequence clock from their origin).
     /// </summary>
     StudioVoice,
 
-    /// <summary>De-Esser (5.2B, StudioVoice.cs): a split-band compressor on 5.5 to 9 kHz. P1: how hard it works (0 to 1).</summary>
+    /// <summary>De-Esser (StudioVoice.cs): split-band compressor on 5.5-9 kHz. P1: strength (0 to 1).</summary>
     DeEsser,
 }
 
-/// <summary>One effect of a strip with every raw parameter (see <see cref="AudioEffectKind"/> for what P1..P8 are).</summary>
+/// <summary>One strip effect with all raw parameters (see <see cref="AudioEffectKind"/> for P1..P8).</summary>
 public readonly record struct AudioEffectSpec(AudioEffectKind Kind, double P1 = 0, double P2 = 0, double P3 = 0, double P4 = 0, double P5 = 0, double P6 = 0, double P7 = 0, double P8 = 0)
 {
-    /// <summary>A value's keyframes on the Sequence's clock (5.2B: Studio Voice's mix), or null for none: equal by value, as the rest is.</summary>
+    /// <summary>Keyframes on the sequence clock (Studio Voice mix), or null; compared by value like the other fields.</summary>
     public AudioMixKeys? Keys { get; init; }
 
     public static AudioEffectSpec Gain(double factor) => new(AudioEffectKind.Gain, factor);
@@ -73,9 +71,9 @@ public readonly record struct AudioEffectSpec(AudioEffectKind Kind, double P1 = 
 }
 
 /// <summary>
-/// A value's keyframes on the Sequence's clock (5.2B: Studio Voice's mix, TrackAudioFilters.StudioVoiceMixKeys): their times seconds from
-/// <see cref="Origin"/> (a clip's Start for a clip's filters, 0 for a track's), in order. Equal by value, so a strip whose keys did not change
-/// keeps its effects as they are (AudioMixer.SetProgram compares the specs). Read on the mixer's thread without allocating.
+/// Keyframes on the sequence clock (Studio Voice mix, TrackAudioFilters.StudioVoiceMixKeys), times in seconds from <see cref="Origin"/>
+/// (clip Start for clip filters, 0 for track filters), sorted. Value equality lets unchanged strips keep their effects
+/// (AudioMixer.SetProgram compares specs). Read on the mixer thread without allocating.
 /// </summary>
 public sealed class AudioMixKeys : IEquatable<AudioMixKeys>
 {
@@ -89,18 +87,18 @@ public sealed class AudioMixKeys : IEquatable<AudioMixKeys>
 
     public IReadOnlyList<Keyframe> Keys => _keys;
 
-    /// <summary>The second of the Sequence the keys' time 0 is.</summary>
+    /// <summary>Sequence time corresponding to key time 0.</summary>
     public double Origin { get; }
 
-    /// <summary>The keyed value at a moment of the Sequence (EasingCurves, as every keyframed value is); 0 with no keys.</summary>
+    /// <summary>Keyed value at a sequence time (EasingCurves); 0 without keys.</summary>
     public double ValueAt(double sequenceSeconds) => _keys.Length == 0 ? 0 : EasingCurves.ValueAt(_keys, sequenceSeconds - Origin);
 
     public bool Equals(AudioMixKeys? other) => other is not null && Origin == other.Origin && _keys.AsSpan().SequenceEqual(other._keys.AsSpan());
 
     public override bool Equals(object? obj) => obj is AudioMixKeys other && Equals(other);
 
-    // Every key whole (its time, value, easing, handles and part: the record's own hash) and the origin, so a key moved or changed anywhere
-    // is a new hash (AudioReactive.KeyOf, which keeps the player's energy map while it holds). Allocates nothing.
+    // Hashes every full key (record hash: time, value, easing, handles) plus the origin, so any key change yields a new hash
+    // (AudioReactive.KeyOf keeps the energy map while it matches). Allocation-free.
     public override int GetHashCode()
     {
         var hash = new HashCode();
@@ -111,30 +109,26 @@ public sealed class AudioMixKeys : IEquatable<AudioMixKeys>
     }
 }
 
-/// <summary>A strip's chain: its effects, and what changes a voice's time (pitch, tempo).</summary>
+/// <summary>A strip's chain: its effects plus voice time modifiers (pitch, tempo).</summary>
 public sealed record AudioChain(AudioEffectSpec[] Effects, double Pitch, double Tempo)
 {
     public static AudioChain None { get; } = new([], 1, 1);
 }
 
 /// <summary>
-/// A track's filters and gain as a strip's chain (5.2-AuditB: typed; until then the chain was read back from the filters'
-/// FFmpeg words, TrackAudioFilters.BuildChain, which nothing writes any more). What is switched on runs in a fixed order:
-/// cleaning first (rumble, noise between words, steady noise), then dynamics, then tone, then the effects; the gain after
-/// them, and the limiter last of all so that nothing before it can push the track into clipping. Each setting is held to its
-/// range and to the four decimals the words held, and each parameter HandPeg leaves out is its FFmpeg filter's default, so a
-/// strip's effects are the very numbers the words gave.
+/// Builds a strip chain from track filters and gain (typed). Enabled stages run in fixed order: cleanup (rumble, gate, steady noise),
+/// dynamics, tone, effects, then gain, with the limiter last so nothing upstream can clip the track. Each setting is clamped to its range
+/// and rounded to four decimals, and omitted parameters use the FFmpeg filter defaults, preserving historical behaviour exactly.
 /// </summary>
 public static class AudioChainBuilder
 {
-    // FFmpeg's width types for a biquad: q 3 (bass, treble), o 2 (an equalizer band an octave wide).
+    // FFmpeg biquad width types: 3 = Q (bass, treble), 2 = octaves (one-octave EQ band).
     private const int WidthQ = 3, WidthOctaves = 2;
 
-    /// <summary>The chain of a track's (or a clip's) filters, null for none, and its gain.</summary>
-    /// <param name="gainDb">The gain, in decibels; within 0.05 of 0 none.</param>
+    /// <summary>Chain for a track's (or clip's) filters (null = none) and gain.</summary>
+    /// <param name="gainDb">Gain in dB; within 0.05 of 0 is treated as none.</param>
     /// <param name="keysOrigin">
-    /// The second of the Sequence the filters' keyframes count from (5.2B: Studio Voice's mix keys): a clip's Start for a clip's filters,
-    /// 0 for a track's.
+    /// Sequence time the filters' keyframes count from (Studio Voice mix keys): clip Start for clip filters, 0 for track filters.
     /// </param>
     public static AudioChain From(TrackAudioFilters? filters, double gainDb, double keysOrigin = 0)
     {
@@ -150,8 +144,8 @@ public static class AudioChainBuilder
         if (f.DeNoise)
             effects.Add(new AudioEffectSpec(AudioEffectKind.Denoise, Written(Math.Clamp(f.DeNoiseStrength, 1, 60))));
 
-        // Studio Voice (5.2B) after the cleaning, before the dynamics: left out at a mix of 0 with no keys, so the dry sound is untouched
-        // (TrackAudioFilters.StudioVoiceInChain, the one test the strips' routing reads too, through Processes).
+        // Studio Voice after cleanup, before dynamics; omitted at mix 0 without keys so the dry signal is untouched
+        // (TrackAudioFilters.StudioVoiceInChain, the same test strip routing uses via Processes).
         if (f.StudioVoiceInChain)
         {
             var keys = f.StudioVoiceMixKeys is { Count: > 0 } keyed ? new AudioMixKeys(keyed, keysOrigin) : null;
@@ -164,13 +158,13 @@ public static class AudioChainBuilder
                 Written(Math.Clamp(f.CompressorRatio, 1, 20)), 20, 250, 2.82843, 1, 1, 1));
         }
 
-        // The De-Esser (5.2B) after the dynamics (a compressor lifts the sibilance it then takes down), before the tone.
+        // De-Esser after dynamics (compression raises the sibilance it then removes), before tone.
         if (f.DeEsser)
             effects.Add(new AudioEffectSpec(AudioEffectKind.DeEsser, Written(Math.Clamp(f.DeEsserAmount, 0, 100)) / 100));
 
         if (f.BassTreble)
         {
-            // FFmpeg's bass and treble: shelves half a Q wide, their bandwidth term divided by the square root of two (P5 1).
+            // FFmpeg bass/treble: Q 0.5 shelves with the bandwidth term divided by sqrt(2) (P5 = 1).
             if (Math.Abs(f.BassGain) >= 0.05)
                 effects.Add(BassOf(f));
             if (Math.Abs(f.TrebleGain) >= 0.05)
@@ -179,7 +173,7 @@ public static class AudioChainBuilder
 
         if (f.Equalizer)
         {
-            // One band per slider that has been moved, each an octave wide at its octave's centre unless it was moved and widened (5.2B).
+            // One band per non-zero slider: one octave wide at its centre unless repositioned or widened.
             for (var band = 0; band < TrackAudioFilters.EqualizerBands.Count && band < f.EqualizerGains.Length; band++)
             {
                 if (Math.Abs(f.EqualizerGains[band]) >= 0.05)
@@ -190,9 +184,8 @@ public static class AudioChainBuilder
         var (pitch, tempo) = (1.0, 1.0);
         if (f.PitchTempo)
         {
-            // The samples played faster raise the pitch and shorten the sound together (a rate of 48 kHz times the pitch, read
-            // as 48 kHz); the tempo then puts the speed where it is wanted without touching the pitch again: one stretch covers
-            // 0.5 to 100, slower than that takes a half first.
+            // Resampling raises pitch and shortens duration together (48 kHz x pitch read as 48 kHz); tempo then corrects speed
+            // without changing pitch. One stretch covers 0.5-100; slower first applies a 0.5 stage.
             var raised = Math.Pow(2, Math.Clamp(f.PitchSemitones, -12, 12) / 12);
             var speed = Math.Clamp(f.Tempo, 0.5, 2) / raised;
             if (Math.Abs(raised - 1) >= 0.001)
@@ -208,20 +201,20 @@ public static class AudioChainBuilder
         if (gained)
             effects.Add(AudioEffectSpec.Gain(FromDecibels(gainDb)));
 
-        // The limiter's ceiling as a factor, its output at that level (no auto level), FFmpeg's attack and release.
+        // Limiter ceiling as a factor, output at that level (no auto level), FFmpeg default attack and release.
         if (f.Limiter)
             effects.Add(new AudioEffectSpec(AudioEffectKind.Limiter, Math.Clamp(Written(Math.Pow(10, Math.Clamp(f.LimiterCeiling, -24, 0) / 20)), 0.0625, 1), 5, 50, 1, 1));
         return new AudioChain([.. effects], pitch, tempo);
     }
 
-    // The tone filters as the chain has them, one place for From and EqualizerResponseDb (each held to its range, written as the words were).
+    // Tone filter specs shared by From and EqualizerResponseDb (clamped and rounded via Written).
     private static AudioEffectSpec HighPassOf(TrackAudioFilters f) => new(AudioEffectKind.HighPass, Written(Math.Clamp(f.HighPassHz, 20, 1000)), 0.707, WidthQ);
 
     private static AudioEffectSpec BassOf(TrackAudioFilters f) => new(AudioEffectKind.LowShelf, 100, 0.5, WidthQ, Written(Math.Clamp(f.BassGain, -20, 20)), 1);
 
     private static AudioEffectSpec TrebleOf(TrackAudioFilters f) => new(AudioEffectKind.HighShelf, 3000, 0.5, WidthQ, Written(Math.Clamp(f.TrebleGain, -20, 20)), 1);
 
-    // An equalizer band: at its octave's centre, an octave wide, unless the parametric equalizer moved it (5.2B: EqualizerFrequencies, EqualizerWidths).
+    // EQ band: octave centre and one-octave width unless overridden by the parametric EQ (EqualizerFrequencies, EqualizerWidths).
     private static AudioEffectSpec BandOf(TrackAudioFilters f, int band)
     {
         var hz = f.EqualizerFrequencies is { } moved && band < moved.Length && double.IsFinite(moved[band])
@@ -231,9 +224,9 @@ public static class AudioChainBuilder
     }
 
     /// <summary>
-    /// The tone a track's filters give a frequency (5.2B: the parametric equalizer's curve), in decibels: the summed magnitude of the
-    /// equalizer's bands, and of the high-pass and the bass and treble shelves when they are on, exactly as the chain's biquads have them
-    /// (the same specs, BiquadEffect's coefficients). 0 for none. Pure and allocation-free: any thread, every pixel of a curve.
+    /// Frequency response of a track's tone filters in dB (parametric EQ curve): summed magnitudes of EQ bands and, when enabled, high-pass
+    /// and bass/treble shelves, using the chain's exact specs and BiquadEffect coefficients. 0 when none. Pure and allocation-free (any
+    /// thread, per curve pixel).
     /// </summary>
     public static double EqualizerResponseDb(TrackAudioFilters filters, double hz, int sampleRate = 48000)
     {
@@ -264,7 +257,7 @@ public static class AudioChainBuilder
         return db;
     }
 
-    // One biquad's magnitude at w (radians a sample), in decibels: |b0 + b1 z^-1 + b2 z^-2| / |1 + a1 z^-1 + a2 z^-2| on the unit circle.
+    // Biquad magnitude at w (radians per sample) in dB: |b0 + b1 z^-1 + b2 z^-2| / |1 + a1 z^-1 + a2 z^-2| on the unit circle.
     private static double ResponseDb(in AudioEffectSpec spec, int sampleRate, double w)
     {
         var (b0, b1, b2, a1, a2) = BiquadEffect.Coefficients(spec, sampleRate);
@@ -276,16 +269,16 @@ public static class AudioChainBuilder
         return 10 * Math.Log10(Math.Max(ratio, 1e-30));
     }
 
-    // A level in decibels (as the settings hold it) as a factor.
+    // Converts a settings level in dB to a linear factor.
     private static double FromDecibels(double decibels) => Math.Pow(10, Written(decibels) / 20);
 
-    // A setting as its words held it: to fifteen significant digits, then four decimals, halves away from zero (FFmpeg's words
-    // for it were written "0.####"), so the effects are the numbers they always were. A value past what that can hold is itself.
+    // Rounds a setting to four decimals, midpoint away from zero (via decimal, ~15 significant digits), matching the historical "0.####"
+    // filter formatting so effect parameters stay bit-identical. Values beyond decimal range pass through.
     private static double Written(double value) =>
         double.IsFinite(value) && Math.Abs(value) < 1e15 ? (double)Math.Round((decimal)value, 4, MidpointRounding.AwayFromZero) : value;
 }
 
-/// <summary>One effect at work: its state (filter history, envelopes) lives here, on the mixer's thread only.</summary>
+/// <summary>A running effect instance holding its state (filter history, envelopes); mixer thread only.</summary>
 internal abstract class AudioEffect
 {
     public static AudioEffect Create(in AudioEffectSpec spec, int sampleRate) => spec.Kind switch
@@ -303,10 +296,9 @@ internal abstract class AudioEffect
     };
 
     /// <summary>
-    /// How many samples late an effect's sound comes out at <paramref name="sampleRate"/> (5.2C): the spectral stages' frame (Noise
-    /// Reduction, Studio Voice), and since Pass 5.2D the limiter's lookahead too (the user's answer: every audio
-    /// filter with no drift; its attack less one sample, 239 samples at 48 kHz and 5 ms, as af_alimiter with latency=1 takes back). The
-    /// mixer reads a strip's voices this far ahead so its sound lands on its picture (AudioMixer.MixInto).
+    /// Effect latency in samples at <paramref name="sampleRate"/>: the spectral frame (Noise Reduction, Studio Voice) and the limiter
+    /// lookahead (attack minus one sample: 239 samples at 48 kHz and 5 ms, as af_alimiter latency=1 compensates). The mixer reads a strip's
+    /// voices this far ahead so sound stays in sync with picture (AudioMixer.MixInto).
     /// </summary>
     public static int LatencyOf(in AudioEffectSpec spec, int sampleRate) => spec.Kind switch
     {
@@ -316,7 +308,7 @@ internal abstract class AudioEffect
         _ => 0,
     };
 
-    /// <summary>A chain's latency: its effects' latencies summed (samples at <paramref name="sampleRate"/>).</summary>
+    /// <summary>Total chain latency: sum of effect latencies (samples at <paramref name="sampleRate"/>).</summary>
     public static int LatencyOf(ReadOnlySpan<AudioEffectSpec> specs, int sampleRate)
     {
         var total = 0;
@@ -329,19 +321,19 @@ internal abstract class AudioEffect
     public abstract void Process(Span<float> stereo, int frames);
 
     /// <summary>
-    /// The moments of the Sequence the next block's sound is heard at (5.2B: the mixer calls it before each <see cref="Process"/>), from
-    /// <paramref name="fromSeconds"/> to <paramref name="toSeconds"/>: an effect with keyframes (Studio Voice's mix) follows the Sequence by it.
+    /// Sequence time span of the next block (called by the mixer before each <see cref="Process"/>), from <paramref name="fromSeconds"/> to
+    /// <paramref name="toSeconds"/>; keyframed effects (Studio Voice mix) follow the sequence through it.
     /// </summary>
     public virtual void Moment(double fromSeconds, double toSeconds)
     {
     }
 
-    /// <summary>The same effect with new settings takes the old one's state: a slider moved does not click.</summary>
+    /// <summary>Inherits state from the previous instance of the same effect, so a moved slider does not click.</summary>
     public virtual void TakeState(AudioEffect previous)
     {
     }
 
-    /// <summary>A jump (a seek): every filter starts afresh there, as FFmpeg's do in a graph begun at that moment.</summary>
+    /// <summary>Resets all filter state on a jump (seek), as an FFmpeg graph started at that time would.</summary>
     public virtual void Reset()
     {
     }
@@ -353,23 +345,22 @@ internal sealed class GainEffect(float factor) : AudioEffect
 }
 
 /// <summary>
-/// Spectral noise reduction (5.2-Audit: afftdn's part, heard while editing and exported alike). A short-time Fourier transform of
-/// each channel (512-sample square-root Hann windows a quarter apart, overlap-added back); each bin's noise is the least its
-/// smoothed power has been over the last second or so (minimum statistics, two half windows, the minimum's bias corrected), held
-/// to a background's level (what is steadily louder than -30 dBFS is a sound, not a noise: a held note, a tone); a
-/// decision-directed Wiener gain takes it away, never below 10^(-P1 / 20) (the reduction asked for, afftdn's nr). Speech and
-/// sound above the noise pass; the steady hiss and hum under them go. The sound comes out 512 samples late (11 ms at 48 kHz).
+/// Spectral noise reduction (same in editing and export). Per-channel STFT (512-sample sqrt-Hann windows, 75 % overlap, overlap-add);
+/// each bin's noise estimate is the minimum smoothed power over roughly the last second (minimum statistics, two half windows, bias
+/// corrected), capped at a background level (anything steadily above -30 dBFS is signal: a held note or tone). A decision-directed Wiener
+/// gain removes it, floored at 10^(-P1 / 20) (afftdn nr equivalent). Speech and sound above the noise pass; steady hiss and hum are
+/// removed. Latency 512 samples (11 ms at 48 kHz).
 /// </summary>
 internal sealed class DenoiseEffect : AudioEffect
 {
-    // (Its transform, window and noise floor's rules are Studio Voice's spectral stage's too, 5.2B: StudioVoice.cs.)
+    // Transform, window and noise-floor rules are shared with Studio Voice's spectral stage (StudioVoice.cs).
     internal const int Size = 512, Hop = Size / 4, Bins = Size / 2 + 1;
 
-    // How much more than its minimum a bin's noise is taken to be (the minimum of a noisy power, smoothed, over some hundred
-    // frames lies about a third of its mean down).
+    // Bias factor from the bin's minimum to its noise estimate (the smoothed minimum over ~100 frames sits about a third below the
+    // mean).
     internal const float Bias = 3f;
 
-    // The loudest a bin's noise is taken to be: white noise at -30 dBFS (its power in a bin, sigma^2 times the window's energy, Size / 2).
+    // Noise estimate cap: white noise at -30 dBFS (per-bin power = sigma^2 x window energy, Size / 2).
     internal const float MostNoise = Size / 2 * 1e-3f;
 
     internal static readonly float[] Window = MakeWindow();
@@ -419,9 +410,8 @@ internal sealed class DenoiseEffect : AudioEffect
         Windowed(channel.Input, re, im);
         Transform(re, im, inverse: false);
 
-        // The noise floor: the least smoothed power over this half window and the last one. Bins 0 to Size / 2 - 1 four at a time (each lane
-        // the scalar loop's operations in its order: the same gains to the bit), the last bin alone; the bins above Size / 2 then take their
-        // mirror bins' gains.
+        // Noise floor: minimum smoothed power over this and the previous half window. Bins 0..Size/2-1 in SIMD groups of four (each lane
+        // performs the scalar loop's operations in order: bit-identical gains), the last bin scalar; bins above Size/2 use mirrored gains.
         var newWindow = channel.Frames % _halfWindow == 0;
         var started = channel.Started;
         Span<Vector128<float>> vectorRe = Vectors(re), vectorIm = Vectors(im);
@@ -480,13 +470,13 @@ internal sealed class DenoiseEffect : AudioEffect
         Array.Copy(channel.Input, Hop, channel.Input, 0, Size - Hop);
     }
 
-    // An in-place radix-2 FFT of Size points (the inverse unscaled).
+    // In-place radix-2 FFT of Size points (inverse unscaled).
     internal static void Transform(float[] re, float[] im, bool inverse) => Fft.Transform(re, im, inverse);
 
-    // The first so many bins (or points) of a frame's array, four to a vector: the bins below Size / 2 unless told.
+    // First count elements of an array viewed as Vector128 groups of four (default: bins below Size/2).
     internal static Span<Vector128<float>> Vectors(float[] values, int count = Size / 2) => MemoryMarshal.Cast<float, Vector128<float>>(values.AsSpan(0, count));
 
-    /// <summary>A frame's input under the window: the transform's real part (its imaginary part nothing).</summary>
+    /// <summary>Applies the window to a frame's input as the transform's real part (imaginary part zeroed).</summary>
     internal static void Windowed(float[] input, float[] re, float[] im)
     {
         Span<Vector128<float>> from = Vectors(input, Size), window = Vectors(Window, Size), to = Vectors(re, Size);
@@ -495,7 +485,7 @@ internal sealed class DenoiseEffect : AudioEffect
         Array.Clear(im, 0, Size);
     }
 
-    /// <summary>The bins above Size / 2 (a real sound's spectrum, mirrored) scaled by their mirror bins' gains: bin Size - b by bin b's.</summary>
+    /// <summary>Scales bins above Size/2 (mirrored half of a real spectrum) by their mirror bins' gains: bin Size - b by gain b.</summary>
     internal static void Mirror(float[] re, float[] im, float[] gains)
     {
         var n = Size / 2 + 1;
@@ -513,7 +503,7 @@ internal sealed class DenoiseEffect : AudioEffect
         }
     }
 
-    /// <summary>A frame's inverse transform overlap-added to the output: square-root Hann twice is Hann, four of which a quarter apart sum to 2.</summary>
+    /// <summary>Overlap-adds a frame's inverse transform into the output (sqrt-Hann applied twice is Hann; four at 75 % overlap sum to 2).</summary>
     internal static void OverlapAdd(float[] re, float[] output)
     {
         Span<Vector128<float>> from = Vectors(re, Size), window = Vectors(Window, Size), to = Vectors(output, Size);
@@ -540,11 +530,10 @@ internal sealed class DenoiseEffect : AudioEffect
 }
 
 /// <summary>
-/// An in-place radix-2 FFT of a power of two of 8 points or more, the inverse unscaled (5.3: the noise reduction's and Studio Voice's 512
-/// points, the beat detector's 128). Each stage's twiddles lie side by side (the stage of half-length h at [h, 2h)), so from h = 4 on a
-/// vector does four butterflies (eight where the processor has 256-bit vectors); the first two stages are done four points at a time in
-/// registers. Every butterfly is the multiplications, additions and subtractions of one done alone, in the same order and never fused
-/// (no fused multiply-add), so the result is the same to the bit as the plain loop's.
+/// In-place radix-2 FFT for power-of-two sizes of 8 or more, inverse unscaled (512 points for noise reduction and Studio Voice, 128 for
+/// the beat detector). Each stage's twiddles are contiguous (half-length h at [h, 2h)), so from h = 4 a vector performs four butterflies
+/// (eight with 256-bit SIMD); the first two stages run four points at a time in registers. Butterflies use the same unfused multiply/add
+/// sequence as the scalar loop (no FMA), so results are bit-identical.
 /// </summary>
 internal sealed class Radix2Fft
 {
@@ -557,7 +546,7 @@ internal sealed class Radix2Fft
         if (size < 8 || !BitOperations.IsPow2(size))
             throw new ArgumentOutOfRangeException(nameof(size), size, "A power of two of 8 or more.");
 
-        // The twiddles as the plain loop had them (the table of cos and sin of 2 pi k / size, read at k * step): the same values.
+        // Twiddles identical to the scalar loop's (cos/sin of 2 pi k / size, sampled at k * step).
         _size = size;
         (_cos, _forwardSin, _inverseSin) = (new float[size], new float[size], new float[size]);
         for (var half = 1; half < size; half <<= 1)
@@ -571,7 +560,7 @@ internal sealed class Radix2Fft
             }
         }
 
-        // The bit-reversed order, and the pairs of points it swaps.
+        // Bit-reversal permutation and its swap pairs.
         _reverse = new int[size];
         var bits = BitOperations.Log2((uint)size);
         var swaps = new List<int>(size);
@@ -591,10 +580,10 @@ internal sealed class Radix2Fft
         _swaps = [.. swaps];
     }
 
-    /// <summary>The point each point of the transform's input goes to before the butterflies (its index's bits reversed).</summary>
+    /// <summary>Bit-reversed destination index of each input point before the butterflies.</summary>
     public ReadOnlySpan<int> Reverse => _reverse;
 
-    /// <summary>The transform of re + i im in place, the inverse unscaled.</summary>
+    /// <summary>Transforms re + i im in place (inverse unscaled).</summary>
     public void Transform(Span<float> re, Span<float> im, bool inverse)
     {
         var swaps = _swaps;
@@ -608,7 +597,7 @@ internal sealed class Radix2Fft
         Butterflies(re, im, inverse);
     }
 
-    /// <summary>The transform of points already in bit-reversed order (<see cref="Reverse"/>), in place.</summary>
+    /// <summary>Transforms points already in bit-reversed order (<see cref="Reverse"/>), in place.</summary>
     public void Butterflies(Span<float> re, Span<float> im, bool inverse)
     {
         var size = _size;
@@ -616,7 +605,7 @@ internal sealed class Radix2Fft
         im = im[..size];
         var (cos, sin) = (_cos, inverse ? _inverseSin : _forwardSin);
 
-        // Half-lengths 1 and 2: each four points' two stages in registers.
+        // Half-lengths 1 and 2: both stages per group of four points in registers.
         var (w1r, w1i, w20r, w20i, w21r, w21i) = (cos[1], sin[1], cos[2], sin[2], cos[3], sin[3]);
         for (var g = 0; g + 3 < re.Length && g + 3 < im.Length; g += 4)
         {
@@ -638,7 +627,7 @@ internal sealed class Radix2Fft
             (im[g], im[g + 1], im[g + 2], im[g + 3]) = (y0, y1, y2, y3);
         }
 
-        // Half-length 4 on (and from 8 on, eight at a time where 256-bit vectors are the processor's own).
+        // Half-length 4 and up with Vector128 (from 8 up, Vector256 when hardware-accelerated).
         var half = 4;
         for (; half < size && (half < 8 || !Vector256.IsHardwareAccelerated); half <<= 1)
         {
@@ -653,8 +642,8 @@ internal sealed class Radix2Fft
         }
     }
 
-    // One stage, a vector of butterflies at a time: in each group of points, its first half (a) and second half (b), as long as the twiddles.
-    // (Each span's length is in the loop's condition, so the indexing is not checked again.)
+    // One stage, a vector of butterflies at a time: each group's first half (a) and second half (b), twiddle-length each. Span lengths
+    // appear in the loop conditions so the JIT elides bounds checks.
     private static void Stage(Span<Vector128<float>> re, Span<Vector128<float>> im, ReadOnlySpan<Vector128<float>> cos, ReadOnlySpan<Vector128<float>> sin)
     {
         var h = cos.Length;
@@ -707,7 +696,7 @@ internal sealed class WidenerEffect(float m, bool clip) : AudioEffect
     }
 }
 
-/// <summary>af_biquads' RBJ cookbook filters, in double precision (a 31 Hz band at 48 kHz needs it).</summary>
+/// <summary>af_biquads RBJ cookbook filters in double precision (needed for a 31 Hz band at 48 kHz).</summary>
 internal sealed class BiquadEffect : AudioEffect
 {
     private readonly double _b0, _b1, _b2, _a1, _a2;
@@ -715,7 +704,7 @@ internal sealed class BiquadEffect : AudioEffect
 
     public BiquadEffect(in AudioEffectSpec spec, int sampleRate) => (_b0, _b1, _b2, _a1, _a2) = Coefficients(spec, sampleRate);
 
-    /// <summary>A spec's coefficients, normalized (a0 = 1): the filter's own, and the equalizer curve's (AudioChainBuilder.EqualizerResponseDb, 5.2B).</summary>
+    /// <summary>Normalized coefficients (a0 = 1) for a spec; shared by the filter and the EQ curve (AudioChainBuilder.EqualizerResponseDb).</summary>
     internal static (double B0, double B1, double B2, double A1, double A2) Coefficients(in AudioEffectSpec spec, int sampleRate)
     {
         var frequency = Math.Clamp(spec.P1, 1, sampleRate * 0.4999);
@@ -783,7 +772,7 @@ internal sealed class BiquadEffect : AudioEffect
             stereo[2 * i + 1] = (float)yr;
         }
 
-        // Denormals, which would slow the processor to a crawl in the silence after a sound.
+        // Flush denormals, which would stall the CPU in the silence after a sound.
         (_x1L, _x2L, _y1L, _y2L) = (Flush(x1L), Flush(x2L), Flush(y1L), Flush(y2L));
         (_x1R, _x2R, _y1R, _y2R) = (Flush(x1R), Flush(x2R), Flush(y1R), Flush(y2R));
     }
@@ -800,8 +789,8 @@ internal sealed class BiquadEffect : AudioEffect
 }
 
 /// <summary>
-/// af_sidechaincompress's gain computer, downward, RMS detection, the channels averaged: acompressor (the side chain is
-/// the input) and the ducking (the side chain is the voices). Its envelope is the filter's lin_slope.
+/// af_sidechaincompress gain computer (downward, RMS detection, channels averaged) for acompressor (side chain = input) and ducking (side
+/// chain = voices). The envelope is the filter's lin_slope.
 /// </summary>
 internal sealed class CompressorMath
 {
@@ -823,7 +812,7 @@ internal sealed class CompressorMath
         _release = Math.Min(1, 1 / (releaseMs * sampleRate / 4000));
     }
 
-    /// <summary>The factor for one frame, from its side chain's level (the channels' average magnitude, times the side chain's gain).</summary>
+    /// <summary>Gain factor for one frame from its side-chain level (average channel magnitude times side-chain gain).</summary>
     public double Next(double level)
     {
         var squared = level * level;
@@ -847,7 +836,7 @@ internal sealed class CompressorEffect : AudioEffect
     private readonly CompressorMath _math;
     private readonly double _levelSc;
 
-    // acompressor's side chain is its own input, at its input level (af_sidechaincompress passes level_in for both).
+    // acompressor's side chain is its own input at level_in (af_sidechaincompress applies level_in to both).
     public CompressorEffect(in AudioEffectSpec spec, int sampleRate)
     {
         _math = new CompressorMath(spec.P1, spec.P2, spec.P3, spec.P4, spec.P5, spec.P6, spec.P7, spec.P8, sampleRate);
@@ -874,7 +863,7 @@ internal sealed class CompressorEffect : AudioEffect
     public override void Reset() => _math.Envelope = 0;
 }
 
-/// <summary>The ducking: a strip pressed down by the voices' side chain (sidechaincompress's, as the export's graph had it before 5.2-Audit).</summary>
+/// <summary>Ducking: compresses a strip by the voices' side chain (sidechaincompress semantics).</summary>
 internal sealed class Ducker(DuckParameters duck, int sampleRate)
 {
     private readonly CompressorMath _math = new(Math.Clamp(duck.Threshold, 0.000976563, 1), Math.Clamp(duck.Ratio, 1, 20), duck.AttackMs, duck.ReleaseMs,
@@ -896,7 +885,7 @@ internal sealed class Ducker(DuckParameters duck, int sampleRate)
     public void Reset() => _math.Envelope = 0;
 }
 
-/// <summary>af_agate, downward, RMS detection, the channels averaged.</summary>
+/// <summary>af_agate: downward, RMS detection, channels averaged.</summary>
 internal sealed class GateEffect : AudioEffect
 {
     private readonly double _thres, _ratio, _kneeStart, _kneeStop, _linKneeStop, _range, _attack, _release, _factor, _levelIn;
@@ -949,13 +938,11 @@ internal sealed class GateEffect : AudioEffect
 }
 
 /// <summary>
-/// af_alimiter, line for line (double precision, the two channels interleaved in one ring as the filter keeps them), so the
-/// limiter heard while editing is the export's to the bit (checked against HandPeg's pinned FFmpeg). The sound is held back
-/// by the attack less one sample (239 samples at 48 kHz and 5 ms, <see cref="LatencyFor"/>), which the mixer reads ahead by since
-/// Pass 5.2D: what comes out is af_alimiter's with latency=1, on its picture. A sample over the limit sets the
-/// slope the gain falls along to reach limit / peak as that sample comes out; a louder one later replaces it, a gentler one queues
-/// behind it; past the last the gain climbs back by (1 - gain) over the release. Its auto level (on by default in FFmpeg, off in
-/// what HandPeg writes) and level_out are the output's factor.
+/// af_alimiter ported line for line (double precision, both channels interleaved in one ring as the filter does), bit-exact against the
+/// pinned FFmpeg. Output is delayed by the attack minus one sample (239 samples at 48 kHz and 5 ms, <see cref="LatencyFor"/>), which the
+/// mixer compensates by reading ahead: equivalent to af_alimiter latency=1, in sync with picture. A sample over the limit sets the gain
+/// slope reaching limit / peak as it leaves; a louder later sample replaces it, a gentler one queues behind; after the last, gain recovers
+/// by (1 - gain) over the release. Auto level (FFmpeg default on, HandPeg off) and level_out form the output factor.
 /// </summary>
 internal sealed class LimiterEffect : AudioEffect
 {
@@ -976,14 +963,14 @@ internal sealed class LimiterEffect : AudioEffect
         Array.Fill(_nextPos, -1);
     }
 
-    // config_input's sizes: the ring is the attack's samples (whole frames, both channels); the queues are as long as 100 ms.
+    // Sizes as in config_input: ring = attack samples (whole frames, both channels); queues = 100 ms.
     private static int RingSize(in AudioEffectSpec spec, int sampleRate)
     {
         var size = (int)(sampleRate * (spec.P2 / 1000) * Channels);
         return Math.Max(size - size % Channels, Channels);
     }
 
-    /// <summary>How many frames late the sound comes out: a sample leaves the ring the frame before its place is written again.</summary>
+    /// <summary>Latency in frames: a sample leaves the ring one frame before its slot is rewritten.</summary>
     public static int LatencyFor(in AudioEffectSpec spec, int sampleRate) => RingSize(spec, sampleRate) / Channels - 1;
 
     public override void Process(Span<float> stereo, int frames)
@@ -1033,7 +1020,7 @@ internal sealed class LimiterEffect : AudioEffect
         }
     }
 
-    // A sample over the limit: the slope that brings the gain to limit / peak when it comes out, or its place in the queue.
+    // For a sample over the limit: set the slope reaching limit / peak as it leaves, or queue it.
     private void Plan(double peak)
     {
         var (limit, size, buffer, nextPos, nextDelta) = (_limit, _size, _buffer, _nextPos, _nextDelta);
@@ -1116,7 +1103,7 @@ internal static class AudioMath
             data[i] *= factor;
     }
 
-    /// <summary>target = source * factor, each sample one multiplication (5.3: an export track's gain).</summary>
+    /// <summary>target = source * factor, one multiplication per sample (export track gain).</summary>
     public static void Scale(ReadOnlySpan<float> source, Span<float> target, float factor)
     {
         var s = MemoryMarshal.Cast<float, Vector<float>>(source);

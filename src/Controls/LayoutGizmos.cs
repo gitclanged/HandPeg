@@ -11,7 +11,7 @@ using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
 
-/// <summary>A corner of a clip's box, in the order its corners are listed (<see cref="LayerGizmoAdorner.TiltedCorners"/>).</summary>
+/// <summary>Clip box corner, in the same order as <see cref="LayerGizmoAdorner.TiltedCorners"/>.</summary>
 internal enum GripCorner
 {
     TopLeft,
@@ -21,15 +21,12 @@ internal enum GripCorner
 }
 
 /// <summary>
-/// The handles on a clip's box in the layout pane (and, 4.1.1-B, over the player): the resize grip on its bottom-right
-/// corner, the rotation handle on a stalk above its top edge, and its anchor point (the dot it turns and grows about).
-/// Living in the adorner layer, they follow the box wherever it is moved and however it is turned, and lie above every
-/// box. A stalk that would stand outside the surface the box is on (a box at the top of the frame) is turned down into
-/// the box instead, so the handle can always be reached. While the handle is dragged, a ring round the anchor point
-/// and the angle in degrees are shown. A tilted clip's (5.2C, the user's Q4: <see cref="TiltedCorners"/>) grips are on the
-/// corners its picture is drawn at, all four of them (Pass 5.2D, the user's Q3: any corner of a tilted
-/// clip can be taken), and its stalk stands off its drawn top edge; a grip's drag is told as that corner of the flat box would
-/// have moved (<see cref="FlatDelta"/>). A flat clip keeps its one bottom-right grip.
+/// Clip box handles on the Canvas pane and the player: a bottom-right resize grip, a rotation handle on a stalk above the top edge,
+/// and the anchor dot (rotation and scale pivot). As an adorner they track the box's position and rotation and render above all
+/// boxes. If the stalk would leave the surface (box at the frame top), it folds down into the box so the handle stays reachable.
+/// During rotation, a ring around the anchor and an angle readout are shown. Tilted clips (<see cref="TiltedCorners"/>) get grips on
+/// all four drawn corners and a stalk off the drawn top edge; grip drags are reported as the equivalent flat-box corner delta
+/// (<see cref="FlatDelta"/>). Flat clips keep the single bottom-right grip.
 /// </summary>
 internal sealed class LayerGizmoAdorner : Adorner
 {
@@ -38,7 +35,7 @@ internal sealed class LayerGizmoAdorner : Adorner
     private readonly VisualCollection _visuals;
     private readonly Thumb _turn, _anchor;
 
-    // A grip on each corner, in GripCorner's order: only the bottom right one is shown on a flat clip.
+    // One grip per corner in GripCorner order; flat clips show only the bottom-right one.
     private readonly Thumb[] _grips = new Thumb[4];
     private readonly Line _stalk;
     private readonly Ellipse _ring;
@@ -47,22 +44,22 @@ internal sealed class LayerGizmoAdorner : Adorner
     private readonly Func<Point> _anchorAt;
     private bool _turning;
 
-    /// <summary>A corner grip dragged: which corner, and how far that corner of the flat box moved (its own frame, in screen units).</summary>
+    /// <summary>Corner grip drag: the corner and the flat-box corner delta (box-local frame, screen units).</summary>
     public event Action<GripCorner, Vector>? ResizeDelta;
 
     public event Action<GripCorner>? ResizeStarted;
 
-    /// <summary>The rotation handle dragged: the pointer is read by the window, against the anchor point.</summary>
+    /// <summary>Rotation handle drag started; the host reads the pointer relative to the anchor point.</summary>
     public event Action? TurnStarted;
 
     public event Action? TurnDelta;
 
-    /// <summary>The anchor dot dragged: the pointer is read by the window, inside the box.</summary>
+    /// <summary>Anchor dot drag started; the host reads the pointer within the box.</summary>
     public event Action? AnchorStarted;
 
     public event Action? AnchorDelta;
 
-    /// <param name="anchorAt">Where the anchor point is, as fractions of the box's width and height.</param>
+    /// <param name="anchorAt">Anchor point as fractions (0..1) of the box width and height.</param>
     public LayerGizmoAdorner(FrameworkElement box, Style gripStyle, string name, Func<Point> anchorAt) : base(box)
     {
         _anchorAt = anchorAt;
@@ -74,7 +71,7 @@ internal sealed class LayerGizmoAdorner : Adorner
             IsHitTestVisible = false, Visibility = Visibility.Collapsed,
         };
 
-        // The bottom right grip is the one a flat clip has always had (its name and words as they were); the other three are a tilted clip's.
+        // Bottom-right is the flat-clip grip (legacy name and tooltip kept); the other three appear only for tilted clips.
         for (var k = 0; k < _grips.Length; k++)
         {
             var corner = (GripCorner)k;
@@ -130,7 +127,7 @@ internal sealed class LayerGizmoAdorner : Adorner
         _ => "Bottom Left",
     };
 
-    /// <summary>Which sides of the box a corner is on: (1, 1) for the bottom right one, (0, 0) for the top left.</summary>
+    /// <summary>Box sides a corner lies on: (0, 0) top-left through (1, 1) bottom-right.</summary>
     internal static (int X, int Y) SidesOf(GripCorner corner) => corner switch
     {
         GripCorner.TopLeft => (0, 0),
@@ -149,12 +146,12 @@ internal sealed class LayerGizmoAdorner : Adorner
     }
 
     /// <summary>
-    /// A tilted clip's four corners (top left, top right, bottom right, bottom left) on the surface the box lies on, as its picture is
-    /// drawn (MainWindow.TiltedCorners); null, or a null answer, for a flat clip, whose handles are on its box.
+    /// Provider of a tilted clip's four drawn corners (TL, TR, BR, BL) in surface coordinates (MainWindow.TiltedCorners); null provider
+    /// or null result means a flat clip with handles on its box.
     /// </summary>
     public Func<PointCollection?>? TiltedCorners { get; set; }
 
-    // The tilted corners in the box's own (unturned) frame, as the box is placed now; null for a flat clip.
+    // Tilted corners in the box's local (unrotated) frame at its current placement; null for a flat clip.
     private Point[]? LocalCorners(Size size)
     {
         if (TiltedCorners?.Invoke() is not { Count: 4 } corners)
@@ -163,7 +160,7 @@ internal sealed class LayerGizmoAdorner : Adorner
         if (double.IsNaN(left) || double.IsNaN(top))
             return null;
 
-        // HandleInside's way back: the surface point less the box's place and its turn about its origin.
+        // Inverse of HandleInside's mapping: subtract box placement, then undo rotation about the render origin.
         var origin = new Point(AdornedElement.RenderTransformOrigin.X * size.Width, AdornedElement.RenderTransformOrigin.Y * size.Height);
         var back = AdornedElement.RenderTransform.Inverse;
         var local = new Point[4];
@@ -184,10 +181,10 @@ internal sealed class LayerGizmoAdorner : Adorner
     }
 
     /// <summary>
-    /// How far a corner of the flat box (the bottom right one unless <paramref name="corner"/> says another; its own frame) moves for that
-    /// drawn corner of a tilted one to move by <paramref name="moved"/>: the two drawn edges that meet at it (the top or bottom one across,
-    /// the left or right one down), a box's pixel of each, are the corner's two ways (at the corner, perspective is near enough a linear
-    /// map); a flat box's edges are its own, so its move is the move. A box seen edge on keeps the move as it is.
+    /// Converts a drawn-corner move <paramref name="moved"/> on a tilted clip into the flat-box corner delta (box-local frame) for
+    /// <paramref name="corner"/> (default bottom-right). The two drawn edges meeting at the corner, per box pixel, form a local linear basis
+    /// (perspective is near-linear at the corner); solving in that basis yields the flat delta. Flat boxes map 1:1; near-degenerate
+    /// (edge-on) bases return the move unchanged.
     /// </summary>
     internal static Vector FlatDelta(Point[] corners, Size size, Vector moved, GripCorner corner = GripCorner.BottomRight)
     {
@@ -200,7 +197,7 @@ internal sealed class LayerGizmoAdorner : Adorner
         return new Vector((moved.X * down.Y - moved.Y * down.X) / determinant, (across.X * moved.Y - across.Y * moved.X) / determinant);
     }
 
-    /// <summary>Shows the angle the clip is turned to, beside the rotation handle, while it is dragged.</summary>
+    /// <summary>Shows the rotation angle beside the handle while it is dragged.</summary>
     public void ShowAngle(double degrees)
     {
         _readoutText.Text = degrees.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + "\u00B0";
@@ -209,9 +206,9 @@ internal sealed class LayerGizmoAdorner : Adorner
     }
 
     /// <summary>
-    /// Whether the rotation handle stands inside the box (true when, above its top edge, it would be outside the surface
-    /// the box lies on). Worked out from the box's place and turn as they are set, not as last laid out: the box is
-    /// placed (Canvas.Left/Top) just before this adorner is told to lay itself out again.
+    /// True when the rotation handle must fold into the box because <paramref name="tip"/> would fall outside the parent surface.
+    /// Uses the box's current Canvas.Left/Top and RenderTransform rather than last layout, since placement is set just before this
+    /// adorner re-arranges.
     /// </summary>
     private bool HandleInside(Size size, Point tip)
     {
@@ -259,8 +256,7 @@ internal sealed class LayerGizmoAdorner : Adorner
     {
         var size = AdornedElement.RenderSize;
 
-        // The grips' corners and the top edge the stalk stands off: the box's (its bottom right grip alone), or a tilted clip's as its
-        // picture is drawn (5.2C), a grip on each of its four corners.
+        // Grip corners and stalk edge: the box itself (bottom-right grip only), or the tilted clip's drawn corners (four grips).
         var corners = LocalCorners(size);
         var (edgeFrom, edgeTo) = corners is null ? (new Point(0, 0), new Point(size.Width, 0)) : (corners[0], corners[1]);
         for (var k = 0; k < _grips.Length; k++)
@@ -275,8 +271,8 @@ internal sealed class LayerGizmoAdorner : Adorner
             grip.Arrange(new Rect(at.X - grip.Width / 2, at.Y - grip.Height / 2, grip.Width, grip.Height));
         }
 
-        // Off the top edge's middle, away from the box (the edge's normal, turned to point away from the box's middle), or (with no room
-        // there) turned down into the box: never further in than a quarter of it, so it keeps clear of the anchor point in the middle.
+        // Stalk from the top-edge midpoint along the outward normal (pointing away from the box centre); without room, fold inward by
+        // at most a quarter of the height so it clears a centred anchor.
         var middle = new Point((edgeFrom.X + edgeTo.X) / 2, (edgeFrom.Y + edgeTo.Y) / 2);
         var edge = edgeTo - edgeFrom;
         var outward = edge.Length > 1e-6 ? new Vector(edge.Y, -edge.X) / edge.Length : new Vector(0, -1);
@@ -293,7 +289,7 @@ internal sealed class LayerGizmoAdorner : Adorner
         var anchorPoint = new Point(anchor.X * size.Width, anchor.Y * size.Height);
         _anchor.Arrange(new Rect(anchorPoint.X - _anchor.Width / 2, anchorPoint.Y - _anchor.Height / 2, _anchor.Width, _anchor.Height));
 
-        // While turning: the ring the handle goes round, about the anchor point, and the angle beside the handle.
+        // Rotation feedback: ring around the anchor through the handle, and the angle readout beside the handle.
         var radius = Math.Max((handle - anchorPoint).Length, 8);
         _ring.Arrange(new Rect(anchorPoint.X - radius, anchorPoint.Y - radius, 2 * radius, 2 * radius));
         _readout.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
@@ -303,10 +299,9 @@ internal sealed class LayerGizmoAdorner : Adorner
 }
 
 /// <summary>
-/// What the layout pane draws over its boxes: the guides a dragged box has snapped to (the frame's middle, the action-safe
-/// and title-safe margins), and the selected clip's motion path (where its anchor point goes over time, sampled as the
-/// export eases it) with a dot at each of its place keyframes. Only the dots answer the pointer: a press anywhere else
-/// goes through to the boxes under it. Drawn in OnRender.
+/// Canvas pane overlay drawn in OnRender: snap guides for a dragged box (frame centre, action-safe and title-safe margins) and the
+/// selected clip's motion path (anchor trajectory sampled with export easing) with a dot per position keyframe. Only dots are
+/// hit-testable; other presses pass through to the boxes beneath.
 /// </summary>
 internal sealed class LayoutGuidesView : FrameworkElement
 {
@@ -320,16 +315,16 @@ internal sealed class LayoutGuidesView : FrameworkElement
     private IReadOnlyList<(double Time, Point At)> _dots = [];
     private IReadOnlyList<(Point From, Point To)> _guides = [];
 
-    // A dot being dragged: its keyframe's moment, where the pointer took it, and how far it has gone.
+    // Active dot drag: keyframe time, press point and accumulated offset.
     private (double Time, Point From, Vector Moved)? _drag;
 
-    /// <summary>A dot let go elsewhere: its keyframe's moment (the clip's own seconds) and how far it moved, in pixels of the canvas.</summary>
+    /// <summary>Dot dropped at a new spot: keyframe time (clip-local seconds) and offset in canvas pixels.</summary>
     public event Action<double, Vector>? DotMoved;
 
-    /// <summary>A dot clicked without moving it: the playhead goes to its keyframe.</summary>
+    /// <summary>Dot clicked without a drag: the host seeks the playhead to that keyframe.</summary>
     public event Action<double>? DotClicked;
 
-    // UI Automation sees one element with a name and its place on screen; the guides and dots drawn on it have no peers.
+    // UI Automation exposes one named element; drawn guides and dots have no child peers.
     protected override AutomationPeer OnCreateAutomationPeer() => new GuidesPeer(this);
 
     private sealed class GuidesPeer(LayoutGuidesView owner) : FrameworkElementAutomationPeer(owner)
@@ -343,14 +338,14 @@ internal sealed class LayoutGuidesView : FrameworkElement
 
     public LayoutGuidesView() => Cursor = Cursors.SizeAll;
 
-    /// <summary>The motion path (points on the canvas) and its keyframes' dots; none to draw none.</summary>
+    /// <summary>Sets the motion path (canvas points) and keyframe dots; empty lists clear them.</summary>
     public void ShowPath(IReadOnlyList<Point> path, IReadOnlyList<(double Time, Point At)> dots)
     {
         (_path, _dots) = (path, dots);
         InvalidateVisual();
     }
 
-    /// <summary>The guides a dragged box has snapped to, as lines across the canvas; none while nothing is snapped.</summary>
+    /// <summary>Sets the snap guide lines for a dragged box; empty when nothing is snapped.</summary>
     public void ShowGuides(IReadOnlyList<(Point From, Point To)> guides)
     {
         if (guides.Count == 0 && _guides.Count == 0)

@@ -7,29 +7,22 @@ using static HandPegApp.Native.Kernel32;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Catches what makes HandPeg fall over, so that it can be looked at later: a trail of the last things that happened
-/// (the breadcrumbs), a short summary of what was going on (the context), and the fault itself, written as a .hpcrash
-/// file in the crashes folder (<see cref="AppPaths.Crashes"/>). Nothing in a file tells who made it or what they were
-/// working on (<see cref="CrashSanitizer"/>), and the files stay on this computer: HandPeg sends nothing anywhere.
+/// Crash capture: breadcrumb ring, context summaries and the fault, written as sanitized (<see cref="CrashSanitizer"/>) .hpcrash files in
+/// <see cref="AppPaths.Crashes"/>. Reports stay local unless an upload endpoint is configured.
 ///
-/// Four kinds of fall are caught. An exception nobody handled, one thrown on the window's thread, and a task's exception
-/// nobody looked at are written here, in the process (CrashReporter.Reports.cs). A native fault (an access violation in
-/// a graphics driver or a system library) leaves no managed code standing to write anything, so a tiny second copy of HandPeg, the
-/// sentinel (<see cref="CrashSentinel"/>), watches from outside: when the process dies badly without having written a
-/// report, the sentinel writes one from the shared memory this class keeps up to date (CrashReporter.Watch.cs).
+/// Managed faults (unhandled, dispatcher, unobserved task exceptions) are written in-process (CrashReporter.Reports.cs). Native faults
+/// (access violations in drivers or system DLLs) are reported by an external sentinel process (<see cref="CrashSentinel"/>) from shared
+/// memory this class keeps current (CrashReporter.Watch.cs).
 ///
-/// Off (Settings, Send Crash Reports): nothing is written and no sentinel runs; the breadcrumbs are still kept, in
-/// memory only, which costs next to nothing, so a report written after it is switched on has them.
+/// When disabled, nothing is written and no sentinel runs; breadcrumbs are still kept in memory (negligible cost) for later reports.
 /// </summary>
 public static partial class CrashReporter
 {
     // ----- The breadcrumb ring -----
     //
-    // Four parallel arrays, so that leaving a breadcrumb stores two references and two numbers and allocates nothing.
-    // The count only goes up (Interlocked); a breadcrumb's slot is its number modulo the ring's size. Each slot's number
-    // is cleared before the slot is written and set after, so a report that reads a slot while it is being written
-    // (another thread, a moment before a crash) skips it rather than pairing one breadcrumb's category with another's
-    // detail. No lock anywhere: a breadcrumb may be left from the UI thread in the middle of a drag.
+    // Four parallel arrays: a breadcrumb stores two references and two numbers with no allocation. Monotonic Interlocked counter;
+    // slot = number mod size. Each slot's number is cleared before writing and set after, so concurrent readers skip torn slots.
+    // Lock-free (safe from the UI thread mid-drag).
 
     private const int Ring = CrashSharedMemory.BreadcrumbCount;
     private static readonly long[] Sequences = new long[Ring];
@@ -40,20 +33,16 @@ public static partial class CrashReporter
 
     // ----- The context -----
     //
-    // A few named summaries of what HandPeg is doing ("mode", "media", "graph", "export"), each in a slot of its own so
-    // the sentinel can read it from the shared memory. A key takes the first free slot the first time it is set
-    // (claimed with Interlocked, so two threads setting new keys at once each get one); keys beginning "env." are
-    // facts about the computer for the report's environment, not the context.
+    // Named summaries ("mode", "media", "graph", "export"), one slot each so the sentinel can read them from shared memory. A new key
+    // claims the first free slot via Interlocked. "env." keys describe the machine environment rather than context.
 
     private static readonly string?[] ContextKeys = new string?[CrashSharedMemory.ContextSlotCount];
     private static readonly string?[] ContextValues = new string?[CrashSharedMemory.ContextSlotCount];
 
     // ----- Time -----
     //
-    // A breadcrumb is stamped with a monotonic clock started with this class (in Main), so a change of the computer's
-    // clock never reorders them; reports count from the process's start, which is that clock plus how long the process
-    // had been running when it started. That offset is asked of Windows only when it is first wanted (a report, or the
-    // shared memory after the first frame), not in Main.
+    // Breadcrumbs use a monotonic clock started in Main (immune to wall-clock changes). Reports are relative to process start: clock plus
+    // the process age at class init, queried lazily (first report or shared-memory publish after Frame 1), not in Main.
 
     private static readonly Stopwatch Clock = Stopwatch.StartNew();
     private static double _startOffset = double.NaN;
@@ -76,7 +65,7 @@ public static partial class CrashReporter
         return offset;
     }
 
-    /// <summary>When this process was created (a FILETIME), or 0 when Windows will not say. The sentinel compares it with the process it finds.</summary>
+    /// <summary>Process creation FILETIME, or 0 if unavailable; the sentinel uses it to verify process identity.</summary>
     private static unsafe long CreationTime()
     {
         if (_creationTime == 0)
@@ -88,19 +77,17 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// Leaves a breadcrumb: a short note of something that just happened, which a crash report lists in order. Costs a
-    /// few dozen nanoseconds (a hundred or so while the sentinel runs, for the copy into the shared memory), never
-    /// allocates and never throws, so it can sit anywhere. The detail is sanitized when a report is written, not here,
-    /// so it may hold a path as it is passed; still, pass short summaries, not whole graphs or commands.
+    /// Records a breadcrumb (tens of ns; ~100 ns with the sentinel's shared-memory copy). Allocation-free and non-throwing. Detail is
+    /// sanitized at report time, but keep it a short summary, not a full command.
     /// </summary>
-    /// <param name="category">One short word: "app", "mode", "media", "project", "export", "queue", "graph", "seek"...</param>
+    /// <param name="category">Short tag: "app", "mode", "media", "project", "export", "queue", "graph", "seek", ...</param>
     public static void Note(string category, string? detail = null)
     {
         var sequence = Interlocked.Increment(ref _noted);
         var slot = (int)((sequence - 1) % Ring);
         var at = Now;
 
-        // A full fence (not a release store), so the plain stores below never become visible before the slot reads as being written.
+        // Full fence (not a release store) so the following plain stores cannot become visible before the slot is marked in-progress.
         Interlocked.Exchange(ref Sequences[slot], 0);
         Ats[slot] = at;
         Categories[slot] = category;
@@ -121,9 +108,8 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// Sets a context slot: a summary of what HandPeg is doing, by name ("mode", "media", "graph", "export"). Only
-    /// summaries belong here: containers, codecs, sizes, rates, lengths, counts, filter names (see <see
-    /// cref="CrashSummaries"/>), never a path or any of the media's own words. Null clears it. Lock-free.
+    /// Sets a named context slot ("mode", "media", "graph", "export") to a summary (containers, codecs, sizes, rates, counts; see
+    /// <see cref="CrashSummaries"/>), never paths or media text. Null clears. Lock-free.
     /// </summary>
     public static void SetContext(string key, string? value)
     {
@@ -144,10 +130,8 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// Keeps the names of files HandPeg has in use (the main video, a layer's file, the project, the output) out of every
-    /// report, wherever they turn up without their folders: each file's name without its extension is stripped as the
-    /// user's name is (<see cref="CrashSanitizer.KeepOutFileName"/>), by this process and by the sentinel, which is
-    /// handed them in the shared memory. Web addresses and empty paths are passed over. Lock-free; never throws.
+    /// Registers open file base names (sources, project, output) for redaction like the user name (<see cref="CrashSanitizer.KeepOutFileName"/>),
+    /// in-process and in the sentinel via shared memory. URLs and empty paths are ignored. Lock-free; never throws.
     /// </summary>
     public static void KeepOut(params string?[] paths) => KeepOut((IEnumerable<string?>)paths);
 
@@ -191,9 +175,8 @@ public static partial class CrashReporter
     private static int _installed;
 
     /// <summary>
-    /// Registers the handlers for managed exceptions and the native fault filter. Cheap enough for the first moments of
-    /// Main (no disk, no process, no window, no reflection): the shared memory and the sentinel come after the first
-    /// frame (<see cref="FirstFrameShown"/>). The window's thread is watched once there is one (<see cref="WatchDispatcher"/>).
+    /// Installs managed exception handlers and the native fault filter. Safe for early Main (no disk, processes, windows or reflection);
+    /// shared memory and the sentinel start after Frame 1 (<see cref="FirstFrameShown"/>); the dispatcher is hooked via <see cref="WatchDispatcher"/>.
     /// </summary>
     public static void Install()
     {
@@ -210,14 +193,12 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// Watches a dispatcher (the window's thread) for exceptions that escape its work. What HandPeg did before stays as
-    /// it was: nothing here marks one handled, so an exception nobody handles still ends the process.
+    /// Hooks dispatcher unhandled exceptions for reporting without marking them handled (they still terminate the process).
     /// </summary>
     public static void WatchDispatcher(Dispatcher dispatcher) => dispatcher.UnhandledException += OnDispatcherUnhandledException;
 
     /// <summary>
-    /// The window's first frame is on screen: from now on processes may start and the disk may be read (Cold-Start rule
-    /// 3). Once the window is idle, the sentinel is started, and a test crash asked for by HANDPEG_TEST_CRASH happens.
+    /// Called after Frame 1 (processes and disk I/O now allowed). At idle, starts the sentinel and triggers HANDPEG_TEST_CRASH if set.
     /// </summary>
     public static void FirstFrameShown(Dispatcher dispatcher)
     {
@@ -236,8 +217,7 @@ public static partial class CrashReporter
     private static volatile bool _firstFrameShown;
 
     /// <summary>
-    /// Settings were saved: starts the sentinel when crash reports were switched on (after the first frame), or stops it
-    /// when they were switched off.
+    /// On settings save: starts the sentinel when reports were enabled (after Frame 1) or stops it when disabled.
     /// </summary>
     public static void FollowSetting()
     {
@@ -265,8 +245,7 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// HandPeg is closing in the ordinary way (the window closed, an update restarting it, Environment.Exit): the
-    /// sentinel, which wakes when the process ends, has nothing to write.
+    /// Marks a normal shutdown (window close, update restart, Environment.Exit) so the sentinel writes nothing on exit.
     /// </summary>
     public static void MarkCleanExit()
     {
@@ -279,8 +258,7 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// The user asked HandPeg to close (true), from before the save prompt is shown, or went back to it (false): ended from
-    /// outside meanwhile (the taskbar or Task Manager closing it while the prompt is up), the sentinel writes no report.
+    /// Close requested (true, set before the save prompt) or cancelled (false); an external kill while prompting produces no report.
     /// </summary>
     public static void MarkUserClosing(bool closing)
     {
@@ -308,14 +286,12 @@ public static partial class CrashReporter
 
     private const uint ClrExceptionCode = 0xE0434352;
 
-    // How long the filter waits for the sentinel to name the module the fault is in, while the process can still be
-    // looked at from outside: long enough for it to list the modules, short enough that a crash is not held up.
+    // Filter wait for the sentinel to resolve the faulting module while the process is still inspectable; bounded so crashes are not delayed.
     private const uint ModuleNamingWaitMs = 2000;
 
     /// <summary>
-    /// Puts the filter in place, in front of the runtime's. The filter is called once here, with nothing to record, so
-    /// that it is compiled and its way in from native code is made now rather than while the process is falling over.
-    /// What it calls only once there is shared memory is made ready with the shared memory (<see cref="PrepareFilter"/>).
+    /// Installs the filter ahead of the runtime's, invoking it once with no data so it is JIT-compiled and its reverse-P/Invoke thunk exists
+    /// before a crash. Shared-memory-dependent paths are prepared later (<see cref="PrepareFilter"/>).
     /// </summary>
     private static unsafe void InstallFilter()
     {
@@ -332,8 +308,7 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// Makes ready, before the shared memory is published, everything the filter calls once there is some: the Windows
-    /// functions found and bound, and the copy of the fault compiled, so nothing is done for the first time in a crash.
+    /// Pre-binds Win32 functions and JIT-compiles the fault copy before shared memory is published, so nothing runs for the first time in a crash.
     /// </summary>
     private static unsafe void PrepareFilter()
     {
@@ -345,11 +320,9 @@ public static partial class CrashReporter
     }
 
     /// <summary>
-    /// The top-level filter Windows calls when a fault reaches the top of a thread with nothing to handle it: the way a
-    /// crash in a graphics driver or a system library arrives. It copies numbers only (the code, the address, the module's base)
-    /// into the shared memory, with no allocation, no lock and nothing that can throw; for a native fault it then wakes
-    /// the sentinel and gives it a moment to name the module from outside, while there is still a process to look at.
-    /// Then it hands over to the filter that was there before (the runtime's) and returns what that returns.
+    /// Unhandled exception filter (native faults from drivers/system DLLs): copies only numbers (code, address, module base) into shared
+    /// memory without allocation, locks or throwing; for native faults wakes the sentinel and briefly waits for it to resolve the module,
+    /// then chains to the previous (runtime) filter and returns its result.
     /// </summary>
     [UnmanagedCallersOnly]
     private static unsafe int Filter(nint pointers)

@@ -4,7 +4,7 @@
         Title="Save Current Layout" Width="420" SizeToContent="Height" ResizeMode="NoResize"
         Background="{DynamicResource WindowBackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
-    <!-- The panes as they are now, kept as a layout of the user's own: a name, and which of this mode's three places it goes in. -->
+    <!-- Saves the current pane layout as a custom layout: name and one of this mode's three slots. -->
     <StackPanel Margin="16">
         <TextBlock x:Name="ModeText" TextWrapping="Wrap" Foreground="{DynamicResource MutedTextBrush}" Margin="0,0,0,10" />
         <TextBlock Text="Name:" Margin="0,0,0,4" />

@@ -9,20 +9,16 @@ using HandPegApp.Models.Effects;
 
 namespace HandPegApp.Services;
 
-// ----- Project bundles (.hpb, 5.0-Release) -----
-// One file that holds a project and every file it reads (its videos, sounds, pictures, LUTs), to carry it to another PC or
-// keep it as it is. A ZIP archive, so any archive tool opens it:
-//   bundle.json    what the bundle is: its format and version, the HandPeg that wrote it, and each media file's entry name,
-//                  length and last-write time (never where it came from: a bundle is meant to be given away);
-//   project.hproj  the project (format 6), each file it reads written as its entry's name ("media/clip.mkv");
-//   thumbnail.jpg  the project's thumbnail when it has one (Pass 5.2D: stored, for Explorer's preview, which
-//                  finds it through the archive's directory without reading the media); unpacking leaves it in the bundle;
-//   media/...      the files, stored as they are (no compression: video does not shrink, and the copy runs at disk speed).
-// Opening a bundle unpacks it into a folder beside it (named after it), points the project at the unpacked files and opens
-// that project, which is then an ordinary one: saving writes it there. A bundle opened again finds its folder and opens the
-// project in it as it was left; a changed bundle unpacks into a folder of its own, never over the user's work.
-// A long recording the Sequence uses little of goes in as the stretches it uses (5.2C, VodTrim: lossless stream copies with 5 s
-// handles, AppSettings.TrimLongVodsOnBundle), the bundle's project pointed at them; the working project is never changed.
+// ----- Project bundles (.hpb) -----
+// A self-contained ZIP of a project and all referenced media (video, audio, images, LUTs) for transfer or archival:
+//   bundle.json    format/version, writer version, and per-media entry name, length and last-write time (never source paths);
+//   project.hproj  the project (format 6) with media references rewritten to entry names ("media/clip.mkv");
+//   thumbnail.jpg  optional stored thumbnail for Explorer previews (found via the central directory); not extracted;
+//   media/...      media stored uncompressed (video does not compress; copies run at disk speed).
+// Opening extracts beside the bundle (folder named after it), rewrites paths to the extracted files and opens that ordinary project.
+// Reopening reuses its folder as left; a changed bundle extracts to a new folder, never over existing work.
+// Long recordings mostly unused by the Sequence are stored as used ranges (VodTrim: lossless stream copies with 5 s handles,
+// AppSettings.TrimLongVodsOnBundle); only the bundled project references them, the working project is unchanged.
 public static class ProjectBundle
 {
     public const string Extension = ".hpb";
@@ -36,8 +32,7 @@ public static class ProjectBundle
 
     private const int CopyBuffer = 4 << 20;
 
-    // The times a ZIP entry can carry; and how far a file's write time may be from the manifest's and still be that file
-    // (FAT32 keeps 2 s, exFAT 10 ms: a bundle carried on a USB stick unpacks there).
+    // ZIP timestamp range, and write-time tolerance for matching the manifest (FAT32 has 2 s resolution, exFAT 10 ms; USB sticks).
     private static readonly DateTimeOffset ZipEarliest = new(1980, 1, 1, 0, 0, 0, TimeSpan.Zero), ZipLatest = new(2107, 12, 31, 0, 0, 0, TimeSpan.Zero);
     private static readonly long SameTimeTicks = TimeSpan.FromSeconds(2.5).Ticks;
 
@@ -48,7 +43,7 @@ public static class ProjectBundle
         public string? WrittenBy { get; set; }
         public string Project { get; set; } = ProjectEntry;
 
-        /// <summary>The project's thumbnail entry ("thumbnail.jpg", Pass 5.2D); left out when the bundle has none.</summary>
+        /// <summary>Thumbnail entry name ("thumbnail.jpg"); omitted when absent.</summary>
         [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
         public string? Thumbnail { get; set; }
 
@@ -60,7 +55,7 @@ public static class ProjectBundle
         public string Entry { get; set; } = "";
         public long Length { get; set; }
 
-        /// <summary>The file's last-write time in UTC ticks, put back on unpacking (the seek indexes the project carries match on it).</summary>
+        /// <summary>Last-write time (UTC ticks), restored on extraction so embedded seek indexes still match.</summary>
         public long Written { get; set; }
     }
 
@@ -69,10 +64,9 @@ public static class ProjectBundle
     // ----- Packing -----
 
     /// <summary>
-    /// Writes the state as a bundle (through a ".part" file, moved into place when whole): the project and every file it reads
-    /// that is there. Reports the share of bytes written (0 to 1). Returns how many files went in, how many named files were
-    /// not there (left as they were in the project), and how many long recordings went in trimmed (<paramref name="trimLongVods"/>:
-    /// VodTrim, the stretches cut beside the bundle first and let go of after).
+    /// Writes a bundle atomically (via ".part") with the project and all existing referenced files, reporting byte progress 0..1.
+    /// Returns counts of files added, missing references (left unchanged) and recordings trimmed (<paramref name="trimLongVods"/>:
+    /// VodTrim pieces cut beside the bundle, deleted afterwards).
     /// </summary>
     public static (int Files, int Missing, int Trimmed) Pack(ProjectState state, string bundlePath, IProgress<double>? progress = null, CancellationToken cancel = default,
         bool trimLongVods = false)
@@ -108,8 +102,8 @@ public static class ProjectBundle
     }
 
     /// <summary>
-    /// Project Media with each trimmed recording in it (5.4C) as the pieces that went in for it, in its place and each once, so the bundle's
-    /// bin holds every piece its clips play (a recording only in the bin is never trimmed: no clip reads it, so it goes in whole).
+    /// Project Media with each trimmed recording replaced in place by its pieces (each once), so the bundled bin covers every played
+    /// piece. Bin-only recordings are never trimmed (no clip reads them) and are bundled whole.
     /// </summary>
     internal static List<string> PoolWithPieces(IReadOnlyList<string> pool, IReadOnlyDictionary<string, IReadOnlyList<VodTrim.Piece>> trimmed)
     {
@@ -147,14 +141,14 @@ public static class ProjectBundle
         return kept;
     }
 
-    /// <param name="trimmed">The pieces of each recording trimmed (VodTrim.Cut): anything still naming one of them (a look kept elsewhere in the
-    /// project) names its first piece, so the whole recording never goes in beside its pieces.</param>
+    /// <param name="trimmed">Pieces per trimmed recording (VodTrim.Cut); other references to a trimmed recording map to its first piece so
+    /// the full recording is never bundled alongside them.</param>
     private static (int Files, int Missing) PackWhole(ProjectState state, string bundlePath, IProgress<double>? progress, CancellationToken cancel,
         IReadOnlyDictionary<string, IReadOnlyList<VodTrim.Piece>>? trimmed)
     {
         var project = JsonNode.Parse(ProjectStore.Serialize(state)) ?? throw new InvalidDataException("The project could not be written.");
 
-        // Every file the project names that is there, under one entry name each (the file's own name, numbered when two share one).
+        // Each existing referenced file gets a unique entry name (its file name, numbered on collision).
         var entries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var missing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -189,14 +183,12 @@ public static class ProjectBundle
             return entries[full] = entry;
         }
 
-        // Where the export goes is this PC's folder (and never a file to carry, though an earlier export may be there): in the
-        // bundle it is the file's name alone, beside the unpacked project.
+        // Export destination is machine-specific and never bundled: reduce it to a bare file name beside the extracted project.
         var output = project["output"] as JsonObject;
         var exportName = output?["path"] is JsonValue destination && destination.TryGetValue<string>(out var to) && to.Length > 0 ? Path.GetFileName(to) : null;
         output?.Remove("path");
 
-        // The undo history is left behind: its steps are packed snapshots naming this PC's files, which no rewrite reaches.
-        // So is a hand-edited command (a whole command line naming this PC's files): the project makes its own again.
+        // Omit undo history (packed snapshots with local paths the rewrite cannot reach) and hand-edited commands (regenerated).
         if (project is JsonObject whole)
         {
             foreach (var key in (string[])["undoFormat", "undoHistory", "redoHistory"])
@@ -231,7 +223,7 @@ public static class ProjectBundle
                 WriteText(archive, ManifestEntry, JsonSerializer.Serialize(manifest, ManifestOptions));
                 WriteText(archive, ProjectEntry, project.ToJsonString());
 
-                // The thumbnail right after the project, stored (a JPEG does not shrink): Explorer's preview reads it alone.
+                // Thumbnail stored (uncompressed JPEG) right after the project for Explorer's preview.
                 if (thumbnail is not null)
                 {
                     using var written = archive.CreateEntry(ProjectThumbnail.BundleEntry, CompressionLevel.NoCompression).Open();
@@ -243,7 +235,7 @@ public static class ProjectBundle
                 {
                     cancel.ThrowIfCancellationRequested();
                     var zipped = archive.CreateEntry(entry, CompressionLevel.NoCompression);
-                    // A ZIP keeps 1980 to 2107 (the manifest keeps the file's own time, put back on unpacking).
+                    // ZIP timestamps span 1980-2107 (the manifest holds the exact time, restored on extraction).
                     zipped.LastWriteTime = info.LastWriteTime < ZipEarliest ? ZipEarliest : info.LastWriteTime > ZipLatest ? ZipLatest : info.LastWriteTime;
                     using var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, CopyBuffer, FileOptions.SequentialScan);
                     using var into = zipped.Open();
@@ -281,9 +273,8 @@ public static class ProjectBundle
     // ----- Unpacking -----
 
     /// <summary>
-    /// Unpacks a bundle into its folder (beside it, else in the projects folder) and returns the project file to open there.
-    /// A folder this very bundle was unpacked into before is used again as it was left: its project is not written over,
-    /// and only the files that are not there whole are copied. Reports the share of bytes copied (0 to 1).
+    /// Extracts a bundle (beside it, else the projects folder) and returns the project path. A folder previously extracted from the same
+    /// bundle is reused as left: the project is not overwritten and only missing or incomplete files are copied. Reports progress 0..1.
     /// </summary>
     public static string Unpack(string bundlePath, IProgress<double>? progress = null, CancellationToken cancel = default)
     {
@@ -351,15 +342,14 @@ public static class ProjectBundle
             }
         }
 
-        // The project, pointed at the unpacked files: written once, never over what the user saved there since.
+        // Rewritten project written once; never overwrites later saves.
         if (!File.Exists(projectPath))
         {
             using var reader = new StreamReader(projectEntry.Open(), Encoding.UTF8);
             var project = JsonNode.Parse(reader.ReadToEnd()) ?? throw new InvalidDataException("The bundle's project is empty.");
 
-            // A bundle is made to be shared: what it carries is untrusted. A hand-edited command never comes out of one (Pack leaves it out
-            // too; one put back by hand would run on Export), and only the bundle's own files are pointed at: a string is rewritten only
-            // when it is exactly one of the manifest's entries, never because it starts with "media/".
+            // Bundle content is untrusted: hand-edited commands are always dropped (they would run on Export), and only strings exactly
+            // matching a manifest entry are rewritten (never by "media/" prefix).
             (project["output"] as JsonObject)?.Remove("manualCommand");
             var entries = manifest.Media.Select(m => m.Entry).ToHashSet(StringComparer.Ordinal);
             Rewrite(project, value => entries.Contains(value) ? InsideOf(folder, value) : null);
@@ -376,8 +366,8 @@ public static class ProjectBundle
     }
 
     /// <summary>
-    /// The folder a bundle unpacks into: the one it was unpacked into before (its marker names it), else the first free one
-    /// of "Name", "Name (2)"... beside it, else (a folder that cannot be written, a read-only drive) in the projects folder.
+    /// Extraction folder: the previous one (identified by its marker), else the first free "Name", "Name (2)", ... beside the bundle,
+    /// else (unwritable location) the projects folder.
     /// </summary>
     private static string FolderFor(FileInfo bundle, string name, string stamp)
     {
@@ -426,7 +416,7 @@ public static class ProjectBundle
         }
     }
 
-    /// <summary>An entry's file inside the folder, or null for a name that would leave it ("..", a rooted name). Also a portable project's media (5.2A).</summary>
+    /// <summary>Resolves an entry inside the folder; null for escaping names ("..", rooted). Also used for portable project media.</summary>
     internal static string? InsideOf(string folder, string entryName)
     {
         if (entryName.Length == 0 || Path.IsPathRooted(entryName))
@@ -439,9 +429,8 @@ public static class ProjectBundle
     // ----- The project's paths -----
 
     /// <summary>
-    /// Properties that hold the user's own words, never a file: a title card's text, names of tracks, layers and markers, captions,
-    /// the speech prompt, Extra options. <see cref="Rewrite"/> never maps them, so a title that happens to read like a path
-    /// ("C:\Users\me\notes.txt") is not shipped as a file in a bundle and does not change on screen.
+    /// Free-text properties (title text, track/layer/marker names, captions, speech prompt, Extra options) that never name files.
+    /// <see cref="Rewrite"/> skips them so path-like text ("C:\Users\me\notes.txt") is neither bundled nor altered.
     /// </summary>
     internal static readonly IReadOnlySet<string> FreeTextKeys = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -449,8 +438,8 @@ public static class ProjectBundle
     };
 
     /// <summary>
-    /// Replaces every string of the JSON that <paramref name="map"/> has another value for (null: kept), at any depth, except the
-    /// <see cref="FreeTextKeys"/> and an effect's text parameters (<see cref="ParamKind.Text"/> in its registry definition).
+    /// Recursively replaces JSON strings mapped by <paramref name="map"/> (null keeps), skipping <see cref="FreeTextKeys"/> and effect
+    /// text parameters (<see cref="ParamKind.Text"/>).
     /// </summary>
     internal static void Rewrite(JsonNode node, Func<string, string?> map)
     {
@@ -506,7 +495,7 @@ public static class ProjectBundle
         }
     }
 
-    /// <summary>A string that names a file on a drive or a share ("D:\clip.mkv", "\\pc\share\a.wav"): what the project reads.</summary>
+    /// <summary>True for an absolute drive or UNC path ("D:\clip.mkv", "\\pc\share\a.wav").</summary>
     internal static bool LooksLikeFilePath(string text) =>
         text.Length is > 3 and < 1024 && !text.Contains("://", StringComparison.Ordinal) && text.IndexOfAny(['\n', '\r', '"', '<', '>', '|']) < 0
         && ((char.IsAsciiLetter(text[0]) && text[1] == ':' && text[2] is '\\' or '/') || text.StartsWith(@"\\", StringComparison.Ordinal));

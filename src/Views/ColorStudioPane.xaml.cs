@@ -16,17 +16,15 @@ using HandPegApp.ViewModels;
 namespace HandPegApp.Views;
 
 /// <summary>
-/// The Color tab: the Color Grade card of what the editing panes work on (<see cref="MainViewModel.EditTarget"/>: a clip, the
-/// blur fill or the Sequence Output), as wheels (Lift, Gamma, Gain, each with its master), curves over the picture's histogram before the
-/// grade, the white balance, exposure, contrast, saturation and vibrance, a LUT and its mix, Color Match (lane B's bar), the whole picture's
-/// Output switches and, while the project still has it, the old Filters grade with Convert. The first edit of a target without a card puts
-/// one on (one step of Undo); a drag is one step, written at most 30 times a second; the card is found again whenever its stack changes
-/// (Undo puts new cards in). Light to make: everything is built the first time the tab is shown, and the histogram is captured only while
-/// it is in sight and the player paused (Law 3).
+/// Color tab: edits the Color Grade card of the current <see cref="MainViewModel.EditTarget"/> (clip, blur fill or Sequence Output) via
+/// Lift/Gamma/Gain wheels with masters, curves over the pre-grade histogram, white balance, exposure, contrast, saturation, vibrance, a
+/// LUT with mix, the Color Match bar, Output switches and, for legacy projects, the old Filters grade with Convert. The first edit adds a
+/// card (one Undo step); a drag is one step written at most 30 times per second; the card is re-resolved whenever its stack changes
+/// (Undo inserts new instances). Built lazily on first show; the histogram is captured only while visible and paused (Law 3).
 /// </summary>
 public partial class ColorStudioPane : UserControl
 {
-    /// <summary>The wheels' cards, in their order: Lift, Gamma, Gain (each its red, green and blue keys).</summary>
+    /// <summary>Wheel cards in display order (Lift, Gamma, Gain), each with its R/G/B parameter keys.</summary>
     internal static readonly (string Title, string R, string G, string B)[] WheelKeys =
     [
         ("Lift", ColorGradeKeys.LiftR, ColorGradeKeys.LiftG, ColorGradeKeys.LiftB),
@@ -34,7 +32,7 @@ public partial class ColorStudioPane : UserControl
         ("Gain", ColorGradeKeys.GainR, ColorGradeKeys.GainG, ColorGradeKeys.GainB),
     ];
 
-    /// <summary>The sliders of the Basics card, in their order.</summary>
+    /// <summary>Basics card slider keys in display order.</summary>
     internal static readonly string[] BasicKeys =
         [ColorGradeKeys.Temperature, ColorGradeKeys.Tint, ColorGradeKeys.Exposure, ColorGradeKeys.Contrast, ColorGradeKeys.Saturation, ColorGradeKeys.Vibrance];
 
@@ -47,7 +45,7 @@ public partial class ColorStudioPane : UserControl
     private EffectInstance? _card;
     private bool _built, _listening, _refreshQueued, _settingControls;
 
-    // The parts, made by Build.
+    // UI parts created by Build.
     private TextBlock _targetLabel = null!, _empty = null!;
     private ToggleButton _sequenceToggle = null!, _compareEye = null!;
     private Button _resetButton = null!;
@@ -58,8 +56,8 @@ public partial class ColorStudioPane : UserControl
     private TextBox _lutBox = null!;
 
     /// <summary>
-    /// A slider of the card's: its parameter, the slider, its value box, whether the slider's thumb is held, and the box's text as the pane
-    /// last put it (5.6A: a box whose text is still that holds no edit of the user's: leaving it writes nothing, and an Undo refreshes it).
+    /// One card slider row: parameter, slider, value box, thumb-held flag, and the box text last written by the pane (while the box still
+    /// shows it, it holds no user edit: leaving it writes nothing and Undo refreshes it).
     /// </summary>
     private sealed class SliderRow(EffectParam param, Slider slider, TextBox box)
     {
@@ -83,9 +81,9 @@ public partial class ColorStudioPane : UserControl
     }
 
     /// <summary>
-    /// Wires the pane to the window (MainWindow.ColorStudio.cs, as the tab is realized): the view model (whose edit target it follows,
-    /// <see cref="MainViewModel.EditTarget"/>), the capture of the input still (the frame without a card:
-    /// GpuPreviewEngine.CaptureInputThumbnailAsync) and Color Match's bar. Nothing is built or listened to until the tab is shown.
+    /// Connects the pane on tab realization (MainWindow.ColorStudio.cs): the view model (follows <see cref="MainViewModel.EditTarget"/>),
+    /// the ungraded input-still capture (GpuPreviewEngine.CaptureInputThumbnailAsync) and the Color Match bar factory. Nothing is built
+    /// or subscribed until the tab is shown.
     /// </summary>
     public void Attach(MainViewModel viewModel, Func<Guid, Task<(byte[] Bgra, int Width, int Height)?>> capture,
         Func<Func<ColorGradeTarget>, FrameworkElement?>? colorMatch)
@@ -95,17 +93,17 @@ public partial class ColorStudioPane : UserControl
         Wake();
     }
 
-    /// <summary>The Compare eye was switched (on: the player splits Before and After at a divider).</summary>
+    /// <summary>Raised when the Compare eye toggles (on: the player shows a Before/After split at a divider).</summary>
     public event Action<bool>? CompareToggled;
 
-    /// <summary>The Compare eye shown on or off (the window's state: a hotkey may have changed it).</summary>
+    /// <summary>Syncs the Compare eye to the window state (a hotkey may have changed it).</summary>
     public void ShowCompare(bool on)
     {
         if (_built && _compareEye.IsChecked != on)
             _compareEye.IsChecked = on;
     }
 
-    // ----- For the goldens -----
+    // ----- Golden test hooks -----
 
     internal bool IsBuilt => _built;
 
@@ -117,14 +115,14 @@ public partial class ColorStudioPane : UserControl
 
     internal ColorCurvesControl Curves => _curves;
 
-    /// <summary>Retargets the pane by hand (the goldens; the window's pane follows the Effects pane).</summary>
+    /// <summary>Explicit retarget for goldens (in the app, the pane follows the Effects pane's target).</summary>
     internal void SetTargetForTests(ColorGradeTarget target)
     {
         _vm?.SetEditTarget(target);
         SetTarget(target);
     }
 
-    // ----- Built and listening only while shown -----
+    // ----- Lazy build and visibility-scoped subscriptions -----
 
     private void Wake()
     {
@@ -170,7 +168,7 @@ public partial class ColorStudioPane : UserControl
     {
         switch (e.PropertyName)
         {
-            // A paused scrub: captured once it rests; keyed values follow the playhead.
+            // Paused scrub: recapture once it rests; keyed values track the playhead.
             case nameof(MainViewModel.PositionMs):
                 if (_card is { Keys.Count: > 0 })
                     QueueRefresh();
@@ -188,9 +186,9 @@ public partial class ColorStudioPane : UserControl
         }
     }
 
-    // ----- The target -----
+    // ----- Target -----
 
-    /// <summary>The view model's edit target taken (it changed, or the tab was shown).</summary>
+    /// <summary>Adopts the view model's edit target (on change or when the tab is shown).</summary>
     private void Retarget()
     {
         if (!_built)
@@ -224,8 +222,8 @@ public partial class ColorStudioPane : UserControl
     private void Stack_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => Resolve();
 
     /// <summary>
-    /// The target's card found again (a new target, a stack changed: Undo puts new cards in), and the controls shown from it. A target that
-    /// cannot be graded (5.6A: a sound clip can be the Effects pane's) has no card here, whatever its stack holds: nothing writes to it.
+    /// Re-resolves the target's card (new target, or a stack change since Undo inserts new instances) and refreshes the controls.
+    /// Non-gradable targets (e.g. an audio clip selected in the Effects pane) never get a card here, so nothing writes to them.
     /// </summary>
     private void Resolve()
     {
@@ -244,7 +242,7 @@ public partial class ColorStudioPane : UserControl
             _card.ValueChanged += Card_ValueChanged;
     }
 
-    // A value changed elsewhere (the Effects pane's card, Color Match, keyframes): shown once the burst is over.
+    // External value change (Effects pane card, Color Match, keyframes): refresh once per burst.
     private void Card_ValueChanged(EffectInstance card, string key)
     {
         if (!_writing)
@@ -263,10 +261,10 @@ public partial class ColorStudioPane : UserControl
         }, DispatcherPriority.DataBind);
     }
 
-    /// <summary>Where the playhead is in the target's own time (a clip's keys count from its start; the Sequence Output's from 0).</summary>
+    /// <summary>Playhead in target-local seconds (clip keys are relative to clip start; Sequence Output keys to 0).</summary>
     private double ClipTime => (_vm?.PositionMs ?? 0) / 1000 - (_target.Layer?.StartTime ?? 0);
 
-    /// <summary>A value as the card has it now (its keys at the playhead when it has some); a new card's when there is no card.</summary>
+    /// <summary>Current card value (keyframed value at the playhead if keyed); the registry default when there is no card.</summary>
     private double ValueOf(string key)
     {
         if (_card is not { } card)
@@ -274,7 +272,7 @@ public partial class ColorStudioPane : UserControl
         return card.HasKeys(key) ? EasingCurves.ValueAt(card.GetKeys(key), Math.Max(ClipTime, 0)) : card.Get(key);
     }
 
-    /// <summary>Every control shown from the card (a control under a gesture keeps what the gesture made).</summary>
+    /// <summary>Refreshes all controls from the card; controls mid-gesture keep their gesture value.</summary>
     private void RefreshControls()
     {
         if (!_built || _vm is not { } vm)
@@ -305,7 +303,7 @@ public partial class ColorStudioPane : UserControl
                 var value = ValueOf(row.Param.Key);
                 row.Slider.Value = value;
 
-                // A box being typed into keeps its text; a focused one the user has not edited follows (an Undo, a retarget: 5.6A).
+                // Boxes with pending typing keep their text; focused but unedited boxes follow (Undo, retarget).
                 if (BoxFollows(row.Box.IsKeyboardFocusWithin, row.Box.Text, row.Shown))
                     row.Box.Text = row.Shown = Format(row.Param, value);
             }
@@ -323,8 +321,8 @@ public partial class ColorStudioPane : UserControl
     }
 
     /// <summary>
-    /// Whether a box shows the value as it is now (5.6A): an unfocused one always; a focused one only while its text is still what was last
-    /// shown (an Undo with the box still focused after Enter), so text being typed is never overwritten. Pure (the goldens).
+    /// True when a box should display the current value: always when unfocused; when focused, only while its text equals the last shown
+    /// text (e.g. Undo after Enter), so in-progress typing is never overwritten. Pure; golden-tested.
     /// </summary>
     internal static bool BoxFollows(bool focused, string text, string shown) => !focused || text == shown;
 
@@ -334,14 +332,14 @@ public partial class ColorStudioPane : UserControl
         return value.ToString("F" + decimals, CultureInfo.InvariantCulture) + param.Unit;
     }
 
-    // ----- Building (the first time the tab is shown) -----
+    // ----- Build (first show) -----
 
     private void Build()
     {
         _built = true;
         var definition = EffectRegistry.Find(EffectRegistry.ColorStudio);
 
-        // The header: what is graded, the Sequence Output, the Compare eye, Reset.
+        // Header: target label, Sequence Output toggle, Compare eye, Reset.
         var header = new DockPanel { Margin = new Thickness(0, 0, 0, 8), LastChildFill = true };
         DockPanel.SetDock(header, Dock.Top);
         _resetButton = new Button { Content = "Reset", Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Reset the whole grade" };
@@ -380,7 +378,7 @@ public partial class ColorStudioPane : UserControl
         var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Content = _body };
         Root.Children.Add(scroller);
 
-        // The wheels, side by side.
+        // Wheels in a three-column row.
         var wheels = new UniformGrid { Columns = 3 };
         for (var i = 0; i < 3; i++)
         {
@@ -399,14 +397,14 @@ public partial class ColorStudioPane : UserControl
 
         _body.Children.Add(InspectorCard("Wheels", wheels));
 
-        // The curves, over the input's histogram.
+        // Curves over the input histogram.
         _curves = new ColorCurvesControl { MaxWidth = 420, HorizontalAlignment = HorizontalAlignment.Left };
         _curves.EditStarted += BeginGesture;
         _curves.EditEnded += EndGesture;
         _curves.CurveChanged += (channel, text) => QueueText(ColorGradeKeys.Curves[channel], text);
         _body.Children.Add(InspectorCard("Curves", _curves));
 
-        // The white balance, exposure and the rest.
+        // Basics: white balance, exposure, contrast, saturation, vibrance.
         var basics = new StackPanel();
         foreach (var key in BasicKeys)
         {
@@ -417,7 +415,7 @@ public partial class ColorStudioPane : UserControl
         _body.Children.Add(InspectorCard("Basics", basics));
         _body.Children.Add(InspectorCard("LUT", LutRows(definition)));
 
-        // Color Match (lane B's bar), when there is one.
+        // Color Match bar, when the host provides one.
         if (_colorMatch?.Invoke(() => _target) is { } match)
             _body.Children.Add(InspectorCard("Color Match", match));
 
@@ -425,7 +423,7 @@ public partial class ColorStudioPane : UserControl
         _body.Children.Add(LegacyFold());
     }
 
-    /// <summary>An inspector card (CLAUDE.md 10.3): its title over its content, on the cards' surface and edge.</summary>
+    /// <summary>Inspector card: title above content on the InspectorCard surface and border brushes.</summary>
     private static Border InspectorCard(string title, UIElement content)
     {
         var stack = new StackPanel();
@@ -440,7 +438,7 @@ public partial class ColorStudioPane : UserControl
         return card;
     }
 
-    /// <summary>A number of the card as a row: its name (double-click: back to its default), a slider and a value box.</summary>
+    /// <summary>Numeric parameter row: label (double-click resets to default), slider and value box.</summary>
     private FrameworkElement Row(EffectParam param)
     {
         var grid = new Grid { Margin = new Thickness(0, 2, 0, 2) };
@@ -496,8 +494,8 @@ public partial class ColorStudioPane : UserControl
     }
 
     /// <summary>
-    /// A value box's text written (Enter, or the box left): only text the user changed (5.6A: leaving an untouched box adds no card, key or
-    /// step, and never writes a value an Undo took back); its unit stripped when the parameter has one (Temperature and the rest have none).
+    /// Commits a value box on Enter or blur, only if its text was edited (an untouched box adds no card, key or step, and never reapplies a
+    /// value Undo reverted). Strips the parameter's unit suffix when it has one, then clamps to range.
     /// </summary>
     private void CommitBox(SliderRow row)
     {

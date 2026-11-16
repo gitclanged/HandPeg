@@ -9,12 +9,12 @@ namespace HandPegApp;
 public sealed partial class MaskDrawWindow
 {
     /// <summary>
-    /// The Source Navigator (5.3.1): the whole frame the Cutouts are cut from, small, with the shapes drawn on it and a bright box
-    /// round the part the drawing view shows. A press or a drag in it moves the drawing view there, at the zoom it has.
+    /// Source Navigator: thumbnail of the full source frame with shapes and a highlighted viewport box. Press/drag recentres the drawing
+    /// view at its current zoom.
     /// </summary>
     private sealed class SourceNavigator : FrameworkElement
     {
-        // The tallest it grows in a wide column, for a tall source.
+        // Max height in a wide column (tall sources).
         private const double MostHeight = 220;
 
         private static readonly Brush Back = Frozen(Color.FromRgb(0x10, 0x10, 0x12));
@@ -27,7 +27,7 @@ public sealed partial class MaskDrawWindow
         private BitmapSource? _still;
         private Rect _seen;
 
-        /// <summary>A press or drag asks for the drawing view to be centred on this point of the source (in its pixels).</summary>
+        /// <summary>Requests centring the drawing view on a source-pixel point (press or drag).</summary>
         public event Action<Point>? Navigate;
 
         public SourceNavigator(double sourceWidth, double sourceHeight, ShapeSurface surface)
@@ -44,7 +44,7 @@ public sealed partial class MaskDrawWindow
             InvalidateVisual();
         }
 
-        /// <summary>The part of the source the drawing view shows, in its pixels.</summary>
+        /// <summary>Drawing view's visible source rect (source pixels).</summary>
         public Rect Seen
         {
             get => _seen;
@@ -57,7 +57,7 @@ public sealed partial class MaskDrawWindow
             }
         }
 
-        // The frame, kept to its shape in the room it has.
+        // Frame rect, aspect-fit into available space.
         private Rect Picture
         {
             get
@@ -109,7 +109,7 @@ public sealed partial class MaskDrawWindow
             else
                 dc.DrawRectangle(Brushes.DimGray, null, picture);
 
-            // The shapes, each in its piece's colour.
+            // Shapes in their piece colours.
             var (perX, perY) = (picture.Width / _sourceWidth, picture.Height / _sourceHeight);
             Point On(Point p) => new(picture.X + p.X * perX, picture.Y + p.Y * perY);
             for (var s = 0; s < _surface.Finished.Count; s++)
@@ -129,7 +129,7 @@ public sealed partial class MaskDrawWindow
                 dc.DrawGeometry(null, ShapeSurface.PenOf(_surface.Owners[s]), outline);
             }
 
-            // What the drawing view shows: the rest dimmed, the box bright. The whole frame in view leaves it undimmed, edged only.
+            // Viewport box bright, outside dimmed; when the whole frame is visible, only an outline is drawn.
             var seen = Rect.Intersect(new Rect(On(_seen.TopLeft), On(_seen.BottomRight)), picture);
             if (!seen.IsEmpty && (seen.Width < picture.Width - 0.5 || seen.Height < picture.Height - 0.5))
             {

@@ -8,34 +8,33 @@ using Microsoft.Win32;
 
 namespace HandPegApp;
 
-/// <summary>What the launch window was asked to open.</summary>
+/// <summary>Open request recorded by the launch window.</summary>
 public enum LaunchKind
 {
     Video,
     Project,
 }
 
-/// <param name="Path">The video, or the project file.</param>
-/// <param name="StylePath">The Game Preset to give the video, or null to open it as it is.</param>
+/// <param name="Path">Video or project file.</param>
+/// <param name="StylePath">Game Preset to apply to the video, or null to open it unstyled.</param>
 public sealed record LaunchRequest(LaunchKind Kind, string Path, string? StylePath = null);
 
-/// <summary>A saved project as the launch window's recent list shows it: its entry, and its baked thumbnail decoded small (Pass 5.2D).</summary>
-/// <param name="Thumbnail">The thumbnail; null when the project's file has none.</param>
-/// <param name="ThumbnailVisibility">Its place: shown, kept empty (another row has one), or left out (none has).</param>
+/// <summary>Recent-projects row: entry plus its baked thumbnail decoded at small size.</summary>
+/// <param name="Thumbnail">Thumbnail; null when the project file has none.</param>
+/// <param name="ThumbnailVisibility">Visible, Hidden (reserve space when another row has one) or Collapsed (none do).</param>
 public sealed record RecentProject(ProjectEntry Entry, BitmapSource? Thumbnail, Visibility ThumbnailVisibility)
 {
     public string Name => Entry.Name;
 
     public string SavedText => Entry.SavedText;
 
-    /// <summary>The project's name: what the list's keyboard search and screen readers go by.</summary>
+    /// <summary>Project name for keyboard text search and screen readers.</summary>
     public override string ToString() => Name;
 }
 
 /// <summary>
-/// The launch window, shown over the main window as it starts, when it is switched on in the
-/// settings: a place to drop a video, a way back into a recent project, and style presets as drop targets.
-/// It only records what was asked for; the main window, which owns it, does the opening once it has closed.
+/// Optional launch window over the starting main window: video drop zone, recent projects and Game Preset drop targets. It only
+/// records the request; the owning main window performs the open after it closes.
 /// </summary>
 public partial class SplashWindow : Window
 {
@@ -57,12 +56,12 @@ public partial class SplashWindow : Window
         SquisherPanel.Visibility = squish.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         Closed += (_, _) => EndSquish();
 
-        // The recent projects are read (every file parsed) off the interface thread, and fill in a moment later (4.3E).
+        // Parse recent project files off the UI thread; the list populates shortly after.
         RecentButton.IsEnabled = RecentBox.IsEnabled = false;
         _ = ShowRecentAsync();
     }
 
-    // How tall the recent projects' thumbnails are decoded: the list shows them 40 pixels tall, at up to twice that on a high-DPI screen.
+    // Thumbnail decode height: shown at 40 DIP, up to 2x on high-DPI displays.
     private const int ThumbnailDecodeHeight = 80;
 
     private async Task ShowRecentAsync()
@@ -74,8 +73,7 @@ public partial class SplashWindow : Window
             {
                 var entries = ProjectStore.ListRecent().Take(12).ToList();
 
-                // Each with its baked thumbnail when its file has one (Pass 5.2D), decoded here, off the interface;
-                // a row without one keeps the place empty while another has one, so that the names line up.
+                // Decode baked thumbnails off the UI thread; rows without one reserve the space when others have one so names align.
                 var anyThumbnail = entries.Exists(e => e.Thumbnail is { Length: > 0 });
                 return entries.Select(e =>
                 {
@@ -96,7 +94,7 @@ public partial class SplashWindow : Window
             RecentButton.ToolTip = "There are no saved projects yet. Save one with the Project button in the main window.";
     }
 
-    /// <summary>What to open once this window has closed; null for nothing (a blank project, or the window was simply closed).</summary>
+    /// <summary>Request to open after close; null for none (blank project or dismissed).</summary>
     public LaunchRequest? Request { get; private set; }
 
     private void Finish(LaunchRequest? request)
@@ -113,12 +111,10 @@ public partial class SplashWindow : Window
             Finish(new LaunchRequest(LaunchKind.Project, project.FilePath));
     }
 
-    // ----- The Social Sharing Squisher -----
-    // A video dropped on a preset is not opened: it is squeezed under the preset's size, here. The window
-    // shrinks to a square that shows one still frame of the video with blocks crunching over it and how far
-    // along the encode is, and when it is done the picture is the file: dragged out of the window, it is
-    // dropped wherever a file can be (Discord, a browser, a folder). The file is a temporary one, and goes
-    // when the window closes.
+    // ----- Social Sharing Squisher -----
+    // A video dropped on a preset is encoded under the preset's size limit instead of opened. The window shrinks to a square showing
+    // a still frame with crunching blocks and encode progress; when done, the picture is draggable as the output file (to chat apps,
+    // browsers, folders). The temporary file is deleted when the window closes.
 
     private static readonly string[] SquishTexts =
     [
@@ -133,24 +129,24 @@ public partial class SplashWindow : Window
         "Rounding 60 fps down to enough...", "Hiding the artifacts in the shadows...", "Convincing it that 480p is plenty...", "Wringing out the last kilobits...",
     ];
 
-    /// <summary>Starts squishing a video for a preset, as dropping it on the preset in this window would: for a drop made elsewhere (the main window's overlay).</summary>
-    /// <param name="instant">The window goes to its processing square at once, with no shrinking shown: for a drop on the overlay, which opened it only for this.</param>
+    /// <summary>Starts a squish as a preset drop would, for drops made elsewhere (main window overlay).</summary>
+    /// <param name="instant">Jump straight to the processing square with no shrink animation (overlay-opened window).</param>
     public void StartSquish(string file, SquishPreset preset, bool instant = false) => _ = SquishAsync(file, preset, instant);
 
     public static readonly DependencyProperty ShrinkProperty = DependencyProperty.Register(
         nameof(Shrink), typeof(double), typeof(SplashWindow), new PropertyMetadata(0.0, (d, _) => ((SplashWindow)d).ApplyShrink()));
 
-    /// <summary>How far the window has shrunk to the processing square: 0 as it was, 1 the square. Animated; the window's size and place follow it.</summary>
+    /// <summary>Animated shrink progress (0 = original, 1 = processing square); window size and position follow it.</summary>
     public double Shrink
     {
         get => (double)GetValue(ShrinkProperty);
         set => SetValue(ShrinkProperty, value);
     }
 
-    /// <summary>The hardware encoders this computer has, asked for when a squish starts: they are still being found when the window opens.</summary>
+    /// <summary>Available hardware encoders, resolved at squish start (enumeration may still run when the window opens).</summary>
     public Func<IReadOnlyCollection<string>>? AvailableEncoders { get; set; }
 
-    /// <summary>A squish was started in this window: it is no longer put away by a click elsewhere, since what it made would go with it.</summary>
+    /// <summary>A squish started here: deactivation no longer closes the window (that would delete its output).</summary>
     public bool IsSquishing { get; private set; }
 
     private const double SquareWidth = 380, SquareHeight = 430;
@@ -165,7 +161,7 @@ public partial class SplashWindow : Window
         var (t, full) = (Shrink, _fullSize);
         (Width, Height) = (full.Width + (SquareWidth - full.Width) * t, full.Height + (SquareHeight - full.Height) * t);
 
-        // About its middle: the square ends up where the middle of the window was.
+        // Shrink about the centre so the square ends where the window's centre was.
         (Left, Top) = (full.Left + (full.Width - Width) / 2, full.Top + (full.Height - Height) / 2);
     }
 
@@ -194,7 +190,7 @@ public partial class SplashWindow : Window
         var settings = AppSettings.Current;
         _squishFolder = Path.Combine(SessionPaths.Root, "squish_" + Guid.NewGuid().ToString("N")[..8]);
 
-        // The window as it is, and then down to the square.
+        // Animate from the current bounds to the square.
         _fullSize = (Left, Top, ActualWidth, ActualHeight);
         SizeToContent = SizeToContent.Manual;
         (MainPanel.Visibility, SquishPanel.Visibility) = (Visibility.Collapsed, Visibility.Visible);
@@ -218,7 +214,7 @@ public partial class SplashWindow : Window
 
         try
         {
-            // One still frame, and no player: it comes to the middle as it arrives, and the blocks start on it.
+            // Single still frame (no player), centred on arrival; the block effect starts on it.
             SquishPicture.Thumbnail = await SocialSquisher.ExtractThumbnailAsync(file, Path.Combine(_squishFolder, "thumbnail.jpg"), cancel.Token);
             SquishPicture.IsCrunching = true;
             var arrive = new System.Windows.Media.Animation.DoubleAnimation(0.4, 1, TimeSpan.FromMilliseconds(420)) { EasingFunction = ease };
@@ -246,7 +242,7 @@ public partial class SplashWindow : Window
         }
         catch (OperationCanceledException)
         {
-            // Closed while it was running.
+            // Window closed mid-run.
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
@@ -263,7 +259,7 @@ public partial class SplashWindow : Window
         }
     }
 
-    // The finished picture is the file: pressed and dragged, it is carried out of the window as a file is from Explorer.
+    // Dragging the finished picture starts a file drag-drop (as from Explorer).
     private void SquishPicture_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (_squishedFile.Length == 0 || !File.Exists(_squishedFile))
@@ -276,10 +272,7 @@ public partial class SplashWindow : Window
 
     private void SquishClose_Click(object sender, RoutedEventArgs e) => Close();
 
-    /// <summary>
-    /// Finish: what was squished is cleared away (its file with it), and the window opens out again to the
-    /// screen it started on, ready for another video.
-    /// </summary>
+    /// <summary>Finish: deletes the squished output and restores the window to its original screen, ready for another video.</summary>
     private void SquishFinish_Click(object sender, RoutedEventArgs e)
     {
         EndSquish();
@@ -301,7 +294,7 @@ public partial class SplashWindow : Window
         };
         open.Completed += (_, _) =>
         {
-            // The window is its content's height again, as it was before it shrank.
+            // Restore SizeToContent height as before the shrink.
             BeginAnimation(ShrinkProperty, null);
             Shrink = 0;
             SizeToContent = SizeToContent.Height;
@@ -309,7 +302,7 @@ public partial class SplashWindow : Window
         BeginAnimation(ShrinkProperty, open);
     }
 
-    /// <summary>Stops a squish that is still running, and takes away what it made: the file was only ever a temporary one.</summary>
+    /// <summary>Cancels a running squish and deletes its temporary output.</summary>
     private void EndSquish()
     {
         _squish?.Cancel();
@@ -319,7 +312,7 @@ public partial class SplashWindow : Window
         if (folder.Length == 0)
             return;
 
-        // A moment later, and off this thread: FFmpeg, just told to stop, may still be holding the file.
+        // Delete later off-thread: FFmpeg may still hold the file briefly after being stopped.
         _ = Task.Run(async () =>
         {
             for (var attempt = 0; attempt < 10; attempt++)
@@ -349,7 +342,7 @@ public partial class SplashWindow : Window
         e.Handled = true;
     }
 
-    // The target under the pointer lights up, so it is clear which style a drop would use.
+    // Highlight the drop target under the pointer to show which preset applies.
     private void DropTarget_DragEnter(object sender, DragEventArgs e)
     {
         if (sender is UIElement target && e.Data.GetDataPresent(DataFormats.FileDrop))

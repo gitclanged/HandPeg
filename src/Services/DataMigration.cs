@@ -3,12 +3,9 @@ using System.IO;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Brings over what earlier builds kept next to the program (appsettings.json, presets.json and the "bin" folder
-/// of tools) and in %TEMP%\Handpeg, once per old location. Settings and presets are copied, so the originals stay
-/// as they were; the tools and downloaded videos, which are large and can be fetched again, are moved. Nothing
-/// already in a new location is replaced. The projects HandPeg 1.x kept there (a projects folder of .txt files)
-/// are not brought over: this version opens format 5 projects only. A portable copy's first start brings over the
-/// installed places' settings (<see cref="CopyInstalledIntoPortable"/>).
+/// One-time migration from legacy locations (beside the program: appsettings.json, presets.json, "bin" tools; and %TEMP%\Handpeg).
+/// Settings and presets are copied; large re-downloadable tools and videos are moved. Existing new-location files are never replaced.
+/// Legacy .txt projects are not migrated. Portable first start imports installed settings (<see cref="CopyInstalledIntoPortable"/>).
 /// </summary>
 public static class DataMigration
 {
@@ -27,11 +24,9 @@ public static class DataMigration
     }
 
     /// <summary>
-    /// Velopack's portable build kept its data in the installed places until Pass 4.1C.2 (AppPaths asked Velopack before
-    /// Velopack could answer): its first start with its own HandPeg-Data folder, still without settings there, copies
-    /// what the installed places hold, so nobody's settings, presets, projects, styles, effect presets or masks seem to
-    /// vanish. Copied, never moved: the originals stay for an installed copy. Voiceover recordings (large, and found by
-    /// the projects where they are), tools, caches and logs stay where they are; tools are downloaded again if wanted.
+    /// Older portable builds stored data in installed locations; on first start with an empty HandPeg-Data, copy (never move) settings,
+    /// presets, projects, styles, effect presets and masks so nothing appears lost. Voiceovers (referenced in place), tools, caches and
+    /// logs are not copied.
     /// </summary>
     private static void CopyInstalledIntoPortable()
     {
@@ -45,8 +40,7 @@ public static class DataMigration
         AppLog.Write($"Portable copy: {copied} file(s) of the installed settings and user files brought into {AppPaths.DataRoot}.");
     }
 
-    // Every file of a folder and its subfolders that the target lacks; the number copied. A file that cannot be read
-    // (in use by an installed copy that is running) is left out, and the rest still copied.
+    // Recursively copies files missing from the target, returning the count; unreadable (locked) files are skipped.
     private static int CopyFolderIfAbsent(string source, string target)
     {
         if (!Directory.Exists(source))
@@ -100,8 +94,7 @@ public static class DataMigration
     }
 
     /// <summary>
-    /// The downloads cache used to be in the temp folder, which was spelled "Handpeg". Windows treats that
-    /// as the same folder as "HandPeg", so the name on disk is corrected too, when nothing in it is in use.
+    /// Legacy downloads cache lived in %TEMP%\Handpeg; also fixes the on-disk casing to "HandPeg" when nothing inside is in use.
     /// </summary>
     private static void MigrateTempFolder()
     {

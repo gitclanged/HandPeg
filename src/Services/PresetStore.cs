@@ -5,8 +5,8 @@ using HandPegApp.Models;
 namespace HandPegApp.Services;
 
 /// <summary>
-/// Reads and writes presets.json in the settings folder (see <see cref="AppPaths"/>): the user's own Export Presets ("My Presets").
-/// The built-in ones are in code (<see cref="ExportPresetCatalog"/>, 5.4B) and never written here.
+/// Persists custom Export Presets ("My Presets") in presets.json in the settings folder (<see cref="AppPaths"/>). Built-ins live in code
+/// (<see cref="ExportPresetCatalog"/>) and are never written here.
 /// </summary>
 public static class PresetStore
 {
@@ -25,11 +25,10 @@ public static class PresetStore
         Interlocked.Exchange(ref _early, null) is { } early ? early.GetAwaiter().GetResult() : Load();
 
     /// <summary>
-    /// The user's saved presets (none on a first launch: the built-ins are <see cref="ExportPresetCatalog.BuiltIns"/>). Read on a thread
-    /// of its own at launch (<see cref="LoadEarly"/>), so what it brings up to date is done off the window's thread (Law 1): the built-ins
-    /// of 5.4A and before, written into the file then, leave it while they are as HandPeg made them (a changed one stays, the user's
-    /// own); a preset named as a built-in is now is renamed "(Custom)"; and a Smart Rule or the default preset naming a built-in by its
-    /// old name, or a preset just renamed, is given its new one (<see cref="AppSettings.RenamePresetReferences"/>, saved at once).
+    /// Custom presets (empty on first launch; built-ins are <see cref="ExportPresetCatalog.BuiltIns"/>). Loaded on a dedicated thread at
+    /// launch (<see cref="LoadEarly"/>) so migration stays off the UI thread (Law 1): untouched legacy built-ins are removed (modified ones
+    /// stay), presets colliding with a built-in name get "(Custom)", and Smart Rule / default-preset references follow renames
+    /// (<see cref="AppSettings.RenamePresetReferences"/>, saved immediately).
     /// </summary>
     public static List<EncodingPreset> Load()
     {
@@ -42,7 +41,7 @@ public static class PresetStore
                 break;
 
             case ReadOutcome.Unreadable:
-                // The file is there but cannot be opened: run with the built-ins and never write over it this session (Save refuses).
+                // File exists but cannot be opened: use built-ins only and never overwrite it this session (Save refuses).
                 AppLog.Write($"Presets: {FilePath} could not be read; this session uses the built-in presets and does not write the file", error!);
                 ReadFailed = true;
                 return [];
@@ -61,8 +60,7 @@ public static class PresetStore
         var renamed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var changed = Migrate(presets, renamed);
 
-        // The presets file is written back below, so the old name is not there to follow next time: the settings keep the new one.
-        // Update is safe off the window's thread (one lock) and saves on a background write, so nothing here writes on the UI thread.
+        // The presets file is rewritten below, so persist renamed references now. Update is thread-safe and saves in the background.
         var references = ReferenceRenames(renamed);
         AppSettings.UpdateIf(settings => settings.RenamePresetReferences(references, name => presets.Any(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase))));
 
@@ -74,7 +72,7 @@ public static class PresetStore
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // The settings folder cannot be written to: the presets still work for this session, and are brought up to date again next time.
+                // Settings folder unwritable: presets work this session and migrate again next launch.
             }
         }
 
@@ -82,9 +80,8 @@ public static class PresetStore
     }
 
     /// <summary>
-    /// Brings a list read from presets.json up to 5.4B (see <see cref="Load"/>): an old built-in still as HandPeg made it goes, a
-    /// preset named as a built-in is renamed (old name to new into <paramref name="renamed"/>, for the references to follow), and nothing
-    /// the file holds is marked built-in. Whether anything changed (to write back).
+    /// Migrates a loaded list (see <see cref="Load"/>): removes untouched legacy built-ins, renames built-in name collisions (recorded in
+    /// <paramref name="renamed"/>), and clears built-in markers. Returns true if anything changed.
     /// </summary>
     internal static bool Migrate(List<EncodingPreset> presets, Dictionary<string, string>? renamed = null)
     {
@@ -107,9 +104,8 @@ public static class PresetStore
     }
 
     /// <summary>
-    /// The renames a Smart Rule or the default preset follows: the built-ins' (<see cref="ExportPresetCatalog.RenamedBuiltIns"/>), then
-    /// the user's own presets <see cref="Migrate"/> renamed "(Custom)", which win, so a reference to one never lands on the built-in that
-    /// now has its old name.
+    /// Rename map for references: built-in renames (<see cref="ExportPresetCatalog.RenamedBuiltIns"/>) overridden by "(Custom)" renames from
+    /// <see cref="Migrate"/>, so references never land on a built-in that took the old name.
     /// </summary>
     internal static Dictionary<string, string> ReferenceRenames(IReadOnlyDictionary<string, string> migrated)
     {
@@ -119,7 +115,7 @@ public static class PresetStore
         return references;
     }
 
-    /// <summary>A name for a user's preset that no built-in and no other preset of <paramref name="presets"/> has: the name, else "Name (Custom)", "Name (Custom 2)"...</summary>
+    /// <summary>Unique custom preset name versus built-ins and <paramref name="presets"/>: the name, else "Name (Custom)", "Name (Custom 2)", ...</summary>
     public static string UniqueName(string name, IEnumerable<EncodingPreset> presets)
     {
         var taken = presets.Select(p => p.Name).ToList();
@@ -135,7 +131,7 @@ public static class PresetStore
         }
     }
 
-    // Whether a stored preset still has the export fields an old built-in was made with (its layout fields were never set by one).
+    // True when a stored preset's export fields match a legacy built-in (built-ins never set layout fields).
     private static bool SameExport(EncodingPreset old, EncodingPreset stored)
     {
         static string Rate(string value) => value == "Same as source" ? "Match Project Settings" : value;
@@ -146,9 +142,8 @@ public static class PresetStore
                && old.AudioBitrate == stored.AudioBitrate && old.TargetFileSize == stored.TargetFileSize && old.Container == stored.Container;
     }
 
-    // Whether everything a saved preset holds and an old built-in never set is still as a new preset has it: a user who saved their own
-    // layout, sound, look or captions over an old built-in's name keeps it. One field at a time ("Same as source" is the old spelling
-    // of "Match Project Settings"), not the whole JSON: other defaults changed in 5.4B, and an untouched built-in must still match.
+    // True when all fields a legacy built-in never set still hold defaults, so customized layout, audio, look or captions are kept.
+    // Compared per field ("Same as source" = legacy "Match Project Settings"), not as JSON, since other defaults have since changed.
     private static bool UntouchedByUser(EncodingPreset stored)
     {
         var fresh = new EncodingPreset();
@@ -175,7 +170,7 @@ public static class PresetStore
         return picture && tuning && sound && layout && captions && look;
     }
 
-    /// <summary>Writes the user's own presets (a built-in one is left out: it is HandPeg's, in code).</summary>
+    /// <summary>Writes custom presets (built-ins excluded).</summary>
     public static void Save(IEnumerable<EncodingPreset> presets)
     {
         if (ReadFailed)
@@ -183,12 +178,12 @@ public static class PresetStore
         AtomicFile.WriteAllText(FilePath, JsonSerializer.Serialize(presets.Where(p => !p.IsBuiltIn), JsonOptions), durable: true, keepPrevious: true);
     }
 
-    /// <summary>True when presets.json existed at start but could not be opened: <see cref="Save"/> refuses to write over it this session.</summary>
+    /// <summary>True when presets.json existed but could not be opened; <see cref="Save"/> then refuses to overwrite it.</summary>
     internal static bool ReadFailed { get; private set; }
 
     private enum ReadOutcome { Read, Missing, Unreadable, Damaged }
 
-    /// <summary>Reads one presets file; open failures are retried briefly, anything wrong with the content is Damaged.</summary>
+    /// <summary>Reads a presets file; open failures are briefly retried, invalid content is Damaged.</summary>
     private static ReadOutcome TryRead(string path, out List<EncodingPreset>? presets, out Exception? error)
     {
         (presets, error) = (null, null);
@@ -243,8 +238,8 @@ public static class PresetStore
     }
 
     /// <summary>
-    /// The presets HandPeg 5.4A and before wrote into presets.json at its first launch, as it wrote them (the rate control and bitrate
-    /// those versions defaulted to spelled out): the ones still as they were are taken out of the file (<see cref="Migrate"/>).
+    /// Legacy built-ins as older versions seeded them into presets.json (with their implicit rate control and bitrate); untouched copies
+    /// are removed by <see cref="Migrate"/>.
     /// </summary>
     internal static List<EncodingPreset> LegacyBuiltIns() => LegacyDefaults().Select(p =>
     {
@@ -256,7 +251,7 @@ public static class PresetStore
         return p;
     }).ToList();
 
-    // The 5.4A built-ins (CreateDefaults then); LegacyBuiltIns puts back the rate control and bitrate those versions defaulted to.
+    // Legacy CreateDefaults output; LegacyBuiltIns restores the rate control and bitrate those versions implied.
     private static List<EncodingPreset> LegacyDefaults() =>
     [
         // No encoding: the streams are copied as they are. For cutting, joining and changing the container.

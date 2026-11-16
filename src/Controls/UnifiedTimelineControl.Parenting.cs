@@ -6,51 +6,50 @@ using System.Windows.Threading;
 
 namespace HandPegApp;
 
-// ----- Fluid drags and child layers (5.5A, the user's directive) -----
-// What a move wakes is held back while the pointer sweeps past it: a "+ New Track" seam and a clip's tether wake only once the pointer has
-// settled on them (DragSettle: under 60 DIP/s for 75 ms, or still), never in Transit (over 160 DIP/s), and stay awake until Transit once
-// woken; a move changes rows only past a 6 DIP deadzone beyond the row it is on; Shift on a move that has left its lane keeps its time.
-// Two ways to make a child layer: a clip let go on the bottom edge of a clip it overlaps on another lane (or anywhere on it with Alt pressed
-// during the move) is tethered to it, a curve drawn to it with "Attach as Child of ..." (the host makes it that clip's child: its Link
-// switch unlinks it); a track's header dragged to a seam between the picture tracks moves the track with its Sub-Lanes there (a Sub-Lane
-// leaves its stack), and dragged right onto the lower half of another top-level picture track's header makes it that track's Sub-Lane.
-// All of it on the UI thread; the dwell's timer runs only while a drag rests in a window, and nothing of it is made before the first drag.
+// ----- Velocity-gated drags and child layers -----
+// "+ New Track" seams and tethers activate only once the pointer settles (DragSettle: < 60 DIP/s for 75 ms, or still), never in Transit
+// (> 160 DIP/s), and stay active until the next Transit. Row changes need a 6 DIP deadzone past the current row; Shift off-lane keeps time.
+// Child layers: (1) a clip released on the bottom-edge band of an overlapped clip on another lane (anywhere on it with Alt mid-move) is
+// tethered, drawn as a curve with "Attach as Child of ..." (the Link switch undoes it); (2) a header dragged to a seam between video tracks
+// moves the track with its Sub-Lanes (a Sub-Lane leaves its stack), or dragged right onto another top-level video header's lower half
+// nests it as a Sub-Lane. UI thread only; the dwell timer runs only while a drag rests in a window, and nothing is allocated before the
+// first drag.
 public sealed partial class UnifiedTimelineControl
 {
-    // How far (DIPs) a move goes past the row it is on before it changes rows; how far right a header goes to nest; a tether's band.
+    // DIPs: row-change deadzone, rightward header offset to nest, tether band height.
     private const double VerticalDeadzone = 6, NestIndent = 18, AttachBand = 14;
 
-    // The pointer's speed for the drags, made at the first one.
+    // Pointer velocity tracker for drags (created on first drag).
     private DragSettle? _settle;
 
     private DragSettle Settle => _settle ??= new DragSettle();
 
-    /// <summary>The drags' clock, ms (MomentumScroller.Now when null). Test seam.</summary>
+    /// <summary>Test seam: drag clock in ms (MomentumScroller.Now when null).</summary>
     internal Func<double>? Clock { get; set; }
 
     private double Now() => Clock?.Invoke() ?? MomentumScroller.Now();
 
-    // The dwell's look again (WPF raises no move while the pointer rests): made at a drag's first move, dropped as the drag ends. While a
-    // move of one block rests with the button held it ticks on every SettleMs (Input priority), watching the keys (RestTick, 5.5A review).
+    // Dwell re-evaluation timer (WPF raises no moves while the pointer rests): created on a drag's first move, dropped at drag end. While a
+    // single-block move rests with the button held it ticks every SettleMs at Input priority, polling modifiers (RestTick).
     private DispatcherTimer? _settleTimer;
 
-    /// <summary>Whether a track's header may be dragged (5.5A): the host's say for the row (a picture track's).</summary>
+    /// <summary>Host predicate: may this row's header be dragged (video tracks).</summary>
     public Func<TimelineRow, bool>? CanDragRow { get; set; }
 
-    /// <summary>Whether a dragged header's row may go to a seam beside a top-level picture row (that row, and above it: true); asked once a seam in a drag.</summary>
+    /// <summary>Host predicate: may the dragged row move to the seam beside a top-level video row (row, above); queried once per seam per drag.</summary>
     public Func<TimelineRow, TimelineRow, bool, bool>? CanMoveRowTo { get; set; }
 
-    /// <summary>Whether a dragged header's row may become a Sub-Lane of another top-level picture row; asked once a row in a drag.</summary>
+    /// <summary>Host predicate: may the dragged row nest as a Sub-Lane of a top-level video row; queried once per row per drag.</summary>
     public Func<TimelineRow, TimelineRow, bool>? CanNestRow { get; set; }
 
-    /// <summary>A dragged header let go at a seam (5.5A): the row, the top-level picture row the seam is beside, and whether above it.</summary>
+    /// <summary>Header released at a seam: (row, adjacent top-level video row, above).</summary>
     public event Action<TimelineRow, TimelineRow, bool>? RowMoveRequested;
 
-    /// <summary>A dragged header let go nested (5.5A): the row, and the top-level picture row it is to be a Sub-Lane of (its stack is opened).</summary>
+    /// <summary>Header released as a nest: (row, new parent top-level video row); the parent's stack is expanded.</summary>
     public event Action<TimelineRow, TimelineRow>? RowNestRequested;
 
-    // A track's header pressed (held for a drag) or dragged: its row, where it was pressed (the control's x, the rows' y), whether the drag
-    // has begun, the pointer's last place on the control, the seam or the row to nest under it is over, and the host's answers so far.
+    // Header drag state: row, press point (control x, row y), started flag, last pointer (control space), current seam or nest target,
+    // and cached host answers.
     private sealed class RowDrag
     {
         public required TimelineRow Row { get; init; }
@@ -66,11 +65,10 @@ public sealed partial class UnifiedTimelineControl
 
     private RowDrag? _rowDrag;
 
-    // ----- The dwell -----
+    // ----- Dwell -----
 
-    // A move of a drag that waits on the dwell: its look again once the pointer has rested past it (in a window only: never in a test).
-    // Started once and left running while moves come (never restarted at every move: a fast mouse sends a thousand a second); its tick
-    // waits on for what is left of the dwell when the pointer moved meanwhile.
+    // Arms the dwell timer to re-evaluate once the pointer rests (window-hosted only, never in tests). Started once and left running
+    // across moves (not restarted per move: high-rate mice send ~1000/s); the tick reschedules for the remaining dwell if moved since.
     private void RestSoon()
     {
         if (_settleTimer is { IsEnabled: true } || PresentationSource.FromVisual(this) is null)
@@ -105,7 +103,7 @@ public sealed partial class UnifiedTimelineControl
         if (Mouse.LeftButton != MouseButtonState.Pressed)
             return;
 
-        // (Started again only while it is still the drag's: a look that ended the drag has dropped it.)
+        // Restart only if still current: an evaluation that ended the drag has already dropped the timer.
         if (RestTick(Now(), Keyboard.Modifiers) is { } wait && ReferenceEquals(_settleTimer, timer))
         {
             timer.Interval = TimeSpan.FromMilliseconds(wait);
@@ -114,11 +112,10 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The dwell's timer at <paramref name="nowMs"/>, <paramref name="keys"/> held (5.5A). Moved since it was started: it waits on for the rest of
-    /// the dwell from the last move. Rested past it: the drag looks again once for what it is over (a zone may wake), with the keys as they are
-    /// now; then (5.5A review), while a move of one block rests with the button held, it looks at the keys every <see cref="DragSettle.SettleMs"/>
-    /// and looks again only when they changed (Alt pressed at rest tethers at once, Shift keeps its time once it is off its lane). The wait to
-    /// the next tick (ms), or null to stop. Test seam (the timer is made only in a window).
+    /// Test seam: dwell tick at <paramref name="nowMs"/> with <paramref name="keys"/>. If moved recently, waits out the remaining dwell.
+    /// Once rested, re-evaluates targets once with current modifiers; then, while a single-block move rests, polls modifiers every
+    /// <see cref="DragSettle.SettleMs"/> and re-evaluates only on change (Alt tethers immediately, Shift keeps time off-lane).
+    /// Returns ms until the next tick, or null to stop.
     /// </summary>
     internal double? RestTick(double nowMs, ModifierKeys keys)
     {
@@ -138,7 +135,7 @@ public sealed partial class UnifiedTimelineControl
         return OneMove() is not null ? DragSettle.SettleMs : null;
     }
 
-    /// <summary>The pointer at rest at <paramref name="nowMs"/>: a drag looks again for what it is over (a zone may wake). Test seam.</summary>
+    /// <summary>Test seam: pointer at rest at <paramref name="nowMs"/>; re-evaluates drag targets (zones may activate).</summary>
     internal void SettleTick(double nowMs)
     {
         if (_rowDrag is { Started: true } rowDrag)
@@ -147,10 +144,10 @@ public sealed partial class UnifiedTimelineControl
             Follow(drag, _lastPointer, pointerMoved: true, nowMs);
     }
 
-    // ----- A move's rows: the deadzone -----
+    // ----- Row deadzone -----
 
-    // The lane a move is over: the row it is on (its own, or the one it is over) while the pointer is within the deadzone past its edges,
-    // else the open lane under the pointer (a thin lane of a closed stack stands for its open row).
+    // Lane for a move: the current row (own or target) while within the deadzone past its edges, else the open lane under the pointer
+    // (thin lanes of collapsed stacks map to their open row).
     private int StickyLaneAt(BlockDrag drag, double y)
     {
         if (LaneOf(drag.Target ?? drag.Row) is >= 0 and var at && y >= _lanes[at].Top - VerticalDeadzone && y < _lanes[at].Bottom + LaneGap + VerticalDeadzone)
@@ -158,13 +155,12 @@ public sealed partial class UnifiedTimelineControl
         return OpenLaneOf(LaneAt(y));
     }
 
-    // ----- Way 2: a clip tethered to a clip -----
+    // ----- Clip tether -----
 
     /// <summary>
-    /// The clip a move is tethered to at <paramref name="laid"/> (5.5A): a clip on another lane drawn in full that the dragged block overlaps
-    /// in time, the pointer on the band along its bottom edge (just above a "+ New Track" seam's band there, never on it) once settled or
-    /// still awake from before; with Alt pressed during the move (not at the press: a slip, a cut), anywhere on it but a seam's band, at
-    /// once. The host says whether it may be (its name for the pill). Only a move of one block (never a group) the host offers it for.
+    /// Tether target at <paramref name="laid"/>: a time-overlapping clip on another full-size lane, with the pointer in its bottom-edge band
+    /// (above any "+ New Track" seam band) once settled or still active; with Alt pressed mid-move (not at press, which slips), anywhere on it
+    /// except seam bands, immediately. The host's CanAttachTo approves and names the pill. Single-block moves only, never groups.
     /// </summary>
     private (TimelineRow Row, TimelineBlock Block, string Name)? AttachAt(BlockDrag drag, Point laid, double nowMs)
     {
@@ -212,9 +208,9 @@ public sealed partial class UnifiedTimelineControl
         return null;
     }
 
-    // ----- Way 1: a track's header dragged -----
+    // ----- Header drag (move or nest a track) -----
 
-    // A header pressed on its name: held for a drag when the host lets the row be dragged (at: the control's x, the rows' y).
+    // Header name press: arms a row drag if CanDragRow allows (at: control x, row y).
     private bool ArmRowDrag(TimelineRow row, Point at, double nowMs)
     {
         var may = false;
@@ -227,7 +223,7 @@ public sealed partial class UnifiedTimelineControl
         return true;
     }
 
-    // A move of a held header (the control's own point): the speed sampled, and what it is over looked for.
+    // Header drag move (control space): samples velocity and re-evaluates the target.
     private void FollowRowDrag(Point point, double nowMs)
     {
         if (_rowDrag is not { } drag)
@@ -241,10 +237,9 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// What a header's drag is over (5.5A). It begins once the pointer has gone past the system's drag distance from the press. Then: right
-    /// of the press by <see cref="NestIndent"/> or more over the lower half of another top-level picture row's header, once settled (or
-    /// still awake from before), a nest under that row; else the seam between the picture tracks nearest the pointer, at once (a seam
-    /// moves a track, it makes none). Each only where the host says it may.
+    /// Header drag target, starting past the system drag distance. At least <see cref="NestIndent"/> right of the press over the lower half
+    /// of another top-level video header, once settled (or still active): nest under it. Otherwise the nearest seam between video tracks,
+    /// immediately (moves the track; creates none). Each requires host approval.
     /// </summary>
     private void EvaluateRowDrag(RowDrag drag, Point point, double nowMs)
     {
@@ -265,7 +260,7 @@ public sealed partial class UnifiedTimelineControl
             WatchEscape(true);
         }
 
-        // 5.5A review: a Sub-Lane over its own family's rows (but their outer seam bands) is over nothing: let go there, nothing changes.
+        // A Sub-Lane over its own family (inside the outer seam bands) targets nothing, so releasing there is a no-op.
         var (seam, nest) = (drag.Seam, drag.Nest);
         BuildSeamGroups();
         drag.Nest = NestAt(drag, point.X, laidY, nowMs);
@@ -278,7 +273,7 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
-    // The top-level picture row a dragged header would be nested under at this point, or null.
+    // Top-level video row the dragged header would nest under at this point, or null.
     private TimelineRow? NestAt(RowDrag drag, double x, double laidY, double nowMs)
     {
         if (x - drag.PressX < NestIndent || LaneAt(laidY) is not (>= 0 and var index))
@@ -302,7 +297,7 @@ public sealed partial class UnifiedTimelineControl
         return asked.May ? lane.Row : null;
     }
 
-    // A seam the host lets the dragged row go to (asked once a seam in a drag: nothing changes the tracks meanwhile), or null.
+    // Seam if the host allows it (cached per seam: tracks cannot change mid-drag), or null.
     private (TimelineRow Beside, bool Above, double Y)? MaySeam(RowDrag drag, (TimelineRow Beside, bool Above, double Y)? seam)
     {
         if (seam is not { } found)
@@ -320,10 +315,9 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The seam between the picture tracks nearest a height (the rows' y), as the "+ New Track" seams are named (the top-level picture row
-    /// it goes beside, above it or below it, and where its bar is drawn): the upper half of a picture group, the seam over it; the lower
-    /// half, the one under it (said as the next group's, above it); above them all, over the first; below them all, under the last.
-    /// The picture groups are the caller's (<see cref="BuildSeamGroups"/>, once a look).
+    /// Nearest video-track seam to row y, in "+ New Track" seam form (adjacent top-level row, above/below, bar y): upper half of a group =
+    /// seam above it; lower half = seam below (expressed as above the next group); before all = above first; after all = below last.
+    /// Groups come from the caller (<see cref="BuildSeamGroups"/>, once per evaluation).
     /// </summary>
     private (TimelineRow Beside, bool Above, double Y)? RowSeamAt(double y)
     {
@@ -354,10 +348,9 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// Whether a Sub-Lane's header drag is over its own family's rows (5.5A review: its top-level track's row and that row's Sub-Lanes, the
-    /// picture group its lane is in), but the outer seam bands at the family's top and bottom edges: the neutral zone, over nothing, so that
-    /// letting go where it began changes nothing (it stays in its stack, its clips linked). A top-level track's own seams are refused anyway.
-    /// The picture groups are the caller's.
+    /// True when a Sub-Lane header drag is over its own family (its top-level row and Sub-Lanes, i.e. its video group) excluding the outer
+    /// seam bands: a neutral zone so releasing near the origin is a no-op (stays stacked and linked). Top-level rows' own seams are refused
+    /// anyway. Groups come from the caller.
     /// </summary>
     private bool OverOwnFamily(RowDrag drag, double laidY)
     {
@@ -373,9 +366,9 @@ public sealed partial class UnifiedTimelineControl
         return false;
     }
 
-    // ----- Esc during a header's drag (5.5A review) -----
-    // Heard on the window while a header's drag is under way (the surface takes no keyboard focus), after the window's own keys and handled
-    // ones too; hooked as the drag begins, unhooked as it ends (EndRowDrag, CancelRowDrag), never before the first drag.
+    // ----- Esc during header drag -----
+    // Window-level PreviewKeyDown (handledEventsToo; the surface is not focusable), hooked at drag start and unhooked at end (EndRowDrag,
+    // CancelRowDrag); never hooked before the first drag.
 
     private Window? _escapeWindow;
 
@@ -400,8 +393,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// Esc during a header's drag (5.5A review): a drag under way let go of as an abort is (<see cref="AbortDrag"/>: its seam bar, its nest
-    /// bracket and pill gone, the mouse let go, nothing moved or nested; the drag's end told); false with none under way. Test seam.
+    /// Test seam: Esc aborts a started header drag via <see cref="AbortDrag"/> (clears seam bar, nest bracket and pill, releases capture,
+    /// applies nothing, raises drag end). False when no drag is active.
     /// </summary>
     internal bool EscapeRowDrag()
     {
@@ -413,9 +406,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A header let go (5.5A): false with no header held. Never begun, it was a click (HeaderClicked was raised as it was pressed). Nested,
-    /// the new parent's layers' stack is opened (kept by its key across the rows made again) and the host asked to nest it; at a seam, to
-    /// move it there. The drag's end is raised either way, so the host lays the rows out from what the timeline is now.
+    /// Header release; false if none held. Unstarted = click (HeaderClicked fired on press). Nest: raises RowNestRequested and expands the
+    /// parent's stack (persisted by key across rebuilds); seam: raises RowMoveRequested. Drag end is always raised so the host re-lays rows.
     /// </summary>
     private bool EndRowDrag()
     {
@@ -451,7 +443,7 @@ public sealed partial class UnifiedTimelineControl
         return true;
     }
 
-    // A header held or dragged let go of, nothing done (the rows made again, the mouse taken away, the control gone): its marks go.
+    // Cancels a header drag without applying it (row rebuild, capture loss, unload) and clears its overlays.
     private void CancelRowDrag()
     {
         if (_rowDrag is not { } drag)
@@ -468,13 +460,13 @@ public sealed partial class UnifiedTimelineControl
         InvalidateVisual();
     }
 
-    // ----- Drawn -----
+    // ----- Rendering -----
 
-    // The pills' words, laid out once for the name they carry and the screen's DPI (ForgetWords lets them go).
+    // Pill FormattedText cached per name and DPI (released by ForgetWords).
     private FormattedText? _attachWords, _nestWords;
     private string? _attachWordsOf, _nestWordsOf;
 
-    // The accent's pen for the tether and the nest's bracket: made again only when the theme's accent changes.
+    // Frozen accent pen for tether and nest bracket, rebuilt only when the theme accent changes.
     private Pen? _accentPen;
     private Brush? _accentPenOf;
 
@@ -507,9 +499,9 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// A header's drag drawn over the headers (5.5A; the headers' space: the control's x, the rows' y): the dragged header shaded, and at a
-    /// seam a 3 DIP accent bar across the headers, or nested an indented accent bracket on the new parent's header with a down-right arrow
-    /// drawn in lines (never a font's glyph) and the pill "Make Sub-Lane of ...", which may run over the time area.
+    /// Header drag overlay in header space (control x, row y): shades the dragged header; at a seam, a 3 DIP accent bar; when nesting, an
+    /// indented accent bracket with a line-drawn down-right arrow (no font glyph) and a "Make Sub-Lane of ..." pill that may overflow into
+    /// the time area.
     /// </summary>
     private void DrawRowDragMarks(DrawingContext drawing, double pixelsPerDip)
     {
@@ -545,13 +537,13 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawText(words, new Point(box.Left + 5, box.Top + 1));
     }
 
-    // A header's seam across the time area too (the overlay's space: laid-out pixels less the drawing's origin, the rows' y).
+    // Header seam bar across the time area (overlay space: layout x minus drawing origin, row y).
     private void DrawRowSeamBar(DrawingContext drawing, double y, double from, double to) =>
         drawing.DrawRectangle(_accent, null, new Rect(from, y - 1.5, to - from, 3));
 
     /// <summary>
-    /// A tether (5.5A, in the overlay's space): a frozen cubic curve from the dragged block's near edge (its top when the parent is above
-    /// it) to the parent's bottom edge under the pointer, a dot there, and a pill with the link glyph and "Attach as Child of ...".
+    /// Tether overlay (overlay space): frozen cubic Bezier from the dragged block's near edge (top if the parent is above) to the parent's
+    /// bottom edge under the pointer, an end dot, and a link-glyph pill "Attach as Child of ...".
     /// </summary>
     private void DrawTether(DrawingContext drawing, BlockDrag drag, (TimelineRow Row, TimelineBlock Block, string Name) attach, double from, double to, double pixelsPerDip)
     {
@@ -586,12 +578,12 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawText(words, new Point(box.Left + 6 + glyph.Width + 4, box.Top + (box.Height - words.Height) / 2));
     }
 
-    // ----- Test seams (no mouse: the point-based paths, with explicit clocks) -----
+    // ----- Test seams (mouse-free, point-based, explicit clocks) -----
 
-    /// <summary>A block pressed at a point on the control (its own coordinates), its drag begun as a press with the mouse begins it: for a test, without a mouse (5.4A). The clock at 0.</summary>
+    /// <summary>Test seam: presses a block at a control-space point and starts its drag as a mouse press would, at clock 0.</summary>
     internal void PressBlockAt(TimelineRow row, TimelineBlock block, Point point, ModifierKeys modifiers) => PressBlockAt(row, block, point, modifiers, 0);
 
-    /// <summary>A block pressed at <paramref name="nowMs"/> (5.5A): as <see cref="PressBlockAt(TimelineRow, TimelineBlock, Point, ModifierKeys)"/>, the dwell begun then.</summary>
+    /// <summary>As <see cref="PressBlockAt(TimelineRow, TimelineBlock, Point, ModifierKeys)"/>, starting the dwell at <paramref name="nowMs"/>.</summary>
     internal void PressBlockAt(TimelineRow row, TimelineBlock block, Point point, ModifierKeys modifiers, double nowMs)
     {
         var laid = Laid(point);
@@ -603,9 +595,8 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>
-    /// The pointer of a block's drag at a point on the control (<see cref="PressBlockAt(TimelineRow, TimelineBlock, Point, ModifierKeys)"/>),
-    /// then at rest past the dwell (5.5A: a second after the last move, then the look again 75 ms on), so what it is over is awake as before
-    /// the dwell was. False with no drag.
+    /// Test seam: moves the block drag to a control-space point 1 s after the last sample, then settles (SettleTick after SettleMs) so
+    /// drop targets are active without simulating a dwell. False with no drag.
     /// </summary>
     internal bool MoveBlockDrag(Point point)
     {
@@ -616,7 +607,7 @@ public sealed partial class UnifiedTimelineControl
         return true;
     }
 
-    /// <summary>The pointer of a block's drag at a point on the control at <paramref name="nowMs"/>, the keys then held (5.5A). False with no drag.</summary>
+    /// <summary>Test seam: moves the block drag to a control-space point at <paramref name="nowMs"/> with modifiers. False with no drag.</summary>
     internal bool MoveBlockDrag(Point point, double nowMs, ModifierKeys modifiers)
     {
         if (_drag is not { } drag)
@@ -627,16 +618,16 @@ public sealed partial class UnifiedTimelineControl
         return true;
     }
 
-    /// <summary>The clip a block's drag is tethered to now (5.5A): its family's key and the name on the pill; null for none.</summary>
+    /// <summary>Test seam: current tether target (family key, pill name); null for none.</summary>
     internal (object? Key, string Name)? AttachTarget => _drag?.Attach is { } attach ? (attach.Block.Family?.Key, attach.Name) : null;
 
-    /// <summary>The key of the other row a block's drag is over now (5.5A, the deadzone); null for none.</summary>
+    /// <summary>Test seam: key of the other row the block drag targets (after deadzone); null for none.</summary>
     internal object? DragTargetKey => _drag?.Target?.Key;
 
-    /// <summary>A header pressed at a point on the control at <paramref name="nowMs"/> (5.5A): held for a drag as a press on its name is (no capture). False when the host refuses.</summary>
+    /// <summary>Test seam: arms a header drag at a control-space point at <paramref name="nowMs"/> (no capture). False if the host refuses.</summary>
     internal bool PressHeaderAt(TimelineRow row, Point point, double nowMs) => ArmRowDrag(row, new Point(point.X, Laid(point).Y), nowMs);
 
-    /// <summary>The pointer of a held header at a point on the control at <paramref name="nowMs"/> (5.5A). False with none held.</summary>
+    /// <summary>Test seam: moves the held header drag at <paramref name="nowMs"/>. False with none held.</summary>
     internal bool MoveHeaderDrag(Point point, double nowMs)
     {
         if (_rowDrag is null)
@@ -645,12 +636,12 @@ public sealed partial class UnifiedTimelineControl
         return true;
     }
 
-    /// <summary>A held header let go (5.5A, <see cref="EndRowDrag"/>). False with none held.</summary>
+    /// <summary>Test seam: releases the held header (<see cref="EndRowDrag"/>). False with none held.</summary>
     internal bool ReleaseHeaderDrag() => EndRowDrag();
 
-    /// <summary>The seam a header's drag is over now (5.5A): the key of the row it is beside and whether above it; null for none.</summary>
+    /// <summary>Test seam: current header-drag seam (adjacent row key, above); null for none.</summary>
     internal (object Key, bool Above)? RowSeam => _rowDrag?.Seam is { } seam ? (seam.Beside.Key, seam.Above) : null;
 
-    /// <summary>The key of the row a header's drag would be nested under now (5.5A); null for none.</summary>
+    /// <summary>Test seam: key of the row the header drag would nest under; null for none.</summary>
     internal object? NestTargetKey => _rowDrag?.Nest?.Key;
 }

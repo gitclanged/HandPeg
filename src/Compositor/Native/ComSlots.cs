@@ -1,11 +1,10 @@
 namespace HandPegApp.Compositor.Native;
 
-// ----- COM vtable slots, by name -----
-// COM methods are called through their vtable slot (Com.Table(p)[slot]). A wrong slot calls another method with the wrong arguments:
-// no exception, just undefined behaviour inside Media Foundation or a driver. So each interface's slots are written once here, derived
-// from its base interface's End (the number of methods up to and including the base), never as bare numbers at call sites; a mistake
-// in a base count then shows in one place, which the hot-path goldens exercise. Order: the SDK headers' declaration order (checked
-// against Windows.Win32.winmd).
+// ----- COM vtable slots by name -----
+// COM methods are called through vtable slots (Com.Table(p)[slot]); a wrong slot silently calls another method with the wrong arguments
+// (undefined behaviour inside MF or a driver). Each interface's slots are defined once here, offset from its base interface's End (method
+// count through the base), never as bare numbers at call sites, so a base-count error shows in one place (exercised by the hot-path
+// goldens). Order follows SDK header declaration order (verified against Windows.Win32.winmd).
 
 /// <summary>IUnknown: QueryInterface 0, AddRef 1, Release 2.</summary>
 internal static class IUnknownSlot
@@ -319,6 +318,12 @@ internal static class IAudioClient3Slot
 internal static class IAudioRenderClientSlot
 {
     public const int GetBuffer = IUnknownSlot.End, ReleaseBuffer = IUnknownSlot.End + 1;
+}
+
+/// <summary>IAudioCaptureClient: GetBuffer, ReleaseBuffer, GetNextPacketSize.</summary>
+internal static class IAudioCaptureClientSlot
+{
+    public const int GetBuffer = IUnknownSlot.End, ReleaseBuffer = IUnknownSlot.End + 1, GetNextPacketSize = IUnknownSlot.End + 2;
 }
 
 /// <summary>IAudioClock: GetFrequency, GetPosition, GetCharacteristics.</summary>

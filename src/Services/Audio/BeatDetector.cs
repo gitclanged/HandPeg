@@ -3,21 +3,19 @@ using System.Runtime.CompilerServices;
 
 namespace HandPegApp.Services.Audio;
 
-// ----- Audio beats (Pass 5.2B): Detect & Snap to Audio Beats -----
-// A sound's onsets, the beats a cut snaps to (TimelineClip.BeatTimes, in its file's seconds). Spectral flux, as onset detectors have it: the
-// sound made mono and brought down to about 5.5 kHz (a beat's weight is low; four samples of 22 kHz averaged), Hann frames of 256 a half
-// apart (46 ms, 23 ms apart), each bin's magnitude log-compressed (log(1 + 100 |X|)), and the flux the sum of the bins' rises since the last
-// frame (half-wave rectified). A frame is an onset where its flux is the highest within two frames either way and over an adaptive threshold
-// (1.25 times the median and half the mean of the flux within half a second, and a fiftieth of the loudest flux). Its moment is then found
-// to the millisecond in the sound's own energy (1 ms blocks at the full rate): the first block that rises a quarter of the way from the
-// quietest to the loudest round the frame. Onsets closer than the gap asked for keep the stronger; with eight or more, a weak onset (under
-// half the median strength) that falls off the dominant interval's grid (its half-beats) is let go. A minute of 22 kHz takes a few ms: the
-// sample loops are compiled fully optimized from their first call (AggressiveOptimization), as a detection runs once, on a background thread.
+// ----- Audio beat detection (Detect & Snap to Audio Beats) -----
+// Onsets for cut snapping (TimelineClip.BeatTimes, in file seconds) by spectral flux: mono, decimated to ~5.5 kHz (four 22 kHz samples
+// averaged; beat energy is low), Hann frames of 256 at 50 % overlap (46 ms / 23 ms), log-compressed magnitudes (log(1 + 100 |X|)), flux =
+// sum of half-wave-rectified bin rises. An onset is a flux peak within +-2 frames above an adaptive threshold (1.25 x median + 0.5 x mean
+// over +-0.5 s, plus loudest / 50), refined to the millisecond on 1 ms full-rate energy blocks (first block rising 25 % from the local
+// minimum toward the maximum). Onsets closer than the gap keep the stronger; with 8+ onsets, weak ones (under half the median strength) off
+// the dominant interval's half-beat grid are dropped. A minute at 22 kHz takes a few ms (AggressiveOptimization: runs once, on a background
+// thread).
 
-/// <summary>Onsets and beats of a sound (see the top of this file).</summary>
+/// <summary>Audio onset and beat detection (see file header).</summary>
 public static class BeatDetector
 {
-    /// <summary>The rate a file's sound is analysed at, mono (<see cref="DetectFileAsync"/>).</summary>
+    /// <summary>Mono analysis sample rate for files (<see cref="DetectFileAsync"/>).</summary>
     public const int AnalysisRate = 22050;
 
     /// <summary>
@@ -35,9 +33,9 @@ public static class BeatDetector
     private static readonly Dictionary<(string Path, long Written, int Stream), Task<double[]>> Cache = [];
 
     /// <summary>
-    /// The audio of a media file (its stream <paramref name="audioStream"/>, -1 the default, the first) decoded to mono at the analysis rate
-    /// and <see cref="Detect"/>-ed: times in the file's own seconds (media time, as a clip's MediaOffset counts it: from the first video frame
-    /// of a video). Background thread; cached per path, last write time and stream (a detection cancelled or failed is not kept).
+    /// Decodes audio stream <paramref name="audioStream"/> (-1 = first) of a media file to mono at the analysis rate and runs <see cref="Detect"/>:
+    /// times in media seconds (as a clip's MediaOffset counts them: from the first video frame of a video). Background thread; cached per path,
+    /// write time and stream (cancelled or failed detections are not cached).
     /// </summary>
     public static Task<double[]> DetectFileAsync(string path, int audioStream, CancellationToken token)
     {
@@ -71,7 +69,7 @@ public static class BeatDetector
         return task;
     }
 
-    // The file's stream decoded from its media time 0 (as the sound engine places it), made mono at the analysis rate, as it comes.
+    // Decodes the stream from media time 0 (as the sound engine places it), streaming mono at the analysis rate.
     private static double[] DetectFile(string file, int stream, CancellationToken token)
     {
         if (!File.Exists(file))
@@ -82,7 +80,7 @@ public static class BeatDetector
         decoder.Seek(0);
         var duration = decoder.Duration > 0 ? decoder.Duration : MediaProbe.KnownInfo(file)?.DurationSeconds ?? 0;
 
-        // Without a length (a pipe's), it reads until 20 s of nothing, four hours at most.
+        // Unknown length (pipes): read until 20 s of silence, at most four hours.
         var total = duration > 0 ? (long)Math.Ceiling(duration * AnalysisRate) : 4L * 3600 * AnalysisRate;
         var resampler = new PolyphaseResampler();
         resampler.Reset(decoder, decoder.SampleRate / (double)AnalysisRate, 0);
@@ -96,7 +94,7 @@ public static class BeatDetector
             var got = resampler.Read(left.AsSpan(0, want), right.AsSpan(0, want));
             if (got <= 0)
             {
-                // A pipe not caught up yet: a moment's wait, up to ten seconds of nothing new.
+                // Pipe not caught up yet: wait 1 ms, giving up after ~10 s with no new data.
                 if (++idle > 10_000)
                     break;
                 Thread.Sleep(1);
@@ -121,7 +119,7 @@ public static class BeatDetector
         return analysis.Finish(0.1);
     }
 
-    /// <summary>The flux of a sound's frames and its energy in 1 ms blocks, as the sound comes; then its onsets (<see cref="Finish"/>).</summary>
+    /// <summary>Streaming analysis: frame flux and 1 ms energy blocks as audio arrives, then onsets (<see cref="Finish"/>).</summary>
     private sealed class Analysis
     {
         private const int Size = 256, Hop = Size / 2, Bins = Size / 2 + 1, Half = Size / 2;
@@ -152,8 +150,8 @@ public static class BeatDetector
             _frameRate = _rate / (double)_decimation;
         }
 
-        // The sound's 1 ms energies, then its decimated samples: each a run of whole blocks summed in locals (5.2B: a field written per sample
-        // cost three quarters of a detection), the same sums in the same order as one sample at a time.
+        // Accumulates 1 ms energies, then decimated samples, summing runs in locals (a per-sample field write cost three quarters of a
+        // detection); sums and order match per-sample processing exactly.
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         public void Add(ReadOnlySpan<float> mono)
         {
@@ -189,7 +187,7 @@ public static class BeatDetector
             (_decimationSum, _decimationCount) = (decimationSum, decimationCount);
         }
 
-        // One decimated sample: a frame each half frame, once the first is full.
+        // One decimated sample; emits a frame every half frame once the first is full.
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private void Push(float sample)
         {
@@ -203,7 +201,7 @@ public static class BeatDetector
             }
         }
 
-        // The frame's log-compressed magnitudes (a real FFT of 256 as a complex one of 128), and its flux against the last frame's.
+        // Frame log magnitudes (real 256-point FFT via a 128-point complex FFT) and flux versus the previous frame.
         [MethodImpl(MethodImplOptions.AggressiveOptimization)]
         private void Frame()
         {
@@ -218,10 +216,10 @@ public static class BeatDetector
                 im[k] = _ring[(_ringAt + odd) & (Size - 1)] * Window[odd];
             }
 
-            // (The noise reduction's transform, its butterflies vectors at a time: the same flux to the bit as one butterfly at a time.)
+            // Vectorized butterflies (shared with noise reduction); flux is bit-identical to scalar butterflies.
             Fft.Butterflies(re, im, inverse: false);
 
-            // X[k] = E[k] + W^k O[k], E and O the even and odd samples' spectra, taken apart from the packed one.
+            // Unpack: X[k] = E[k] + W^k O[k], with E and O the even/odd sample spectra separated from the packed transform.
             const float scale = Compression / (Size / 4f);
             var flux = 0f;
             for (var k = 0; k <= Half; k++)
@@ -239,13 +237,13 @@ public static class BeatDetector
                 _logs[k] = log;
             }
 
-            // (The first frame has none before it to rise from: what starts with the sound is not told from what was already sounding.)
+            // The first frame has no predecessor to rise from, so its flux is 0.
             _flux.Add(_hasLogs ? flux : 0);
             _hasLogs = true;
         }
 
-        // The natural log of a number of 1 or more, to a few thousandths (the float's exponent, and a quadratic of its mantissa: monotonic,
-        // the same everywhere): a frame's 129 logs are most of its cost otherwise.
+        // Fast natural log for x >= 1, accurate to a few thousandths (exponent plus a quadratic in the mantissa: monotonic, deterministic);
+        // the 129 logs per frame would otherwise dominate the cost.
         private static float Log(float x)
         {
             var bits = BitConverter.SingleToInt32Bits(x);
@@ -256,7 +254,7 @@ public static class BeatDetector
 
         public double[] Finish(double minGapSeconds)
         {
-            // What is left of the sound: the frames that would hold it, filled with silence.
+            // Flush the tail: pad with silence to complete the last frame.
             if (_decimated > 0)
             {
                 var pad = _decimated < Size ? Size - _decimated : Hop - _sinceFrame;
@@ -275,7 +273,7 @@ public static class BeatDetector
             if (loudest < 1e-3f)
                 return [];
 
-            // The candidates: the highest within two frames either way, over the threshold of the half second round them.
+            // Candidates: maxima within +-2 frames above the threshold of the surrounding half second.
             var hop = Hop / _frameRate;
             var reach = Math.Max((int)Math.Round(0.5 / hop), 2);
             var window = new float[2 * reach + 1];
@@ -296,12 +294,12 @@ public static class BeatDetector
                 if (here <= 1.25f * median + 0.5f * (sum / count) + floor)
                     continue;
 
-                // The frame's onset: between the middles of it and the frame before, found to the millisecond in the sound's energy.
+                // Onset time: between the centres of this frame and the previous one, refined to the millisecond on the energy envelope.
                 var coarse = (m * (double)Hop + Size / 2.0 - Hop / 2.0) * _decimation / _rate;
                 found.Add((Refined(coarse), here));
             }
 
-            // Closer than the gap: the stronger stays.
+            // Within the minimum gap, keep the stronger onset.
             var kept = new List<(double Time, float Strength)>();
             foreach (var onset in found.OrderByDescending(o => o.Strength))
             {
@@ -313,7 +311,7 @@ public static class BeatDetector
             return [.. OnTheBeat(kept).Select(o => Math.Max(o.Time, 0))];
         }
 
-        // Whether a frame's flux is the highest within so many frames either way (the first of equal ones).
+        // True when the frame's flux is the maximum within +-around frames (the first of equal values wins).
         private static bool Highest(List<float> flux, int m, int around)
         {
             for (var k = Math.Max(m - around, 0); k <= Math.Min(m + around, flux.Count - 1); k++)
@@ -325,8 +323,8 @@ public static class BeatDetector
             return true;
         }
 
-        // An onset's moment: the first 1 ms block after the quietest that rises a quarter of the way to the loudest, within 60 ms before
-        // the coarse moment and 50 ms after it (a frame's onset lies within about a frame and a half after it, or half a frame before).
+        // Refines an onset: the first 1 ms block after the local minimum that rises 25 % toward the local maximum, searched from 60 ms
+        // before to 50 ms after the coarse time (a frame's onset lies within ~1.5 frames after it or half a frame before).
         private double Refined(double coarse)
         {
             var blockSeconds = _blockLength / (double)_rate;
@@ -359,13 +357,13 @@ public static class BeatDetector
             return coarse;
         }
 
-        // With eight onsets or more: a weak one (under half the median strength) off the grid of the dominant interval's half-beats is let go.
+        // With 8+ onsets: drop weak ones (under half the median strength) off the dominant interval's half-beat grid.
         private static List<(double Time, float Strength)> OnTheBeat(List<(double Time, float Strength)> onsets)
         {
             if (onsets.Count < 8)
                 return onsets;
 
-            // The dominant interval between neighbours, 0.25 to 1.5 s, in 10 ms bins smoothed by their neighbours.
+            // Dominant inter-onset interval within 0.25-1.5 s, in 10 ms bins smoothed with their neighbours.
             var votes = new int[151];
             for (var i = 1; i < onsets.Count; i++)
             {
@@ -415,7 +413,7 @@ public static class BeatDetector
             return window;
         }
 
-        // The real split's twiddles (256 points; the complex FFT of 128 is Radix2Fft's).
+        // Real-split twiddles for 256 points (the 128-point complex FFT is Radix2Fft's).
         private static (float[], float[]) MakeTables()
         {
             var (splitCos, splitSin) = (new float[Half + 1], new float[Half + 1]);

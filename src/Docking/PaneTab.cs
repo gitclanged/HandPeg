@@ -9,13 +9,12 @@ using static HandPegApp.UiBrushes;
 namespace HandPegApp.Docking;
 
 /// <summary>
-/// A pane's tab among the others of its group: it can be tabbed to and chosen with Enter as with a click (Space stays
-/// the player's play and pause, as everywhere in the window), and screen readers and UI Automation see it as a tab
-/// item that can be selected (a tab control's tabs could, and the groups that were tab controls are drawn with these now).
+/// Pane group tab: focusable and activated by Enter or click (Space stays play/pause window-wide), exposed to UI Automation as a
+/// selectable TabItem (parity with the former TabControl groups).
 /// </summary>
 internal sealed class PaneTab : Border
 {
-    // Shows the tab's pane; true when it was chosen from the keyboard, whose focus then goes to the new tab.
+    // Activates the tab's pane; true for keyboard activation, which moves focus to the new tab.
     private readonly Action<bool> _choose;
 
     public PaneTab(Action<bool> choose, bool isActive)
@@ -25,16 +24,15 @@ internal sealed class PaneTab : Border
         KeyboardNavigation.SetIsTabStop(this, true);
     }
 
-    /// <summary>Whether its pane is the one its group shows.</summary>
+    /// <summary>Whether its pane is the group's active pane.</summary>
     public bool IsActive { get; }
 
     public void Choose(bool byKey = false) => _choose(byKey);
 
     /// <summary>
-    /// A boxed tab of the main tab bar (4.1.1): outlined where the theme gives tab edges (TabEdgeBrush, ActiveTabEdgeBrush,
-    /// lit "upper/lower"), drawn over the face so they take no room: the top and left in the upper colour, the right in
-    /// the lower one; the tab shown keeps its trace along the top and is outlined at its sides. The bottom is open (it
-    /// joins the panel under it). A change of theme changes the tab's background, which draws it again.
+    /// Boxed main-bar tab: theme edge brushes (TabEdgeBrush, ActiveTabEdgeBrush, "upper/lower" lighting) drawn over the face without
+    /// layout cost: top/left upper colour, right lower colour; the active tab keeps its top trace and side outlines. Bottom open to join
+    /// the panel. Theme changes alter the background, triggering a redraw.
     /// </summary>
     public bool Outlined { get; init; }
 

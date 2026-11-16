@@ -2,10 +2,8 @@
 namespace HandPegApp.Models;
 
 /// <summary>
-/// How a clip gets from one keyframe to the next: the shape of the stretch that leaves the keyframe it is
-/// set on. Each is a curve of how far through the stretch the clip is (0 to 1): closed form where FFmpeg can
-/// write it in one expression, and otherwise a few straight pieces (see <see cref="EasingCurves"/>), so that the
-/// whole motion stays one flat sum of clipped ramps with no nested if().
+/// Interpolation curve for the segment leaving a keyframe (progress 0-1): closed form where one expression suffices, otherwise
+/// piecewise linear (see <see cref="EasingCurves"/>), keeping motion a flat sum of clamped ramps without nested conditionals.
 /// </summary>
 /// <remarks>Saved by number in projects: new easings are added at the end.</remarks>
 public enum EasingType
@@ -80,13 +78,12 @@ public sealed record BezierPreset(string Name, double X1, double Y1, double X2, 
 }
 
 /// <summary>
-/// The easing curves, once, for everything that needs them: the player's boxes and the layout pane (C#), the Keyframes
-/// pane's graph, and the FFmpeg expressions of the export and Live Preview. What is seen is what is encoded: the curves
-/// FFmpeg is given as straight pieces are evaluated here from the same pieces.
+/// Single easing implementation for the player overlays, layout pane, Keyframes graph and expression strings; pieced curves are
+/// evaluated from the same pieces the expressions use, so preview and output match.
 /// </summary>
 public static class EasingCurves
 {
-    /// <summary>How many straight pieces a curve FFmpeg cannot write in closed form is cut into (Bounce, Custom Bézier).</summary>
+    /// <summary>Linear piece count for curves without a closed form (Bounce, Custom Bézier).</summary>
     public const int Pieces = 12;
 
     // Back's overshoot (about 10%), and Elastic's period: the curves easings.net names easeOutBack and easeOutElastic.
@@ -100,13 +97,13 @@ public static class EasingCurves
     public static (double X1, double Y1, double X2, double Y2) DefaultHandles => (0.42, 0, 0.58, 1);
 
     /// <summary>
-    /// How far a stretch has gone in value, given how far through its time it is (both 0 to 1, though Back, Elastic and
-    /// a Bézier may run past 1 or below 0 on the way). The keyframe the stretch leaves gives the easing and the handles.
+    /// Eased value progress for time progress (both nominally 0-1; Back, Elastic and Bézier may overshoot). Easing and handles come from
+    /// the departing keyframe.
     /// </summary>
     public static double Evaluate(double progress, in Keyframe from) =>
         from.IsPart ? EvaluatePart(progress, from) : EvaluateWhole(progress, from);
 
-    /// <summary><see cref="Evaluate"/> over the whole of the keyframe's curve, whatever part of it the keyframe takes.</summary>
+    /// <summary><see cref="Evaluate"/> over the full curve, ignoring any partial range.</summary>
     private static double EvaluateWhole(double progress, in Keyframe from)
     {
         var u = Math.Clamp(progress, 0, 1);
@@ -121,7 +118,7 @@ public static class EasingCurves
             case EasingType.Elastic: return 1 + Math.Pow(2, -10 * u) * Math.Sin((10 * u - 0.75) * ElasticPeriod) - u * ElasticRest;
             case EasingType.Bounce:
             case EasingType.CubicBezier:
-                // The same points as PiecesOf, on the stack: this runs for every keyframed value of every frame (4.3-0B).
+                // Same points as PiecesOf but stack-allocated (hot path: every keyframed value, every frame).
                 Span<(double U, double E)> points = stackalloc (double U, double E)[Pieces + 1];
                 WritePieces(from, points);
                 for (var i = 1; i < points.Length; i++)
@@ -139,8 +136,7 @@ public static class EasingCurves
     }
 
     /// <summary>
-    /// The value a list of keyframes (ascending) gives at a moment: the first before the first, the last after the last,
-    /// and between two the stretch's easing. As the graph works it out, frame for frame.
+    /// Value of ascending keyframes at a time: clamped to the first/last outside, eased between (matches the graph exactly).
     /// </summary>
     public static double ValueAt(IReadOnlyList<Keyframe> keys, double time)
     {
@@ -162,13 +158,12 @@ public static class EasingCurves
         return keys[^1].Value;
     }
 
-    /// <summary>Whether FFmpeg is given the curve as straight pieces (see <see cref="PiecesOf"/>) rather than one expression.</summary>
+    /// <summary>True when the curve is piecewise linear (<see cref="PiecesOf"/>) rather than one expression.</summary>
     public static bool IsPieced(EasingType easing) => easing is EasingType.Bounce or EasingType.CubicBezier;
 
     /// <summary>
-    /// The points a pieced curve is drawn through, from (0, 0) to (1, 1): how far through the time (U) and how far in
-    /// value (E). Bounce is cut at its four landings, so each arc is pieces of its own; a Bézier is sampled along its own
-    /// parameter, which puts more points where it bends most. Its handles' x are held to 0..1, so time runs forwards.
+    /// Points (U = time, E = value) of a pieced curve from (0, 0) to (1, 1). Bounce splits at its four landings; Bézier samples its own
+    /// parameter (denser where it bends) with handle x clamped to 0..1 so time is monotonic.
     /// </summary>
     public static (double U, double E)[] PiecesOf(in Keyframe from)
     {
@@ -177,7 +172,7 @@ public static class EasingCurves
         if (!from.IsPart)
             return points;
 
-        // A part of the curve (4.3D): its own ends and the points between them, scaled so the part runs from 0 to 1.
+        // Partial curve: its endpoints and interior points, rescaled to 0..1.
         var (start, end) = from.Part;
         var (first, last) = (EvaluateWhole(start, from), EvaluateWhole(end, from));
         var rise = Math.Abs(last - first) < 1e-9 ? 1 : last - first;
@@ -226,19 +221,18 @@ public static class EasingCurves
         points[Pieces] = (1, 1);
     }
 
-    /// <summary>A Bézier keyframe's handles, held to what makes a curve that runs forwards in time; the default ones when it has none.</summary>
+    /// <summary>Bézier handles clamped for monotonic time; defaults when unset.</summary>
     public static (double X1, double Y1, double X2, double Y2) Handles(in Keyframe key) =>
         key.BezierX1 == 0 && key.BezierY1 == 0 && key.BezierX2 == 0 && key.BezierY2 == 0
             ? DefaultHandles
             : (Math.Clamp(key.BezierX1, 0, 1), Math.Clamp(key.BezierY1, -2, 3), Math.Clamp(key.BezierX2, 0, 1), Math.Clamp(key.BezierY2, -2, 3));
 
-    // ----- A part of a curve (a clip split between two keyframes, 4.3D) -----
-    // A stretch cut in two by a split keeps its curve: each half's stretch is the part of the curve that falls on its side
-    // (Keyframe.PartStart / PartEnd), its progress rescaled to the part's, so both halves move exactly as the whole did.
+    // ----- Partial curves (clip split between keyframes) -----
+    // Each half keeps its portion of the original curve (Keyframe.PartStart / PartEnd) with rescaled progress, so motion is unchanged.
 
     /// <summary>
-    /// The stretch a keyframe leaves cut at <paramref name="progress"/> of its time into the two keyframes the halves leave
-    /// by: each the same easing (and handles) over its part of the curve. Linear and Hold are themselves on either side.
+    /// Splits a segment at <paramref name="progress"/> into two keyframes sharing the easing and handles over their partial ranges
+    /// (Linear and Hold split trivially).
     /// </summary>
     public static (Keyframe First, Keyframe Second) Cut(in Keyframe from, double progress)
     {
@@ -251,8 +245,7 @@ public static class EasingCurves
     }
 
     /// <summary>
-    /// <see cref="Evaluate"/> for a keyframe whose stretch is a part of its curve: the curve's progress over the part,
-    /// scaled so the part runs from 0 to 1 (as the whole curve's does; flat when the part does not move).
+    /// <see cref="Evaluate"/> for a partial-range keyframe: curve progress over the part, rescaled to 0..1 (flat for a static part).
     /// </summary>
     private static double EvaluatePart(double progress, in Keyframe from)
     {
@@ -263,7 +256,7 @@ public static class EasingCurves
         return Math.Abs(rise) < 1e-9 ? u : (EvaluateWhole(start + u * (end - start), from) - first) / rise;
     }
 
-    /// <summary>A keyframe's curve as FFmpeg evaluates it (see <see cref="Expression(string, EasingType)"/>), over its part when it is one.</summary>
+    /// <summary>FFmpeg expression for a keyframe's curve (<see cref="Expression(string, EasingType)"/>), honouring partial ranges.</summary>
     public static string Expression(string p, in Keyframe from)
     {
         if (!from.IsPart)
@@ -285,8 +278,8 @@ public static class EasingCurves
     }
 
     /// <summary>
-    /// A stretch's progress (an expression that runs from 0 to 1) bent into a closed-form easing curve, for FFmpeg; the
-    /// progress itself for Linear. Hold and the pieced curves are written by the caller instead (see <see cref="IsPieced"/>).
+    /// Wraps a 0-1 progress expression in a closed-form FFmpeg easing expression (identity for Linear). Hold and pieced curves are
+    /// handled by the caller (<see cref="IsPieced"/>).
     /// </summary>
     public static string Expression(string p, EasingType type) => type switch
     {
@@ -301,11 +294,11 @@ public static class EasingCurves
 
     private static string Number(double value) => value.ToString("0.#######", System.Globalization.CultureInfo.InvariantCulture);
 
-    // ----- The 3D view's camera (5.3-Stage3) -----
+    // ----- 3D View camera -----
 
     /// <summary>
-    /// The cubic ease in and out (4u³ to halfway, then 1 - (2 - 2u)³ / 2): from rest to rest, gentler at both ends than Ease In-Out's
-    /// half cosine. The 3D view's way in, way out and Reset (GpuPreviewEngine.StepPose); no keyframe's.
+    /// Cubic ease-in-out (4u³ to the midpoint, then 1 - (2 - 2u)³ / 2), softer at both ends than Ease In-Out's half cosine. Used for 3D
+    /// View enter, exit and Reset (GpuPreviewEngine.StepPose), not keyframes.
     /// </summary>
     public static double CubicInOut(double progress)
     {
