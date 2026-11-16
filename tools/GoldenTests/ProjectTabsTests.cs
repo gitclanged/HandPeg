@@ -53,6 +53,32 @@ public static class ProjectTabsTests
         yield return Case("titlebar-tab-overflow", "# The strip shares its room, narrows its tabs to their initials, then shows a run round the one in front and a count of the rest: never wider than its room.", Overflow);
         yield return Case("project-tabs-save-path", "# Where a tab behind the one in front is saved: its own file, a portable folder, the studio's folder, the Projects folder (as the view model's save).", SavePath);
         yield return Case("project-tabs-never-lost", "# A project file left without a header is taken in under a made-up one, one that cannot come across is kept, and a clean close never deletes a tab it does not know.", NeverLost);
+        yield return Case("project-tabs-waveform", "# The Overview Scrubber's waveform is each tab's own: a new tab, a blank tab switched to and New Project show none of another's.", Waveform);
+    }
+
+    // ----- project-tabs-waveform -----
+
+    private static void Waveform(Action<bool, string> expect)
+    {
+        _ = Application.Current ?? new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var vm = Open();
+        var picture = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[4], 4);
+        picture.Freeze();
+        vm.TimelineWaveform = picture;
+        vm.SourceWaveforms.Add(picture);
+        bool None() => vm.TimelineWaveform is null && vm.SourceWaveforms.Count == 0;
+        bool Own() => ReferenceEquals(vm.TimelineWaveform, picture) && vm.SourceWaveforms.Count == 1;
+
+        var one = vm.DetachForTab("Tab One");
+        expect(None(), "a new tab in front: the previous tab's Overview Scrubber waveform and track waveforms go with it");
+        expect(vm.NewProject() && None(), "the new tab's New Project draws no waveform");
+        var blank = vm.DetachForTab("New Project");
+        expect(vm.AttachTab(one) && Own(), "tab one brought back: its own waveforms come back with it");
+        one = vm.DetachForTab("Tab One");
+        expect(vm.AttachTab(blank) && None(), "the blank tab brought back: no waveform of tab one's");
+        _ = vm.DetachForTab("New Project");
+        expect(vm.AttachTab(one) && Own(), "tab one again: its waveforms again");
+        expect(vm.NewProject() && None(), "New Project over a tab with a waveform: none left on the Overview Scrubber");
     }
 
     private static string Fresh(string name)

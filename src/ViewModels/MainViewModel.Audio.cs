@@ -174,6 +174,18 @@ public partial class MainViewModel
         }
     }
 
+    /// <summary>
+    /// Cancels the waveform renders and drops their pictures (the Overview Scrubber's mix and each track's): a tab put behind, a tab
+    /// switched to or a new project never shows the previous project's waveform. <see cref="AttachTab"/> restores a tab's own afterwards.
+    /// </summary>
+    private void ForgetWaveforms()
+    {
+        _waveformCancellation?.Cancel();
+        _timelineWaveformCancellation?.Cancel();
+        SourceWaveforms.Clear();
+        TimelineWaveform = null;
+    }
+
     // ----- The layers list -----
 
     /// <summary>

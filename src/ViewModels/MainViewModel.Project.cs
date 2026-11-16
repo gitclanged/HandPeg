@@ -641,6 +641,7 @@ public partial class MainViewModel
         using (DeferCommand())
         {
             ResetForNewSource();
+            ForgetWaveforms();
             InstallDocument(NewDocument());
             (SourcePath, LocalMediaPath, DestinationPath, CurrentProjectPath, EditingJob) = ("", "", "", "", null);
             (NewProjectName, NewProjectFolder) = ("", null);

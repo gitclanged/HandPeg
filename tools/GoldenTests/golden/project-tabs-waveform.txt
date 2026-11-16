@@ -1,0 +1,7 @@
+# The Overview Scrubber's waveform is each tab's own: a new tab, a blank tab switched to and New Project show none of another's.
+ok: a new tab in front: the previous tab's Overview Scrubber waveform and track waveforms go with it
+ok: the new tab's New Project draws no waveform
+ok: tab one brought back: its own waveforms come back with it
+ok: the blank tab brought back: no waveform of tab one's
+ok: tab one again: its waveforms again
+ok: New Project over a tab with a waveform: none left on the Overview Scrubber

@@ -308,8 +308,9 @@ public partial class MainViewModel
     }
 
     /// <summary>
-    /// Cancels the current project's background work on backgrounding: I-frame scan, waveforms, hover sheet (each checks its token after
-    /// awaiting), and bumps the generation for untokened work (stream unpack, file adds). Interrupted work restarts in <see cref="AttachTab"/>.
+    /// Cancels the current project's background work on backgrounding: I-frame scan, waveforms (their pictures dropped too), hover sheet (each
+    /// checks its token after awaiting), and bumps the generation for untokened work (stream unpack, file adds). Interrupted work restarts in
+    /// <see cref="AttachTab"/>.
     /// </summary>
     private void CancelProjectBackgroundWork()
     {
@@ -317,8 +318,7 @@ public partial class MainViewModel
         _unpacking = 0;
         _loadingAdds.Clear();
         _iFrameScanCancellation?.Cancel();
-        _waveformCancellation?.Cancel();
-        _timelineWaveformCancellation?.Cancel();
+        ForgetWaveforms();
         _spriteCancellation?.Cancel();
     }
 

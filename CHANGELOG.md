@@ -3,6 +3,12 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.6.3 — Hotfix: Each Tab Keeps Its Own Waveform
+
+### Fixes
+- **A new tab no longer shows the last project's waveform.** Opening a new tab, switching to a blank tab or starting a New Project
+  clears the Overview Scrubber's audio waveform and the track waveforms; switching back to a tab brings its own waveform back.
+
 ## HandPeg v5.6.2 — Hardening: Safer Audio, Stills, Docking and Voiceovers, and a Faster First 3D View
 
 ### Fixes
