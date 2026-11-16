@@ -158,6 +158,11 @@ public partial class MainViewModel
             (state.SourceX, state.SourceY, state.SourceWidth, state.SourceHeight) = (left, top, 1 - left - right, 1 - top - bottom);
             (state.CropLeft, state.CropTop, state.CropRight, state.CropBottom) = (0, 0, 0, 0);
             (state.ImagePath, state.ImageWidth, state.ImageHeight, state.MediaOffset, state.MediaDuration) = ("", 0, 0, 0, 0);
+
+            // A file Cutout's drawn mask is already spread over the whole picture (FileCutoutOf): saved as a frame mask, so applying the
+            // preset again does not squeeze it into the region a second time (the shrinking double crop).
+            if (state.CustomMask && MaskStore.IsDrawn(MaskStore.SourceOf(state.MaskPath, state.MaskShapes)))
+                state.MaskFrame = true;
         }
 
         return state;
@@ -340,7 +345,10 @@ public partial class MainViewModel
     /// State read from disk (project, tab cache, bundle): saved commands and Extra options require confirmation
     /// (<see cref="CommandTrust"/>). False when re-editing this session's queued job.
     /// </param>
-    public Task RestoreStateAsync(ProjectState state, string doneMessage, bool fromFile = true) => RunOperationAsync("Opening a project", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
+    public Task RestoreStateAsync(ProjectState state, string doneMessage, bool fromFile = true) => RestoreStateAsync(state, doneMessage, fromFile, opened: null);
+
+    // As above; <paramref name="opened"/> runs once the project is in place (not when its source failed to load, or it never ran).
+    private Task RestoreStateAsync(ProjectState state, string doneMessage, bool fromFile, Action? opened) => RunOperationAsync("Opening a project", WorkLane.Interactive, loadsDocument: true, operation: async cancellationToken =>
     {
         if (fromFile)
         {
@@ -357,8 +365,8 @@ public partial class MainViewModel
         var oldShape = ProjectStore.OldShapeOf(state.Timeline, state.Deleted, state.Subtitles);
         ConvertedFrom = null;
 
-        // Adopt the project's stored thumbnail (queued jobs have none) until a save renders a new one.
-        TakeUpThumbnail(state.ThumbnailJpeg);
+        // The project's source and download settings (a URL load reads them); put back if the load fails, so the open project keeps its own.
+        var before = (SourcePath, DownloadResolution, DownloadSubtitles);
         SourcePath = state.SourcePath;
         DownloadResolution = Pick(DownloadResolutions, state.DownloadResolution, "Best");
         DownloadSubtitles = state.DownloadSubtitles;
@@ -369,7 +377,10 @@ public partial class MainViewModel
         {
             var (loaded, message) = await LoadMediaAsync(state.SourcePath, state.LocalMediaPath, applyAutomation: false, cancellationToken, place: false);
             if (!loaded)
+            {
+                (SourcePath, DownloadResolution, DownloadSubtitles) = before;
                 return message;
+            }
         }
         else
         {
@@ -377,6 +388,9 @@ public partial class MainViewModel
             LocalMediaPath = "";
             SetMediaInfo(null);
         }
+
+        // Adopt the project's stored thumbnail (queued jobs have none) until a save renders a new one; only once its source loaded.
+        TakeUpThumbnail(state.ThumbnailJpeg);
 
         ApplyProjectSettings(state, legacyMixing: oldShape is not null);
         var timeline = TimelineToOpen(state);
@@ -392,6 +406,7 @@ public partial class MainViewModel
         // Adopt the saved undo history (none for queued jobs) so Ctrl+Z continues from the save.
         TakeUpHistory(state, converted);
         MarkSaved();
+        opened?.Invoke();
         return GetLayoutAspectWarning() is { } warning ? $"{doneMessage}. {warning}" : doneMessage;
     });
 

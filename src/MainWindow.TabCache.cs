@@ -923,8 +923,17 @@ public partial class MainWindow
     // tab's queue (ProjectTabs.Enqueue), so later exact writes and deletes always land after it. Clean tabs keep none; a failed-resume tab
     // is never touched. Exit applies its plan to this file; after a crash the next start imports it (TakeLeftBehind), opening at N-2.
 
-    /// <summary>The tick's last observation of the active tab: tab, undo position, and whether a recovery file was written.</summary>
-    private readonly record struct FrontLook(string Id, (object? Newest, int Undo, int Redo) At, bool Written);
+    /// <summary>
+    /// The tick's last observation of the active tab: tab, undo position, input count (edits with no undo step), and whether a recovery
+    /// file was written.
+    /// </summary>
+    private readonly record struct FrontLook(string Id, (object? Newest, int Undo, int Redo) At, bool Written, int Input)
+    {
+        // Input count unknown (-1): only the undo position decides whether the tab moved.
+        public FrontLook(string Id, (object? Newest, int Undo, int Redo) At, bool Written) : this(Id, At, Written, -1)
+        {
+        }
+    }
 
     // Last observation (null: none yet, or the tab's files were deleted); an unchanged position skips the fingerprint.
     private FrontLook? _frontRecovery;
@@ -965,9 +974,9 @@ public partial class MainWindow
                 return;
 
             // Fingerprint only if the history moved (a save clears MayHaveUnsavedChanges itself), so an idle project costs nothing.
-            var position = _viewModel.HistoryPosition;
+            var (position, input) = (_viewModel.HistoryPosition, _viewModel.InputRevision);
             var written = _frontRecovery is { Written: true };
-            var moved = _frontRecovery is not { } seen || !Equals(seen.At, position);
+            var moved = _frontRecovery is not { } seen || !Equals(seen.At, position) || (seen.Input >= 0 && seen.Input != input);
             var dirty = _viewModel.MayHaveUnsavedChanges && (moved ? _viewModel.HasUnsavedChanges : written);
             switch (FrontRecoveryFor(_unresumed.Contains(tab.Id), written, dirty, moved))
             {
@@ -981,7 +990,7 @@ public partial class MainWindow
                     break;
             }
 
-            _frontRecovery = new FrontLook(tab.Id, position, written);
+            _frontRecovery = new FrontLook(tab.Id, position, written, input);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -1000,7 +1009,7 @@ public partial class MainWindow
         (header.Dirty, header.Empty) = (true, false);
         var (id, state, lag) = (tab.Id, _viewModel.CaptureStateForTab(header.Title), _viewModel.TakeRecoveryLag());
         var (saved, json) = (_viewModel.SavedFingerprintForTab, ProjectTabs.HeaderJson(header));
-        _frontRecovery = new FrontLook(id, position, Written: true);
+        _frontRecovery = new FrontLook(id, position, true, _viewModel.InputRevision);
         _ = _tabs.Enqueue(id, () =>
         {
             if (WriteRecoveryFile(_tabs, id, state, lag, saved, json) is not null)

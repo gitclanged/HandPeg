@@ -1227,6 +1227,14 @@ public partial class MainViewModel
         if (_touchedSinceSaved)
             return;
 
+        // A tab never opened or saved (the first launch's blank tab): its state at the first input is the baseline, so edits count.
+        if (_savedFingerprint.Length == 0)
+        {
+            MarkSaved();
+            _touchedSinceSaved = true;
+            return;
+        }
+
         _touchedSinceSaved = true;
         if (_savedFingerprint.Length == 0 || Fingerprint() is not { } now || now == _savedFingerprint)
             return;

@@ -291,17 +291,9 @@ public static class ExportLoopbackTests
                 heatWorst = Math.Max(heatWorst, Math.Max(heat[i], Math.Max(heat[i + 1], heat[i + 2])));
             expect(heatWorst <= 1, "the heatmap of a picture against itself is black (every pixel within 1/255)");
 
-            var halves = Worst(wipe, encoded, x => x < 318 || x > 321);
-            var divider = 0;
-            for (var y = 0; y < H; y++)
-            {
-                var at = (y * W + 319) * 4;
-                if (Math.Abs(wipe[at] - encoded[at]) > 40 && Math.Abs(wipe[at + 4] - encoded[at + 4]) > 40)
-                    divider++;
-            }
-
-            expect(halves <= 1 && divider == H,
-                "the split wipe at 0.5: both halves are the encoded view (the source and the bypassed encoding agree) and columns 319-320 are the divider, in every row");
+            var halves = Worst(wipe, encoded);
+            expect(halves <= 1,
+                "the split wipe at 0.5: both halves are the encoded view (the source and the bypassed encoding agree), no divider drawn into the picture (the player overlay draws the one line)");
         }
 
         // ----- The loupe over the compare (5.4C), the codec bypassed (every machine) -----

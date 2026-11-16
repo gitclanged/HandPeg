@@ -32,6 +32,9 @@ public partial class MainViewModel
     /// </summary>
     internal (object? Newest, int Undo, int Redo) HistoryPosition => (_undo.Count > 0 ? _undo[^1].State : null, _undo.Count, _redo.Count);
 
+    /// <summary>User input count (NoteUserInput): moves on edits that take no undo step too, so the crash cache sees them.</summary>
+    internal int InputRevision => _inputGesture;
+
     /// <summary>
     /// Whether to write the lagged copy: at least <see cref="RecoveryLagSteps"/> steps since save/open (never older than the saved state)
     /// and no change in flight (open or committing edit, undo/redo restore, master fader gesture). Otherwise writes the current state.

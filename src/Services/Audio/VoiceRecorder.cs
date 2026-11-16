@@ -64,6 +64,22 @@ public sealed class VoiceRecorder
     /// <param name="folder">Segment storage until Stop.</param>
     public async Task StartAsync(string microphone, string folder)
     {
+        Opening = true;
+        try
+        {
+            await OpenAsync(microphone, folder);
+        }
+        finally
+        {
+            Opening = false;
+        }
+    }
+
+    /// <summary>True from the call of <see cref="StartAsync"/> until it finishes (set before its first await).</summary>
+    public bool Opening { get; private set; }
+
+    private async Task OpenAsync(string microphone, string folder)
+    {
         if (_take is not null)
             throw new InvalidOperationException("A recording is already running.");
         if (string.IsNullOrWhiteSpace(microphone))
@@ -124,28 +140,43 @@ public sealed class VoiceRecorder
         await PauseAsync();
 
         var parts = _parts.Where(p => File.Exists(p) && new FileInfo(p).Length > WavFile.HeaderBytes + 960).ToList();
-        var all = _parts.ToList();
-        _parts.Clear();
-        try
+        if (parts.Count == 0)
         {
-            if (parts.Count == 0)
-                return false;
+            DeleteParts();
+            return false;
+        }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-            if (parts.Count == 1)
+        // The segments stay (and _parts with them) until the take is written: a failed join or move keeps it for another Stop.
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        if (parts.Count == 1)
+        {
+            File.Move(parts[0], outputPath, overwrite: true);
+        }
+        else
+        {
+            var joining = outputPath + ".joining";
+            try
             {
-                File.Move(parts[0], outputPath, overwrite: true);
-                return true;
+                await Task.Run(() => WavFile.Join(parts, joining), cancellationToken);
+                File.Move(joining, outputPath, overwrite: true);
             }
+            catch
+            {
+                WavFile.Delete(joining);
+                throw;
+            }
+        }
 
-            await Task.Run(() => WavFile.Join(parts, outputPath), cancellationToken);
-            return true;
-        }
-        finally
-        {
-            foreach (var part in all)
-                WavFile.Delete(part);
-        }
+        DeleteParts();
+        return true;
+    }
+
+    // Deletes every segment file of the take and forgets them.
+    private void DeleteParts()
+    {
+        foreach (var part in _parts)
+            WavFile.Delete(part);
+        _parts.Clear();
     }
 
     // ----- One stretch of capture -----
@@ -250,7 +281,17 @@ public sealed class VoiceRecorder
             {
                 if (started)
                     AudioNative.Stop(client);
-                file?.Dispose();
+
+                // A header flush failing (disk full) must neither end the process nor skip the releases below.
+                try
+                {
+                    file?.Dispose();
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                    AppLog.Write("Voiceover: the recording's header could not be written", ex);
+                }
+
                 Com.Release(ref capture);
                 Com.Release(ref client);
                 Com.Release(ref device);
@@ -412,8 +453,14 @@ internal sealed class WavFile : IDisposable
 
     public void Dispose()
     {
-        UpdateHeader();
-        _stream.Dispose();
+        try
+        {
+            UpdateHeader();
+        }
+        finally
+        {
+            _stream.Dispose();
+        }
     }
 
     private void UpdateHeader()

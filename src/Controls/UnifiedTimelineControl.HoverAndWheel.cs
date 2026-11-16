@@ -902,7 +902,13 @@ public sealed partial class UnifiedTimelineControl
     /// Host relay of the ruler's pointer time (TimelineRuler.PointerSecondsChanged; null on leave) so <see cref="PointerSecondsChanged"/>
     /// covers both ruler and rows.
     /// </summary>
-    public void NotePointerOverRuler(double? seconds) => PointerSeconds(seconds is { } at ? Math.Max(at, 0) : double.NaN);
+    public void NotePointerOverRuler(double? seconds)
+    {
+        // Over the ruler (hovering or scrubbing) only the playhead line shows: no skim line beside it.
+        if (seconds is not null)
+            Skim(double.NaN);
+        PointerSeconds(seconds is { } at ? Math.Max(at, 0) : double.NaN);
+    }
 
     // Raises the pointer time only on change (NaN = none, raised once).
     private void PointerSeconds(double seconds)

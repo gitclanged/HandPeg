@@ -51,8 +51,8 @@ public sealed partial class GpuPreviewEngine
     /// <summary>The scale for the frame drawn now (1: whole). Pump thread.</summary>
     private float PreviewScaleFor(bool playing, int width, int height, int canvasWidth, int canvasHeight)
     {
-        var scrubbing = !playing && Stopwatch.GetElapsedTime(Volatile.Read(ref _scrubMovedTicks)).TotalSeconds < CrispAfter;
-        if (!AppSettings.Current.DynamicPreviewScaling || _sourceView || !(playing || scrubbing))
+        // Paused frames, scrubs included, are always whole: a scrub's slow frames are decoder seeks, not GPU load.
+        if (!AppSettings.Current.DynamicPreviewScaling || _sourceView || !playing)
         {
             EndScaledRun();
             return _lastScale = 1;

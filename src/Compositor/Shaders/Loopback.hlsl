@@ -41,12 +41,11 @@ float4 PSLoopbackCompare(VsOut i) : SV_Target
         return float4(saturate(float3(d.x + d.z, d.x, d.x + d.y)), 1);
     }
 
-    // Split wipe: source left of the divider, encoded right, light divider line.
+    // Split wipe: source left of the divider, encoded right. No line here: the player overlay draws the one divider (a line drawn into
+    // the picture would trail the overlay while the encoder catches up).
     if (Params.x > 0.5)
     {
         float divider = Params2.x + Params.y * Params2.z;
-        if (abs(i.Position.x - divider) < abs(Params.w))
-            return float4(0.95, 0.95, 0.95, 1);
         return float4(LoopbackRgb(i.Position.x < divider ? source : encoded), 1);
     }
 

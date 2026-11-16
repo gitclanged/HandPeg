@@ -17,7 +17,7 @@ ok: the worker finds the loupe's point and draws its view before it takes the ou
 ok: three letterboxed frames without the flag: the loopback says Off and no texture is made between the second and the third (nothing of it exists)
 ok: the encoded view with the codec bypassed is the plain frame within 4/255 (its own 4:2:0 conversion), and the state is Running
 ok: the heatmap of a picture against itself is black (every pixel within 1/255)
-ok: the split wipe at 0.5: both halves are the encoded view (the source and the bypassed encoding agree) and columns 319-320 are the divider, in every row
+ok: the split wipe at 0.5: both halves are the encoded view (the source and the bypassed encoding agree), no divider drawn into the picture (the player overlay draws the one line)
 ok: the loupe is laid over the compare in the far corner (498, 218, 130 a side): the picture round it is the compare as it was, within 1/255
 ok: its middle shows the compare picture at the point it looks at (canvas pixel 25, 14), magnified
 ok: over the heatmap (black: the codec bypassed) the loupe's view is black too, framed in amber: it magnifies the compare picture, not the layer drawn again

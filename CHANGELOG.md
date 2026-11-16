@@ -3,6 +3,22 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.6.1 — Hotfix: One Split-Wipe Line, Sharp Scrubbing, Game Presets That Keep Their Size, and Safer Voiceovers
+
+### Fixes
+- **Live Encoded Preview shows one divider.** The split wipe no longer draws a second, lagging line into the picture while the
+  encoder catches up; the player's own divider is the only one.
+- **Scrubbing stays sharp.** Dynamic Preview Scaling no longer lowers the resolution while paused or scrubbing (slow seeks are not
+  slow graphics), and scrubbing on the ruler shows only the playhead line, without the hover line beside it.
+- **Saved Game Presets keep their Cutouts' size.** A preset saved from a layout and applied again no longer shrinks its masked
+  Cutouts to small stamps.
+- **Voiceover takes are never lost on Stop.** If joining or moving a take fails, its pieces are kept and Stop can be pressed again; a
+  full disk while finishing no longer closes HandPeg, and tabs cannot be switched while the microphone opens.
+- **Crash recovery covers more edits.** Edits on the first blank tab of a fresh start, and changes that take no Undo step, now count
+  as unsaved and are kept by crash recovery.
+- **Opening a project that fails to load** leaves the open project's source and thumbnail as they were, and a queued job is only
+  marked as being edited once it actually opened.
+
 ## HandPeg v5.6.0 — Color Studio, Speed & Pitch With Smooth Slow-Mo, Hardware Performance Tiers, and a Hardened Core
 
 ### User-Facing Highlights

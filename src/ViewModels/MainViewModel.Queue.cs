@@ -242,10 +242,11 @@ public partial class MainViewModel
         if (job is null)
             return;
 
-        await RestoreStateAsync(job.State, $"Editing queued job: {Path.GetFileName(job.Target)}. Update Queued Job saves the changes.", fromFile: false);
+        var opened = false;
+        await RestoreStateAsync(job.State, $"Editing queued job: {Path.GetFileName(job.Target)}. Update Queued Job saves the changes.", fromFile: false, () => opened = true);
 
-        // Only after the job's source is confirmed loaded.
-        if (Queue.Contains(job) && job.Status == QueueJob.Pending
+        // Only after the job's project opened and its source is confirmed loaded.
+        if (opened && Queue.Contains(job) && job.Status == QueueJob.Pending
             && string.Equals(LocalMediaPath, job.State.LocalMediaPath, StringComparison.OrdinalIgnoreCase))
         {
             EditingJob = job;

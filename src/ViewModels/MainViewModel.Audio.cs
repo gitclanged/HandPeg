@@ -390,7 +390,7 @@ public partial class MainViewModel
         };
     }
 
-    private bool CanRecordVoiceover() => !IsRecording && !string.IsNullOrWhiteSpace(SelectedMicrophone);
+    private bool CanRecordVoiceover() => !IsRecording && !_recorder.Opening && !string.IsNullOrWhiteSpace(SelectedMicrophone);
 
     /// <summary>Starts a new recording, or carries a paused one on.</summary>
     [RelayCommand(CanExecute = nameof(CanRecordVoiceover))]
@@ -398,6 +398,9 @@ public partial class MainViewModel
     {
         var resuming = IsRecordingPaused;
         VoiceoverStatus = "Opening the microphone...";
+
+        // Timeline start of the take (placed there when finished), taken when Record is pressed.
+        var startSeconds = resuming ? _recordingStartSeconds : Math.Max(PositionMs / 1000, 0);
         try
         {
             await _recorder.StartAsync(SelectedMicrophone!, VoiceoverFolder);
@@ -409,10 +412,7 @@ public partial class MainViewModel
             return;
         }
 
-        // Timeline start of the take; it is placed there when finished.
-        if (!resuming)
-            _recordingStartSeconds = Math.Max(PositionMs / 1000, 0);
-
+        _recordingStartSeconds = startSeconds;
         (IsRecording, IsRecordingPaused) = (true, false);
         VoiceoverStatus = resuming ? $"Recording again from {SelectedMicrophone}..." : $"Recording from {SelectedMicrophone}...";
     }
@@ -429,9 +429,9 @@ public partial class MainViewModel
 
     /// <summary>
     /// Whether a take (recording or paused, keeping recorder, file and start time) belongs to the open project; tab switches are
-    /// blocked meanwhile so Stop places it in this project.
+    /// blocked meanwhile (from the moment Record is pressed, while the microphone opens) so Stop places it in this project.
     /// </summary>
-    public bool HoldsRecording => IsRecording || IsRecordingPaused;
+    public bool HoldsRecording => IsRecording || IsRecordingPaused || _recorder.Opening;
 
     /// <summary>Finishes the recording and takes it as the session's voiceover.</summary>
     [RelayCommand(CanExecute = nameof(CanStopVoiceover))]
@@ -445,9 +445,11 @@ public partial class MainViewModel
         }
         catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException or OperationCanceledException)
         {
-            recorded = false;
+            // The take's segments are kept (VoiceRecorder.StopAsync): it stays paused in this project so Stop can try again.
             AppLog.Write("Voiceover: finishing the recording", ex);
             VoiceoverStatus = $"The recording could not be finished: {ex.Message}";
+            (IsRecording, IsRecordingPaused) = (false, true);
+            return;
         }
 
         // Count placement as a pending add so tabs cannot switch between stop and placement.
