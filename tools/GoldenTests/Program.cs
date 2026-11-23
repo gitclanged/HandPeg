@@ -148,6 +148,7 @@ public static class Program
         run.Suite("ScrubTests", ScrubTests.All);
         run.Suite("MultiTabIsolationTests", MultiTabIsolationTests.All);
         run.Suite("PreviewScalingTests", PreviewScalingTests.All);
+        run.Suite("WaveContract5_6_4ATests", WaveContract5_6_4ATests.All);
         run.Suite("WaveTilesZoomTests", WaveTilesZoomTests.All);
         run.Suite("PlayerAndLibraryUiTests", PlayerAndLibraryUiTests.All);
         run.Suite("TabsDockTransportTests", TabsDockTransportTests.All);

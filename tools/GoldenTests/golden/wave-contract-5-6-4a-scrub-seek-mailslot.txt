@@ -1,0 +1,16 @@
+# Scrub seeks are lock-free: one mail-slot word, latest wins, drained by the pump under _transport.
+ok: an empty slot has nothing to take
+ok: two posts before a take: the take is the latest and empties the slot
+ok: -0.0 (the empty word's bits) is posted as +0.0, never lost
+ok: non-finite targets are never posted
+ok: with the engine's _transport held elsewhere, 500 paused Seeks and a play-scrub's GhostPause with 500 playing Seeks each take under 5 ms; the clock reads each final target
+ok: Seek takes no lock and never seeks the audio engine: it writes the clock, posts, then bumps the serial (a turn reading the new serial sees the target pending)
+ok: DrainSeek applies the newest target to the audio engine under _transport and empties the slot only afterwards (a newer target stays)
+ok: the pump applies ghost pauses and drains seeks at the top of every turn, and again before a playing turn measures its moment
+ok: the playing clock shows a posted target until the audio clock has it; the Sequence's end is never measured on a clock a pending seek has not moved
+ok: the transport serial is only ever bumped atomically (Seek bumps it without the lock)
+ok: public void Play folds a pending seek in itself
+ok: public void Pause folds a pending seek in itself
+ok: private void ApplyGhostPause folds a pending seek in itself
+ok: a target posted after a drain read the older one: the paused clock shows it and Play resumes from it (from the end, Play restarts at 0)
+ok: the end commits in one compare-exchange: a seek posted before it (serial bumped or not yet) keeps playback going; one after it lands on the paused clock

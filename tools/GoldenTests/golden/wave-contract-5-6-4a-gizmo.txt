@@ -1,0 +1,14 @@
+# Aspect-locked corners resize along the diagonal; drags batch their writes; the anchor dot takes a 6 x 6 hit.
+ok: a move along the diagonal is unchanged
+ok: vertical and horizontal moves resize along the diagonal, outward from either corner
+ok: an aspect-locked box grows on a straight-down drag (width 0.548)
+ok: the 9 x 9 dot takes a 6 x 6 hit, and none on a box under 36 DIP (user decision)
+ok: MoveTrackLayer batches its look writes
+ok: ResizeTrackLayer batches its look writes
+ok: CropCanvas_MouseMove batches its look writes
+ok: WireGizmo batches its look writes
+ok: aspect-locked resizes take the diagonal projection
+ok: an anchor at the moving edge does not amplify a vertical drag (x1.178, at most x1.200)
+ok: a corner resize snaps only its moving edge to a guide within reach (the fixed corner stays, a locked box keeps its shape, out of reach nothing moves)
+ok: resize snapping honours Alt and the Snap Layout Guides setting
+ok: Wave 1: LayerGizmoAdorner hit-tests its anchor dot with GizmoHitRules.AnchorTakes

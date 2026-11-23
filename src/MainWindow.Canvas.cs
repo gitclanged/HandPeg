@@ -233,23 +233,29 @@ public partial class MainWindow
             // source rectangle.
             var (fromX, fromY) = ((drawn.Left - area.Left) / area.Width, (drawn.Top - area.Top) / area.Height);
             var (toX, toY) = ((drawn.Right - area.Left) / area.Width, (drawn.Bottom - area.Top) / area.Height);
-            if (element.IsVideoFile)
+
+            // One look batch per pointer move (one TimelineChanged, one command) for the four edges, as gizmo drags do.
+            using (_viewModel.BatchLookWrites())
             {
-                element.LockAspectRatio = true;
-                (element.CropLeft, element.CropTop, element.CropRight, element.CropBottom) = Layer.HeldCrop(fromX, fromY, 1 - toX, 1 - toY);
-            }
-            else
-            {
-                (element.SourceX, element.SourceY) = (fromX, fromY);
-                (element.SourceWidth, element.SourceHeight) = (toX - fromX, toY - fromY);
+                if (element.IsVideoFile)
+                {
+                    element.LockAspectRatio = true;
+                    (element.CropLeft, element.CropTop, element.CropRight, element.CropBottom) = Layer.HeldCrop(fromX, fromY, 1 - toX, 1 - toY);
+                }
+                else
+                {
+                    (element.SourceX, element.SourceY) = (fromX, fromY);
+                    (element.SourceWidth, element.SourceHeight) = (toX - fromX, toY - fromY);
+                }
             }
 
             RedrawOverlay();
         }
         else
         {
-            // Source pixels here; the view model stores source percentages.
-            _viewModel.SetCropFromPixels(left, top, Even((area.Right - drawn.Right) / scale), Even((area.Bottom - drawn.Bottom) / scale));
+            // Source pixels here; the view model stores source percentages. One look batch per move, as above.
+            using (_viewModel.BatchLookWrites())
+                _viewModel.SetCropFromPixels(left, top, Even((area.Right - drawn.Right) / scale), Even((area.Bottom - drawn.Bottom) / scale));
         }
     }
 
@@ -485,17 +491,26 @@ public partial class MainWindow
         if (AppSettings.Current.SnapLayoutGuides && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
             (x, y) = SnapToGuides(x, y, element.SizeWidth, (double)TrackLayerRect(element).Height / frameHeight, frame, guides);
         var (least, most) = element.IsCaptions ? (0.0, 1.0) : (-2.0, 2.0);
-        element.PositionX = Math.Clamp(x, least, most);
-        element.PositionY = Math.Clamp(y, least, most);
+
+        // One look batch per pointer move (one TimelineChanged, one command), however many properties the move writes.
+        using (_viewModel.BatchLookWrites())
+        {
+            element.PositionX = Math.Clamp(x, least, most);
+            element.PositionY = Math.Clamp(y, least, most);
+        }
     }
 
     /// <summary>
     /// Resizes a track layer by an output-pixel delta of the dragged <paramref name="corner"/> in its unrotated frame (bottom-right unless
     /// a tilted clip's other corner grip is used).
     /// </summary>
-    private void ResizeTrackLayer(Layer element, double deltaX, double deltaY, GripCorner corner = GripCorner.BottomRight)
+    /// <param name="surfaceScale">Drag surface units per output pixel (Canvas pane or player); 0 (3D view) snaps to no guide.</param>
+    private void ResizeTrackLayer(Layer element, double deltaX, double deltaY, GripCorner corner = GripCorner.BottomRight, double surfaceScale = 0)
     {
         var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
+
+        // One look batch per pointer move (one TimelineChanged, one command) for every size/position write below.
+        using var batch = _viewModel.BatchLookWrites();
 
         // Caption box: width and height follow the pointer from its corner, clamped to the frame.
         if (element.IsCaptions)
@@ -510,10 +525,27 @@ public partial class MainWindow
         var height = follows || element.SizeHeight <= 0 ? element.SizeWidth * element.HeightPerWidth : element.SizeHeight;
         var fromOpposite = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
 
-        // Tilted clips keep their drawn opposite corner fixed (TiltedCorners tilt); flat clips have zero tilt.
+        // Tilted clips keep their drawn opposite corner fixed (TiltedCorners tilt); flat clips have zero tilt. Aspect-locked boxes take the
+        // pointer's move along the corner's diagonal (DiagonalDelta), so vertical, horizontal and diagonal drags all resize smoothly.
         var (tiltX, tiltY) = DrawnTilted(element) ? (Layer.Tilt(element.TiltX), Layer.Tilt(element.TiltY)) : (0.0, 0.0);
+        // The diagonal runs from the fixed point (the anchor, or the opposite corner with Ctrl) to the dragged corner, with
+        // ResizedFromCorner's anchor shares, so the box scales by the projection alone (no amplification near the moving edge).
+        var (right, bottom) = LayerGizmoAdorner.SidesOf(corner);
+        var (shareX, shareY) = fromOpposite ? (1.0, 1.0)
+            : (right == 1 ? Math.Max(1 - element.AnchorX, 0.1) : Math.Max(element.AnchorX, 0.1), bottom == 1 ? Math.Max(1 - element.AnchorY, 0.1) : Math.Max(element.AnchorY, 0.1));
+        var (moveX, moveY) = follows
+            ? DiagonalDelta(corner, element.SizeWidth, height, deltaX / frameWidth, deltaY / frameHeight, frameWidth, frameHeight, shareX, shareY)
+            : (deltaX / frameWidth, deltaY / frameHeight);
         var resized = ResizedFromCorner(element.PositionX, element.PositionY, element.SizeWidth, height, element.AnchorX, element.AnchorY, corner,
-            deltaX / frameWidth, deltaY / frameHeight, follows, element.HeightPerWidth, fromOpposite, frameWidth, frameHeight, element.Rotation, tiltX, tiltY);
+            moveX, moveY, follows, element.HeightPerWidth, fromOpposite, frameWidth, frameHeight, element.Rotation, tiltX, tiltY);
+
+        // Guide snapping (Alt: none) of the dragged corner's moving edges only, never the box centre; flat, unrotated boxes.
+        if (surfaceScale > 0 && frameWidth > 0 && frameHeight > 0 && AppSettings.Current.SnapLayoutGuides && !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt)
+            && tiltX == 0 && tiltY == 0 && (!element.HasFilters || Math.Abs(element.Rotation % 360) < 0.05))
+        {
+            var (fixedX, fixedY) = fromOpposite ? (right == 1 ? 0.0 : 1.0, bottom == 1 ? 0.0 : 1.0) : (element.AnchorX, element.AnchorY);
+            resized = SnappedCorner(resized, corner, fixedX, fixedY, follows, element.HeightPerWidth, 6 / (frameWidth * surfaceScale), 6 / (frameHeight * surfaceScale));
+        }
 
         // Ctrl: opposite corner stays fixed (left/top corners shift the position as size changes; tilted clips also shift so the drawn
         // corner stays put).
@@ -576,6 +608,75 @@ public partial class MainWindow
         var newWidth = Math.Clamp(width + deltaX / shareX, 0.02, 4);
         var newHeight = heightFollows ? newWidth * heightPerWidth : Math.Clamp(height + deltaY / shareY, 0.01, 4);
         return (x - (newWidth - width) * anchorX, y - (newHeight - height) * anchorY, newWidth, newHeight);
+    }
+
+    /// <summary>
+    /// Pure (golden wave-contract-5-6-4a): an aspect-locked corner drag (<paramref name="deltaX"/>, <paramref name="deltaY"/>, frame
+    /// fractions) projected onto the dragged corner's outward diagonal of a <paramref name="width"/> x <paramref name="height"/> box, in
+    /// frame pixels so the diagonal is the drawn one. A move along the diagonal is unchanged; a vertical or horizontal move resizes by its
+    /// share along it (outward grows, inward shrinks). Unknown frame size: fraction units.
+    /// </summary>
+    internal static (double X, double Y) DiagonalDelta(GripCorner corner, double width, double height, double deltaX, double deltaY,
+        double frameWidth, double frameHeight, double shareX = 1, double shareY = 1)
+    {
+        // shareX/shareY: the fixed point's distance to the dragged corner as fractions of the box (1: the opposite corner).
+        var (right, bottom) = LayerGizmoAdorner.SidesOf(corner);
+        var (pixelsX, pixelsY) = (frameWidth > 0 ? frameWidth : 1, frameHeight > 0 ? frameHeight : 1);
+        var (alongX, alongY) = ((right == 1 ? 1 : -1) * Math.Max(Math.Abs(width * shareX), 1e-6) * pixelsX, (bottom == 1 ? 1 : -1) * Math.Max(Math.Abs(height * shareY), 1e-6) * pixelsY);
+        var length = Math.Sqrt(alongX * alongX + alongY * alongY);
+        if (!double.IsFinite(length) || length <= 0 || !double.IsFinite(deltaX) || !double.IsFinite(deltaY))
+            return (deltaX, deltaY);
+
+        var along = (deltaX * pixelsX * alongX + deltaY * pixelsY * alongY) / length;
+        return (along * alongX / length / pixelsX, along * alongY / length / pixelsY);
+    }
+
+    /// <summary>
+    /// Pure (golden wave-contract-5-6-4a): snaps a single-corner resize's moving edges (never the box centre) to the frame guides (edges,
+    /// centre line, 5% and 10% safe margins) within <paramref name="reachX"/>/<paramref name="reachY"/> (frame fractions). The box scales
+    /// about its fixed point at (<paramref name="fixedX"/>, <paramref name="fixedY"/>) of its size (the anchor, or the opposite corner with
+    /// Ctrl); with <paramref name="heightFollows"/> the nearer edge (in its own reach) decides and the shape is kept.
+    /// </summary>
+    internal static (double X, double Y, double Width, double Height) SnappedCorner((double X, double Y, double Width, double Height) box, GripCorner corner,
+        double fixedX, double fixedY, bool heightFollows, double heightPerWidth, double reachX, double reachY)
+    {
+        var (right, bottom) = LayerGizmoAdorner.SidesOf(corner);
+        var (pointX, pointY) = (box.X + fixedX * box.Width, box.Y + fixedY * box.Height);
+        var (shareX, shareY) = (right == 1 ? 1 - fixedX : -fixedX, bottom == 1 ? 1 - fixedY : -fixedY);
+        var (width, offX) = NearestGuide(pointX, shareX, pointX + shareX * box.Width, reachX);
+        var (height, offY) = NearestGuide(pointY, shareY, pointY + shareY * box.Height, reachY);
+        if (heightFollows && heightPerWidth > 0)
+        {
+            if (!double.IsNaN(height) && (double.IsNaN(width) || offY / reachY < offX / reachX))
+                width = height / heightPerWidth;
+            if (double.IsNaN(width))
+                return box;
+            width = Math.Clamp(width, 0.02, 4);
+            height = width * heightPerWidth;
+        }
+        else
+        {
+            width = double.IsNaN(width) ? box.Width : Math.Clamp(width, 0.02, 4);
+            height = double.IsNaN(height) ? box.Height : Math.Clamp(height, 0.01, 4);
+        }
+
+        return (pointX - fixedX * width, pointY - fixedY * height, width, height);
+
+        // The size that puts a moving edge (fixed point + share x size) on the nearest guide within reach, and its distance; NaN for none.
+        static (double Size, double Off) NearestGuide(double point, double share, double edge, double reach)
+        {
+            var (size, off) = (double.NaN, double.MaxValue);
+            if (Math.Abs(share) < 0.05 || !(reach > 0))
+                return (size, off);
+            foreach (var line in (ReadOnlySpan<double>)[0, 0.05, 0.1, 0.5, 0.9, 0.95, 1])
+            {
+                var (distance, wanted) = (Math.Abs(line - edge), (line - point) / share);
+                if (distance <= reach && distance < off && wanted > 0)
+                    (size, off) = (wanted, distance);
+            }
+
+            return (size, off);
+        }
     }
 
     // Drawn (tilted) corner of a box in frame pixels, using TiltedCorners' Matrix4.Corners math on the in-progress box.
@@ -670,7 +771,7 @@ public partial class MainWindow
         adorner.ResizeDelta += (corner, moved) =>
         {
             resizeStep.Changing();
-            ResizeTrackLayer(gizmo, moved.X / scale, moved.Y / scale, corner);
+            ResizeTrackLayer(gizmo, moved.X / scale, moved.Y / scale, corner, scale);
         };
 
         // Rotation handle: angle from anchor to pointer; 0 degrees = handle pointing up.
@@ -707,7 +808,8 @@ public partial class MainWindow
             }
 
             var (_, _, width, height) = getRect();
-            gizmo.MoveAnchor(x, y, width, height, _viewModel.FrameWidth, _viewModel.FrameHeight);
+            using (_viewModel.BatchLookWrites())
+                gizmo.MoveAnchor(x, y, width, height, _viewModel.FrameWidth, _viewModel.FrameHeight);
         };
     }
 

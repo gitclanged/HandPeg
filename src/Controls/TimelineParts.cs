@@ -228,9 +228,11 @@ public readonly record struct WaveWindow(HandPegApp.Services.WaveformData Data, 
 /// <summary>
 /// A block's thumbnails: frames sampled evenly over the whole file (frame k at <c>k * SecondsPerFrame</c>), shown from
 /// <paramref name="MediaFrom"/> at <paramref name="Speed"/>. Laid on the file's time grid, so they stay fixed under start trims and
-/// slide under slips.
+/// slide under slips. A Cutout's <paramref name="Crop"/> (Pass 5.6.4A) is the source region [UMin, VMin, UMax, VMax] its frames were
+/// cut to from the parent file's shared strip (MainWindow.FilmOf: at least 16 x 16 strip pixels, aspect kept), so DrawFilm draws them as
+/// they are and slots take the region's shape; null for whole frames.
 /// </summary>
-public readonly record struct FilmWindow(IReadOnlyList<ImageSource> Frames, double SecondsPerFrame, double MediaFrom, double Speed);
+public readonly record struct FilmWindow(IReadOnlyList<ImageSource> Frames, double SecondsPerFrame, double MediaFrom, double Speed, FilmCrop? Crop = null);
 
 /// <summary>Block drag mode (a roll also affects the adjacent block).</summary>
 public enum BlockEdit
@@ -392,6 +394,13 @@ public sealed class TimelineBlock
 
     /// <summary>File-time thumbnails; override <see cref="Frames"/> when set.</summary>
     public FilmWindow? Film { get; init; }
+
+    /// <summary>
+    /// A Cutout block's source region (normalized [UMin, VMin, UMax, VMax]: its cropped source rect intersected with its mask outline's
+    /// bounds, MainWindow.CutoutFilmCrop) that its <see cref="Film"/> frames show; null for whole-frame blocks. Read from the film, so the
+    /// region and the frames cut to it never disagree.
+    /// </summary>
+    public FilmCrop? FilmCrop => Film?.Crop;
 
     /// <summary>Short top-right badge text (speed, "fx N"); null for none.</summary>
     public string? Badge { get; init; }

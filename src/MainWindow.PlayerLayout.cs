@@ -55,8 +55,11 @@ public partial class MainWindow
                     break;
                 case nameof(MainViewModel.PositionMs):
                     // Rebuild player and Canvas boxes only when the visible clip set changed; during a drag, defer until it
-                    // completes.
-                    if (_dragHeld)
+                    // completes; during a held playhead scrub, skip the per-frame commits and rebuild once on release
+                    // (MainWindow.Scrub.cs ReleaseScrubGate), so cut boundaries never rebuild LayerBoxes and hit masks at 60 Hz.
+                    if (ScrubDefersLayout)
+                        _scrubState.RedrawOwed = true;
+                    else if (_dragHeld)
                         _redrawAfterDrag = true;
                     else
                         RedrawForClipsShown();
@@ -371,7 +374,7 @@ public partial class MainWindow
                 grip.ResizeDelta += (_, e) =>
                 {
                     resizeStep.Changing();
-                    ResizeTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale);
+                    ResizeTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale, surfaceScale: _playerScale);
                 };
                 _playerGizmo = grip;
             }

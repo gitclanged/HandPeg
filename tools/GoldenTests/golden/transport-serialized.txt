@@ -1,6 +1,8 @@
 # Play, Pause, Seek, the priming hand-off and the end of the sequence change the transport under one lock.
-ok: Seek, Play, Pause, the end of the sequence and the priming hand-off each change the transport under _transport
+ok: the seek drain, Play, Pause, the end of the sequence and the priming hand-off each change the transport under _transport
+ok: Seek is lock-free (Pass 5.6.4A): it posts its target to the mail-slot before it bumps the serial; only the pump's drain moves the audio
+ok: the drain moves the paused clock and the audio under _transport and empties the slot only if no newer target was posted
 ok: no file I/O under the lock: the play session's log line is written after it
-ok: the pump's end of sequence yields to a Seek, Play or Pause made after it measured the end (no stale Ended)
+ok: the pump's end of sequence yields to a Seek (pending or posted after it measured the end), Play or Pause (no stale Ended)
 ok: the sound engine's seek is one 8-byte value published before the serial's fence (the two-writer seqlock is gone)
 ok: a queued Ended does nothing when Play was pressed again before it ran

@@ -1,0 +1,10 @@
+# A Cutout's filmstrip shows its own region of the shared strip, at least 16 x 16 strip pixels.
+ok: full, empty and partial regions are told apart
+ok: outline bounds map through the part rect with the mask offset
+ok: mask bounds intersected with the crop rect (user decision)
+ok: disjoint regions keep the crop
+ok: a tiny HUD region is cut at 16 x 16 strip pixels about its centre (74,37 16x16)
+ok: the floor stays inside the frame at its edge
+ok: FilmOf cuts each strip frame to the Cutout's region, with the floor, and leaves other clips whole
+ok: DrawFilm holds a sliver's slot aspect to a range and letterboxes the picture at its own shape, never stretched
+ok: a Cutout's region: cropped source, then (unless inverted) its outline's bounds intersected

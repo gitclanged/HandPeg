@@ -1,0 +1,2 @@
+# A/V Sync treats Steam Streaming sinks as virtual, as Remote Audio (Wave 1).
+ok: Wave 1: Steam Streaming sinks count as virtual like Remote Audio; hardware endpoints first, else SKIPPED (virtual audio sink)

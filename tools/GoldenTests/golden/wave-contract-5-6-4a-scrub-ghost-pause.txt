@@ -1,0 +1,9 @@
+# Scrubbing while playing ghost-pauses; an 80 ms rest plays a segment; release resumes whole.
+ok: the pointer rest that plays a segment is 80 ms, CrispAfter (user decision)
+ok: GhostPause is lock-free on the UI thread: it marks the hold, posts the request, cancels a measured end and ends the scaled run
+ok: the pump pauses the audio under _transport unless the hold was dropped first; no session log line and no Ended
+ok: GhostResume drops the hold and plays from the scrubbed clock
+ok: public void Play drops a ghost hold (Space during a play-scrub wins)
+ok: public void Pause drops a ghost hold (Space during a play-scrub wins)
+ok: a rest while still held plays on from the scrubbed moment
+ok: release resumes the held play after the caller's exact release seek

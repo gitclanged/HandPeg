@@ -350,7 +350,7 @@ public partial class MainWindow
             HideTabStill();
 
         // Scrub flush (once per frame): the player was already seeked during the pointer move (MainWindow.Scrub.cs).
-        if (_scrubFlushing)
+        if (_scrubState.Flushing)
             return;
         var ms = (long)_viewModel.PositionMs;
         if (!PlayerAt(ms))

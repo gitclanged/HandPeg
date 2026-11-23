@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq.Expressions;
 using System.Reflection;
 using HandPegApp.Services;
+using HandPegApp.Services.Audio;
 
 namespace HandPegApp.Tools.AvSync;
 
@@ -62,6 +63,24 @@ internal static class Session
             Console.WriteLine(System.FormattableString.Invariant($"Saved display lead: {options.Number("lead-seed-ms", 0):0.###} ms at {options.Number("lead-seed-hz", 0):0.##} Hz (seeds the first play)."));
         }
 
+        // Virtual audio sinks (Pass 5.6.4A): an RDP session's "Remote Audio" and Steam Remote Play's "Steam Streaming ..." clock the sound
+        // off a network stream, not a device. The session measures on an active hardware output instead; with only virtual sinks, it is
+        // skipped (exit 0) rather than reporting a meaningless A/V.
+        var listing = Task.Run(AudioDevices.List);
+        var listed = listing.Wait(TimeSpan.FromSeconds(5));
+        var outputs = listed ? listing.Result : [];
+        if (!listed)
+            Console.WriteLine("Sound: the output list did not answer within 5 s; the output that opens is checked instead.");
+        var (output, sinkNote) = MeasuredOutput(outputs, AppSettings.Current.AudioOutputDeviceId);
+        if (sinkNote.Length > 0)
+            Console.WriteLine(sinkNote);
+        if (output is null)
+        {
+            Console.WriteLine("avsync-session: SKIPPED (virtual audio sink)");
+            return 0;
+        }
+
+        AppSettings.Current.AudioOutputDeviceId = output;
         var starting = GpuPreviewEngine.StartAsync(window.Handle);
         if (!ProjectSession.WaitUntil(() => starting.IsCompleted, TimeSpan.FromSeconds(30)) || starting.Result is not { } engine)
             throw new InvalidOperationException($"The GPU engine did not start: {GpuPreviewEngine.LastStartFailure}");
@@ -75,6 +94,14 @@ internal static class Session
 
             // The device opens on the engine's own thread: given a moment.
             ProjectSession.WaitUntil(() => engine.Audio.DeviceName != "Starting", TimeSpan.FromSeconds(5));
+
+            // The output actually opened (the list may not have answered, or Windows may have opened another): a virtual sink is never sampled.
+            if (engine.Audio.HasDevice && IsVirtualSink(engine.Audio.DeviceName))
+            {
+                Console.WriteLine($"Sound: {engine.Audio.DeviceName} opened, a virtual audio sink.");
+                Console.WriteLine("avsync-session: SKIPPED (virtual audio sink)");
+                return 0;
+            }
             var settings = AppSettings.Current;
             Console.WriteLine();
             Console.WriteLine($"proxies {(proxies ? "on" : "off")}; sound: {(engine.Audio.HasDevice ? engine.Audio.DeviceName : "no device could be opened: the engine's own clock (the processor's counter) is measured")}"
@@ -178,6 +205,35 @@ internal static class Session
                 sampler.Dump(Path.GetFullPath(options.Get("dump")), steps);
             return Report(sampler, steps, tolerance, nominal);
         }
+    }
+
+    // ----- Virtual audio sinks (Pass 5.6.4A) -----
+
+    /// <summary>Output names that are network streams, not sound hardware: RDP's "Remote Audio" and Steam Remote Play's "Steam Streaming ...".</summary>
+    internal static readonly string[] VirtualSinkNames = ["Remote Audio", "Steam Streaming"];
+
+    /// <summary>True for a virtual sink's output name ("Remote Audio", "Steam Streaming Speakers", ...).</summary>
+    internal static bool IsVirtualSink(string name) => VirtualSinkNames.Any(sink => name.Contains(sink, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The output id the session measures, and a line saying why when it is not the usual one. The usual one is Settings' choice when present,
+    /// else the default: kept when it is hardware (or when no output is listed: the engine's own clock is measured, as before). A virtual
+    /// sink gives way to the first active hardware output (default first); with only virtual sinks, null (the session is skipped).
+    /// </summary>
+    internal static (string? Id, string Note) MeasuredOutput(IReadOnlyList<AudioDevice> outputs, string chosenId)
+    {
+        if (outputs.Count == 0)
+            return (chosenId, "");
+
+        var used = outputs.FirstOrDefault(o => chosenId.Length > 0 && string.Equals(o.Id, chosenId, StringComparison.OrdinalIgnoreCase))
+                   ?? outputs.FirstOrDefault(o => o.IsDefault) ?? outputs[0];
+        if (!IsVirtualSink(used.Name))
+            return (chosenId, "");
+
+        var hardware = outputs.Where(o => !IsVirtualSink(o.Name)).OrderByDescending(o => o.IsDefault).FirstOrDefault();
+        return hardware is null
+            ? (null, $"Sound: only virtual audio sinks are active ({string.Join(", ", outputs.Select(o => o.Name))}).")
+            : (hardware.Id, $"Sound: {used.Name} is a virtual audio sink; measuring on {hardware.Name} instead.");
     }
 
     private static int Report(Sampler sampler, List<(string Step, double At, long From, long To)> steps, double tolerance, double nominal)

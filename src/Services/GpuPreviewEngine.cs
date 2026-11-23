@@ -171,7 +171,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
     public double SequenceSeconds => Volatile.Read(ref _plan).SequenceSeconds;
 
     /// <summary>Master clock in sequence seconds: audio device position while playing, else the paused time.</summary>
-    public double Position => _playing ? _audio.Position : Volatile.Read(ref _pausedAt);
+    public double Position => _playing ? PlayingPosition() : SeekMailSlot.PeekOr(ref _pendingSeekBits, Volatile.Read(ref _pausedAt));
 
     /// <summary>J, K, L: forward and back at so many times (0.25 to 4, negative backward; sound only forward).</summary>
     public double Rate
@@ -482,40 +482,52 @@ public sealed partial class GpuPreviewEngine : IDisposable
     private readonly Lock _transport = new();
     private long _transportSerial;
 
-    /// <summary>Sends the playhead to a moment (exact; a scrub calls this at the pointer's rate, no pacing needed).</summary>
+    // ----- Lock-free scrub seeks (Pass 5.6.4A) -----
+    // CL-24 put Seek under _transport, so a 1-4 kHz scrub contended with the pump and a synchronous audio seek on every pointer move. Seek
+    // now takes no lock: it writes the paused clock, bumps the serial (Interlocked) and posts its target to a one-word mail-slot (latest
+    // wins); the pump drains the slot under _transport (DrainSeek), so the audio engine is still only moved inside a serialized transport
+    // transition. Play, Pause and GhostPause fold a pending target in themselves.
+    private long _pendingSeekBits = SeekMailSlot.Empty;
+
+    /// <summary>
+    /// Sends the playhead to a moment (exact; a scrub calls this at the pointer's rate, no pacing needed). Lock-free: never waits on the
+    /// pump or the audio engine; the pump applies it within a turn.
+    /// </summary>
     public void Seek(double sequenceSeconds)
     {
         var seconds = Math.Clamp(sequenceSeconds, 0, Math.Max(SequenceSeconds, 0));
+        if (!double.IsFinite(seconds))
+            return;
 
-        // A paused drag of the playhead: its heading, for the hint a little ahead of it.
+        // A paused drag of the playhead: its heading, for the decode hint a little ahead of it. These fields are Seek's own (one caller
+        // thread); the pump reads them as hints only.
         var now = Stopwatch.GetTimestamp();
         var holdBackground = false;
-        lock (_transport)
+        if (!_playing && !double.IsNaN(_lastSeekAt))
         {
-            _transportSerial++;
-
-            // A paused drag of the playhead: its heading, for the decode hint a little ahead of it.
-            if (!_playing && !double.IsNaN(_lastSeekAt))
+            var elapsed = (now - Volatile.Read(ref _lastSeekTicks)) / (double)Stopwatch.Frequency;
+            if (elapsed is > 0.001 and < 0.25)
+                _scrubVelocity = 0.6 * _scrubVelocity + 0.4 * ((seconds - _lastSeekAt) / elapsed);
+            if (elapsed < ScrubbingFor)
             {
-                var elapsed = (now - _lastSeekTicks) / (double)Stopwatch.Frequency;
-                if (elapsed is > 0.001 and < 0.25)
-                    _scrubVelocity = 0.6 * _scrubVelocity + 0.4 * ((seconds - _lastSeekAt) / elapsed);
-                if (elapsed < ScrubbingFor)
-                {
-                    Volatile.Write(ref _scrubMovedTicks, now);
-                    holdBackground = true;
-                }
-                else
-                {
-                    _scrubVelocity = 0;
-                }
+                Volatile.Write(ref _scrubMovedTicks, now);
+                holdBackground = true;
             }
-
-            _lastSeekAt = seconds;
-            Volatile.Write(ref _lastSeekTicks, now);
-            Volatile.Write(ref _pausedAt, seconds);
-            _audio.Seek(seconds);
+            else
+            {
+                _scrubVelocity = 0;
+            }
         }
+
+        _lastSeekAt = seconds;
+        Volatile.Write(ref _lastSeekTicks, now);
+
+        // The clock reads the target at once (Position); the serial cancels an end-of-Sequence pause measured before it (PauseAtEnd). Posted
+        // before the serial moves: a pump turn that reads the new serial also sees the target pending, so it never measures the end on the
+        // audio clock the seek has not moved yet.
+        Volatile.Write(ref _pausedAt, seconds);
+        SeekMailSlot.Post(ref _pendingSeekBits, seconds);
+        Interlocked.Increment(ref _transportSerial);
 
         // A scrub's move holds background work back a moment (the strip workers stop between pictures meanwhile).
         if (holdBackground)
@@ -523,16 +535,134 @@ public sealed partial class GpuPreviewEngine : IDisposable
         Invalidate();
     }
 
+    /// <summary>
+    /// Applies the newest posted <see cref="Seek"/> to the transport and the audio engine (pump thread, under <see cref="_transport"/>);
+    /// a newer post simply wins on the next turn. No lock when nothing is pending.
+    /// </summary>
+    private void DrainSeek()
+    {
+        if (!SeekMailSlot.IsPending(ref _pendingSeekBits))
+            return;
+
+        lock (_transport)
+        {
+            var bits = Volatile.Read(ref _pendingSeekBits);
+            if (bits == SeekMailSlot.Empty)
+                return;
+            var target = Math.Clamp(BitConverter.Int64BitsToDouble(bits), 0, Math.Max(SequenceSeconds, 0));
+
+            // A Seek racing PauseAtEnd may have written its paused clock before PauseCore wrote the end over it: the drained target is the
+            // newest one, so the paused clock follows it (never left at a stale end).
+            if (!_playing)
+                Volatile.Write(ref _pausedAt, target);
+            _audio.Seek(target);
+
+            // Emptied only once the audio clock has moved (Position shows the target until then), and only if no newer target was posted
+            // meanwhile (that one is applied next turn).
+            Interlocked.CompareExchange(ref _pendingSeekBits, SeekMailSlot.Empty, bits);
+        }
+    }
+
+    /// <summary>The playing clock: a posted target not yet applied to the audio clock (read first), else the audio clock.</summary>
+    private double PlayingPosition()
+    {
+        var bits = Volatile.Read(ref _pendingSeekBits);
+        return bits != SeekMailSlot.Empty ? BitConverter.Int64BitsToDouble(bits) : _audio.Position;
+    }
+
+    // ----- Ghost-pause play-scrubbing (Pass 5.6.4A) -----
+    // A playhead drag while playing holds the transport (GhostPause): audio clock paused at the scrub target, frames drawn as paused ones
+    // (whole, no CountFrame penalty, the scaled run ended). The UI keeps showing play; a pointer rest of GhostDwell plays on from there until
+    // the next move, and release resumes playback (GhostResume). Pause or Play in the meantime drops the hold.
+    private volatile bool _ghostPaused;
+
+    // Asked by GhostPause or EndScrubScaling (any thread), honoured by the pump at the top of its turn: EndScaledRun, so the next frame is
+    // whole and a playing frame starts a fresh run.
+    private int _scaleResetOwed;
+
+    /// <summary>Pointer rest (seconds) after which a held play-scrub plays again until the next move (user decision: 80 ms, CrispAfter).</summary>
+    public const double GhostDwell = CrispAfter;
+
+    // A GhostPause posted by the UI (1), applied by the pump under _transport (ApplyGhostPause).
+    private int _ghostOwed;
+
+    /// <summary>
+    /// True while a play-scrub holds a playing transport (<see cref="GhostPause"/>); <see cref="IsPlaying"/> turns false once the pump has
+    /// applied it (within a turn).
+    /// </summary>
+    public bool IsGhostPaused => _ghostPaused;
+
+    /// <summary>
+    /// Holds a playing transport for a fast play-scrub. Lock-free (UI thread, never waits on the pump or the audio engine): it marks the
+    /// hold, posts the request and cancels an end-of-Sequence pause measured before it; the pump pauses the audio at the pending scrub target
+    /// (ApplyGhostPause). No <see cref="Ended"/>, no play-session log line. False when not playing or already held.
+    /// </summary>
+    public bool GhostPause()
+    {
+        if (!_playing || _ghostPaused)
+            return false;
+
+        _ghostPaused = true;
+        Interlocked.Exchange(ref _ghostOwed, 1);
+        Interlocked.Increment(ref _transportSerial);
+        Interlocked.Exchange(ref _scaleResetOwed, 1);
+        Invalidate();
+        return true;
+    }
+
+    /// <summary>
+    /// Applies a posted <see cref="GhostPause"/> (pump thread, under <see cref="_transport"/>): the audio pauses at the pending scrub target
+    /// or the clock, unless Play, Pause or GhostResume dropped the hold first.
+    /// </summary>
+    private void ApplyGhostPause()
+    {
+        if (Interlocked.Exchange(ref _ghostOwed, 0) == 0)
+            return;
+
+        lock (_transport)
+        {
+            if (!_playing || !_ghostPaused)
+                return;
+            Interlocked.Increment(ref _transportSerial);
+            _ = PauseCore(SeekMailSlot.TryTake(ref _pendingSeekBits, out var pending) ? pending : _audio.Position);
+        }
+    }
+
+    /// <summary>Ends a ghost pause: playback resumes from the paused clock (the scrubbed moment). False when none is held.</summary>
+    public bool GhostResume()
+    {
+        lock (_transport)
+        {
+            if (!_ghostPaused)
+                return false;
+            _ghostPaused = false;
+        }
+
+        Play();
+        return true;
+    }
+
+    /// <summary>
+    /// Scrub released: the pump ends the Dynamic Preview Scaling run (EndScaledRun) before its next frame, so resumed playback starts whole
+    /// instead of staying at a scrub's reduced step until the next pause.
+    /// </summary>
+    public void EndScrubScaling()
+    {
+        Interlocked.Exchange(ref _scaleResetOwed, 1);
+        Invalidate();
+    }
+
     public void Play()
     {
         lock (_transport)
         {
+            _ghostPaused = false;
             if (_playing)
                 return;
-            _transportSerial++;
-            var from = Volatile.Read(ref _pausedAt);
-            if (_rate >= 0 && from >= SequenceSeconds - 1e-3)
-                from = 0;
+            Interlocked.Increment(ref _transportSerial);
+
+            // A pending Seek is folded in: play starts from its target (newer than a paused clock an earlier drain may have written).
+            var from = SeekMailSlot.ResumeFrom(ref _pendingSeekBits, Volatile.Read(ref _pausedAt), SequenceSeconds, _rate);
             _audio.Seek(from);
             _scrubVelocity = 0;
 
@@ -582,10 +712,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
         string? session;
         lock (_transport)
         {
+            _ghostPaused = false;
             if (!_playing)
                 return;
-            _transportSerial++;
-            session = PauseCore(_audio.Position);
+            Interlocked.Increment(ref _transportSerial);
+
+            // A Seek posted while playing and not yet drained is where the pause lands (the audio clock has not moved there yet).
+            session = PauseCore(SeekMailSlot.TryTake(ref _pendingSeekBits, out var pending) ? pending : _audio.Position);
         }
 
         if (session is not null)
@@ -613,15 +746,19 @@ public sealed partial class GpuPreviewEngine : IDisposable
         string? session;
         lock (_transport)
         {
-            if (!_playing || _transportSerial != serial)
+            // One commit point against lock-free Seek (TryCommitEnd): a seek posted before it wins and is applied next turn (every pump
+            // path, draw-ahead included); one posted after it lands on the paused clock (Position reads a pending target first).
+            if (!_playing || !SeekMailSlot.TryCommitEnd(ref _transportSerial, serial, ref _pendingSeekBits))
                 return;
-            _transportSerial++;
             session = PauseCore(end);
         }
 
         if (session is not null)
             AppLog.Write(session);
         Invalidate();
+
+        // The engine did pause at the end, so Ended is due even if a later seek moved the paused clock (its handler skips a queued Ended
+        // when Play was pressed again first).
         Ended?.Invoke();
     }
 
@@ -663,6 +800,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     failedNoted = true;
                     faulted(_client.Message);
                 }
+
+                // Lock-free scrub requests land here, under _transport (ApplyGhostPause, DrainSeek); a scrub release or ghost pause ends the
+                // scaled run.
+                ApplyGhostPause();
+                DrainSeek();
+                if (Interlocked.Exchange(ref _scaleResetOwed, 0) != 0)
+                    EndScaledRun();
 
                 // Export Frame capture: rendered and read back here (the sole scene-writing thread).
                 if (Interlocked.Exchange(ref _capture, null) is { } capture)
@@ -707,6 +851,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     if (_primingSince != 0 && PlayStartReady(_client, _primingSince, _primingScene))
                         EndPriming();
 
+                    // A ghost pause or seek posted during the wait lands before this turn's moment is measured.
+                    ApplyGhostPause();
+                    if (!_playing)
+                        continue;
+                    DrainSeek();
+
                     // Read requested marks before the plan and playhead so this scene satisfies them (PresentedSince).
                     _turnMark = Volatile.Read(ref _sceneMark);
                     var plan = Volatile.Read(ref _plan);
@@ -724,7 +874,11 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     _viewport.FrameOrigin = origin;
                     var serial = Volatile.Read(ref _transportSerial);
                     var at = _audio.Position + GpuViewport.PlayingLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
-                    if (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0)
+
+                    // A seek posted before the serial was read (Seek posts first) and not yet applied: the end is never measured on the old
+                    // audio clock; the next turn drains it. One posted after the read fails PauseAtEnd's serial check.
+                    var unapplied = SeekMailSlot.IsPending(ref _pendingSeekBits);
+                    if (!unapplied && (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0))
                     {
                         PauseAtEnd(serial, _rate >= 0 ? plan.SequenceSeconds : 0);
                         continue;

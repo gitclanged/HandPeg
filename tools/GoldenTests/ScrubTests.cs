@@ -79,7 +79,7 @@ public static class ScrubTests
             "the overview scrubber's drag scrubs the same way and ends with EndScrub");
         expect(player.Contains("if (IsScrubHeld)") && view.Contains("IsScrubHeld ||"),
             "the player's clock and Follow Playhead leave a held scrub alone (a ruler's too)");
-        expect(player.Contains("if (_scrubFlushing)\n            return;") && scrubFile.Contains("if (!PlayerAt((long)positionMs))\n            PlayerSeek((long)positionMs);"),
+        expect(player.Contains("if (_scrubState.Flushing)\n            return;") && scrubFile.Contains("if (!PlayerAt((long)positionMs))\n            PlayerSeek((long)positionMs);"),
             "the engine is sent on the raw move, once: a scrub's value never seeks it again");
         expect(scrubFile.Contains("UnifiedTimeline.Surface.PlayheadSeconds = seconds;") && scrubFile.Contains("PlaceRulerPlayhead(ruler, seconds);") && scrubFile.Contains("KeyLanes.MovePlayhead(seconds);"),
             "the Timeline's, the rulers' and the key lanes' playheads slide on the raw move");

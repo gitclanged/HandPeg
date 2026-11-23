@@ -7,8 +7,12 @@ namespace HandPegApp.Services;
 // by the worker's final pass (FrameSceneHeader.PreviewScale, SceneRenderer.DrawScale). Steps (StepScale): 0 full; 1 "1:1 DIP" (viewport
 // pixels / GpuViewport.MonitorScale, capped by ShortSideCap and Sequence pixels: DipScale); 2 and 3 are 3/4 and 1/2 of step 1. Runs
 // start at step 1 on battery or unified memory with multiple tabs, else full (StartStep), switching immediately if that changes
-// mid-run. Three slow frames in a tumbling StepWindow step down (Counted, NextStep, skipping no-op steps); never steps up mid-run.
-// Pausing (immediately) or CrispAfter past the last scrub restores full resolution and resets the run. Pump thread only.
+// mid-run. Pass 5.6.4A: a frame is slow only by the worker's shader draw time (SlowByDraw: LastDrawMs over SlowDrawMs, or over
+// BigCardDrawMs on a big card on AC power), never by acquire time or lateness (a decoder lane seeking); a late frame is judged by its draw
+// time as it arrives. Three slow frames in a tumbling StepWindow step down (Counted, NextStep, skipping no-op steps); RecoverAfter on-time
+// frames in a row step back up (Recovered, PrevStep: 0.5 -> 0.75 -> 1.0, never above the start step). Pausing (immediately), a scrub's
+// release or a ghost pause (_scaleResetOwed, at the pump's next turn) or CrispAfter past the last scrub restores full resolution and resets
+// the run. Pump thread only.
 public sealed partial class GpuPreviewEngine
 {
     /// <summary>Worker draw time (acquire, draw, flush; ms) above which a frame counts as slow.</summary>
@@ -29,23 +33,26 @@ public sealed partial class GpuPreviewEngine
     // The least time between two steps (the new size settles), seconds.
     private const double StepSettle = 0.5;
 
-    // The step now, and what decides the next one.
-    private int _scaleStep;
-    private int _framesCounted, _slowCounted;
+    // The step now, and what decides the next one: the window's frame and slow counts (down), the on-time streak (back up) and the run's
+    // start step now (the highest it may recover to).
+    private int _scaleStep, _startStep;
+    private int _framesCounted, _slowCounted, _onTimeCounted;
     private long _stepTicks, _countedFrames = -1;
     private bool _scaleActive, _lateOwed;
     private float _lastScale = 1;
 
-    // Run reference sizes (viewport, Sequence, monitor scale) and run statistics for the log line.
+    // Run reference sizes (viewport, Sequence, monitor scale) and run statistics for the log line (late: missed a refresh, judged by draw
+    // time; recovered: steps back up).
     private (int ViewWidth, int ViewHeight, int CanvasWidth, int CanvasHeight, double MonitorScale) _scaleFor;
-    private int _runStart, _runDeepest, _runFrames, _runSlow;
+    private int _runStart, _runDeepest, _runFrames, _runSlow, _runLate, _runRecovered;
     private bool _runPlayed;
 
     // Stopwatch ticks of the last Seek within ScrubbingFor of the previous one (a drag, not a click); written by Seek.
     private long _scrubMovedTicks;
 
-    // On battery, asked again every few seconds (GetSystemPowerStatus is cheap, but not every frame).
-    private bool _onBattery;
+    // On battery, asked again every few seconds (GetSystemPowerStatus is cheap, but not every frame); with it, whether the compositor's
+    // card is big (MemoryTier.IsBigCard) while on AC power: its frames are slow only past BigCardDrawMs of shader draw (SlowByDraw).
+    private bool _onBattery, _bigCardOnAc;
     private long _batteryTicks;
 
     /// <summary>The scale for the frame drawn now (1: whole). Pump thread.</summary>
@@ -60,22 +67,27 @@ public sealed partial class GpuPreviewEngine
 
         var now = Stopwatch.GetTimestamp();
         if (now - _batteryTicks > 5 * Stopwatch.Frequency)
+        {
             (_onBattery, _batteryTicks) = (PowerStatus.OnBattery, now);
+            _bigCardOnAc = !_onBattery && CompositorCardIsBig();
+        }
 
         // Re-evaluated every frame: monitor scale, tab count and power source can change mid-run.
         _scaleFor = (width, height, canvasWidth, canvasHeight, _viewport.MonitorScale);
         var start = StartStep(_onBattery, UnifiedMemory, ProjectTabs.OpenCount);
+        _startStep = start;
         if (!_scaleActive)
         {
-            (_scaleActive, _scaleStep, _framesCounted, _slowCounted, _stepTicks, _lateOwed) = (true, start, 0, 0, now, false);
-            (_runStart, _runDeepest, _runFrames, _runSlow, _runPlayed) = (start, start, 0, 0, false);
+            (_scaleActive, _scaleStep, _framesCounted, _slowCounted, _onTimeCounted, _stepTicks, _lateOwed) = (true, start, 0, 0, 0, now, false);
+            (_runStart, _runDeepest, _runFrames, _runSlow, _runLate, _runRecovered, _runPlayed) = (start, start, 0, 0, 0, 0, false);
             _countedFrames = Volatile.Read(ref _client.Memory.Control.FramesRendered);
         }
         else
         {
-            // Never above the start step while it runs (a second tab opened, the charger pulled), and never back up.
+            // Never above the start step while it runs (a second tab opened, the charger pulled); recovery (CountFrame) climbs back to
+            // it at most.
             if (start > _scaleStep)
-                (_scaleStep, _stepTicks, _runDeepest) = (start, now, Math.Max(_runDeepest, start));
+                (_scaleStep, _stepTicks, _runDeepest, _onTimeCounted) = (start, now, Math.Max(_runDeepest, start), 0);
             CountFrame(late: false);
         }
 
@@ -84,8 +96,10 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// Counts the newest worker frame once: slow if over SlowDrawMs or <paramref name="late"/> (missed its refresh); enough slow frames per
-    /// window step down. Late frames count when late, not again on arrival. Pump thread.
+    /// Counts the newest worker frame once, by its shader draw time alone (<see cref="SlowByDraw"/>), never by acquire time or lateness: a
+    /// frame that missed its refresh (<paramref name="late"/>, often a decoder lane seeking) is noted and judged by its draw time as it
+    /// arrives, once. Enough slow frames per window step down (NextStep); <see cref="RecoverAfter"/> on-time frames in a row step back up
+    /// (PrevStep, never above the start step). Pump thread.
     /// </summary>
     private void CountFrame(bool late)
     {
@@ -95,35 +109,55 @@ public sealed partial class GpuPreviewEngine
         var frames = Volatile.Read(ref control.FramesRendered);
         if (late)
         {
+            // Not slow by itself: the frame is judged by its own draw time when it arrives (the newest drawn one is not counted again).
             (_countedFrames, _lateOwed) = (frames, true);
-        }
-        else
-        {
-            if (frames == _countedFrames)
-                return;
-            _countedFrames = frames;
-            if (_lateOwed)
-            {
-                // The frame that came late, drawn now: counted already.
-                _lateOwed = false;
-                return;
-            }
+            return;
         }
 
-        var slow = late || control.LastAcquireMs + control.LastDrawMs + control.LastFlushMs > SlowDrawMs;
+        if (frames == _countedFrames)
+            return;
+        _countedFrames = frames;
+        if (_lateOwed)
+        {
+            _lateOwed = false;
+            _runLate++;
+        }
+
+        var slow = SlowByDraw(control.LastDrawMs, _bigCardOnAc);
         _runFrames++;
         if (slow)
             _runSlow++;
 
         var now = Stopwatch.GetTimestamp();
-        (_framesCounted, _slowCounted, var step) = Counted(_framesCounted, _slowCounted, slow, now - _stepTicks > StepSettle * Stopwatch.Frequency);
+        var settled = now - _stepTicks > StepSettle * Stopwatch.Frequency;
+        var (width, height, canvasWidth, canvasHeight, monitorScale) = _scaleFor;
+
+        // Back up after a streak of on-time frames: a momentary hitch never degrades the rest of the play.
+        (_onTimeCounted, var up) = Recovered(_onTimeCounted, slow, _scaleStep, _startStep);
+        if (up)
+        {
+            // The streak itself is the settle for recovery (StepSettle only paces steps down): at 120 fps, 30 frames are 0.25 s.
+            var higher = PrevStep(_scaleStep, _startStep, width, height, canvasWidth, canvasHeight, monitorScale);
+            if (higher != _scaleStep)
+                (_scaleStep, _stepTicks, _framesCounted, _slowCounted, _runRecovered) = (higher, now, 0, 0, _runRecovered + 1);
+            return;
+        }
+
+        (_framesCounted, _slowCounted, var step) = Counted(_framesCounted, _slowCounted, slow, settled);
         if (!step)
             return;
-        var (width, height, canvasWidth, canvasHeight, monitorScale) = _scaleFor;
         var next = NextStep(_scaleStep, width, height, canvasWidth, canvasHeight, monitorScale);
         if (next != _scaleStep)
-            (_scaleStep, _stepTicks, _runDeepest) = (next, now, Math.Max(_runDeepest, next));
+            (_scaleStep, _stepTicks, _runDeepest, _onTimeCounted) = (next, now, Math.Max(_runDeepest, next), 0);
     }
+
+    /// <summary>
+    /// True when the compositor's card is big (MemoryTier.IsBigCard: not WARP, not unified memory, over 4 GB of its own). Read from the
+    /// adapter list only once it exists (listing loads drivers); false while unknown. Pump thread, with the battery check.
+    /// </summary>
+    private bool CompositorCardIsBig() =>
+        GpuAdapters.IsListed && GpuAdapters.CompositorAdapter is { } card
+        && HandPegApp.Compositor.MemoryTier.IsBigCard(Volatile.Read(ref _client.Memory.Control.IsSoftwareDevice) != 0, UnifiedMemory, card.DedicatedVideoMemoryMb * 1024 * 1024);
 
     /// <summary>
     /// Ends a scaling run (pause, scrub end, setting off) and resets state; played runs log frames, slow frames, start and deepest step.
@@ -139,7 +173,7 @@ public sealed partial class GpuPreviewEngine
 
         var (width, height, canvasWidth, canvasHeight, monitorScale) = _scaleFor;
         AppLog.Write(FormattableString.Invariant(
-            $"Dynamic Preview Scaling: a play of {_runFrames} frames, {_runSlow} slow; step {_runStart} ({StepScale(_runStart, width, height, canvasWidth, canvasHeight, monitorScale):0.00}) at the start, step {_runDeepest} ({StepScale(_runDeepest, width, height, canvasWidth, canvasHeight, monitorScale):0.00}) at the deepest; {width} x {height} pixels, monitor scale {monitorScale:0.##}, {ProjectTabs.OpenCount} tab(s){(UnifiedMemory ? ", shared memory" : "")}{(_onBattery ? ", on battery" : "")}"));
+            $"Dynamic Preview Scaling: a play of {_runFrames} frames, {_runSlow} slow by draw time{(_bigCardOnAc ? $" (big card: over {BigCardDrawMs:0.#} ms)" : "")}, {_runLate} late (not counted), {_runRecovered} step(s) back up; step {_runStart} ({StepScale(_runStart, width, height, canvasWidth, canvasHeight, monitorScale):0.00}) at the start, step {_runDeepest} ({StepScale(_runDeepest, width, height, canvasWidth, canvasHeight, monitorScale):0.00}) at the deepest; {width} x {height} pixels, monitor scale {monitorScale:0.##}, {ProjectTabs.OpenCount} tab(s){(UnifiedMemory ? ", shared memory" : "")}{(_onBattery ? ", on battery" : "")}"));
     }
 
     /// <summary>True when a paused frame was drawn scaled and the scrub ended, so it must be redrawn full. Pump thread.</summary>

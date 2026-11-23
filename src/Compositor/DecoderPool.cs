@@ -186,6 +186,7 @@ internal sealed partial class DecoderPool : IDisposable
 
         _videosShown = Math.Max(videos, 1);
         _resolvedNow.Clear();
+        _pendingNow = 0;
         SyncSources();
 
         // Exact-frame scenes (export, capture) never skip a layer for a pending stamp: settle now.
@@ -259,7 +260,9 @@ internal sealed partial class DecoderPool : IDisposable
             first = first < 0 ? serial : first;
         }
 
-        if (!several)
+        // A layer still awaiting its source stamp (_pendingNow) is a required layer with no drawable fallback: the last complete picture
+        // stays up as for another video not yet at its frame.
+        if (!several && _pendingNow == 0)
             return false;
 
         var now = Stopwatch.GetTimestamp();
@@ -335,8 +338,13 @@ internal sealed partial class DecoderPool : IDisposable
                 // An exact-frame scene with an undrawable media layer is not exact: the export fails over to FFmpeg rather than silently
                 // dropping the layer. A source with a pending stamp is skipped briefly; the frame is inexact and redrawn when the stamp
                 // returns (FramesArrived).
-                if (_exactOnly && source is { Failed: true } || source is null && _deciding.ContainsKey(id))
+                var pending = source is null && _deciding.ContainsKey(id);
+                if (_exactOnly && source is { Failed: true } || pending)
                     LastFrameExact = false;
+
+                // A visible layer awaiting its stamp has nothing to draw: HoldsForOthers counts it like a source not yet at its frame.
+                if (pending)
+                    _pendingNow++;
                 return null;
             }
         }
@@ -402,9 +410,62 @@ internal sealed partial class DecoderPool : IDisposable
             (memory.Source, memory.Playing) = (source.Serial, _lastWasPlaying);
         }
 
+        // The player keeps each drawn layer's frame held across frames, so a multi-layer scrub never leaves it without a stand-in.
+        if (!_exactOnly)
+            HoldShown(memory, exact);
         if (exact is not null)
             _pinned.Add(exact);
         return exact;
+    }
+
+    /// <summary>
+    /// Player frames (Pass 5.6.4A): keeps a layer's shown frame pinned across frames (one extra pin, taken under the cache's lock), so the
+    /// evictions of a multi-layer scrub (each source's demands crowding the others' frames) always leave FrameCache.Nearest its LayerMemory
+    /// stand-in and a layer never drops out (black) while its exact frame decodes. Released when the layer shows another frame, or is not
+    /// drawn in a frame (<see cref="ReleaseHolds"/>, EndFrame). Render thread.
+    /// </summary>
+    private void HoldShown(LayerMemory memory, CachedFrame? shown)
+    {
+        if (ReferenceEquals(memory.Held, shown))
+            return;
+        if (memory.Held is { } before)
+        {
+            memory.Held = null;
+            _cache.Unpin(before);
+        }
+
+        if (shown is null)
+            return;
+
+        // The frame covering its own moment is itself while it is cached; anything else (just replaced) is not held.
+        var again = _cache.Exact(shown.Source, shown.Time, strictly: false);
+        if (ReferenceEquals(again, shown))
+            memory.Held = shown;
+        else if (again is not null)
+            _cache.Unpin(again);
+    }
+
+    // Holds let go by ReleaseHolds, unpinned after the gate.
+    private readonly List<CachedFrame> _letGo = [];
+
+    /// <summary>Lets go of the held frames (<see cref="HoldShown"/>) of layers not drawn in this frame.</summary>
+    private void ReleaseHolds()
+    {
+        lock (_gate)
+        {
+            foreach (var memory in _layers.Values)
+            {
+                if (memory.Held is { } held && memory.LastFrame != _frame)
+                {
+                    memory.Held = null;
+                    _letGo.Add(held);
+                }
+            }
+        }
+
+        foreach (var frame in _letGo)
+            _cache.Unpin(frame);
+        _letGo.Clear();
     }
 
     /// <summary>
@@ -502,6 +563,9 @@ internal sealed partial class DecoderPool : IDisposable
     // (source, time) pairs resolved this frame: a layer matching an existing pair issues no demands.
     private readonly List<(int Serial, double Seconds)> _resolvedNow = new(16);
 
+    // Visible layers this frame whose source awaits its stamp (Resolve returned null before _resolvedNow); reset with it in BeginFrame.
+    private int _pendingNow;
+
     // Times no frame covers (stream holes), remembered for a few seconds: not re-decoded or waited for.
     private readonly List<(int Serial, double Seconds, long Until)> _missing = [];
 
@@ -572,6 +636,9 @@ internal sealed partial class DecoderPool : IDisposable
         foreach (var frame in _pinned)
             _cache.Unpin(frame);
         _pinned.Clear();
+
+        // Layers not drawn in this frame let their held frames go (before the orphans are collected, so a retired one is freed now).
+        ReleaseHolds();
         _cache.CollectOrphans();
         NoteDrawn();
 
@@ -1305,6 +1372,9 @@ internal sealed partial class DecoderPool : IDisposable
         public double Playhead = double.NaN;
         public CachedFrame? Shown;
         public long LastFrame;
+
+        /// <summary>The shown frame while pinned across frames (player only, HoldShown): never evicted while the layer stays drawn.</summary>
+        public CachedFrame? Held;
 
         /// <summary>True when last drawn during playback (lean parking then also keeps the following frame).</summary>
         public bool Playing;

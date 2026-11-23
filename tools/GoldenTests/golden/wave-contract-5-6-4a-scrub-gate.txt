@@ -1,0 +1,7 @@
+# A held scrub defers box rebuilds, hit masks and Effects pane refreshes to its release.
+ok: held twice, released twice: Released is raised exactly once and the gate is open
+ok: a scrub move holds the gate, ghost-pauses, seeks, then queues the commit
+ok: release commits the last moment, opens the gate, then ends the scaled run
+ok: the deferred box rebuild runs once as the gate opens
+ok: a held scrub's commits skip the player/Canvas box rebuild (LayerBox and LayerHitMask work at cut boundaries)
+ok: Wave 1: EffectsPane defers OnPlayheadMoved while ScrubGate.IsHeld and catches up on Released

@@ -105,7 +105,13 @@ internal sealed class LayerGizmoAdorner : Adorner
             (_ring.Visibility, _readout.Visibility) = (Visibility.Collapsed, Visibility.Collapsed);
         };
 
-        _anchor = new Thumb { Width = 11, Height = 11, Cursor = Cursors.Cross, Template = RoundTemplate(Brushes.Gold, Brushes.Black), ToolTip = "The anchor point: the clip turns and grows about it. Drag it to move it; the clip stays where it is." };
+        // Anchor dot: drawn 9 x 9 but taking the pointer only within GizmoHitRules' 6 x 6 square, and never on a box under 36 DIP
+        // (AnchorThumb), so a press on a box's body moves the box instead of grabbing its anchor (Pass 5.6.4A).
+        _anchor = new AnchorThumb(() => box.RenderSize)
+        {
+            Width = GizmoHitRules.AnchorDotSize, Height = GizmoHitRules.AnchorDotSize, Cursor = Cursors.Cross, Template = RoundTemplate(Brushes.Gold, Brushes.Black, hitTestable: false),
+            ToolTip = "The anchor point: the clip turns and grows about it. Drag it to move it; the clip stays where it is.",
+        };
         System.Windows.Automation.AutomationProperties.SetName(_anchor, $"Anchor Point of {name}");
         _anchor.DragStarted += (_, _) => AnchorStarted?.Invoke();
         _anchor.DragDelta += (_, _) => AnchorDelta?.Invoke();
@@ -225,15 +231,32 @@ internal sealed class LayerGizmoAdorner : Adorner
         return x < 0 || y < 0 || x > surface.ActualWidth || y > surface.ActualHeight;
     }
 
-    private static ControlTemplate RoundTemplate(Brush fill, Brush stroke)
+    private static ControlTemplate RoundTemplate(Brush fill, Brush stroke, bool hitTestable = true)
     {
         var ellipse = new FrameworkElementFactory(typeof(Ellipse));
         ellipse.SetValue(Shape.FillProperty, fill);
         ellipse.SetValue(Shape.StrokeProperty, stroke);
         ellipse.SetValue(Shape.StrokeThicknessProperty, 1.5);
+        if (!hitTestable)
+            ellipse.SetValue(IsHitTestVisibleProperty, false);
         var template = new ControlTemplate(typeof(Thumb)) { VisualTree = ellipse };
         template.Seal();
         return template;
+    }
+
+    /// <summary>
+    /// The anchor dot's thumb: its drawn ellipse takes no hits; the thumb itself is hit only where <see cref="GizmoHitRules.AnchorTakes"/>
+    /// allows for the box's size (<paramref name="box"/>), so other presses fall through to the box beneath.
+    /// </summary>
+    private sealed class AnchorThumb(Func<Size> box) : Thumb
+    {
+        protected override HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
+        {
+            var size = box();
+            return GizmoHitRules.AnchorTakes(hitTestParameters.HitPoint, new Point(ActualWidth / 2, ActualHeight / 2), size.Width, size.Height)
+                ? new PointHitTestResult(this, hitTestParameters.HitPoint)
+                : null;
+        }
     }
 
     protected override int VisualChildrenCount => _visuals.Count;

@@ -79,6 +79,9 @@ public partial class EffectsPane : UserControl
     // animated values, a parameter changed) deferred while the loaded pane was hidden.
     private bool _hooked, _rebuildWhenShown, _refreshWhenShown;
 
+    // A held playhead scrub's PositionMs commits skipped their animated-value refresh (ScrubGate.IsHeld); its release catches up once.
+    private bool _playheadAfterScrub;
+
     /// <summary>Raised by the Mask card's Edit Mask... button; the window opens the layer's mask tools.</summary>
     public event Action<Layer>? EditMaskRequested;
 
@@ -159,6 +162,9 @@ public partial class EffectsPane : UserControl
         viewModel.PropertyChanged += ViewModel_PropertyChanged;
         viewModel.Layers.CollectionChanged += Layers_CollectionChanged;
         viewModel.EditTargetChanged += FollowSequenceOutput;
+
+        // Static event: held only while hooked (Unhook removes it), so it never roots an unloaded pane (BAD-03).
+        ScrubGate.Released += ScrubGate_Released;
         Retarget();
     }
 
@@ -173,6 +179,8 @@ public partial class EffectsPane : UserControl
         viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         viewModel.Layers.CollectionChanged -= Layers_CollectionChanged;
         viewModel.EditTargetChanged -= FollowSequenceOutput;
+        ScrubGate.Released -= ScrubGate_Released;
+        _playheadAfterScrub = false;
         if (_stack is not null)
             _stack.CollectionChanged -= Stack_CollectionChanged;
         if (_layer is not null)
@@ -188,7 +196,11 @@ public partial class EffectsPane : UserControl
                 Retarget();
                 break;
             case nameof(MainViewModel.PositionMs):
-                OnPlayheadMoved();
+                // A held playhead scrub commits PositionMs every frame: refresh animated values once, on its release.
+                if (ScrubGate.IsHeld)
+                    _playheadAfterScrub = true;
+                else
+                    OnPlayheadMoved();
                 break;
             case nameof(MainViewModel.SequenceEffectsBypassed):
                 UpdateHeader();
@@ -203,6 +215,19 @@ public partial class EffectsPane : UserControl
     }
 
     private void Layers_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => Retarget();
+
+    // The scrub ended (after its last PositionMs commit): one animated-value refresh for everything the held scrub skipped.
+    private void ScrubGate_Released()
+    {
+        if (!_playheadAfterScrub)
+            return;
+
+        _playheadAfterScrub = false;
+        if (Dispatcher.CheckAccess())
+            OnPlayheadMoved();
+        else
+            Dispatcher.InvokeAsync(OnPlayheadMoved);
+    }
 
     // Loaded but invisible (inactive tab, collapsed column): skip building; rebuild once visible.
     private bool HiddenNow => IsLoaded && !IsVisible;

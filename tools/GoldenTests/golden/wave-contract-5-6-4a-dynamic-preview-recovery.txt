@@ -1,0 +1,9 @@
+# Only shader draw time counts as slow; 30 on-time frames step back up (0.5 -> 0.75 -> 1.0).
+ok: a big card on AC power: slow only past 8 ms of shader draw
+ok: other devices: slow only past SlowDrawMs (12 ms) of shader draw; an unknown draw time is not slow
+ok: 29 on-time frames: no step yet
+ok: the 30th on-time frame steps up and restarts the streak
+ok: a slow frame resets the streak; a run at its start step never steps up
+ok: recovery goes 0.5 -> 0.75 -> 1.00
+ok: never above the run's start step; a whole run stays whole
+ok: Wave 1: CountFrame uses SlowByDraw (no acquire time, no lateness) and Recovered/PrevStep to step back up

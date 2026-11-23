@@ -10,20 +10,49 @@ namespace HandPegApp.Services;
 public static class Faults
 {
     /// <summary>Observes <paramref name="work"/>: a fault is logged under <paramref name="what"/> (the caller's member name).</summary>
-    public static async void Forget(Task work, string what)
+    public static void Forget(Task work, string what)
     {
-        try
+        // A continuation (no void-returning async method): only a fault is observed (cancellation, a window closed or a newer request, is not a
+        // failure). What it does not handle (OutOfMemoryException, a failing log write) goes where the old observer sent it: rethrown on the
+        // caller's context (the dispatcher for UI callers), else on the thread pool, so the unhandled-exception path still sees it.
+        var context = SynchronizationContext.Current;
+        work.ContinueWith(static (done, state) =>
         {
-            await work;
-        }
-        catch (OperationCanceledException)
-        {
-            // A cancelled operation (a window closed, a newer request) is not a failure.
-        }
-        catch (Exception ex) when (ex is not OutOfMemoryException)
-        {
-            AppLog.Write($"{what} failed", ex);
-            CrashReporter.Note("fault", $"{what}: {ex.GetType().Name}");
-        }
+            var (name, context) = ((string, SynchronizationContext?))state!;
+            try
+            {
+                // Rethrown as await would (its stack kept), so the log entry is the same.
+                done.GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                try
+                {
+                    AppLog.Write($"{name} failed", ex);
+                    CrashReporter.Note("fault", $"{name}: {ex.GetType().Name}");
+                }
+                catch (Exception logging)
+                {
+                    Escalate(logging, context);
+                }
+            }
+            catch (Exception ex)
+            {
+                Escalate(ex, context);
+            }
+        }, (what, context), CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    /// <summary>Rethrows <paramref name="ex"/> (stack kept) on <paramref name="context"/>, else on the thread pool: an unhandled exception.</summary>
+    private static void Escalate(Exception ex, SynchronizationContext? context)
+    {
+        var captured = System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex);
+        if (context is not null)
+            context.Post(static held => ((System.Runtime.ExceptionServices.ExceptionDispatchInfo)held!).Throw(), captured);
+        else
+            ThreadPool.QueueUserWorkItem(static held => held.Throw(), captured, preferLocal: false);
     }
 }

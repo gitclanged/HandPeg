@@ -353,6 +353,7 @@ public partial class MainWindow
             // block's delta (so a block drawn wider than its clip, min 3 px, never stretches it).
             (double Start, double End) built = model is null ? (from, to) : (model.Start, model.End);
             var (left, width) = (from * scale, Math.Max(duration * scale, 3));
+            var cutout = CountsAsCutout(_viewModel, clip);
             row.Blocks.Add(new TimelineBlock
             {
                 Left = left,
@@ -362,14 +363,16 @@ public partial class MainWindow
                 Clip = clip,
                 Family = FamilyOf(model),
 
-                // Thumbnails (from the file's strip) and waveform, both in file time.
+                // Thumbnails (from the file's strip) and waveform, both in file time. A Cutout's tiles show its own region of the shared
+                // strip (CutoutFilmCrop), so HUD cutout rows show their zoomed piece with no extra decoding.
                 Film = clip.IsHidden || !filmstrips ? null
-                    : clip.IsVideoFile && !clip.IsLoading ? FilmOf(_viewModel.FilmstripOf(clip), clip.ImageWidth, clip.ImageHeight, clip.MediaOffset, clip.MediaDuration, speed)
+                    : clip.IsVideoFile && !clip.IsLoading ? FilmOf(_viewModel.FilmstripOf(clip), clip.ImageWidth, clip.ImageHeight, clip.MediaOffset, clip.MediaDuration, speed,
+                        cutout ? CutoutFilmCrop(clip) : null)
                     : null,
                 SoundWindow = showsSound && waveforms ? SoundOf(_viewModel.WaveformOf(clip), clip.MediaOffset, duration, speed, clip.GainDb + trackGainDb) : null,
                 Keys = ClipKeys(clip, 0, scale)?.ToList(),
                 Beats = BeatTicks(model, from, scale),
-                Badge = BadgeOf(speed, slip, BadgeEffects(clip, CountsAsCutout(_viewModel, clip), settings)),
+                Badge = BadgeOf(speed, slip, BadgeEffects(clip, cutout, settings)),
                 CanDrag = AlwaysDraggable,
                 Resizable = true,
 
@@ -931,7 +934,9 @@ public partial class MainWindow
     /// strip exists and the frame size is known.
     /// </summary>
     /// <param name="pixelWidth">Source video width; strip frames share the source aspect ratio.</param>
-    private static FilmWindow? FilmOf(ImageSource? filmstrip, int pixelWidth, int pixelHeight, double mediaOffset, double mediaDuration, double speed)
+    /// <param name="crop">A Cutout's source region (<see cref="CutoutFilmCrop"/>): each frame is cut to it; null or full keeps whole frames.</param>
+    internal static FilmWindow? FilmOf(ImageSource? filmstrip, int pixelWidth, int pixelHeight, double mediaOffset, double mediaDuration, double speed,
+        FilmCrop? crop = null)
     {
         if (filmstrip is not BitmapSource strip || strip.PixelHeight <= 0 || strip.PixelWidth <= 0 || pixelWidth <= 0 || pixelHeight <= 0
             || FramesOf(strip, (double)pixelWidth / pixelHeight) is not { } frames)
@@ -939,9 +944,75 @@ public partial class MainWindow
             return null;
         }
 
+        // The window records the region only when its frames were actually cut to it (TimelineBlock.FilmCrop never disagrees with them).
+        FilmCrop? cutTo = null;
+        if (crop is { IsFull: false } region && CroppedFramesOf(strip, frames.Length, region) is { } cut)
+            (frames, cutTo) = (cut, region);
+
         // Unknown duration: show the first frame throughout.
         var perFrame = mediaDuration > 0.05 ? mediaDuration / frames.Length : 1e9;
-        return new FilmWindow(frames, perFrame, Math.Max(mediaOffset, 0), speed);
+        return new FilmWindow(frames, perFrame, Math.Max(mediaOffset, 0), speed, cutTo);
+    }
+
+    // Per-strip Cutout frame cuts by strip-pixel region, most recent first, at most MostCutsPerStrip kept for the strip's lifetime (UI
+    // thread): a crop or mask drag makes a new region per move, so older cuts are dropped instead of piling up.
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<BitmapSource, List<(Int32Rect Area, ImageSource[] Frames)>> CutoutStripFrames = [];
+    private const int MostCutsPerStrip = 8;
+
+    /// <summary>
+    /// Strip frames cut to a Cutout's region (FilmCrop.ToPixels: at least 16 x 16 strip pixels, aspect kept, so DrawFilm's slots take the
+    /// region's shape); null when a frame cell is too small to cut.
+    /// </summary>
+    private static ImageSource[]? CroppedFramesOf(BitmapSource strip, int count, FilmCrop region)
+    {
+        var cell = strip.PixelWidth / Math.Max(count, 1);
+        if (cell < 2)
+            return null;
+
+        var area = region.ToPixels(cell, strip.PixelHeight);
+        if (area.IsEmpty || area.Width <= 0 || area.Height <= 0)
+            return null;
+
+        var cuts = CutoutStripFrames.GetOrCreateValue(strip);
+        var hit = cuts.FindIndex(c => c.Area == area && c.Frames.Length == count);
+        if (hit >= 0)
+        {
+            var found = cuts[hit];
+            cuts.RemoveAt(hit);
+            cuts.Insert(0, found);
+            return found.Frames;
+        }
+
+        var frames = new ImageSource[count];
+        for (var i = 0; i < count; i++)
+        {
+            var frame = new CroppedBitmap(strip, new Int32Rect(i * cell + area.X, area.Y, area.Width, area.Height));
+            frame.Freeze();
+            frames[i] = frame;
+        }
+
+        cuts.Insert(0, (area, frames));
+        if (cuts.Count > MostCutsPerStrip)
+            cuts.RemoveRange(MostCutsPerStrip, cuts.Count - MostCutsPerStrip);
+        return frames;
+    }
+
+    /// <summary>
+    /// Pure (golden wave-contract-5-6-4a): the source region a Cutout's filmstrip shows, in source-frame fractions: its cropped source rect
+    /// (<see cref="Layer.CroppedSource"/>) intersected with its drawn mask's outline bounds (user decision). Frame masks (MaskFrame) are
+    /// drawn over the whole frame, others over the clip's source rect; inverted masks show everything outside, so only the crop counts.
+    /// </summary>
+    internal static FilmCrop CutoutFilmCrop(Layer clip)
+    {
+        var (x, y, width, height) = clip.CroppedSource;
+        var crop = FilmCrop.FromRect(x, y, width, height);
+        if (!clip.CustomMask || clip.MaskInvert || !Services.MaskStore.IsDrawn(Services.MaskStore.SourceOf(clip)))
+            return crop;
+
+        var (partX, partY, partWidth, partHeight) = clip.MaskFrame ? (0.0, 0.0, 1.0, 1.0) : (clip.SourceX, clip.SourceY, clip.SourceWidth, clip.SourceHeight);
+        var outline = FilmCrop.Bounds(Services.MaskStore.ParseShapes(clip.MaskShapes), partX, partY, partWidth, partHeight,
+            Layer.MaskOffset(clip.MaskOffsetX) / 100, Layer.MaskOffset(clip.MaskOffsetY) / 100);
+        return outline is { } bounds ? crop.Intersect(bounds) : crop;
     }
 
     /// <summary>

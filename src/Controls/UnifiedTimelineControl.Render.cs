@@ -659,6 +659,9 @@ public sealed partial class UnifiedTimelineControl
         return new WaveWindow(peaks.Data, peaks.Offset / span * seconds, (peaks.Offset + width) / span * seconds, seconds * scale / span);
     }
 
+    /// <summary>Thumbnail slot aspect (width / height) bounds: a Cutout's cut frames may be slivers (a killfeed line, a health bar).</summary>
+    internal static readonly (double Least, double Most) FilmAspectRange = (0.25, 8.0);
+
     /// <summary>
     /// Draws thumbnails on the file's time grid: slots one frame-width wide at block height, slot k showing the frame nearest its
     /// centre time. Only visible slots are drawn.
@@ -670,9 +673,15 @@ public sealed partial class UnifiedTimelineControl
         if (film.SecondsPerFrame <= 0 || fileScale <= 0 || !double.IsFinite(fileScale))
             return;
 
+        // A Cutout's frames come cut to its region (MainWindow.FilmOf, FilmCrop: at least 16 x 16 strip pixels), so the slot takes the
+        // region's shape; extreme slivers are held to FilmAspectRange so a slot is never a hairline or a whole row.
         var first = frames[0];
-        var aspect = first.Width > 0 && first.Height > 0 ? first.Width / first.Height : 16.0 / 9;
+        var shape = first.Width > 0 && first.Height > 0 ? first.Width / first.Height : 16.0 / 9;
+        var aspect = Math.Clamp(shape, FilmAspectRange.Least, FilmAspectRange.Most);
         var slot = Math.Max(rect.Height * aspect, 8);
+
+        // Each picture fits its slot at its own shape, centred: a sliver held by FilmAspectRange is letterboxed, never stretched.
+        var (pictureWidth, pictureHeight) = rect.Height > 0 && shape >= slot / rect.Height ? (slot, Math.Min(slot / shape, rect.Height)) : (rect.Height * shape, rect.Height);
         var slotSeconds = slot / fileScale;
         var (left, right) = (Math.Max(rect.Left, from), Math.Min(rect.Right, to));
         if (right <= left)
@@ -685,7 +694,7 @@ public sealed partial class UnifiedTimelineControl
         for (var k = firstSlot; k <= lastSlot && k - firstSlot < 400; k++)
         {
             var index = (int)Math.Clamp(Math.Floor((k + 0.5) * slotSeconds / film.SecondsPerFrame), 0, frames.Count - 1);
-            drawing.DrawImage(frames[index], new Rect(origin + k * slot, rect.Top, slot, rect.Height));
+            drawing.DrawImage(frames[index], new Rect(origin + k * slot + (slot - pictureWidth) / 2, rect.Top + (rect.Height - pictureHeight) / 2, pictureWidth, pictureHeight));
         }
     }
 

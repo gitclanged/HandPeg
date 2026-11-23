@@ -200,15 +200,23 @@ public static class ThreadLifetimeTests
     private static void Transport(Action<bool, string> expect)
     {
         var engine = SourceProbe.Src("Services", "GpuPreviewEngine.cs");
-        expect(new[] { "public void Seek(double sequenceSeconds)", "public void Play()", "public void Pause()", "private void PauseAtEnd(", "private void EndPriming(" }
+        expect(new[] { "private void DrainSeek()", "public void Play()", "public void Pause()", "private void PauseAtEnd(", "private void EndPriming(" }
                    .All(m => SourceProbe.Member(engine, m).Contains("lock (_transport)", StringComparison.Ordinal)),
-            "Seek, Play, Pause, the end of the sequence and the priming hand-off each change the transport under _transport");
+            "the seek drain, Play, Pause, the end of the sequence and the priming hand-off each change the transport under _transport");
+        var seek = SourceProbe.Member(engine, "public void Seek(double sequenceSeconds)");
+        expect(!seek.Contains("lock (_transport)", StringComparison.Ordinal) && !seek.Contains("_audio.Seek(", StringComparison.Ordinal)
+               && SourceProbe.InOrder(seek, "SeekMailSlot.Post(ref _pendingSeekBits, seconds);", "Interlocked.Increment(ref _transportSerial);"),
+            "Seek is lock-free (Pass 5.6.4A): it posts its target to the mail-slot before it bumps the serial; only the pump's drain moves the audio");
+        expect(SourceProbe.InOrder(SourceProbe.Member(engine, "private void DrainSeek()"), "lock (_transport)", "Volatile.Write(ref _pausedAt, target);", "_audio.Seek(target);",
+                   "Interlocked.CompareExchange(ref _pendingSeekBits, SeekMailSlot.Empty, bits);"),
+            "the drain moves the paused clock and the audio under _transport and empties the slot only if no newer target was posted");
         expect(!SourceProbe.Member(engine, "private string? PauseCore(").Contains("AppLog", StringComparison.Ordinal)
                && SourceProbe.Member(SourceProbe.Src("Services", "GpuPreviewEngine.Tabs.cs"), "private string? EndPlaySession(").Contains("return string.Create(", StringComparison.Ordinal),
             "no file I/O under the lock: the play session's log line is written after it");
         expect(SourceProbe.InOrder(engine, "var serial = Volatile.Read(ref _transportSerial);", "var at = _audio.Position", "PauseAtEnd(serial,")
-               && SourceProbe.InOrder(SourceProbe.Member(engine, "private void PauseAtEnd("), "if (!_playing || _transportSerial != serial)", "Ended?.Invoke();"),
-            "the pump's end of sequence yields to a Seek, Play or Pause made after it measured the end (no stale Ended)");
+               && SourceProbe.InOrder(SourceProbe.Member(engine, "private void PauseAtEnd("), "if (!_playing || !SeekMailSlot.TryCommitEnd(ref _transportSerial, serial, ref _pendingSeekBits))", "PauseCore(end)", "Ended?.Invoke();")
+               && SourceProbe.InOrder(engine, "var unapplied = SeekMailSlot.IsPending(ref _pendingSeekBits);", "if (!unapplied &&", "PauseAtEnd(serial,"),
+            "the pump's end of sequence yields to a Seek (pending or posted after it measured the end), Play or Pause (no stale Ended)");
         var wasapi = SourceProbe.Src("Services", "Audio", "WasapiAudioEngine.cs");
         expect(!wasapi.Contains("_seekLock", StringComparison.Ordinal) && wasapi.Contains("private double ReadSeek() => BitConverter.Int64BitsToDouble(Volatile.Read(ref _pausedBits));", StringComparison.Ordinal),
             "the sound engine's seek is one 8-byte value published before the serial's fence (the two-writer seqlock is gone)");
