@@ -501,7 +501,12 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         Commands();
         if (_playing)
             Render();
-        _mixer?.Prime(_written);
+        if (PrimesNow(_playing, _primeDue, Stopwatch.GetTimestamp()))
+        {
+            _primeDue = 0;
+            _mixer?.Prime(_written);
+        }
+
         PublishClock();
 
         // Only now that the clock carries the seek's line may Position stop holding the seek time.
@@ -531,6 +536,12 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         {
             timeout = 5;
         }
+        else if (_primeDue != 0)
+        {
+            // Paused with a deferred prime: wake when the playhead has rested PausedPrimeQuietMs (a newer seek pushes it back).
+            var left = (_primeDue - Stopwatch.GetTimestamp()) * 1000 / Stopwatch.Frequency;
+            timeout = (uint)Math.Clamp(left + 1, 1, PausedPrimeQuietMs + 1);
+        }
 
         Kernel32.WaitForMultipleObjects(count, handles, 0, timeout);
     }
@@ -545,7 +556,13 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         {
             var target = ReadSeek();
             _seenSeek = serial;
-            Line(mixer, _written, target - SyncOffset, rate, jump: true);
+
+            // Paused and staying paused (a scrub sends hundreds of these): the clock moves now, but the voices are requested (seeking
+            // and decoding every track) only once the playhead rests PausedPrimeQuietMs, or at Play (StartPlaying primes at once).
+            var defer = DefersPrime(_playing, Volatile.Read(ref _wantPlaying) != 0);
+            Line(mixer, _written, target - SyncOffset, rate, jump: true, prime: !defer);
+            if (defer)
+                _primeDue = Stopwatch.GetTimestamp() + PrimeQuietMs(Volatile.Read(ref _ghostPrime) != 0) * Stopwatch.Frequency / 1000;
         }
         else if (rate != _rate1)
         {
@@ -559,11 +576,40 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
             StopPlaying();
     }
 
-    private void Line(AudioMixer mixer, long frame, double origin, double rate, bool jump)
+    // ----- Paused-seek prime deferral (W3-REV-5: a paused scrub once made 427,818 MF.ReadSample calls) -----
+
+    /// <summary>Rest of a paused playhead, ms, before its seek requests the voices (decoders seek and fill ahead).</summary>
+    internal const int PausedPrimeQuietMs = 200;
+
+    /// <summary>
+    /// Rest, ms, before a ghost-paused play-scrub's seek requests the voices: under GpuPreviewEngine.GhostDwell (80 ms) so every track
+    /// has sought before the play-scrub resumes.
+    /// </summary>
+    internal const int GhostPrimeQuietMs = 45;
+
+    // 1 while a play-scrub ghost-pauses the transport (GhostPrime); any thread writes, the engine thread reads.
+    private int _ghostPrime;
+
+    /// <summary>Set while a play-scrub ghost-pauses playback: deferred paused primes wait <see cref="GhostPrimeQuietMs"/> instead.</summary>
+    public bool GhostPrime { set => Volatile.Write(ref _ghostPrime, value ? 1 : 0); }
+
+    /// <summary>Prime deferral of a paused seek, ms: <see cref="GhostPrimeQuietMs"/> when ghost-paused, else <see cref="PausedPrimeQuietMs"/>. Pure.</summary>
+    internal static int PrimeQuietMs(bool ghost) => ghost ? GhostPrimeQuietMs : PausedPrimeQuietMs;
+
+    // Stopwatch ticks at which a deferred paused prime is due (0 = none); engine thread only.
+    private long _primeDue;
+
+    /// <summary>True when a seek's voice requests wait: paused and not about to play (<paramref name="wantPlaying"/>). Pure.</summary>
+    internal static bool DefersPrime(bool playing, bool wantPlaying) => !playing && !wantPlaying;
+
+    /// <summary>True when the engine turn primes the mixer: playing, nothing deferred, or the deferred prime is due. Pure.</summary>
+    internal static bool PrimesNow(bool playing, long primeDue, long now) => playing || primeDue == 0 || now >= primeDue;
+
+    private void Line(AudioMixer mixer, long frame, double origin, double rate, bool jump, bool prime = true)
     {
         _rate1 = rate;
         _linePrevious = _lineNow;
-        mixer.SetLine(frame, origin, rate, jump);
+        mixer.SetLine(frame, origin, rate, jump, prime);
         (_lineNow, _lineJump) = (mixer.Line, jump);
 
         // On a jump (seek, pause, play from there), integrated loudness restarts here.
@@ -578,6 +624,10 @@ public sealed unsafe class WasapiAudioEngine : IDisposable
         _playing = true;
         _streamStart = _written;
         _clockMoving = false;
+
+        // A paused seek's deferred prime is due now: the voices are requested before the first buffer is mixed.
+        _primeDue = 0;
+        _mixer?.Prime(_written);
         if (_client != 0)
         {
             Render();

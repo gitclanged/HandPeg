@@ -422,7 +422,7 @@ public static partial class SideWindowTests
                && preview.Split("ForgetMirrors();").Length - 1 == 3,
             "a new engine has every preview attached afresh; an engine stopped, closed or released forgets them (its mirrors went with it)");
         var surface = File.ReadAllText(Path.Combine(src, "Controls", "VideoSurface.cs"));
-        expect(surface.Contains("Docking.WindowOrder.Lowest(sides)", StringComparison.Ordinal) && surface.Contains("if (msg == WmNcHitTest && PassesPointer)", StringComparison.Ordinal),
+        expect(surface.Contains("Docking.WindowOrder.Lowest(siblings)", StringComparison.Ordinal) && surface.Contains("if (msg == WmNcHitTest && PassesPointer)", StringComparison.Ordinal),
             "the player's overlay goes under the lowest side window; a mirror's surface lets the pointer through (double-click: full screen)");
     }
 

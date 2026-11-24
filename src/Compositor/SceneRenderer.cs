@@ -54,7 +54,8 @@ internal sealed unsafe partial class SceneRenderer : IDisposable
         _frame++;
         _playing = header.IsPlaying != 0;
         (_audioBass, _audioMid, _audioHigh) = (Band(header.AudioBass), Band(header.AudioMid), Band(header.AudioHigh));
-        _decoders.BeginFrame(_frame, _playing, header.PlayheadSeconds, exactOnly: (header.Flags & FrameSceneHeader.FlagExactFrames) != 0);
+        _decoders.BeginFrame(_frame, _playing, header.PlayheadSeconds, exactOnly: (header.Flags & FrameSceneHeader.FlagExactFrames) != 0,
+            scrubbing: (header.Flags & FrameSceneHeader.FlagScrubbing) != 0, ghost: (header.Flags & FrameSceneHeader.FlagGhostScrub) != 0);
         _resources.BeginFrame();
         try
         {

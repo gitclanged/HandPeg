@@ -7,8 +7,9 @@ public enum VideoScopeKind { Histogram, LumaWaveform, RgbParade, Vectorscope }
 /// Pure Video Scopes math over BGRA8 frames (alpha ignored) from GpuPreviewEngine.CaptureThumbnailAsync (small paused frame). Builds
 /// Histogram (R, G, B, luma), Luma Waveform (per-column luma) and RGB Parade (per-channel columns) as Bgr32 images, one row per level
 /// (255 at top) on a dark ground with quarter graticules. Luma is integer BT.709 (0.2126 R + 0.7152 G + 0.0722 B, white = 255).
-/// Vectorscope: BT.709 Cb (x) / Cr (y) density with range graticule, 75 % circle, crosshair, 75/100 % primary targets and skin-tone line.
-/// WPF-free; the pane copies pixels into one reused bitmap.
+/// Vectorscope: BT.709 Cb (x) / Cr (y) density with range graticule, 75 % circle, crosshair, 75/100 % primary targets and the skin-tone
+/// I-bar through the centre. WPF-free; the pane copies pixels into one reused bitmap (the Histogram it draws as the YRGB overlay over
+/// <see cref="Histogram"/>'s counts, YrgbHistogram; <see cref="Render"/>'s Histogram bitmap stays for other callers).
 /// </summary>
 public static class VideoScopes
 {
@@ -33,11 +34,17 @@ public static class VideoScopes
     /// <summary>BT.709 chroma scales: Cb = (B - Y) / 1.8556, Cr = (R - Y) / 1.5748, each -0.5..0.5 (matches PSHueSaturation).</summary>
     public const double CbScale = 1.8556, CrScale = 1.5748;
 
-    /// <summary>Skin-tone line angle, degrees CCW from +Cb (between red 103 and yellow 175).</summary>
+    /// <summary>
+    /// Skin-tone line angle, degrees CCW from +Cb (between red 103 and yellow 175): the I-bar's skin side; the bar runs through the centre
+    /// to <see cref="SkinToneDegrees"/> + 180 as well.
+    /// </summary>
     public const double SkinToneDegrees = 123;
 
-    // The skin-tone line's colour, and the targets' (brighter than the graticule).
+    // The skin-tone I-bar's colour, and the targets' (brighter than the graticule).
     private const uint SkinTone = 0x00E8A27C, TargetBox = 0x00707084;
+
+    // The I-bar's blend over the picture: its skin side, and the fainter opposite side.
+    private const double SkinToneBlend = 0.55, SkinToneOppositeBlend = 0.4;
 
     /// <summary>A pixel's BT.709 luma, 0 to 255, rounded to the nearest level.</summary>
     public static int Luma(int red, int green, int blue) => (WeightRed * red + WeightGreen * green + WeightBlue * blue + 32768) >> 16;
@@ -58,6 +65,38 @@ public static class VideoScopes
 
         return counts;
     }
+
+    /// <summary>
+    /// The levels of a frame after a colour transform (sRGB 0..1 in and out, held within it), counted as <see cref="Histogram"/> counts
+    /// them over every <paramref name="step"/>-th pixel of every <paramref name="step"/>-th row: a live post-grade histogram from the
+    /// pre-grade still while a drag holds the GPU readback back (the still through the grade's own model, ColorMatch.Graded; a LUT is not
+    /// modelled, so the next paused capture replaces it). Allocation-free per pixel; run it off the UI thread.
+    /// </summary>
+    public static int[,] HistogramOf(ReadOnlySpan<byte> bgra, int width, int height, Func<(double R, double G, double B), (double R, double G, double B)> transform, int step = 1)
+    {
+        ArgumentNullException.ThrowIfNull(transform);
+        var counts = new int[4, Levels];
+        step = Math.Max(step, 1);
+        var rows = width > 0 ? Math.Min(height, bgra.Length / 4 / width) : 0;
+        for (var y = 0; y < rows; y += step)
+        {
+            for (var x = 0; x < width; x += step)
+            {
+                var i = (y * width + x) * 4;
+                var (r, g, b) = transform((bgra[i + 2] / 255.0, bgra[i + 1] / 255.0, bgra[i] / 255.0));
+                var (red, green, blue) = (LevelOf(r), LevelOf(g), LevelOf(b));
+                counts[0, red]++;
+                counts[1, green]++;
+                counts[2, blue]++;
+                counts[3, Luma(red, green, blue)]++;
+            }
+        }
+
+        return counts;
+    }
+
+    // A 0..1 value as its nearest of the 256 levels (non-finite reads 0).
+    private static int LevelOf(double value) => double.IsFinite(value) ? (int)Math.Round(Math.Clamp(value, 0, 1) * (Levels - 1)) : 0;
 
     /// <summary>
     /// Scope column range for a frame column: one when downsampling, else the spanned run so narrow (9:16) frames leave no gaps.
@@ -247,13 +286,15 @@ public static class VideoScopes
             }
         }
 
-        // The skin-tone line, from the centre to the reach, two pixels wide, blended over what is under it.
+        // The skin-tone I-bar: the in-phase axis through the centre, reach to reach, two pixels wide, blended over what is under it; the
+        // skin side (SkinToneDegrees) warm, the opposite side (its -I half, toward cyan-blue) fainter. The skin half draws as it always has.
         var (cos, sin) = (Math.Cos(SkinToneDegrees * Math.PI / 180), Math.Sin(SkinToneDegrees * Math.PI / 180));
-        for (var t = 0.0; t <= reach; t += 0.5)
+        for (var t = -reach; t <= reach; t += 0.5)
         {
+            var amount = t >= 0 ? SkinToneBlend : SkinToneOppositeBlend;
             var (x, y) = (centre + t * cos, centre - t * sin);
-            Blend(pixels, size, (int)Math.Round(x), (int)Math.Round(y), SkinTone, 0.55);
-            Blend(pixels, size, (int)Math.Round(x - sin * 0.8), (int)Math.Round(y - cos * 0.8), SkinTone, 0.55);
+            Blend(pixels, size, (int)Math.Round(x), (int)Math.Round(y), SkinTone, amount);
+            Blend(pixels, size, (int)Math.Round(x - sin * 0.8), (int)Math.Round(y - cos * 0.8), SkinTone, amount);
         }
 
         // The targets: small boxes at 100 %, smaller at 75 %.

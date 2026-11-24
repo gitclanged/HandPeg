@@ -401,6 +401,7 @@ public static unsafe partial class CompositorWorker
     {
         control.CacheBytes = cache.Bytes;
         control.CacheBudgetBytes = cache.BudgetBytes;
+        control.CacheBudgetCap = cache.CapReason;
         control.CachedFrames = cache.Count;
         control.CacheFreeBytes = cache.FreeBytes;
         control.CacheMaximumBytes = cache.MaximumBytes;

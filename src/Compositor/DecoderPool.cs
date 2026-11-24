@@ -168,12 +168,22 @@ internal sealed partial class DecoderPool : IDisposable
 
     // ----- Per-frame renderer interface -----
 
-    public void BeginFrame(long frame, bool playing, double playhead, bool exactOnly = false)
+    public void BeginFrame(long frame, bool playing, double playhead, bool exactOnly = false, bool scrubbing = false, bool ghost = false)
     {
         // Scene arrival time (play-rate sample), read before any wait below.
         var arrived = Stopwatch.GetTimestamp();
         _frame = frame;
         _exactOnly = exactOnly;
+
+        // The editor's held playhead drag (FrameSceneHeader.FlagScrubbing): paused live frames only. Its release (flag cleared) chases the
+        // exact frame at once until the next held drag.
+        var held = scrubbing && !exactOnly && !playing;
+        if (Volatile.Read(ref _scrubHeld) && !held)
+            Volatile.Write(ref _scrubReleased, true);
+        else if (held)
+            Volatile.Write(ref _scrubReleased, false);
+        Volatile.Write(ref _scrubHeld, held);
+        Volatile.Write(ref _scrubGhost, held && ghost);
 
         // Number of videos in the last picture: each gets a cache share and its own lane for deferrable work.
         var (videos, seen) = (0, 0UL);
@@ -202,6 +212,14 @@ internal sealed partial class DecoderPool : IDisposable
         // A moving playhead (playing, seek, scrub step) keeps idle work off the lanes for IdleQuietMs.
         if (!exactOnly && (playing || !double.IsNaN(_lastPlayhead) && Math.Abs(playhead - _lastPlayhead) > 1e-9))
             Volatile.Write(ref _activeUntil, Stopwatch.GetTimestamp() + IdleQuietMs * Stopwatch.Frequency / 1000);
+
+        // Paused playhead moves (scrub steps, seeks): their rhythm tells an active scrub (ScrubbingAt) from single steps.
+        if (!exactOnly && !playing && !double.IsNaN(_lastPlayhead) && Math.Abs(playhead - _lastPlayhead) > 1e-9)
+        {
+            var now = Stopwatch.GetTimestamp();
+            Volatile.Write(ref _scrubMoves, NextScrubMoves(Volatile.Read(ref _scrubMoves), now, Volatile.Read(ref _lastMoveAt), Stopwatch.Frequency));
+            Volatile.Write(ref _lastMoveAt, now);
+        }
 
         // Cold play: a jump whose first picture missed a frame (LastFrameExact still refers to that picture here) is a cold seek and arms
         // the window, as a source change does (SyncSources); the first playing frame opens it, a pause closes it. Exact-frame scenes
@@ -667,6 +685,19 @@ internal sealed partial class DecoderPool : IDisposable
                 // Drop pre-roll ranges of clips no longer drawn (they would crowd the cache interests).
                 _demands.RemoveAll(d => d.Kind == DemandKind.PreRoll && d.Lane < 0 && (!_layers.TryGetValue(d.ClipKey, out var seen) || seen.LastFrame != _frame));
 
+                // Playhead still moving (scrub, seek): no range is read until PreRollQuietMs past the last move (MostUrgent), and one already
+                // under way stops (it holds a hardware decoder and the device lock the scrub's own frames need).
+                // A held drag (FlagScrubbing) also stops a scrub-ahead read under way: one decode engine and device lock serve the drag.
+                var held = Volatile.Read(ref _scrubHeld);
+                if (!PreRollMayRun(Stopwatch.GetTimestamp(), Volatile.Read(ref _lastMoveAt), Stopwatch.Frequency, held))
+                {
+                    foreach (var busy in _demands)
+                    {
+                        if (busy.Lane >= 0 && (busy.Kind == DemandKind.PreRoll || held && busy.HintKind == GpuSeekHintKind.ScrubAhead))
+                            busy.Cancelled = true;
+                    }
+                }
+
                 foreach (var (clipKey, memory) in _layers)
                 {
                     if (memory.LastFrame != _frame)
@@ -1009,6 +1040,88 @@ internal sealed partial class DecoderPool : IDisposable
     private const double HeldShare = 0.3;
 
     private static bool IsHint(DemandKind kind) => kind is DemandKind.Hinted or DemandKind.Hover or DemandKind.Idle;
+
+    // ----- Active scrub (paused playhead moving fast: key frames first, no speculative reads) -----
+
+    /// <summary>Paused moves closer together than this, ms, count as one active scrub (slower single steps never do).</summary>
+    internal const int ScrubRapidMs = 120;
+
+    /// <summary>Consecutive rapid paused moves that make an active scrub.</summary>
+    internal const int ScrubRapidMoves = 2;
+
+    /// <summary>Dwell past the last move, ms, after which a scrub has settled and the landing key frame's chase to the exact frame resumes.</summary>
+    internal const int ScrubDwellMs = 70;
+
+    /// <summary>Quiet time past the last paused playhead move, ms, before pre-roll ranges are read.</summary>
+    internal const int PreRollQuietMs = 250;
+
+    /// <summary>Landing key frame dwell, ms, while the editor holds a playhead drag (FrameSceneHeader.FlagScrubbing).</summary>
+    internal const int HeldScrubDwellMs = 140;
+
+    /// <summary>
+    /// Landing key frame dwell, ms, while a held drag ghost-pauses playback (FrameSceneHeader.FlagGhostScrub): well under
+    /// GpuPreviewEngine.GhostDwell (80 ms) so the exact-frame chase starts before the play-scrub resumes.
+    /// </summary>
+    internal const int GhostScrubDwellMs = 35;
+
+    // Last paused playhead move (Stopwatch ticks, 0 = none) and the run of rapid moves ending there: written by BeginFrame, read by lanes.
+    private long _lastMoveAt;
+    private int _scrubMoves;
+
+    // FlagScrubbing on the last scene (paused, not exact-only), and true once a held drag was released until the next one: written by
+    // BeginFrame, read by lanes.
+    private bool _scrubHeld, _scrubReleased;
+
+    // The held drag ghost-pauses a playing transport (FlagGhostScrub): written by BeginFrame, read by lanes.
+    private bool _scrubGhost;
+
+    /// <summary>Rapid-move run after a paused move at <paramref name="now"/>: one more when within <see cref="ScrubRapidMs"/> of the last, else 1. Pure.</summary>
+    internal static int NextScrubMoves(int moves, long now, long lastMoveAt, long frequency) =>
+        lastMoveAt != 0 && (now - lastMoveAt) * 1000 < ScrubRapidMs * frequency ? Math.Min(moves + 1, 1_000) : 1;
+
+    /// <summary>
+    /// True while a paused scrub is active: <see cref="ScrubRapidMoves"/> rapid moves, the last within <see cref="ScrubDwellMs"/>. Never while
+    /// <paramref name="playing"/> or in exact-frame scenes (<paramref name="exactOnly"/>: export, filmstrips, captures). Pure; checked by goldens.
+    /// </summary>
+    /// <remarks>
+    /// With the editor's explicit drag flag: <paramref name="held"/> scrubs from the first move until <see cref="HeldScrubDwellMs"/> past
+    /// the last one; <paramref name="released"/> (the drag ended, not held again) never scrubs, so the landing key frame chases at once.
+    /// A held drag that ghost-pauses playback (<paramref name="ghost"/>) dwells only <see cref="GhostScrubDwellMs"/>.
+    /// </remarks>
+    internal static bool ScrubbingAt(bool exactOnly, bool playing, long now, long lastMoveAt, int moves, long frequency, bool held = false, bool released = false,
+        bool ghost = false) =>
+        !exactOnly && !playing && lastMoveAt != 0 && (held || !released) &&
+        (held ? (now - lastMoveAt) * 1000 < HeldDwellMs(ghost) * frequency
+              : moves >= ScrubRapidMoves && (now - lastMoveAt) * 1000 < ScrubDwellMs * frequency);
+
+    /// <summary>Landing key frame dwell of a held drag, ms: <see cref="GhostScrubDwellMs"/> when it ghost-pauses playback, else <see cref="HeldScrubDwellMs"/>. Pure.</summary>
+    internal static int HeldDwellMs(bool ghost) => ghost ? GhostScrubDwellMs : HeldScrubDwellMs;
+
+    /// <summary>
+    /// True when a visible frame's lane, having just read its seek-landing key frame (<paramref name="landed"/>, before the target), waits
+    /// instead of decoding on through the GOP: an active scrub shows key frames and chases the exact frame once the pointer dwells. Pure.
+    /// </summary>
+    internal static bool ChaseWaits(bool exactOnly, bool playing, bool visible, bool landed, long now, long lastMoveAt, int moves, long frequency,
+        bool held = false, bool released = false, bool ghost = false) =>
+        visible && landed && ScrubbingAt(exactOnly, playing, now, lastMoveAt, moves, frequency, held, released, ghost);
+
+    /// <summary>True when pre-roll ranges may be read: <see cref="PreRollQuietMs"/> past the last paused playhead move (or none yet). Pure.</summary>
+    /// <remarks>Never while the editor holds a playhead drag (<paramref name="held"/>, FlagScrubbing).</remarks>
+    internal static bool PreRollMayRun(long now, long lastMoveAt, long frequency, bool held = false) =>
+        !held && (lastMoveAt == 0 || (now - lastMoveAt) * 1000 >= PreRollQuietMs * frequency);
+
+    /// <summary>
+    /// True when a scrub-ahead hint may take a lane: never while a visible frame is being decoded, and during an active scrub only when no
+    /// other scrub-ahead read is under way (one hardware decode engine and device lock serve every lane). Pure.
+    /// </summary>
+    /// <remarks>Never while the editor holds a playhead drag (<paramref name="held"/>, FlagScrubbing): no extra lane contends with it.</remarks>
+    internal static bool ScrubAheadMayRun(bool visibleDecoding, bool scrubbing, int scrubAheadBusy, bool held = false) =>
+        !held && !visibleDecoding && (!scrubbing || scrubAheadBusy == 0);
+
+    // ScrubbingAt for the pool now (any thread).
+    private bool ScrubbingNow() =>
+        ScrubbingAt(_exactOnly, _lastWasPlaying, Stopwatch.GetTimestamp(), Volatile.Read(ref _lastMoveAt), Volatile.Read(ref _scrubMoves), Stopwatch.Frequency,
+            Volatile.Read(ref _scrubHeld), Volatile.Read(ref _scrubReleased), Volatile.Read(ref _scrubGhost));
 
     // ----- Idle work (speculative work never competes with the active tab) -----
 

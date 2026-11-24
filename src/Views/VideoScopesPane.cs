@@ -16,7 +16,9 @@ namespace HandPegApp.Views;
 /// Fed by a small paused-player capture (GpuPreviewEngine.CaptureThumbnailAsync; never during playback, so no frame waits on it: Law 3),
 /// requested only while visible and paused after frame, timeline or preview changes, at most ~8 Hz. Binning and rendering run off the UI
 /// thread (Services/VideoScopes.cs) into one reused bitmap. During playback the last image stays with an "updates when paused" note.
-/// Built in code and cheap to construct (Law 1): nothing is captured or drawn until shown.
+/// Built in code and cheap to construct (Law 1): nothing is captured or drawn until shown. Pass 5.6.4B: the Histogram is the YRGB overlay
+/// (HistogramView over YrgbHistogram) with YRGB | RGB | Luma pills in the title row, its mode shared with the Color Studio curves through
+/// AppSettings.ColorHistogramMode.
 /// </summary>
 public sealed class VideoScopesPane : UserControl
 {
@@ -31,11 +33,16 @@ public sealed class VideoScopesPane : UserControl
     private readonly ComboBox _kindBox;
     private readonly Image _picture;
     private readonly TextBlock _note;
+    private readonly HistogramView _histogram = new() { Visibility = Visibility.Collapsed };
+    private readonly StackPanel _modePills = new() { Orientation = Orientation.Horizontal, Margin = new Thickness(6, 0, 0, 0), Visibility = Visibility.Collapsed };
 
     // Trailing throttle: a change arms it, the tick captures; intermediate changes coalesce into one capture.
     private readonly DispatcherTimer _throttle = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(ThrottleMs) };
 
     private bool _attached, _capturing, _wanted;
+
+    // A held playhead scrub skipped its captures (ScrubGate.IsHeld); ScrubGate.Released captures once.
+    private bool _captureAfterScrub;
 
     // Last captured frame (so switching scopes redraws immediately) and the single reused output bitmap.
     private (byte[] Bgra, int Width, int Height)? _frame;
@@ -57,6 +64,21 @@ public sealed class VideoScopesPane : UserControl
         var title = new PaneTitleRow { Margin = new Thickness(0, 0, 0, 6) };
         title.Children.Add(new PaneTitleSlot { PaneId = MainWindow.VideoScopesId });
         title.Children.Add(_kindBox);
+        foreach (var mode in YrgbHistogram.Modes)
+        {
+            var label = YrgbHistogram.LabelOf(mode);
+            var pill = new System.Windows.Controls.Primitives.ToggleButton { Content = label, Padding = new Thickness(6, 2, 6, 2), Margin = new Thickness(2, 0, 0, 0), ToolTip = $"Histogram: {label}" };
+            AutomationProperties.SetName(pill, label + " Histogram");
+            pill.Click += (_, _) =>
+            {
+                HistogramMode = mode;
+                AppSettings.Update(settings => settings.ColorHistogramMode = label);
+                YrgbHistogram.Announce(mode, this);
+            };
+            _modePills.Children.Add(pill);
+        }
+
+        title.Children.Add(_modePills);
         DockPanel.SetDock(title, Dock.Top);
 
         _picture = new Image { Stretch = Stretch.Fill };
@@ -69,7 +91,9 @@ public sealed class VideoScopesPane : UserControl
         var stage = new Grid { ClipToBounds = true };
         stage.SetResourceReference(BackgroundProperty, "InsetBrush");
         stage.Children.Add(_picture);
+        stage.Children.Add(_histogram);
         stage.Children.Add(_note);
+        HistogramMode = YrgbHistogram.Parse(AppSettings.Current.ColorHistogramMode);
 
         var root = new DockPanel();
         root.Children.Add(title);
@@ -98,15 +122,39 @@ public sealed class VideoScopesPane : UserControl
         set => _kindBox.SelectedIndex = (int)value;
     }
 
+    /// <summary>The Histogram's overlay channels (YRGB | RGB | Luma); setting it updates the pills and redraws.</summary>
+    internal HistogramMode HistogramMode
+    {
+        get => _histogram.Mode;
+        set
+        {
+            _histogram.Mode = value;
+            for (var i = 0; i < _modePills.Children.Count; i++)
+                ((System.Windows.Controls.Primitives.ToggleButton)_modePills.Children[i]).IsChecked = YrgbHistogram.Modes[i] == value;
+        }
+    }
+
+    /// <summary>The YRGB histogram last drawn (goldens).</summary>
+    internal YrgbHistogram? ShownHistogram => _histogram.Painter.Histogram;
+
     private void Attach()
     {
         if (_attached)
             return;
 
+        // The Color Studio may have changed the shared mode while this pane was away.
+        HistogramMode = YrgbHistogram.Parse(AppSettings.Current.ColorHistogramMode);
+
         _attached = true;
         _viewModel.PropertyChanged += ViewModel_PropertyChanged;
         _viewModel.TimelineChanged += Want;
         _viewModel.PreviewStateInvalidated += Want;
+        GradeGhost.Changed += GhostChanged;
+        YrgbHistogram.ModeChanged += SharedMode_Changed;
+
+        // Static event: held only while attached (Detach removes it), so it never roots an unloaded pane.
+        ScrubGate.Released += ScrubGate_Released;
+        GhostChanged();
         Want();
     }
 
@@ -119,8 +167,22 @@ public sealed class VideoScopesPane : UserControl
         _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         _viewModel.TimelineChanged -= Want;
         _viewModel.PreviewStateInvalidated -= Want;
+        GradeGhost.Changed -= GhostChanged;
+        YrgbHistogram.ModeChanged -= SharedMode_Changed;
+        ScrubGate.Released -= ScrubGate_Released;
+        _captureAfterScrub = false;
         _throttle.Stop();
     }
+
+    // A pill click in the Color Studio: adopt the mode live (the setter never writes the setting, so nothing echoes back).
+    private void SharedMode_Changed(HistogramMode mode, object? origin)
+    {
+        if (!ReferenceEquals(origin, this) && HistogramMode != mode)
+            HistogramMode = mode;
+    }
+
+    // A Color Studio grading gesture: its pre-grade ghost over this Histogram until the gesture ends.
+    private void GhostChanged() => _histogram.ShowGhost(GradeGhost.Shown);
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -128,6 +190,11 @@ public sealed class VideoScopesPane : UserControl
         {
             // Paused scrubs move the playhead many times per second: capture after it rests, since an exact-frame readback on the pump
             // would delay the scrub's own frames.
+            // A held scrub defers every capture to its release (ScrubGate_Released): no readbacks compete with the scrub's frames.
+            case nameof(MainViewModel.PositionMs) when ScrubGate.IsHeld:
+                _captureAfterScrub = true;
+                _throttle.Stop();
+                break;
             case nameof(MainViewModel.PositionMs) when !_viewModel.IsPlaying:
                 Want(afterRest: true);
                 break;
@@ -136,6 +203,19 @@ public sealed class VideoScopesPane : UserControl
                 Want();
                 break;
         }
+    }
+
+    // The scrub ended (after its last PositionMs commit): one capture for the frame it rests on.
+    private void ScrubGate_Released()
+    {
+        if (!_captureAfterScrub)
+            return;
+
+        _captureAfterScrub = false;
+        if (Dispatcher.CheckAccess())
+            Want();
+        else
+            Dispatcher.InvokeAsync(Want);
     }
 
     /// <summary>Frame may have changed: schedule a throttled recapture (never during playback; a note is shown instead).</summary>
@@ -179,6 +259,10 @@ public sealed class VideoScopesPane : UserControl
             }
             else if (!_viewModel.HasSource)
             {
+                // No source: drop any draw still in flight and the last histogram, so nothing stale reappears over the note.
+                _drawn++;
+                _histogram.Show(null);
+                (_histogram.Visibility, _modePills.Visibility) = (Visibility.Collapsed, Visibility.Collapsed);
                 (_frame, _picture.Source) = (null, null);
                 ShowNote("Open a video to read its frame.");
             }
@@ -209,9 +293,27 @@ public sealed class VideoScopesPane : UserControl
 
         var kind = Kind;
         var turn = ++_drawn;
+        var histogram = kind == VideoScopeKind.Histogram;
+        _modePills.Visibility = histogram ? Visibility.Visible : Visibility.Collapsed;
+        if (histogram)
+        {
+            // The YRGB overlay, drawn in WPF over the counts (no bitmap).
+            var counts = await Task.Run(() => YrgbHistogram.Of(frame.Bgra, frame.Width, frame.Height));
+            if (turn != _drawn)
+                return;
+            _histogram.Show(counts);
+            (_histogram.Visibility, _picture.Visibility) = (Visibility.Visible, Visibility.Collapsed);
+
+            // The hidden picture drops the Vectorscope's Uniform: every scope but the Vectorscope fills the pane.
+            _picture.Stretch = Stretch.Fill;
+            ShowNote(_viewModel.IsPlaying ? "Updates when paused." : "");
+            return;
+        }
+
         var (pixels, width, height) = await Task.Run(() => VideoScopes.Render(kind, frame.Bgra, frame.Width, frame.Height));
         if (turn != _drawn)
             return;
+        (_histogram.Visibility, _picture.Visibility) = (Visibility.Collapsed, Visibility.Visible);
 
         // Vectorscope uses Uniform to keep its circle round; other scopes fill the pane.
         _picture.Stretch = kind == VideoScopeKind.Vectorscope ? Stretch.Uniform : Stretch.Fill;
@@ -227,7 +329,7 @@ public sealed class VideoScopesPane : UserControl
     {
         // With an image shown, bottom-align the note so the scope stays readable.
         _note.Text = text;
-        _note.VerticalAlignment = _picture.Source is null ? VerticalAlignment.Center : VerticalAlignment.Bottom;
+        _note.VerticalAlignment = _picture.Source is null && _histogram.Visibility != Visibility.Visible ? VerticalAlignment.Center : VerticalAlignment.Bottom;
         _note.Visibility = text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 }

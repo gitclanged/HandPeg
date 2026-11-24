@@ -1,0 +1,11 @@
+# The Color Studio deck reflows to 3 columns from 920 DIP, 2 from 640, else 1 (520 max); the Output fold is retired.
+ok: breakpoints: 1 column under 640 DIP, 2 from 640 to 919, 3 from 920 (user decision)
+ok: Compact Inspector Mode caps each column at 520 DIP
+ok: at 920 DIP the three columns fit beside each other: Curves 320..560, Basics & LUT 300..460, the rest to Wheels
+ok: on a 2,500 DIP pane Curves stop at 560, Basics & LUT at 460 and Wheels at 720: sliders never stretch across
+ok: wide deck: Wheels over Color Match | Curves & histogram | Basics & LUT
+ok: two columns keep Wheels over Color Match; one column stacks every card
+ok: the Color Studio shows no Fade In, Fade Out, Denoise or Deinterlace switch
+ok: Deinterlace lives inside Export's Advanced Codec & Chapter Options drawer (its own Expander block)
+ok: legacy projects' fades and Denoise are still read and written silently
+ok: the deck reflows on its own width changes

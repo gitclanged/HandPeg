@@ -166,7 +166,7 @@ public static class WaveContract5_6_4ATests
         }
 
         var scrub = SourceProbe.MemberOfType("MainWindow", "private void ScrubPlayheadTo(");
-        expect(SourceProbe.InOrder(scrub, "ScrubGate.Hold()", "GhostPauseForScrub()", "PlayerSeek(", "Scrub.Move("), "a scrub move holds the gate, ghost-pauses, seeks, then queues the commit");
+        expect(SourceProbe.InOrder(scrub, "ScrubGate.Hold()", "GhostPauseForScrub()", "ScrubSeek(", "Scrub.Move("), "a scrub move holds the gate, ghost-pauses, seeks, then queues the commit");
         var end = SourceProbe.MemberOfType("MainWindow", "private void EndScrub(");
         expect(SourceProbe.InOrder(end, "_scrub?.Release(", "ReleaseScrubGate()", "EndScrubScaling()"), "release commits the last moment, opens the gate, then ends the scaled run");
         var release = SourceProbe.MemberOfType("MainWindow", "private void ReleaseScrubGate(");

@@ -37,6 +37,7 @@ public partial class MainWindow
             ApplyGradeCompare();
         };
         pane.ShowCompare(_gradeSplit);
+        HookCurveSampling();
     }
 
     /// <summary>
@@ -232,5 +233,55 @@ public partial class MainWindow
         _gradeDivider.Height = Math.Max(to - from, 0);
         Canvas.SetLeft(_gradeDivider, (Math.Round(x * scale) - 1) / scale);
         Canvas.SetTop(_gradeDivider, from);
+    }
+
+    // ----- Ctrl + Hover / Ctrl + Click on the player: tonal pips and curve points in the Color Studio (Pass 5.6.4B) -----
+    // While the Color tab is shown, Ctrl + Hover over the picture shows the pixel's Y/R/G/B pips on the curves (ColorStudioPane.SampleAt: the
+    // pre-grade still graded through the card's other stages, i.e. the value entering the curves); Ctrl + Click drops a point on the active
+    // curve (luma on Master, its own channel on Red/Green/Blue) and Ctrl + Shift + Click matched points on all four, one Undo step either way
+    // (user decisions). The picture is read from the Color Studio's last paused still: no capture, no GPU or decoder work per move (Law 3).
+
+    /// <summary>
+    /// Which curves a click feeds: null without Ctrl (the player keeps the click), false (Ctrl) the active curve, true (Ctrl + Shift) all
+    /// four. Pure; golden-tested.
+    /// </summary>
+    internal static bool? CurveClickScope(ModifierKeys modifiers) => modifiers switch
+    {
+        ModifierKeys.Control => false,
+        ModifierKeys.Control | ModifierKeys.Shift => true,
+        _ => null,
+    };
+
+    /// <summary>True while the player's Ctrl gestures belong to the Color Studio curves: its tab shown, no 3D, crop or source view.</summary>
+    private bool CurveSamplingLive => _colorStudio is { IsVisible: true } && !_explodedUi && !_viewModel.IsInteractiveCropActive && _viewModel.DrawTargetLayer is null;
+
+    /// <summary>Hooks the player overlay (AttachColorStudio): named handlers removed first, so hooking again never doubles them.</summary>
+    private void HookCurveSampling()
+    {
+        PlayerOverlay.PreviewMouseMove -= CurveSampling_MouseMove;
+        PlayerOverlay.PreviewMouseMove += CurveSampling_MouseMove;
+        PlayerOverlay.MouseLeave -= CurveSampling_MouseLeave;
+        PlayerOverlay.MouseLeave += CurveSampling_MouseLeave;
+        PlayerOverlay.PreviewMouseLeftButtonDown -= CurveSampling_MouseDown;
+        PlayerOverlay.PreviewMouseLeftButtonDown += CurveSampling_MouseDown;
+    }
+
+    private void CurveSampling_MouseMove(object? sender, MouseEventArgs e)
+    {
+        if (_colorStudio is not { } pane)
+            return;
+        var sample = CurveSamplingLive && Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.LeftButton != MouseButtonState.Pressed
+            && PictureFocalAt(e.GetPosition(PlayerOverlay)) is { } focal ? pane.SampleAt(focal) : null;
+        pane.ShowTonalPips(sample);
+    }
+
+    private void CurveSampling_MouseLeave(object? sender, MouseEventArgs e) => _colorStudio?.ShowTonalPips(null);
+
+    private void CurveSampling_MouseDown(object? sender, MouseButtonEventArgs e)
+    {
+        if (_colorStudio is not { } pane || e.ClickCount != 1 || CurveClickScope(Keyboard.Modifiers) is not { } allChannels || !CurveSamplingLive)
+            return;
+        if (PictureFocalAt(e.GetPosition(PlayerOverlay)) is { } focal && pane.SampleAt(focal) is { } sample && pane.AddCurvePoints(sample, allChannels))
+            e.Handled = true;
     }
 }

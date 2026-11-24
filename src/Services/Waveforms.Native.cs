@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using HandPegApp.Compositor.Native;
 using HandPegApp.Services.Audio;
@@ -12,8 +13,9 @@ public static partial class Waveforms
     /// Reads peaks for all requested tracks in one pass, one reader each. False when MF cannot read the file (FFmpeg fallback); multi-audio
     /// MP4s also go to FFmpeg since MF stream order differs (AudioDecoder.Open).
     /// </summary>
-    private static unsafe bool ReadPeaksNatively(string path, IReadOnlyList<int> tracks, PeakReader[] readers, CancellationToken token)
+    private static unsafe bool ReadPeaksNatively(string path, IReadOnlyList<int> tracks, PeakReader[] readers, CancellationToken token, Func<bool>? pause = null)
     {
+        var nextPauseCheck = 0L;
         if (tracks.Count == 0 || !MfAudio.Start() || Mp4Timing.Read(path) is { } mp4 && mp4.Count(t => t.Handler == "soun") > 1)
             return false;
 
@@ -57,6 +59,7 @@ public static partial class Waveforms
             while (open > 0)
             {
                 token.ThrowIfCancellationRequested();
+                YieldWhilePaused(pause, token, ref nextPauseCheck);
                 var hr = Mf.ReadSampleAny(reader, out var stream, out var flags, out var time, out var sample);
                 try
                 {
@@ -101,6 +104,27 @@ public static partial class Waveforms
 
             return -1;
         }
+    }
+
+    /// <summary>Interval between pause checks while reading, ms; and the re-check interval while paused.</summary>
+    internal const int PauseCheckMs = 25, PausedRecheckMs = 10;
+
+    /// <summary>
+    /// Pause point between reads (every <see cref="PauseCheckMs"/>): while <paramref name="pause"/> holds (WorkScheduler.PausePoint: scrub or
+    /// drag hold, playback) the reading thread waits, so the file and the CPU go to the foreground; cancellation throws. Null never pauses.
+    /// </summary>
+    internal static void YieldWhilePaused(Func<bool>? pause, CancellationToken token, ref long nextCheck)
+    {
+        if (pause is null || Stopwatch.GetTimestamp() < nextCheck)
+            return;
+        while (pause())
+        {
+            token.ThrowIfCancellationRequested();
+            token.WaitHandle.WaitOne(PausedRecheckMs);
+        }
+
+        token.ThrowIfCancellationRequested();
+        nextCheck = Stopwatch.GetTimestamp() + PauseCheckMs * Stopwatch.Frequency / 1000;
     }
 
     private static unsafe bool AsFloat(nint reader, uint stream, StreamPeaks peaks)

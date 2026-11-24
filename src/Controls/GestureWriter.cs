@@ -79,6 +79,9 @@ internal sealed class GestureWriter<TKey> : IGestureWriter where TKey : notnull
     /// <summary>Flushes pending writes now (e.g. before a target change or a dialog opens).</summary>
     public void Flush() => _throttle.Flush();
 
+    /// <summary>Discards pending writes unrun (a gesture invalidated midway: its queued values must not land).</summary>
+    public void Cancel() => _throttle.Cancel();
+
     private void RunBatch(Action batch)
     {
         var run = _around is { } around ? () => around(batch) : batch;

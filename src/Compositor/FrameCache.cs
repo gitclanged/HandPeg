@@ -319,8 +319,42 @@ internal sealed unsafe class FrameCache : IDisposable
         Volatile.Write(ref _maximum, _disabled ? MinBudget : maximum);
         var wanted = _disabled ? MinBudget : MemoryTier.Budget(BigCard, baseline, steps, maximum, _scale?.Step ?? MemoryTier.GrowStep);
         var least = _scale is { } scale ? Math.Min(scale.Baseline, MinBudget) : MinBudget;
+        Volatile.Write(ref _capReason, CapOf(_disabled, wanted, _windowsRoom, _commitRoom, _physicalRoom));
         return Math.Max(Math.Min(Math.Min(Math.Min(wanted, _windowsRoom), _commitRoom), _physicalRoom), least);
     }
+
+    /// <summary>Budget cap reasons (<see cref="CapReason"/>, ControlBlock.CacheBudgetCap): what limits the effective budget now.</summary>
+    public const int CapAuto = 0, CapOff = 1, CapDxgi = 2, CapCommit = 3, CapRam = 4;
+
+    // Cap reason of the last computed budget (CapAuto...CapRam).
+    private int _capReason;
+
+    /// <summary>What limits the effective budget now: <see cref="CapAuto"/> (the rule or Settings maximum), off, DXGI, commit or RAM.</summary>
+    public int CapReason => Volatile.Read(ref _capReason);
+
+    /// <summary>
+    /// Cap reason of a budget: off when disabled, else the tightest of the DXGI, commit and RAM rooms below <paramref name="wanted"/>,
+    /// else auto. Pure.
+    /// </summary>
+    internal static int CapOf(bool disabled, long wanted, long windowsRoom, long commitRoom, long physicalRoom)
+    {
+        if (disabled)
+            return CapOff;
+        var tightest = Math.Min(Math.Min(windowsRoom, commitRoom), physicalRoom);
+        if (tightest >= wanted)
+            return CapAuto;
+        return tightest == windowsRoom ? CapDxgi : tightest == commitRoom ? CapCommit : CapRam;
+    }
+
+    /// <summary>Log name of a cap reason: off, dxgi, commit, ram or auto. Pure.</summary>
+    public static string CapName(int cap) => cap switch
+    {
+        CapOff => "off",
+        CapDxgi => "dxgi",
+        CapCommit => "commit",
+        CapRam => "ram",
+        _ => "auto",
+    };
 
     /// <summary>
     /// Grows one step when allowed (MemoryTier.MayGrow: below maximum, 2 s since the last) and the caps let the budget actually rise; false

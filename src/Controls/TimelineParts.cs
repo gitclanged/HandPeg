@@ -93,7 +93,9 @@ public abstract class TimelineBar : FrameworkElement
     {
         var height = Math.Max(ActualHeight, 4);
         var shown = !double.IsNaN(_playheadX);
-        if (height != _playheadHeight || !shown)
+
+        // Scrub hot path: redraw only on a height change or the first hide; otherwise translate the existing visual.
+        if (shown ? height != _playheadHeight : _playheadHeight != 0)
         {
             _playheadHeight = shown ? height : 0;
             using var drawing = _playhead.RenderOpen();
@@ -584,6 +586,15 @@ public sealed class TimelineRuler : TimelineBar
     // Last raised pointer time (PointerSecondsChanged), NaN for none.
     private double _pointerSeconds = double.NaN;
 
+    /// <summary>
+    /// True when a pointer move reports its time (skim line, hover hints): never during a seek drag, whose 500 Hz moves only move the
+    /// playhead (the skim line is cleared at the press and placed again at the release). Pure; checked by goldens.
+    /// </summary>
+    internal static bool NotesPointer(bool seeking) => !seeking;
+
+    // Pointer time at x (clamped to the ruler), NaN before the first layout.
+    private double PointerTimeAt(double x) => ActualWidth > 0 && _span > 0 ? Math.Max(TimeAt(Math.Clamp(x, 0, ActualWidth)), 0) : double.NaN;
+
     private void NotePointer(double seconds)
     {
         if (seconds.Equals(_pointerSeconds))
@@ -725,8 +736,9 @@ public sealed class TimelineRuler : TimelineBar
         if (!CaptureMouse())
             return;
 
-        // Snap exactly to a marker under the pointer.
+        // Snap exactly to a marker under the pointer. The skim line steps aside for the drag (NotesPointer).
         _seeking = true;
+        NotePointer(double.NaN);
         var x = e.GetPosition(this).X;
         SeekRequested?.Invoke(MarkerNear(x) is >= 0 and var marker ? _markers[marker] : TimeAt(x));
         e.Handled = true;
@@ -751,6 +763,8 @@ public sealed class TimelineRuler : TimelineBar
         _seeking = false;
         ReleaseMouseCapture();
         SeekEnded?.Invoke();
+        if (IsMouseOver)
+            NotePointer(PointerTimeAt(e.GetPosition(this).X));
         e.Handled = true;
     }
 
@@ -890,7 +904,8 @@ public sealed class TimelineRuler : TimelineBar
     {
         base.OnMouseMove(e);
         var at = e.GetPosition(this).X;
-        NotePointer(ActualWidth > 0 && _span > 0 ? Math.Max(TimeAt(Math.Clamp(at, 0, ActualWidth)), 0) : double.NaN);
+        if (NotesPointer(_seeking))
+            NotePointer(PointerTimeAt(at));
         if (_panFrom is not null)
         {
             MiddlePanMove(at, MomentumScroller.Now());

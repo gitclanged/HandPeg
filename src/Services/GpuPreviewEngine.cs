@@ -529,11 +529,26 @@ public sealed partial class GpuPreviewEngine : IDisposable
         SeekMailSlot.Post(ref _pendingSeekBits, seconds);
         Interlocked.Increment(ref _transportSerial);
 
-        // A scrub's move holds background work back a moment (the strip workers stop between pictures meanwhile).
-        if (holdBackground)
+        // A scrub's move holds background work back a moment (the strip workers stop between pictures meanwhile); extended at most every
+        // ScrubHoldEveryMs, never taking WorkScheduler's gate at the pointer's 500 Hz.
+        if (holdBackground && ScrubHoldDue(now, _scrubHeldAt, Stopwatch.Frequency))
+        {
+            _scrubHeldAt = now;
             WorkScheduler.HoldBackground(ScrubHold);
+        }
+
         Invalidate();
     }
+
+    /// <summary>Least time, ms, between two scrub extensions of the background hold (<see cref="ScrubHold"/>, 400 ms, outlasts it).</summary>
+    internal const int ScrubHoldEveryMs = 50;
+
+    // Stopwatch ticks of Seek's last background hold (0 = none); Seek's own.
+    private long _scrubHeldAt;
+
+    /// <summary>True when a scrub move should extend the background hold: none yet, or <see cref="ScrubHoldEveryMs"/> since the last. Pure.</summary>
+    internal static bool ScrubHoldDue(long now, long lastHeldAt, long frequency) =>
+        lastHeldAt == 0 || (now - lastHeldAt) * 1000 >= ScrubHoldEveryMs * frequency;
 
     /// <summary>
     /// Applies the newest posted <see cref="Seek"/> to the transport and the audio engine (pump thread, under <see cref="_transport"/>);
@@ -624,6 +639,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
             if (!_playing || !_ghostPaused)
                 return;
             Interlocked.Increment(ref _transportSerial);
+
+            // The play-scrub's paused seeks prime the voices short of GhostDwell (WasapiAudioEngine.GhostPrimeQuietMs); Play or Pause restores.
+            _audio.GhostPrime = true;
             _ = PauseCore(SeekMailSlot.TryTake(ref _pendingSeekBits, out var pending) ? pending : _audio.Position);
         }
     }
@@ -657,17 +675,23 @@ public sealed partial class GpuPreviewEngine : IDisposable
         lock (_transport)
         {
             _ghostPaused = false;
+            _audio.GhostPrime = false;
             if (_playing)
                 return;
             Interlocked.Increment(ref _transportSerial);
 
             // A pending Seek is folded in: play starts from its target (newer than a paused clock an earlier drain may have written).
+            var seekPending = SeekMailSlot.IsPending(ref _pendingSeekBits);
             var from = SeekMailSlot.ResumeFrom(ref _pendingSeekBits, Volatile.Read(ref _pausedAt), SequenceSeconds, _rate);
             _audio.Seek(from);
             _scrubVelocity = 0;
 
-        // Multiple videos: hold the clock for their first frames (PlayStartWait) so none starts late or out of sync.
-            _primingSince = _state is { } state && VideosAt(state, from) > 1 ? Stopwatch.GetTimestamp() : 0;
+            // Multiple videos: hold the clock for their first frames (PlayStartWait) so none starts late or out of sync. One video whose
+            // playhead frame is not on screen exact yet (cold resume, GhostResume): a brief hold (SingleStartWait) for its exact frame.
+            // No drawable surface (hidden player, headless): no scene can be presented, so nothing is primed.
+            var videos = _state is { } state && _viewport.PixelSize is var (surfaceW, surfaceH) && surfaceW >= 8 && surfaceH >= 8 ? VideosAt(state, from) : 0;
+            _primingSingle = videos == 1;
+            _primingSince = PrimesAtPlay(videos, alreadyExact: !seekPending && PausedSceneExact(from)) ? Stopwatch.GetTimestamp() : 0;
             _primingScene = 0;
             if (_primingSince == 0)
                 _audio.Play();
@@ -679,13 +703,79 @@ public sealed partial class GpuPreviewEngine : IDisposable
     }
 
     /// <summary>
-    /// Maximum play-start wait for first frames (ms). A single video never waits, nor do videos already decoded at and just after the
-    /// playhead (<see cref="PlayStartReady"/>).
+    /// Maximum play-start wait for several videos' first frames (ms); videos already decoded at and just after the playhead never wait
+    /// (<see cref="PlayStartReady"/>). A single video waits at most <see cref="SingleStartWait"/>.
     /// </summary>
     public const int PlayStartWait = 350;
 
-    // When play was pressed with several videos on screen, and the first scene drawn since (0: none yet).
+    /// <summary>
+    /// Maximum play-start wait (ms) for a single video's exact playhead frame when it is not on screen yet (cold Play, GhostResume): audio
+    /// never runs ahead of stand-in frames nor trips Dynamic Preview Scaling. No wait when that frame is already presented exact.
+    /// </summary>
+    public const int SingleStartWait = 120;
+
+    // When play was pressed with videos to prime, and the first scene drawn since (0: none yet).
     private long _primingSince, _primingScene;
+
+    // The priming press had one video on screen (SingleStartWait, exact frame only), else several (PlayStartWait).
+    private bool _primingSingle;
+
+    /// <summary>
+    /// True when Play holds the clock for first frames: several videos on screen, or one whose playhead frame is not yet presented exact
+    /// (<paramref name="alreadyExact"/>: the newest presented scene is exact and no seek is pending). Pure.
+    /// </summary>
+    internal static bool PrimesAtPlay(int videos, bool alreadyExact) => videos > 1 || videos == 1 && !alreadyExact;
+
+    // The newest paused scene published (pump thread; 0 once a playing scene is published) and its playhead. Written scene=0, at, scene so
+    // a reader that sees the same non-zero scene before and after reading the time has a matching pair (sequences only grow).
+    private long _pausedScene;
+    private double _pausedSceneAt;
+
+    private void NotePublished(long sequence, double seconds, bool playing)
+    {
+        if (sequence <= 0)
+            return;
+        Volatile.Write(ref _pausedScene, 0);
+        if (playing)
+            return;
+        Volatile.Write(ref _pausedSceneAt, seconds);
+        Volatile.Write(ref _pausedScene, sequence);
+    }
+
+    /// <summary>
+    /// True when the paused scene at <paramref name="from"/> is the one presented, exact, with no redraw owed: a drained seek or ghost pause
+    /// whose scene is not on screen yet never counts the previous frame's exact flag.
+    /// </summary>
+    private bool PausedSceneExact(double from)
+    {
+        var scene = Volatile.Read(ref _pausedScene);
+        var at = Volatile.Read(ref _pausedSceneAt);
+        ref var control = ref _client.Memory.Control;
+        return PausedSceneExact(Volatile.Read(ref _sceneDirty) != 0, scene, Volatile.Read(ref _pausedScene) == scene,
+            Volatile.Read(ref control.PresentedSequence), at, from, Volatile.Read(ref control.PresentedExact) != 0);
+    }
+
+    /// <summary>Resume-target exactness from its inputs (see <see cref="PausedSceneExact(double)"/>). Pure.</summary>
+    internal static bool PausedSceneExact(bool dirty, long scene, bool stable, long presented, double sceneAt, double from, bool exact) =>
+        !dirty && scene > 0 && stable && presented >= scene && Math.Abs(sceneAt - from) < 1e-9 && exact;
+
+    /// <summary>
+    /// Single-video play-start readiness: the first scene presented since the press (<paramref name="scene"/>) is exact, or
+    /// <see cref="SingleStartWait"/> has passed since <paramref name="since"/>. Pure over the shared control block.
+    /// </summary>
+    public static bool SingleStartReady(CompositorClient client, long since, long scene)
+    {
+        ref var control = ref client.Memory.Control;
+        return SingleStartReady(scene > 0 && Volatile.Read(ref control.PresentedSequence) >= scene, Volatile.Read(ref control.PresentedExact) != 0,
+            Stopwatch.GetElapsedTime(since).TotalMilliseconds);
+    }
+
+    /// <summary>Single-video play-start readiness from its inputs: exact scene presented, or <see cref="SingleStartWait"/> elapsed. Pure.</summary>
+    internal static bool SingleStartReady(bool presented, bool exact, double elapsedMs) => presented && exact || elapsedMs >= SingleStartWait;
+
+    // Play-start readiness of the current priming press (pump thread).
+    private bool PrimingReady() =>
+        _primingSingle ? SingleStartReady(_client, _primingSince, _primingScene) : PlayStartReady(_client, _primingSince, _primingScene);
 
     /// <summary>How many different videos are on screen at a moment of the timeline.</summary>
     public static int VideosAt(SequenceExportState state, double at) =>
@@ -713,6 +803,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         lock (_transport)
         {
             _ghostPaused = false;
+            _audio.GhostPrime = false;
             if (!_playing)
                 return;
             Interlocked.Increment(ref _transportSerial);
@@ -848,7 +939,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
                         _refresh = GpuViewport.NextRefresh(_refresh, interval, monitorPeriod);
                     presentedLast = false;
 
-                    if (_primingSince != 0 && PlayStartReady(_client, _primingSince, _primingScene))
+                    if (_primingSince != 0 && PrimingReady())
                         EndPriming();
 
                     // A ghost pause or seek posted during the wait lands before this turn's moment is measured.
@@ -873,7 +964,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     // Evaluate at display time: measured lead to the presenting vblank (GpuViewport.DisplayLeadSeconds), else one refresh.
                     _viewport.FrameOrigin = origin;
                     var serial = Volatile.Read(ref _transportSerial);
-                    var at = _audio.Position + GpuViewport.PlayingLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
+                    // While priming the audio clock is held at the resume target: no display lead, so the requested start frame is the one primed.
+                    var lead = _primingSince != 0 ? 0 : GpuViewport.PlayingLead(_refresh, _viewport.DisplayLeadSeconds);
+                    var at = _audio.Position + lead * Math.Max(_rate, 0);
 
                     // A seek posted before the serial was read (Seek posts first) and not yet applied: the end is never measured on the old
                     // audio clock; the next turn drains it. One posted after the read fails PauseAtEnd's serial check.
@@ -903,7 +996,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     Volatile.Write(ref _sceneDirty, 0);
                     _lastPlayedFrame = frame;
                     var sequence = PublishAt(plan, at, playing: true);
-                    if (_primingSince != 0 && _primingScene == 0)
+                    if (_primingSince != 0 && sequence == 0)
+                        EndPriming(); // (no surface: nothing can be presented to wait for)
+                    else if (_primingSince != 0 && _primingScene == 0)
                         _primingScene = sequence;
 
                     // The cuts ahead (rewritten only when one is passed or another comes into the horizon).
@@ -988,6 +1083,13 @@ public sealed partial class GpuPreviewEngine : IDisposable
         return fps > 0 && double.IsFinite(seconds) ? (long)Math.Floor(seconds * fps + 1e-6) : long.MinValue;
     }
 
+    /// <summary>
+    /// Scrub flags of a published scene: <see cref="FrameSceneHeader.FlagScrubbing"/> for a held drag while the transport is paused, plus
+    /// <see cref="FrameSceneHeader.FlagGhostScrub"/> when that drag ghost-pauses playback; none once playing (Play, GhostResume). Pure.
+    /// </summary>
+    internal static int ScrubFlags(bool playing, bool held, bool ghostPaused) =>
+        playing || !held ? 0 : FrameSceneHeader.FlagScrubbing | (ghostPaused ? FrameSceneHeader.FlagGhostScrub : 0);
+
     private long PublishAt(GpuScenePlan plan, double seconds, bool playing)
     {
         var (width, height) = _viewport.PixelSize;
@@ -995,6 +1097,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             return 0;
 
         // The end of the sequence shows its last frame, not what comes after it: nothing.
+        var asked = seconds;
         if (plan.SequenceSeconds > 0.002 && seconds > plan.SequenceSeconds - 0.001)
             seconds = plan.SequenceSeconds - 0.001;
 
@@ -1013,6 +1116,11 @@ public sealed partial class GpuPreviewEngine : IDisposable
         header.IsPlaying = playing ? 1 : 0;
         (header.OutputWidth, header.OutputHeight) = (width, height);
         header.Flags |= FrameSceneHeader.FlagLetterbox;
+
+        // A held paused drag tells the worker's decoders outright (no pre-roll or scrub-ahead lanes; EndScrubScaling redraws on release).
+        // Play or GhostResume clears it at once (a dwell-play segment keeps the gate held); a ghost-paused play-scrub dwells short.
+        if (ScrubFlags(playing || _playing, ScrubGate.IsHeld, _ghostPaused) is var scrub and not 0)
+            header.Flags |= scrub;
         header.PreviewScale = PreviewScaleFor(playing, width, height, header.CanvasWidth > 0 ? header.CanvasWidth : 1920, header.CanvasHeight > 0 ? header.CanvasHeight : 1080);
         if (!sourceView)
             WriteAudioBands(ref header, seconds, playing);
@@ -1029,6 +1137,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
         }
 
         var sequence = _client.Publish();
+        NotePublished(sequence, asked, playing);
 
         // Downscaled scene: block still readback until a newer full frame is on screen (TakeSnapshot).
         if (sequence > 0 && _lastScale < 1)

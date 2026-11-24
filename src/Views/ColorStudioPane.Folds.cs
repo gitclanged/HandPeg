@@ -2,7 +2,6 @@ using System.IO;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
-using System.Windows.Data;
 using System.Windows.Threading;
 using HandPegApp.Models.Effects;
 using HandPegApp.Services;
@@ -10,7 +9,7 @@ using HandPegApp.ViewModels;
 
 namespace HandPegApp.Views;
 
-// ----- Color Studio LUT, Output and Legacy Grade sections, and the pre-grade histogram -----
+// ----- Color Studio LUT and Legacy Grade sections, and the post-grade YRGB histogram (pre-grade ghost) -----
 public partial class ColorStudioPane
 {
     /// <summary>Minimum interval between input-still captures, ms (~8 Hz, matching Video Scopes).</summary>
@@ -18,7 +17,7 @@ public partial class ColorStudioPane
 
     // Trailing throttle (created lazily): a change arms it, the tick captures; intermediate changes coalesce.
     private DispatcherTimer? _throttle;
-    private bool _capturing, _wanted;
+    private bool _capturing, _wanted, _postWanted;
     private Border? _legacyCard;
     private TextBlock? _legacySummary;
     private Button? _legacyConvert;
@@ -76,29 +75,6 @@ public partial class ColorStudioPane
         var dialog = new Microsoft.Win32.OpenFileDialog { Filter = "Cube LUT (*.cube)|*.cube|All files (*.*)|*.*", Title = "Choose a LUT" };
         if (dialog.ShowDialog(Window.GetWindow(this)) == true)
             QueueText(ColorGradeKeys.Lut, dialog.FileName);
-    }
-
-    // ----- Output: whole-picture switches (their single home since the Filters tab was removed) -----
-
-    private Expander OutputFold()
-    {
-        var switches = new WrapPanel { Margin = new Thickness(0, 4, 0, 0) };
-        CheckBox Switch(string label, string property, string tip)
-        {
-            var box = new CheckBox { Content = label, Margin = new Thickness(0, 2, 16, 2), ToolTip = tip };
-            box.SetBinding(System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty, new Binding(property) { Source = _vm, Mode = BindingMode.TwoWay });
-            AutomationProperties.SetName(box, label);
-            switches.Children.Add(box);
-            return box;
-        }
-
-        Switch("Deinterlace", nameof(MainViewModel.Deinterlace), "Draws interlaced video as whole frames");
-        Switch("Denoise", nameof(MainViewModel.Denoise), "Smooths grain over the whole picture");
-        Switch("Fade In", nameof(MainViewModel.FadeIn), "Picture and sound in from black (1 s)");
-        Switch("Fade Out", nameof(MainViewModel.FadeOut), "Picture and sound out to black (1 s)");
-        var fold = new Expander { Header = "Output", Content = switches, Margin = new Thickness(0, 0, 0, 8) };
-        AutomationProperties.SetName(fold, "Output");
-        return fold;
     }
 
     // ----- Legacy Grade: former Filters tab sliders and LUT, shown while the project still uses them -----
@@ -180,7 +156,7 @@ public partial class ColorStudioPane
         UpdateLegacy();
     }
 
-    // ----- Pre-grade histogram -----
+    // ----- Post-grade YRGB histogram (with the pre-grade input as its ghost) -----
 
     // Timeline or preview changed, so the input may have; ignored within 400 ms of this pane's own write (which changes only the grade).
     private void Invalidated()
@@ -229,20 +205,53 @@ public partial class ColorStudioPane
         if (_capturing || !_listening || !IsVisible || _vm is not { IsPlaying: false } || _capture is not { } capture)
             return;
 
-        // Skip during a gesture: the readback would queue behind its frames (requested again when the gesture ends).
+        // During a gesture the pre-grade input stays held (the ghost) and only the displayed, post-grade picture is read, throttled, so the
+        // histogram follows the grade live; the full capture runs again when the gesture ends.
         if (InGesture)
+        {
+            await CapturePostAsync(capture);
             return;
+        }
 
         _capturing = true;
         _wanted = false;
         CaptureCount++;
         try
         {
-            var frame = await capture(_card?.Id ?? Guid.Empty);
-            if (frame is { Width: > 0, Height: > 0 } still)
+            // The input with the card excluded (the curves' input and the ghost), then the picture as displayed (post-grade); with no card
+            // yet the two are the same frame. Both must be one frame of one target: playback, a gesture, the playhead, the target or its
+            // card changing meanwhile drops the result (and the second readback) and asks again.
+            var cardId = _card?.Id ?? Guid.Empty;
+            var (target, position) = (_target, _vm?.PositionMs);
+            bool Current() => _listening && IsVisible && !InGesture && _vm is { IsPlaying: false } now && now.PositionMs == position && _target == target
+                && (_card?.Id ?? Guid.Empty) == cardId;
+
+            var frame = await capture(cardId);
+            var shown = cardId != Guid.Empty && frame is { Width: > 0, Height: > 0 } && Current() ? await capture(Guid.Empty) : null;
+            if (frame is { Width: > 0, Height: > 0 } still && Current())
             {
-                var luma = await Task.Run(() => LumaOf(still.Bgra, still.Width, still.Height));
-                _curves.SetHistogram(luma);
+                var (pre, post) = await Task.Run(() =>
+                {
+                    var input = YrgbHistogram.Of(still.Bgra, still.Width, still.Height);
+                    return (input, cardId == Guid.Empty ? input : shown is { Width: > 0, Height: > 0 } graded ? YrgbHistogram.Of(graded.Bgra, graded.Width, graded.Height) : null);
+                });
+                if (Current())
+                {
+                    // No post-grade picture (its readback slot busy): the input counts are the ghost only, never drawn as the post-grade
+                    // result, and the capture is asked again.
+                    _still = new StampedStill(still.Bgra, still.Width, still.Height, target, cardId, position ?? 0);
+                    _curves.SetHistograms(post ?? _curves.Surface.Histogram, pre);
+                    GradeGhost.Set(pre, _curves.GradeGesture);
+                    _wanted |= post is null;
+                }
+                else
+                {
+                    _wanted = true;
+                }
+            }
+            else if (frame is { Width: > 0, Height: > 0 })
+            {
+                _wanted = true;
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or TaskCanceledException)
@@ -256,6 +265,61 @@ public partial class ColorStudioPane
 
         if (_wanted && _listening && IsVisible && _vm is { IsPlaying: false })
             _throttle?.Start();
+    }
+
+    // One throttled post-grade readback during a gesture: its counts drawn over the held pre-grade ghost (same target, card, frame and
+    // gesture, or dropped); the full capture is owed once the gesture ends.
+    private async Task CapturePostAsync(Func<Guid, Task<(byte[] Bgra, int Width, int Height)?>> capture)
+    {
+        if (_curves.Surface.Ghost is not { } held)
+            return;
+        var (target, position, cardId) = (_target, _vm?.PositionMs, _card?.Id ?? Guid.Empty);
+        bool Current() => InGesture && _listening && IsVisible && _vm is { IsPlaying: false } now && now.PositionMs == position && _target == target
+            && (_card?.Id ?? Guid.Empty) == cardId && ReferenceEquals(_curves.Surface.Ghost, held);
+
+        _capturing = true;
+        (_postWanted, _wanted) = (false, true);
+        try
+        {
+            if (await capture(Guid.Empty) is { Width: > 0, Height: > 0 } shown && Current())
+            {
+                var post = await Task.Run(() => YrgbHistogram.Of(shown.Bgra, shown.Width, shown.Height));
+                if (Current())
+                    _curves.SetHistograms(post, held);
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or TaskCanceledException)
+        {
+            AppLog.Write("Color Studio: the frame could not be read", ex);
+        }
+        finally
+        {
+            _capturing = false;
+        }
+
+        // Written again meanwhile: another post-grade read; the gesture over: the full capture it owes.
+        if ((InGesture ? _postWanted : _wanted) && _listening && IsVisible && _vm is { IsPlaying: false })
+            _throttle?.Start();
+    }
+
+    // A write of this pane's during a gesture: a throttled post-grade read (the pre-grade ghost held) and a full capture owed after it.
+    private void WantPost()
+    {
+        if (!_built || !_listening || !IsVisible || _vm is not { IsPlaying: false } || _capture is null)
+            return;
+        (_postWanted, _wanted) = (true, true);
+        var throttle = _throttle ??= MakeThrottle();
+        if (!throttle.IsEnabled && !_capturing)
+            throttle.Start();
+    }
+
+    // A grading gesture (wheel, Basics, curve, Match Strength) shows the pre-grade ghost on the curves and in Video Scopes until it ends.
+    private void ShowGradeGhost(bool active)
+    {
+        if (!_built)
+            return;
+        _curves.GradeGesture = active;
+        GradeGhost.Set(_curves.Surface.Ghost, active);
     }
 
     /// <summary>256-bin BT.709 luma histogram of a still (VideoScopes.Histogram's luma row).</summary>

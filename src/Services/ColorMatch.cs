@@ -34,6 +34,9 @@ public static class ColorMatch
     /// <summary>The most steps each stage of the solver takes.</summary>
     public const int MaxIterations = 20;
 
+    // The wheels that take a remainder beyond the tone-zone wheel, in order: Gamma, Lift, Gain.
+    private static readonly int[] WheelOrder = [1, 0, 2];
+
     // Lazy sRGB-to-linear LUT for 256 levels (the screen eyedropper samples at 60 Hz).
     private static double[]? _linear;
 
@@ -187,11 +190,28 @@ public static class ColorMatch
     /// <summary>
     /// Solves from the <paramref name="ungraded"/> target to <paramref name="reference"/> starting at <paramref name="current"/> (curves kept):
     /// exposure, then exposure + temperature + tint, then the tone-zone wheel; other values unchanged. A white balance pinned at its limit is
-    /// compared against a wheel-only solution after exposure and replaced when that matches. Verified with the full forward model
-    /// (<see cref="ColorMatchSolution.DeltaE"/>).
+    /// compared against a wheel-only solution after exposure and replaced when that matches. Pass 5.6.4B: the solution keeps to natural
+    /// bounds (<see cref="ColorMatchBounds"/>: Temperature and Tint within 0.75 of their reach, each wheel's push within 0.75 of the radius).
+    /// A free fit inside them is kept exactly as found; one beyond them is fitted again within them (the white balance bounded, every wheel's
+    /// push projected into its disc, the other wheels taking a remainder beyond <see cref="Tolerance"/>) and regularized
+    /// (<see cref="ColorMatchBounds.Regularize"/>), so a match never paints a cast past what a colourist would. Verified with the full forward
+    /// model (<see cref="ColorMatchSolution.DeltaE"/>).
     /// </summary>
     public static ColorMatchSolution SolveFrom((double R, double G, double B) ungraded, (double R, double G, double B) reference, in ColorGradeValues current, ColorCurveStage? curves = null)
     {
+        var free = SolveWithin(ungraded, reference, current, curves, bounded: false);
+        if (ColorMatchBounds.Within(free.Values))
+            return free;
+        var held = SolveWithin(ungraded, reference, current, curves, bounded: true);
+        return held with { Iterations = free.Iterations + held.Iterations };
+    }
+
+    // The staged fit, free (each value within its own range) or held within the natural bounds.
+    private static ColorMatchSolution SolveWithin((double R, double G, double B) ungraded, (double R, double G, double B) reference, in ColorGradeValues current,
+        ColorCurveStage? curves, bool bounded)
+    {
+        // White balance scaled to -1..1 per 100: its whole range free, 0.75 of it held.
+        var balanceBound = bounded ? ColorMatchBounds.WheelLimit : 1;
         var iterations = 0;
         var goal = ToOkLab(reference);
         double Distance(in ColorGradeValues v) => DeltaE(ToOkLab(Graded(ungraded, v, curves)), goal);
@@ -216,20 +236,20 @@ public static class ColorMatch
             return start with { Exposure = q[0] };
         }
 
-        // 2. Joint exposure/temperature/tint fit (temperature and tint scaled to -1..1 for comparable step sizes).
+        // 2. Joint exposure/temperature/tint fit (temperature and tint scaled to -1..1 for comparable step sizes, held within the bound).
         ColorGradeValues Balance(ColorGradeValues start)
         {
             if (Distance(start) <= StopAt)
                 return start;
             double[] q = [start.Exposure, start.Temperature / 100, start.Tint / 100];
-            iterations += Fit(q, [-3, -1, -1], [3, 1, 1], p => LabResidual(start with { Exposure = p[0], Temperature = p[1] * 100, Tint = p[2] * 100 }), StopAt * StopAt);
+            iterations += Fit(q, [-3, -balanceBound, -balanceBound], [3, balanceBound, balanceBound],
+                p => LabResidual(start with { Exposure = p[0], Temperature = p[1] * 100, Tint = p[2] * 100 }), StopAt * StopAt);
             return start with { Exposure = q[0], Temperature = q[1] * 100, Tint = q[2] * 100 };
         }
 
-        // 3. Residual to the tone-zone wheel (by ungraded luma): Lift, Gamma or Gain RGB; kept only if it reduces dE.
-        var luma = ColorGradeMath.LumaR * ungraded.R + ColorGradeMath.LumaG * ungraded.G + ColorGradeMath.LumaB * ungraded.B;
-        var zone = luma < 1 / 3.0 ? 0 : luma > 2 / 3.0 ? 2 : 1;
-        ColorGradeValues Wheel(ColorGradeValues start)
+        // 3. Residual to a wheel (Lift 0, Gamma 1, Gain 2), its RGB fitted; held, the push is projected into the bound's disc (the puck never
+        // past 0.75 of the rim, its master kept; an identity inside it). Kept only if it reduces dE.
+        ColorGradeValues Wheel(ColorGradeValues start, int zone)
         {
             if (Distance(start) <= StopAt)
                 return start;
@@ -239,27 +259,50 @@ public static class ColorMatch
                 2 => [start.GainR, start.GainG, start.GainB],
                 _ => [start.GammaR, start.GammaG, start.GammaB],
             };
-            ColorGradeValues With(ReadOnlySpan<double> p) => zone switch
+            ColorGradeValues With(ReadOnlySpan<double> p)
             {
-                0 => start with { LiftR = p[0], LiftG = p[1], LiftB = p[2] },
-                2 => start with { GainR = p[0], GainG = p[1], GainB = p[2] },
-                _ => start with { GammaR = p[0], GammaG = p[1], GammaB = p[2] },
-            };
+                var (r, g, b) = bounded ? ColorMatchBounds.Wheel((p[0], p[1], p[2])) : (p[0], p[1], p[2]);
+                return zone switch
+                {
+                    0 => start with { LiftR = r, LiftG = g, LiftB = b },
+                    2 => start with { GainR = r, GainG = g, GainB = b },
+                    _ => start with { GammaR = r, GammaG = g, GammaB = b },
+                };
+            }
+
             iterations += Fit(q, [-1, -1, -1], [1, 1, 1], p => LabResidual(With(p)), StopAt * StopAt);
             var trial = With(q);
             return Distance(trial) < Distance(start) ? trial : start;
         }
 
-        var exposed = Exposure(current);
+        // The tone zone by ungraded luma: shadows to Lift, midtones to Gamma, highlights to Gain.
+        var luma = ColorGradeMath.LumaR * ungraded.R + ColorGradeMath.LumaG * ungraded.G + ColorGradeMath.LumaB * ungraded.B;
+        var zone = luma < 1 / 3.0 ? 0 : luma > 2 / 3.0 ? 2 : 1;
+        // Held, the fit starts from the start itself regularized: no stage stops early on a grade the final clamp would then move.
+        var exposed = Exposure(bounded ? ColorMatchBounds.Regularize(current) : current);
         var balanced = Balance(exposed);
-        var values = Wheel(balanced);
+        var values = Wheel(balanced, zone);
 
-        // A temperature or tint at its limit: the wheel alone after the exposure, kept when it matches (or comes closer).
-        if (Math.Abs(balanced.Temperature) >= 99.5 || Math.Abs(balanced.Tint) >= 99.5)
+        // A temperature or tint at its limit (or bound): the wheel alone after the exposure, kept when it matches (or comes closer).
+        var pinned = balanceBound * 100 - 0.5;
+        if (Math.Abs(balanced.Temperature) >= pinned || Math.Abs(balanced.Tint) >= pinned)
         {
-            var wheel = Wheel(exposed);
+            var wheel = Wheel(exposed, zone);
             if (Distance(wheel) <= Tolerance || Distance(wheel) < Distance(values))
                 values = wheel;
+        }
+
+        if (bounded)
+        {
+            // Still beyond the tolerance with the tone-zone wheel at its bound: the other wheels take the remainder, each within its own.
+            foreach (var other in WheelOrder)
+            {
+                if (other != zone && Distance(values) > Tolerance)
+                    values = Wheel(values, other);
+            }
+
+            // The bounds hold whatever the start (a card set past them by hand included); the distance reported is the regularized grade's.
+            values = ColorMatchBounds.Regularize(values);
         }
 
         var left = Distance(values);

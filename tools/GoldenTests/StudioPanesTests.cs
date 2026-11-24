@@ -538,10 +538,11 @@ public static class StudioPanesTests
             expect(captures == 1 && pane.Kind == VideoScopeKind.LumaWaveform && picture is { PixelWidth: VideoScopes.WaveformColumns, PixelHeight: 256 },
                 "shown and paused: one capture, drawn as the Luma Waveform (384 x 256)");
 
+            // 5.6.4B: the Histogram is the YRGB overlay drawn in WPF over the last frame's counts (HistogramView), not a bitmap.
             pane.Kind = VideoScopeKind.Histogram;
             Pump(80);
-            picture = Descendants<Image>(pane).FirstOrDefault()?.Source as WriteableBitmap;
-            expect(captures == 1 && picture is { PixelWidth: 256, PixelHeight: 256 }, "another scope is drawn from the last frame, without a capture");
+            expect(captures == 1 && pane.ShownHistogram is not null && Descendants<HistogramView>(pane).FirstOrDefault() is { Visibility: Visibility.Visible },
+                "another scope is drawn from the last frame, without a capture");
 
             // 5.6A: the Vectorscope, from the same frame, kept square (Uniform: its circle stays round); a waveform fills the pane again.
             pane.Kind = VideoScopeKind.Vectorscope;

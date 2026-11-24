@@ -253,11 +253,16 @@ public sealed class AudioMixer : IDisposable
     /// starts and speed changes every voice is re-requested; on a jump every strip's processing restarts, as FFmpeg filters would in a graph
     /// started at that time.
     /// </summary>
-    internal void SetLine(long frame, double origin, double rate, bool jump)
+    /// <remarks>
+    /// <paramref name="prime"/> false (a paused scrub's seek, WasapiAudioEngine.DefersPrime): the line moves but no voice is requested
+    /// until the next <see cref="Prime"/>, so rapid paused seeks never make every track's decoder seek and decode.
+    /// </remarks>
+    internal void SetLine(long frame, double origin, double rate, bool jump, bool prime = true)
     {
         _line = new TransportLine(++_lines, frame, origin, rate);
         _resetStrips |= jump;
-        Prime(frame);
+        if (prime)
+            Prime(frame);
     }
 
     /// <summary>Requests voices starting soon that were not requested on this line (and those whose feeding fell behind).</summary>

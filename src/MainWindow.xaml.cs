@@ -1411,12 +1411,17 @@ public partial class MainWindow : Window
         if (e.PropertyName == nameof(MainViewModel.PositionMs))
         {
             FollowPlayheadInPlayer();
-            MoveClipPlayheads();
-            KeyLanes.MovePlayhead(_viewModel.PositionMs / 1000);
 
-            // Refresh keyframe-at-playhead diamonds (paused only).
-            if (!_viewModel.IsPlaying)
-                KeyLanes.InvalidateVisual();
+            // Held scrub commits (60 Hz): ScrubPlayheadTo already moved the lines; ReleaseScrubGate moves and repaints once.
+            if (!_scrubState.Flushing && !ScrubGate.IsHeld)
+            {
+                MoveClipPlayheads();
+                KeyLanes.MovePlayhead(_viewModel.PositionMs / 1000);
+
+                // Refresh keyframe-at-playhead diamonds (paused only).
+                if (!_viewModel.IsPlaying)
+                    KeyLanes.InvalidateVisual();
+            }
         }
 
         if (e.PropertyName is nameof(MainViewModel.ShowKeyframesPane) or nameof(MainViewModel.ShowEffectsPane) or nameof(MainViewModel.IsMediaBrowserVisible))

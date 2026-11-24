@@ -1,0 +1,9 @@
+# Color Match stays within natural bounds (0.75 of each reach) and Match Strength blends live from the grade before.
+ok: Temperature and Tint stay within 0.75 of their reach
+ok: each wheel's push stays within 0.75 of the radius, its master kept
+ok: values within the bounds are untouched
+ok: Match Strength 0 % keeps the grade before, 100 % (and NaN) the solved grade, between them a blend
+ok: the strength reads as a whole percentage
+ok: a new match resets the strength to 100 % (user decision); double-click resets it; moves blend live
+ok: the blend writes through the Color Studio's writer: one Undo step per drag or click
+ok: Wave 1: ColorMatch.SolveFrom regularizes its solution within the natural bounds

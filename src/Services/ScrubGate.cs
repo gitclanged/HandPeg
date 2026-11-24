@@ -7,8 +7,15 @@ namespace HandPegApp.Services;
 /// </summary>
 public static class ScrubGate
 {
-    /// <summary>True while a playhead drag is held (Overview Scrubber thumb or a ruler).</summary>
-    public static bool IsHeld { get; private set; }
+    // Volatile: also read by GpuPreviewEngine's pump for FrameSceneHeader.FlagScrubbing.
+    private static volatile bool _held;
+
+    /// <summary>True while a playhead drag is held (Overview Scrubber thumb or a ruler). Any thread may read it.</summary>
+    public static bool IsHeld
+    {
+        get => _held;
+        private set => _held = value;
+    }
 
     /// <summary>Raised once as a held scrub ends (after its last PositionMs commit); listeners refresh what they skipped.</summary>
     public static event Action? Released;

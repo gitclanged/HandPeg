@@ -55,7 +55,9 @@ public sealed partial class GpuPreviewEngine
 
         // 2. The next frame, for its own moment on the screen, handed to the worker now: drawn while this one is shown.
         var serial = Volatile.Read(ref _transportSerial);
-        var at = _audio.Position + AheadLead(_refresh, _viewport.DisplayLeadSeconds) * Math.Max(_rate, 0);
+        // While priming the audio clock is held at the resume target: no display lead, so the requested start frame is the one primed.
+        var lead = _primingSince != 0 ? 0 : AheadLead(_refresh, _viewport.DisplayLeadSeconds);
+        var at = _audio.Position + lead * Math.Max(_rate, 0);
         if (_rate >= 0 && at >= plan.SequenceSeconds - 1e-3 || _rate < 0 && at <= 0)
         {
             // Its moment is past the end: the end is reached on the next turn's clock, as without drawing ahead.
@@ -76,7 +78,9 @@ public sealed partial class GpuPreviewEngine
         Volatile.Write(ref _sceneDirty, 0);
         _lastPlayedFrame = frame;
         var sequence = PublishAt(plan, at, playing: true);
-        if (_primingSince != 0 && _primingScene == 0)
+        if (_primingSince != 0 && sequence == 0)
+            EndPriming(); // (no surface: nothing can be presented to wait for)
+        else if (_primingSince != 0 && _primingScene == 0)
             _primingScene = sequence;
         LeaveHints(plan, at, playing: true, hints);
         (_aheadSequence, _aheadOrigin, _aheadFrame) = (sequence > 0 ? sequence : 0, now, frame);

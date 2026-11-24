@@ -6,11 +6,15 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\Release.ps1 [-OutDir <folder>] [-Scorecard <scorecard.json>] [-SkipTests]
 #
 # Gates, in order (each refuses the release with a message):
-#   1. One version: HandPegApp.csproj's Version (X.Y.Z) with AssemblyVersion and FileVersion X.Y.Z.0, the same in HandPegBootstrap.csproj.
+#   1. One version: HandPegApp.csproj's Version (X.Y.Z) with AssemblyVersion and FileVersion X.Y.Z.0, the same in HandPegBootstrap.csproj,
+#      and its release notes: a "## HandPeg vX.Y.Z" section in CHANGELOG.md, copied beside the release files as release-notes.md (UTF-8,
+#      no BOM) for the GitHub release.
 #   2. A clean tree: no change to a tracked file and no untracked file under src\ (the SDK compiles every .cs there); the tag vX.Y.Z,
 #      when it already exists, must point at HEAD.
 #   3. Tests: a passing full AutoTest scorecard for HEAD (-Scorecard), else tools\GoldenTests.ps1 run here. -SkipTests skips this gate
 #      and says so in the release folder's release.txt.
+# A build in a ClangBoard branch sandbox (a HandPeg-branch-* clone, or a CLAUDE.md headed BRANCH SANDBOX) is a local check only: its
+# release.txt and last line say it is not for publishing (a sandbox's work reaches main, and GitHub, through ClangBoard's merge).
 # No icon (HandPeg ships none until a designed one is made) and no --framework (Setup must never install .NET machine-wide by itself).
 # Needs the .NET 10 SDK, vpk (dotnet tool), and Visual Studio's C++ build tools (ARM64 and x64 compilers) for the NativeAOT linker of the
 # bootstrapper and of Explorer's thumbnail handler (src\ShellThumbnails; HandPegApp.csproj's Release publish puts it in shell\ and only
@@ -57,6 +61,17 @@ if ($Version -notmatch '^\d+\.\d+\.\d+$' -or $app[1] -ne "$Version.0" -or $app[2
 if (($bootVersion -join '/') -ne ($app -join '/')) {
     throw "HandPegBootstrap.csproj's version ($($bootVersion -join '/')) differs from HandPegApp.csproj's ($($app -join '/'))"
 }
+
+# The version's release notes: CHANGELOG.md from its "## HandPeg vX.Y.Z" heading to the next "## " heading. No notes, no release.
+$changelog = Join-Path $repo 'CHANGELOG.md'
+if (-not (Test-Path -LiteralPath $changelog)) { throw "CHANGELOG.md was not found in $repo" }
+$notesMatch = [regex]::Match([IO.File]::ReadAllText($changelog, [Text.Encoding]::UTF8), '(?ms)^## HandPeg v' + [regex]::Escape($Version) + '(?=[ \t\r\n]).*?(?=^## |\z)')
+if (-not $notesMatch.Success) { throw "CHANGELOG.md has no '## HandPeg v$Version' section: write the release notes first" }
+$releaseNotes = ($notesMatch.Value -replace "`r`n", "`n").TrimEnd() + "`n"
+
+# A branch sandbox packages for local checks only (never published from).
+$claudeNote = Join-Path $repo 'CLAUDE.md'
+$sandbox = ((Split-Path -Leaf $repo) -match '-branch-') -or ((Test-Path -LiteralPath $claudeNote) -and (Select-String -LiteralPath $claudeNote -Pattern 'BRANCH SANDBOX' -SimpleMatch -Quiet))
 
 # ----- Gate 2: a clean tree -----
 $head = (Git @('rev-parse', 'HEAD'))[0]
@@ -169,7 +184,10 @@ foreach ($dir in 'publish-x64', 'publish-arm64', 'pack-x64', 'pack-arm64', 'velo
     if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
 }
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-@("HandPeg $Version", "commit $head", $testNote) | Out-File -FilePath (Join-Path $out 'release.txt') -Encoding ascii
+$sandboxNote = @()
+if ($sandbox) { $sandboxNote = @('branch sandbox build: a local check, not for publishing') }
+@("HandPeg $Version", "commit $head", $testNote) + $sandboxNote | Out-File -FilePath (Join-Path $out 'release.txt') -Encoding ascii
+[IO.File]::WriteAllText((Join-Path $out 'release-notes.md'), $releaseNotes, (New-Object Text.UTF8Encoding $false))
 
 Run 'dotnet' @('publish', (Join-Path $repo 'HandPegApp.csproj'), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'false', '-p:DebugType=none', '-o', (Join-Path $out 'publish-x64'))
 Run 'dotnet' @('publish', (Join-Path $repo 'HandPegApp.csproj'), '-c', 'Release', '-r', 'win-arm64', '--self-contained', 'false', '-p:DebugType=none', '-o', (Join-Path $out 'publish-arm64'))
@@ -288,4 +306,5 @@ foreach ($package in $packages) {
 Remove-Item -LiteralPath $check -Recurse -Force
 
 Get-ChildItem -LiteralPath (Join-Path $out 'velopack') | ForEach-Object { '{0} {1:N0}' -f $_.Name, $_.Length }
-Write-Host "Release $Version of $head in $out ($testNote)"
+Write-Host "Release $Version of $head in $out ($testNote); notes in release-notes.md"
+if ($sandbox) { Write-Host "WARNING: built in a branch sandbox ($repo): a local check, not for publishing" }

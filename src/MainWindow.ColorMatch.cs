@@ -18,8 +18,11 @@ namespace HandPegApp;
 // ----- Color Match: target picked on the player, reference picked anywhere on screen, grade solved -----
 // Builds the Color Studio's Color Match row. Pick Target pauses playback, captures ONE canvas-size frame (GpuPreviewEngine.CaptureFrameAsync,
 // export picture; never while playing, Law 3), and turns the player pointer into a crosshair with a CPU-drawn loupe from that frame (no
-// GPU/decoder work per move). Click samples the bilateral mean of 15 x 15 pixels (ColorMatch.BilateralMean); Esc cancels; 3D and source
-// views refuse. Reference uses ScreenEyedropper (press and drag anywhere, any monitor). With both colours, Color Grade values are solved
+// GPU/decoder work per move). Click samples the bilateral mean of 15 x 15 pixels (ColorMatch.BilateralMean); Esc or a right click cancels;
+// 3D and source views refuse. Reference uses ScreenEyedropper: the same two-click pick (TwoClickPick) anywhere on any monitor, a loupe with
+// a live RGB/Luma readout following the pointer. Match Strength (0-100 %, reset to 100 % by a new match or a double-click) blends live
+// from the grade before the match to the solved one (ColorMatchBounds.Blend, written through the Color Studio's writer, one Undo step per
+// drag). With both colours, Color Grade values are solved
 // (ColorMatch.Solve against ColorGradeMath.Apply, target ungraded first) and applied as one Undo step (MainViewModel.ApplyColorGrade,
 // adding the card if missing). Colours are display-referred SDR (HDR frames read as 8-bit). The target colour is ungraded once at click
 // time under the frame's grade (ColorMatch.SolveFrom starts from it); card curves are modelled. A mixed-in LUT, keyframed value or a
@@ -35,7 +38,7 @@ public partial class MainWindow
     private sealed class ColorMatchBar
     {
         // Loupe size over the player and its offset from the pointer (DIPs).
-        private const double LoupeSide = 96, LoupeGap = 18;
+        private const double LoupeSide = 96, LoupeGap = 18, LoupeReadoutHeight = 30;
 
         private static readonly Geometry TargetIcon = Icon("M 2,6 A 4,4 0 1 0 10,6 A 4,4 0 1 0 2,6 M 6,0 V 3.5 M 6,8.5 V 12 M 0,6 H 3.5 M 8.5,6 H 12");
         private static readonly Geometry EyedropperIcon = Icon(
@@ -48,6 +51,23 @@ public partial class MainWindow
         private readonly Button _pick;
         private readonly ScreenEyedropper _reference;
         private readonly TextBlock _status;
+
+        // Match Strength: the slider (0..100 %), its value text, the grade before the last match and the solved one it blends between.
+        private readonly Slider _strength;
+        private readonly TextBlock _strengthValue;
+        private ColorGradeValues? _before, _solved;
+        private ColorGradeTarget _solvedFor;
+        private bool _settingStrength, _strengthDragging;
+
+        // The card the last match wrote into and what it held after the match's (or Match Strength's) last write: the slider writes only
+        // while both still stand (a manual edit, Undo or another card ends it).
+        private Guid _matchedCard;
+        private ColorGradeValues? _written;
+
+        // The card a Match Strength drag is bound to (its target is _solvedFor): its queued writes land only there; another card or target,
+        // or an edit from elsewhere, ends the drag.
+        private EffectInstance? _dragCard;
+        private TextBlock? _loupeReadout;
 
         // Swatch brushes, intentionally unfrozen: colours are updated in place on each pick.
         private readonly SolidColorBrush _targetBrush = new(Colors.Transparent), _referenceBrush = new(Colors.Transparent);
@@ -81,21 +101,21 @@ public partial class MainWindow
             _pick.Click += (_, _) => _ = PickTargetAsync();
 
             _reference = new ScreenEyedropper { Content = Labelled(EyedropperIcon, "Reference"), Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(10, 0, 0, 0),
-                ToolTip = "Drag anywhere on screen, release on the colour [Esc cancels]" };
+                ToolTip = "Click, then click a colour anywhere [Esc cancels]" };
             AutomationProperties.SetName(_reference, "Reference");
             _reference.DraggingChanged += dragging =>
             {
                 if (dragging)
                 {
                     EndPick();
-                    Status("Release to match");
+                    Status("Click a colour anywhere");
                 }
                 else
                 {
                     // Drag ended: restore the swatch to the kept reference (Picked sets a new one and matches); a click or Esc without a
                     // pick shows a usage hint.
                     _referenceBrush.Color = _referenceColor is { } kept ? ToColor(kept) : Colors.Transparent;
-                    Status(Next() is { Length: > 0 } next ? next : _referenceColor is null ? "Drag to a colour" : "");
+                    Status(Next() is { Length: > 0 } next ? next : _referenceColor is null ? "Click Reference, then a colour" : "");
                 }
             };
             _reference.Sampling += colour => _referenceBrush.Color = ToColor(colour);
@@ -118,16 +138,200 @@ public partial class MainWindow
             foreach (var part in new FrameworkElement[] { _pick, _targetSwatch, _reference, _referenceSwatch, _status })
                 row.Children.Add(part);
             AutomationProperties.SetName(row, "Color Match");
-            Root = row;
+
+            // Match Strength row: label (double-click resets), slider, value.
+            (_strength, _strengthValue) = StrengthRow(out var strengthRow);
+            var root = new StackPanel();
+            root.Children.Add(row);
+            root.Children.Add(strengthRow);
+            Root = root;
 
             // Unloaded (Color tab moved or hidden): end pick mode.
-            row.Unloaded += (_, _) => EndPick();
+            root.Unloaded += (_, _) => EndPick();
+        }
+
+        /// <summary>The Match Strength slider (goldens).</summary>
+        internal Slider Strength => _strength;
+
+        // Match Strength: 0..100 %, 100 % after every match; a drag is one Undo step, a click or key one step each.
+        private (Slider Slider, TextBlock Value) StrengthRow(out FrameworkElement row)
+        {
+            var grid = new Grid { Margin = new Thickness(0, 6, 0, 0) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(96) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
+            var label = new TextBlock { Text = "Match Strength", VerticalAlignment = VerticalAlignment.Center, ToolTip = "Blend toward the match (double-click: 100%)" };
+            var slider = new Slider
+            {
+                Minimum = 0, Maximum = 100, Value = 100, SmallChange = 1, LargeChange = 10, IsMoveToPointEnabled = true, IsEnabled = false,
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(4, 0, 6, 0), ToolTip = "Match Strength (double-click: 100%)",
+            };
+            AutomationProperties.SetName(slider, "Match Strength");
+            var value = new TextBlock { Text = ColorMatchBounds.StrengthText(1), VerticalAlignment = VerticalAlignment.Center, TextAlignment = TextAlignment.Right };
+            AutomationProperties.SetName(value, "Match Strength Value");
+            Grid.SetColumn(slider, 1);
+            Grid.SetColumn(value, 2);
+            grid.Children.Add(label);
+            grid.Children.Add(slider);
+            grid.Children.Add(value);
+
+            slider.AddHandler(Thumb.DragStartedEvent, new DragStartedEventHandler((_, _) =>
+            {
+                // The grade changed since the match (edited, undone, another card or target): Match Strength ends instead of writing.
+                if (_window._colorStudio is not { } pane || !StillMatched())
+                {
+                    EndStrength();
+                    return;
+                }
+
+                // Bound to this target and card for the whole drag: an edit from elsewhere (Undo included) ends it (DragCard_ValueChanged).
+                UnbindDrag();
+                (_strengthDragging, _dragCard) = (true, _window._viewModel.FindColorGrade(_solvedFor));
+                if (_dragCard is not null)
+                    _dragCard.ValueChanged += DragCard_ValueChanged;
+                pane.BeginValuesGesture();
+            }));
+            slider.AddHandler(Thumb.DragCompletedEvent, new DragCompletedEventHandler((_, _) =>
+            {
+                if (!_strengthDragging)
+                    return;
+                UnbindDrag();
+                _strengthDragging = false;
+                if (_window._colorStudio is { } pane)
+                {
+                    pane.EndValuesGesture();
+                    pane.FlushWrites();
+                }
+
+                Remember();
+            }));
+            slider.ValueChanged += (_, e) =>
+            {
+                _strengthValue!.Text = ColorMatchBounds.StrengthText(e.NewValue / 100);
+                if (!_settingStrength)
+                    ApplyStrength(e.NewValue / 100);
+            };
+            slider.MouseDoubleClick += (_, _) => slider.Value = 100;
+
+            // Pointer over the slider: a match edited, undone or replaced since shows as ended before anything is written.
+            slider.MouseEnter += (_, _) =>
+            {
+                if (_before is not null && !_strengthDragging && !StillMatched())
+                    EndStrength();
+            };
+            label.MouseLeftButtonDown += (_, e) =>
+            {
+                if (e.ClickCount == 2)
+                    slider.Value = 100;
+            };
+            row = grid;
+            return (slider, value);
+        }
+
+        // Writes the blend of the grade before the last match and the solved one, only over the grade the match (or this slider) left: a
+        // changed target, card or value since then ends Match Strength instead; a drag stays bound to the target and card it started on.
+        private void ApplyStrength(double strength)
+        {
+            if (_before is not { } before || _solved is not { } solved || _window._colorStudio is not { } pane)
+                return;
+            if (!_strengthDragging && !StillMatched())
+            {
+                EndStrength();
+                return;
+            }
+
+            var blend = ColorMatchBounds.Blend(before, solved, strength);
+            if (_strengthDragging)
+            {
+                // Another target or card since the drag began (Undo puts new cards in): it ends unwritten.
+                if (_target() != _solvedFor || _dragCard is null || !ReferenceEquals(_window._viewModel.FindColorGrade(_solvedFor), _dragCard)
+                    || (pane.Card is { } shown && !ReferenceEquals(shown, _dragCard)))
+                {
+                    CancelStrengthDrag();
+                    return;
+                }
+
+                pane.WriteValues(blend, _dragCard);
+                return;
+            }
+
+            pane.BeginValuesGesture();
+            pane.WriteValues(blend);
+            pane.EndValuesGesture();
+            pane.FlushWrites();
+            Remember();
+        }
+
+        // The dragged card changed outside the pane's own writes (Undo, Redo, an Effects pane edit): the drag's pending writes are dropped
+        // and Match Strength ends, so no queued blend lands over that change.
+        private void DragCard_ValueChanged(EffectInstance card, string key)
+        {
+            if (_strengthDragging && _window._colorStudio is not { IsWriting: true })
+                CancelStrengthDrag();
+        }
+
+        // Ends an invalidated drag: its pending writes dropped (never flushed into the current card), the slider off until the next match.
+        private void CancelStrengthDrag()
+        {
+            UnbindDrag();
+            _strengthDragging = false;
+            _window._colorStudio?.CancelValuesGesture();
+            EndStrength();
+        }
+
+        // Releases the drag's card subscription (drag ended or cancelled).
+        private void UnbindDrag()
+        {
+            if (_dragCard is not null)
+                _dragCard.ValueChanged -= DragCard_ValueChanged;
+            _dragCard = null;
+        }
+
+        // A new match: the slider back at 100 % (without writing) and enabled for this target and the card the match wrote.
+        private void ResetStrength(in ColorGradeValues before, in ColorGradeValues solved, ColorGradeTarget target)
+        {
+            (_before, _solved, _solvedFor) = (before, solved, target);
+            _matchedCard = _window._viewModel.FindColorGrade(target)?.Id ?? Guid.Empty;
+            Remember();
+            SetStrengthQuietly(100);
+            _strength.IsEnabled = _written is not null;
+        }
+
+        // True while the target, its card and the card's values are still what the match or Match Strength last left.
+        private bool StillMatched() =>
+            _written is { } written && _target() == _solvedFor && _window._viewModel.FindColorGrade(_solvedFor) is { } card && card.Id == _matchedCard
+            && ColorGradeValues.From(card) == written;
+
+        // Records what the matched card holds now: the baseline StillMatched compares against (null when the card is gone).
+        private void Remember() =>
+            _written = _window._viewModel.FindColorGrade(_solvedFor) is { } card && card.Id == _matchedCard ? ColorGradeValues.From(card) : null;
+
+        // The match no longer stands: the slider back at 100 % (without writing) and off until the next match.
+        private void EndStrength()
+        {
+            (_before, _solved, _written) = (null, null, null);
+            SetStrengthQuietly(100);
+            _strength.IsEnabled = false;
+        }
+
+        // The slider's value set without writing (a new match, or the match ended).
+        private void SetStrengthQuietly(double value)
+        {
+            _settingStrength = true;
+            try
+            {
+                _strength.Value = value;
+            }
+            finally
+            {
+                _settingStrength = false;
+            }
         }
 
         public FrameworkElement Root { get; }
 
         // Next-step hint for the status line: the missing colour, or empty when both are set.
-        private string Next() => _targetUngraded is null ? _referenceColor is null ? "" : "Now pick the target" : _referenceColor is null ? "Now drag Reference" : "";
+        private string Next() => _targetUngraded is null ? _referenceColor is null ? "" : "Now pick the target" : _referenceColor is null ? "Now pick the reference" : "";
 
         // ----- Pick Target: single frame capture, crosshair + loupe over the player, click samples -----
 
@@ -242,6 +446,7 @@ public partial class MainWindow
             (_overlayCursor, _overlayForced, _pickedAtMs) = (overlay.ReadLocalValue(FrameworkElement.CursorProperty), overlay.ForceCursor, _window._viewModel.PositionMs);
             (overlay.Cursor, overlay.ForceCursor) = (Cursors.Cross, true);
             overlay.PreviewMouseLeftButtonDown += Overlay_PreviewMouseLeftButtonDown;
+            overlay.PreviewMouseRightButtonDown += Overlay_PreviewMouseRightButtonDown;
             overlay.PreviewMouseMove += Overlay_PreviewMouseMove;
             overlay.MouseLeave += Overlay_MouseLeave;
             _window.PreviewKeyDown += Window_PreviewKeyDown;
@@ -258,6 +463,7 @@ public partial class MainWindow
             _frame = null;
             var overlay = _window.PlayerOverlay;
             overlay.PreviewMouseLeftButtonDown -= Overlay_PreviewMouseLeftButtonDown;
+            overlay.PreviewMouseRightButtonDown -= Overlay_PreviewMouseRightButtonDown;
             overlay.PreviewMouseMove -= Overlay_PreviewMouseMove;
             overlay.MouseLeave -= Overlay_MouseLeave;
             _window.PreviewKeyDown -= Window_PreviewKeyDown;
@@ -299,6 +505,14 @@ public partial class MainWindow
                 return;
             EndPick();
             Status("Pick the target again");
+        }
+
+        // A right click while picking cancels (the two-click pick's other way out besides Esc); the player's context menu never opens.
+        private void Overlay_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            e.Handled = true;
+            EndPick();
+            Status(Next());
         }
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -363,7 +577,7 @@ public partial class MainWindow
             var ungraded = ColorMatch.Ungrade(picked, shot.Values, shot.Curves);
             (_targetUngraded, _pickedFor, _targetBrush.Color, _targetSwatch.ToolTip) = (ungraded, shot.For, ToColor(picked), $"Target {Hex(picked)}");
             if (_referenceColor is null)
-                Status("Now drag Reference");
+                Status("Now pick the reference");
             else
                 Match();
         }
@@ -401,12 +615,16 @@ public partial class MainWindow
             var loupe = _loupe ??= MakeLoupe();
             _loupePicture!.WritePixels(new Int32Rect(0, 0, side, side), _loupePatch, side * 4, 0);
             if (ColorMatch.BilateralMean(frame.Bgra, frame.Width, frame.Height, pixel.X, pixel.Y) is { } colour)
+            {
                 _loupeSwatch.Color = ToColor(colour);
+                if (_loupeReadout is not null)
+                    _loupeReadout.Text = TwoClickPick.ReadoutLines(colour);
+            }
 
             // Place beside the pointer on whichever side has room, in HUD coordinates (unaffected by picture zoom).
             var hud = _window.PlayerHud;
             var at = e.GetPosition(hud);
-            var height = LoupeSide + 14;
+            var height = LoupeSide + 14 + LoupeReadoutHeight;
             _loupeAt = new Point(at.X + LoupeGap + LoupeSide <= hud.ActualWidth ? at.X + LoupeGap : at.X - LoupeGap - LoupeSide,
                 at.Y + LoupeGap + height <= hud.ActualHeight ? at.Y + LoupeGap : at.Y - LoupeGap - height);
             if (!loupe.IsOpen)
@@ -440,6 +658,14 @@ public partial class MainWindow
             var body = new StackPanel();
             body.Children.Add(picture);
             body.Children.Add(new Border { Height = 14, Background = _loupeSwatch });
+            // Two lines (TwoClickPick.ReadoutLines), scaled down only if a large UI font would still overflow: never an ellipsis.
+            _loupeReadout = new TextBlock { FontSize = 10, Foreground = CentreMark, Padding = new Thickness(3, 1, 3, 1), LineHeight = 13, LineStackingStrategy = LineStackingStrategy.BlockLineHeight };
+            AutomationProperties.SetName(_loupeReadout, "Loupe Readout");
+            body.Children.Add(new Border
+            {
+                Background = LoupeFrame, Width = LoupeSide, Height = LoupeReadoutHeight,
+                Child = new Viewbox { Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, HorizontalAlignment = HorizontalAlignment.Left, Child = _loupeReadout },
+            });
             var frame = new Border { Child = body, BorderBrush = LoupeFrame, BorderThickness = new Thickness(1), IsHitTestVisible = false };
 
             var hud = _window.PlayerHud;
@@ -495,6 +721,8 @@ public partial class MainWindow
                 Status("Nothing to grade");
                 return;
             }
+
+            ResetStrength(current, solution.Values, target);
 
             // Swatch shows the target under the new grade; the ungraded colour is kept so a later match (after Undo or manual edits)
             // restarts from it.

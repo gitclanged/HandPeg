@@ -1,0 +1,17 @@
+# Overlay under owned windows, ghost-scrub dwell and prime under GhostDwell, single-video priming hold, cache cap in the play log.
+ok: the player overlay goes directly below the lowest visible owned window (Settings, dialogs, side windows), never activated
+ok: a created or re-shown overlay re-inserts itself under owned windows (the engine starting while Settings is open)
+ok: a paused held drag dwells 140 ms on landing key frames; a ghost-paused play-scrub 35 ms, under GhostDwell (80 ms)
+ok: a ghost-paused play-scrub chases the exact frame 35 ms after the last move; a paused drag still waits
+ok: a paused seek primes the voices after 200 ms of rest; a ghost-paused play-scrub after 45 ms, under GhostDwell
+ok: the worker reads the ghost flag per scene and the landing dwell honours it
+ok: the pump's ghost pause shortens the audio prime before pausing; Play, GhostResume and Pause restore it
+ok: a paused held drag flags scrubbing (plus ghost when it holds a play); none once playing though the gate stays held
+ok: every scene reads the transport, so GhostResume's or Play's first scene already drops FlagScrubbing
+ok: a single video waits at most 120 ms for its exact frame (several videos 350 ms)
+ok: one video primes only when its playhead frame is not presented exact; several always; none never
+ok: the single-video hold releases as soon as the exact frame is presented, else at 120 ms
+ok: Play holds the audio clock for a cold single video; the pump releases it on the exact frame or the cap
+ok: the cap is off, the tightest of DXGI, commit and RAM below the wanted budget, else auto
+ok: cap names: off, dxgi, commit, ram, auto
+ok: the worker publishes the cap reason and the play-session line ends with it

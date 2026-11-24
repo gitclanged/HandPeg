@@ -58,7 +58,7 @@ public partial class MainWindow
         // Playing: hold the transport first, so this seek lands on a paused engine (whole frames, no scaling penalty).
         GhostPauseForScrub();
         if (!PlayerAt((long)positionMs))
-            PlayerSeek((long)positionMs);
+            ScrubSeek((long)positionMs);
 
         Scrub.Move(positionMs);
         if (!_scrubState.FrameHooked)
@@ -79,9 +79,29 @@ public partial class MainWindow
         _scrubState.GhostDwell?.Stop();
         if (_gpu is { } engine)
         {
+            // Caption pre-roll runs once here, never per raw pointer move (ScrubSeek).
+            engine.PrepareAround(engine.Position);
             engine.EndScrubScaling();
             if (engine.IsGhostPaused)
                 Dispatcher.BeginInvoke(ResumeAfterScrub, DispatcherPriority.Input);
+        }
+    }
+
+    /// <summary>
+    /// Raw scrub move's seek: only the lock-free GpuPreviewEngine.Seek. PrepareAround (UI-thread caption rasterization, a couple of ms)
+    /// runs once on EndScrub and on a GhostDwell resume, never at pointer rate.
+    /// </summary>
+    private void ScrubSeek(long positionMs)
+    {
+        if (_gpu is { } engine)
+        {
+            if (!engine.IsPlaying)
+                _pausedOnUsersMoment = true;
+            engine.Seek(positionMs / 1000.0);
+        }
+        else if (_pendingMedia is { } pending)
+        {
+            _pendingMedia = (positionMs, pending.Paused);
         }
     }
 
@@ -124,7 +144,15 @@ public partial class MainWindow
     /// <summary>Opens the scrub gate once: listeners catch up (ScrubGate.Released) and the deferred box rebuild runs.</summary>
     private void ReleaseScrubGate()
     {
-        if (!ScrubGate.Release() || !_scrubState.RedrawOwed)
+        if (!ScrubGate.Release())
+            return;
+
+        // Held commits skipped the clip/key-lane playhead moves and the key diamonds' repaint (ViewModel_PropertyChanged): catch up once.
+        MoveClipPlayheads();
+        KeyLanes.MovePlayhead(_viewModel.PositionMs / 1000);
+        if (!_viewModel.IsPlaying)
+            KeyLanes.InvalidateVisual();
+        if (!_scrubState.RedrawOwed)
             return;
 
         _scrubState.RedrawOwed = false;
@@ -160,7 +188,10 @@ public partial class MainWindow
             // The pointer rested while the drag is still held: play on from the scrubbed moment until the next move.
             timer.Stop();
             if (IsScrubHeld && _gpu is { IsGhostPaused: true } engine)
+            {
+                engine.PrepareAround(engine.Position);
                 engine.GhostResume();
+            }
         };
         return timer;
     }

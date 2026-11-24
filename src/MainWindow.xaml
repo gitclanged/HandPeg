@@ -1876,6 +1876,9 @@
                                               ToolTip="The encoder's own options (tune, profile, level, multipass, lookahead, AQ), the pixel aspect, extra encoder options, the chapters and SponsorBlock.">
                                         <!-- Encoder options disable for stream copy; chapters and SponsorBlock below stay enabled (copy keeps them). -->
                                         <StackPanel Margin="0,6,0,0">
+                                            <!-- Deinterlace (Pass 5.6.4B): the whole-picture switch's home since the Color Studio's Output fold was retired. -->
+                                            <CheckBox Content="Deinterlace" IsChecked="{Binding Deinterlace}" Margin="0,2,0,6" AutomationProperties.Name="Deinterlace"
+                                                      IsEnabled="{Binding IsVideoReencoded}" ToolTip="Draws interlaced video as whole frames" />
                                             <Grid IsEnabled="{Binding IsVideoReencoded}">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto" SharedSizeGroup="ExportLabel2" />

@@ -1,0 +1,11 @@
+# A held scrub only seeks and slides lines: no PrepareAround, Color Studio or Video Scopes work until release.
+ok: a raw scrub move seeks the engine lock-free and never calls PrepareAround
+ok: release runs PrepareAround once, after opening the gate
+ok: a GhostDwell resume runs PrepareAround once before playing on
+ok: the gate's release moves the clip and key-lane playheads and repaints the key diamonds once
+ok: held 60 Hz commits skip MoveClipPlayheads, KeyLanes.MovePlayhead and the key diamonds' repaint
+ok: Color Studio: a held scrub's commits drop the still once and skip the keyed refresh and the recapture
+ok: Color Studio subscribes to ScrubGate.Released while listening and refreshes and recaptures once on release
+ok: Video Scopes: a held scrub's commits skip the capture
+ok: Video Scopes subscribes to ScrubGate.Released while attached and captures once on release
+ok: a ruler or key-lane playhead redraws only on a height change or its first hide; moves translate it

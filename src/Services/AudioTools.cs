@@ -100,6 +100,9 @@ public static partial class Waveforms
             var distinct = wanted.SelectMany(i => requests[i].Tracks).Distinct().ToList();
             var native = distinct.Select(_ => new PeakReader()).ToArray();
             var written = new bool[requests.Count];
+
+            // Background hold (scrub, drag, playback): the reading thread yields between reads (Waveforms.YieldWhilePaused).
+            var pause = WorkScheduler.PausePoint();
             try
             {
                 var read = await Task.Factory.StartNew(() =>
@@ -107,7 +110,7 @@ public static partial class Waveforms
                     Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
                     try
                     {
-                        return ReadPeaksNatively(mediaPath, distinct, native, cancellationToken);
+                        return ReadPeaksNatively(mediaPath, distinct, native, cancellationToken, pause);
                     }
                     finally
                     {

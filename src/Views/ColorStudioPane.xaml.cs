@@ -17,8 +17,9 @@ namespace HandPegApp.Views;
 
 /// <summary>
 /// Color tab: edits the Color Grade card of the current <see cref="MainViewModel.EditTarget"/> (clip, blur fill or Sequence Output) via
-/// Lift/Gamma/Gain wheels with masters, curves over the pre-grade histogram, white balance, exposure, contrast, saturation, vibrance, a
-/// LUT with mix, the Color Match bar, Output switches and, for legacy projects, the old Filters grade with Convert. The first edit adds a
+/// Lift/Gamma/Gain wheels with masters, curves over the live post-grade YRGB histogram, white balance, exposure, contrast, saturation,
+/// vibrance, a LUT with mix, the Color Match bar and, for legacy projects, the old Filters grade with Convert, as deck cards that reflow
+/// into one, two or three columns (ColorStudioPane.Deck.cs; the Output fold is retired: Deinterlace lives in Export). The first edit adds a
 /// card (one Undo step); a drag is one step written at most 30 times per second; the card is re-resolved whenever its stack changes
 /// (Undo inserts new instances). Built lazily on first show; the histogram is captured only while visible and paused (Law 3).
 /// </summary>
@@ -44,6 +45,9 @@ public partial class ColorStudioPane : UserControl
     private ObservableCollection<EffectInstance>? _stack;
     private EffectInstance? _card;
     private bool _built, _listening, _refreshQueued, _settingControls;
+
+    // A held playhead scrub's PositionMs commits skipped the keyed refresh and the recapture (ScrubGate.IsHeld); its release catches up.
+    private bool _playheadAfterScrub;
 
     // UI parts created by Build.
     private TextBlock _targetLabel = null!, _empty = null!;
@@ -149,6 +153,9 @@ public partial class ColorStudioPane : UserControl
         vm.PropertyChanged += ViewModel_PropertyChanged;
         vm.TimelineChanged += Invalidated;
         vm.PreviewStateInvalidated += Invalidated;
+
+        // Static event: held only while listening (StopListening removes it), so it never roots an unloaded pane.
+        Services.ScrubGate.Released += ScrubGate_Released;
     }
 
     private void StopListening()
@@ -160,8 +167,34 @@ public partial class ColorStudioPane : UserControl
         vm.PropertyChanged -= ViewModel_PropertyChanged;
         vm.TimelineChanged -= Invalidated;
         vm.PreviewStateInvalidated -= Invalidated;
+        Services.ScrubGate.Released -= ScrubGate_Released;
+        _playheadAfterScrub = false;
         _throttle?.Stop();
         FlushWrites();
+    }
+
+    // The scrub ended (after its last PositionMs commit): one keyed refresh and one recapture for everything the held scrub skipped.
+    private void ScrubGate_Released()
+    {
+        if (!_playheadAfterScrub)
+            return;
+
+        _playheadAfterScrub = false;
+        if (Dispatcher.CheckAccess())
+            CatchUpAfterScrub();
+        else
+            Dispatcher.InvokeAsync(CatchUpAfterScrub);
+    }
+
+    private void CatchUpAfterScrub()
+    {
+        if (!_listening)
+            return;
+
+        ForgetStill();
+        if (_card is { Keys.Count: > 0 })
+            QueueRefresh();
+        Want();
     }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -170,12 +203,23 @@ public partial class ColorStudioPane : UserControl
         {
             // Paused scrub: recapture once it rests; keyed values track the playhead.
             case nameof(MainViewModel.PositionMs):
+                // Held scrub (60 Hz commits): drop the stale still once; refresh and recapture once on release (ScrubGate_Released).
+                if (Services.ScrubGate.IsHeld)
+                {
+                    if (_still is not null)
+                        ForgetStill();
+                    _playheadAfterScrub = true;
+                    break;
+                }
+
+                ForgetStill();
                 if (_card is { Keys.Count: > 0 })
                     QueueRefresh();
                 if (_vm is { IsPlaying: false })
                     Want(afterRest: true);
                 break;
             case nameof(MainViewModel.IsPlaying) or nameof(MainViewModel.HasSource):
+                ForgetStill();
                 Want();
                 break;
             case nameof(MainViewModel.ColorContrast) or nameof(MainViewModel.ColorBrightness) or nameof(MainViewModel.ColorSaturation) or nameof(MainViewModel.ColorGamma)
@@ -209,6 +253,8 @@ public partial class ColorStudioPane : UserControl
         }
 
         FlushWrites();
+        if (target != _target)
+            ForgetStill();
         if (_stack is not null)
             _stack.CollectionChanged -= Stack_CollectionChanged;
         (_target, _stack) = (target, stack);
@@ -378,7 +424,7 @@ public partial class ColorStudioPane : UserControl
         var scroller = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = false, Content = _body };
         Root.Children.Add(scroller);
 
-        // Wheels in a three-column row.
+        // Wheels in a three-column row (Wheels & Color Match column).
         var wheels = new UniformGrid { Columns = 3 };
         for (var i = 0; i < 3; i++)
         {
@@ -395,16 +441,17 @@ public partial class ColorStudioPane : UserControl
             wheels.Children.Add(wheel);
         }
 
-        _body.Children.Add(InspectorCard("Wheels", wheels));
+        DeckCard(WheelsCard, wheels);
 
-        // Curves over the input histogram.
-        _curves = new ColorCurvesControl { MaxWidth = 420, HorizontalAlignment = HorizontalAlignment.Left };
+        // Curves over the live post-grade YRGB histogram (its mode shared with Video Scopes).
+        _curves = new ColorCurvesControl { HorizontalAlignment = HorizontalAlignment.Stretch };
         _curves.EditStarted += BeginGesture;
         _curves.EditEnded += EndGesture;
         _curves.CurveChanged += (channel, text) => QueueText(ColorGradeKeys.Curves[channel], text);
-        _body.Children.Add(InspectorCard("Curves", _curves));
+        WireHistogramMode();
+        DeckCard(CurvesCard, _curves);
 
-        // Basics: white balance, exposure, contrast, saturation, vibrance.
+        // Basics & LUT: white balance, exposure, contrast, saturation, vibrance, then the LUT file and its mix.
         var basics = new StackPanel();
         foreach (var key in BasicKeys)
         {
@@ -412,15 +459,18 @@ public partial class ColorStudioPane : UserControl
                 basics.Children.Add(Row(param));
         }
 
-        _body.Children.Add(InspectorCard("Basics", basics));
-        _body.Children.Add(InspectorCard("LUT", LutRows(definition)));
+        var lutHeading = new TextBlock { Text = "LUT", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 10, 0, 6) };
+        lutHeading.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+        basics.Children.Add(lutHeading);
+        basics.Children.Add(LutRows(definition));
+        DeckCard(BasicsCard, basics);
 
-        // Color Match bar, when the host provides one.
+        // Color Match bar, when the host provides one (under the wheels).
         if (_colorMatch?.Invoke(() => _target) is { } match)
-            _body.Children.Add(InspectorCard("Color Match", match));
+            DeckCard(MatchCard, match);
 
-        _body.Children.Add(OutputFold());
-        _body.Children.Add(LegacyFold());
+        _cards[LegacyCard] = LegacyFold();
+        _body.Children.Add(BuildDeck());
     }
 
     /// <summary>Inspector card: title above content on the InspectorCard surface and border brushes.</summary>

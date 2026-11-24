@@ -1,0 +1,12 @@
+# Player samples feed the curves: Ctrl + Hover pips, Ctrl + Click (active) and Ctrl + Shift + Click (all four) points.
+ok: Master takes the sample's luma, Red/Green/Blue their own value (user decision)
+ok: a sample is the 3 x 3 mean at a focal point; outside the frame there is none
+ok: a sampled point sits on the curve as it is; none next to an existing point or for no value
+ok: Ctrl + Click drops one point on the active curve at its channel's value, as one gesture
+ok: Ctrl + Shift + Click drops matched points on Master, Red, Green and Blue in one click
+ok: Ctrl + Hover shows the sample's tonal pips
+ok: Ctrl feeds the active curve, Ctrl + Shift all four; other clicks stay the player's
+ok: hovering the curves reads the input, the output and the histogram's share there
+ok: samples read only a still stamped with this target, card and playhead, paused, graded with the keyed values at the playhead
+ok: the still is stamped at capture start and dropped (with its pips) on a new target, playhead or play state
+ok: the player's Ctrl + Hover and Ctrl + Click reach the Color Studio curves

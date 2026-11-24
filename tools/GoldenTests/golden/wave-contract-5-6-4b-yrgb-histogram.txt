@@ -1,0 +1,17 @@
+# The YRGB overlay histogram: modes, crush/clip edges, a shared persisted mode, Video Scopes' overlay, the I-bar.
+ok: the YRGB histogram counts red, green, blue and BT.709 luma per level
+ok: a channel with at least 0.5 % of its pixels at 0 % or 100 % lights its crush or clip edge
+ok: no extremes, no edges; the peak ignores pure black and white
+ok: YRGB draws R, G, B and the luma trace; RGB no luma; Luma alone
+ok: the pills read YRGB | RGB | Luma and round-trip through their labels
+ok: AppSettings.ColorHistogramMode persists the pill, YRGB in a new install
+ok: a pill click in the Color Studio or Video Scopes saves the mode
+ok: the curves draw the post-grade histogram with the pre-grade one as their ghost, in the chosen mode
+ok: a legacy luma histogram still draws, as a grey picture's
+ok: the overlay draws fills, 1.5 px traces, the ghost and the edges
+ok: R/G/B fills are additive height-sorted spans: equal channels fill once with the neutral sum, never stacked translucency
+ok: with no source Video Scopes drops in-flight draws, the histogram and its pills before the note
+ok: open panes share the histogram mode live through YrgbHistogram.ModeChanged, subscribed only while loaded
+ok: a pane hears another pane's mode, never its own
+ok: Video Scopes draws its Histogram as the same YRGB overlay with its own pills
+ok: Wave 1: the Vectorscope draws the skin-tone I-bar through the centre

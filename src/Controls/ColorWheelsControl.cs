@@ -4,6 +4,7 @@ using System.Windows.Automation;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using HandPegApp.Services;
 using static HandPegApp.UiBrushes;
 
 namespace HandPegApp;
@@ -15,20 +16,18 @@ namespace HandPegApp;
 /// captured here so it is not promoted to mouse). Pointer logic lives in point methods (<see cref="BeginDrag"/>, <see cref="DragTo"/>,
 /// <see cref="EndDrag"/>) that goldens drive directly. A gesture spans <see cref="EditStarted"/> .. <see cref="EditEnded"/> with values via
 /// <see cref="ValueChanged"/>; the pane writes them as one Undo step. Single OnRender; the disc is one frozen bitmap shared by all wheels.
+/// Pass 5.6.4B: the puck, its stem and the pointer math stay inside the rim (<see cref="WheelPush.ClampToDisc"/>, even for a card value
+/// beyond it), and a drag shows its R/G/B change from the press in the title row (<see cref="DeltaText"/>).
 /// </summary>
 public sealed class ColorWheelsControl : FrameworkElement
 {
     /// <summary>Push magnitude at the disc edge (channels range -1..1; the push is the channels minus their mean).</summary>
-    public const double Reach = 0.5;
+    public const double Reach = WheelPush.Reach;
 
     /// <summary>Master delta for a drag across the full bar width.</summary>
     public const double JogReach = 1;
 
     private const double TitleHeight = 18, JogHeight = 12, JogGap = 8, Pad = 2, PuckRadius = 5, FineScale = 0.2, AxisLockDip = 3;
-
-    // Primary push directions in degrees anticlockwise from +X (vectorscope order: red upper left, green lower left, blue right), 120 degrees
-    // apart: puck offset P gives channel i the push P . e_i; a push c maps to P = 2/3 sum c_i e_i.
-    private static readonly double[] HueAngles = [105, 225, 345];
 
     private static readonly Typeface Face = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
     private static readonly Pen PuckEdge = Frozen(new Pen(Solid(255, 0x10, 0x10, 0x12), 1.2));
@@ -108,32 +107,35 @@ public sealed class ColorWheelsControl : FrameworkElement
     // ----- Value decomposition: master + push and back (pure; golden-tested) -----
 
     /// <summary>Splits RGB into the master (channel mean) and the puck offset in push units (<see cref="Reach"/> = disc edge, +Y up).</summary>
-    public static (double Master, double X, double Y) Split((double R, double G, double B) value)
-    {
-        var master = (value.R + value.G + value.B) / 3;
-        var (x, y) = (0.0, 0.0);
-        var pushes = (value.R - master, value.G - master, value.B - master);
-        for (var i = 0; i < 3; i++)
-        {
-            var push = i == 0 ? pushes.Item1 : i == 1 ? pushes.Item2 : pushes.Item3;
-            var angle = HueAngles[i] * Math.PI / 180;
-            (x, y) = (x + 2.0 / 3 * push * Math.Cos(angle), y + 2.0 / 3 * push * Math.Sin(angle));
-        }
-
-        return (master, x, y);
-    }
+    public static (double Master, double X, double Y) Split((double R, double G, double B) value) => WheelPush.Split(value);
 
     /// <summary>Inverse of <see cref="Split"/>: master + puck offset to RGB, each channel clamped to -1..1.</summary>
-    public static (double R, double G, double B) Join(double master, double x, double y)
-    {
-        double Channel(int i)
-        {
-            var angle = HueAngles[i] * Math.PI / 180;
-            return Math.Max(-1, Math.Min(master + x * Math.Cos(angle) + y * Math.Sin(angle), 1));
-        }
+    public static (double R, double G, double B) Join(double master, double x, double y) => WheelPush.Join(master, x, y);
 
-        return (Channel(0), Channel(1), Channel(2));
+    /// <summary>
+    /// The puck's centre for a value on a disc at <paramref name="centre"/> of <paramref name="radius"/> DIPs: the push held to the rim
+    /// first, so neither the puck nor its stem can leave the wheel. Pure; golden-tested.
+    /// </summary>
+    internal static Point PuckAt(Point centre, double radius, (double R, double G, double B) value)
+    {
+        var (_, x, y) = Split(value);
+        var (cx, cy) = WheelPush.ClampToDisc(x, y);
+        var travel = TravelRadius(radius);
+        return new Point(centre.X + cx / Reach * travel, centre.Y - cy / Reach * travel);
     }
+
+    /// <summary>
+    /// How far the puck's centre travels at full reach on a disc of <paramref name="radius"/> DIPs: the radius less the painted puck (its
+    /// radius and half its outline), so its edge stays inside the rim; the pointer moves the puck at the same scale. Pure.
+    /// </summary>
+    internal static double TravelRadius(double radius) => Math.Max(radius - PuckRadius - PuckEdge.Thickness / 2, 0);
+
+    /// <summary>A drag's change per channel from the press ("R +0.05  G -0.02  B +0.01"), shown in the title row while dragging.</summary>
+    public static string DeltaText((double R, double G, double B) from, (double R, double G, double B) to) =>
+        string.Create(CultureInfo.InvariantCulture, $"R {to.R - from.R:+0.00;-0.00;0.00}  G {to.G - from.G:+0.00;-0.00;0.00}  B {to.B - from.B:+0.00;-0.00;0.00}");
+
+    /// <summary>The current drag's change per channel from its press; null when not dragging.</summary>
+    public (double R, double G, double B)? DragDelta => _part == Part.None ? null : (_value.R - _start.R, _value.G - _start.G, _value.B - _start.B);
 
     // ----- Geometry -----
 
@@ -189,10 +191,12 @@ public sealed class ColorWheelsControl : FrameworkElement
         var (master, x, y) = Split(_start);
         if (_part == Part.Jog)
         {
+            // The master bar moves the master only: the push is kept as it was (one beyond the rim included).
             master += dx / Math.Max(Jog().Width, 1) * JogReach * scale;
         }
         else
         {
+            (x, y) = WheelPush.ClampToDisc(x, y);
             if (lockAxis)
             {
                 if (_axis == 0 && Math.Max(Math.Abs(dx), Math.Abs(dy)) >= AxisLockDip)
@@ -204,11 +208,8 @@ public sealed class ColorWheelsControl : FrameworkElement
                 _axis = 0;
             }
 
-            var perDip = Reach / Math.Max(Disc().Radius, 1) * scale;
-            (x, y) = (x + dx * perDip, y - dy * perDip);
-            var length = Math.Sqrt(x * x + y * y);
-            if (length > Reach)
-                (x, y) = (x * Reach / length, y * Reach / length);
+            var perDip = Reach / Math.Max(TravelRadius(Disc().Radius), 1) * scale;
+            (x, y) = WheelPush.ClampToDisc(x + dx * perDip, y - dy * perDip);
         }
 
         var value = Join(master, x, y);
@@ -225,6 +226,7 @@ public sealed class ColorWheelsControl : FrameworkElement
         if (_part == Part.None)
             return;
         (_part, _axis) = (Part.None, 0);
+        InvalidateVisual();
         EditEnded?.Invoke(this);
     }
 
@@ -336,20 +338,30 @@ public sealed class ColorWheelsControl : FrameworkElement
     {
         var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
         var (centre, radius) = Disc();
-        var (master, x, y) = Split(_value);
+        var (master, _, _) = Split(_value);
 
-        // Title at left, master value right-aligned.
-        var title = new FormattedText(_title, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 11, _text, dpi);
-        drawing.DrawText(title, new Point(centre.X - radius, 0));
-        var number = new FormattedText(master.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10, _muted, dpi);
-        drawing.DrawText(number, new Point(centre.X + radius - number.Width, 1));
+        // Title at left, master value right-aligned; while dragging, the R/G/B change from the press instead (fitted to the disc width).
+        if (_part != Part.None)
+        {
+            var delta = new FormattedText(DeltaText(_start, _value), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10, _text, dpi);
+            if (delta.Width > radius * 2)
+                delta.SetFontSize(Math.Max(10 * radius * 2 / delta.Width, 6));
+            drawing.DrawText(delta, new Point(centre.X - Math.Min(delta.Width, radius * 2) / 2, 1));
+        }
+        else
+        {
+            var title = new FormattedText(_title, CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 11, _text, dpi);
+            drawing.DrawText(title, new Point(centre.X - radius, 0));
+            var number = new FormattedText(master.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face, 10, _muted, dpi);
+            drawing.DrawText(number, new Point(centre.X + radius - number.Width, 1));
+        }
 
         // Disc, rim and faint crosshair; puck with a stem from the centre.
         drawing.DrawImage(DiscPicture(), new Rect(centre.X - radius, centre.Y - radius, radius * 2, radius * 2));
         drawing.DrawEllipse(null, _ring, centre, radius, radius);
         drawing.DrawLine(CrossPen, new Point(centre.X - radius, centre.Y), new Point(centre.X + radius, centre.Y));
         drawing.DrawLine(CrossPen, new Point(centre.X, centre.Y - radius), new Point(centre.X, centre.Y + radius));
-        var puck = new Point(centre.X + x / Reach * radius, centre.Y - y / Reach * radius);
+        var puck = PuckAt(centre, radius, _value);
         if ((puck - centre).Length > 0.5)
             drawing.DrawLine(PuckEdge, centre, puck);
         drawing.DrawEllipse(PuckFill, PuckEdge, puck, PuckRadius, PuckRadius);
@@ -370,7 +382,9 @@ public sealed class ColorWheelsControl : FrameworkElement
 
         const int size = 256;
         var pixels = new byte[size * size * 4];
-        var units = HueAngles.Select(a => (Math.Cos(a * Math.PI / 180), Math.Sin(a * Math.PI / 180))).ToArray();
+        var units = new (double, double)[3];
+        for (var i = 0; i < 3; i++)
+            units[i] = (Math.Cos(WheelPush.HueAngles[i] * Math.PI / 180), Math.Sin(WheelPush.HueAngles[i] * Math.PI / 180));
         for (var row = 0; row < size; row++)
         {
             for (var column = 0; column < size; column++)

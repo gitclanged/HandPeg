@@ -1,0 +1,34 @@
+# Scrub decode: landing key frames shown at once, chase on dwell, no pre-roll or scrub-ahead contention, held reads yield.
+ok: paused moves within 120 ms extend the scrub run; a slower step starts a new one
+ok: an active scrub is two rapid paused moves, the last within 70 ms
+ok: never an active scrub in exact-frame scenes (export, filmstrips) or while playing
+ok: an active scrub's visible landing key frame is shown and the GOP chase waits
+ok: the exact frame is chased once the pointer dwells 70 ms
+ok: only a visible frame's landing waits (pre-roll, hints and frames mid-GOP read on)
+ok: exports, filmstrips, playback and single steps always decode the exact frame at once
+ok: pre-roll waits 250 ms past the last paused playhead move
+ok: scrub-ahead never beside a visible decode, and one read at most during an active scrub
+ok: a visible frame's landing key frame wakes the renderer at once; the chase dwells only during an active scrub
+ok: the dwell ends when the pointer settles, play starts, anyone waits for exact frames, or the demand moves or is withdrawn
+ok: MostUrgent holds pre-roll until the playhead is quiet and scrub-ahead off a visible decode
+ok: a moving playhead stops the pre-roll under way; its range is queued again for the quiet
+ok: BeginFrame records each paused move (never an exact-frame scene's or a playing frame's)
+ok: a held drag scrubs from its first move until it dwells 140 ms
+ok: a released drag chases the exact frame at once
+ok: the held flag never scrubs exact-frame scenes or playback
+ok: a held drag suppresses pre-roll and scrub-ahead outright
+ok: BeginFrame reads the editor's held-drag flag and marks its release
+ok: a paused seek defers its voice requests unless play is asked
+ok: a deferred prime runs once the playhead rests 200 ms, or at once while playing
+ok: paused seeks move the line at once; the voices are primed on rest or at play
+ok: a live decoder read is superseded once the voice's request serial moves on
+ok: a newer seek abandons a post-seek skip (live only); a returned decoder forgets its owner
+ok: a seek drag never reports the pointer time
+ok: the ruler's skim line steps aside for a seek drag and returns at release
+ok: a scrub extends the background hold at most every 50 ms
+ok: Seek extends the background hold only when due
+ok: a held waveform read waits at its pause point and resumes promptly on release
+ok: between checks (25 ms) a read never asks the pause
+ok: cancellation ends a held read at once
+ok: the multi-track MF waveform scan checks the background pause between reads
+ok: the program strip pauses before each cell it draws

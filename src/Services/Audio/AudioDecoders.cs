@@ -19,6 +19,20 @@ internal abstract class AudioDecoder : IStereoSource, IDisposable
 {
     protected AudioDecoder(AudioSource source) => Source = source;
 
+    // Live request being served (VoiceProducer, feeder thread): Read may stop early, with nothing produced, once the voice's request
+    // serial has moved past it (a newer seek), instead of decoding on through a long-GOP post-seek skip. Null offline (exact renders).
+    private VoiceState? _abortOwner;
+    private long _abortSerial;
+
+    /// <summary>Lets <see cref="Read"/> abandon its post-seek skip once <paramref name="owner"/>'s request serial is no longer <paramref name="serial"/>.</summary>
+    internal void AbortWhenSuperseded(VoiceState? owner, long serial) => (_abortOwner, _abortSerial) = (owner, serial);
+
+    /// <summary>True when a newer request superseded the one being read (see <see cref="AbortWhenSuperseded"/>).</summary>
+    protected bool Superseded => _abortOwner is { } owner && Superseding(owner.RequestSerial, _abortSerial);
+
+    /// <summary>True when the voice's current request serial (<paramref name="current"/>) supersedes the one being read. Pure.</summary>
+    internal static bool Superseding(long current, long reading) => reading != 0 && current != reading;
+
     public AudioSource Source { get; }
 
     public abstract int SampleRate { get; }
@@ -337,6 +351,10 @@ internal sealed unsafe class MfAudioDecoder : AudioDecoder
                 (produced, _next) = (produced + take, _next + take);
                 continue;
             }
+
+            // Nothing produced yet (still skipping to the seek point) and a newer seek superseded this one: stop before the next ReadSample.
+            if (produced == 0 && !_ended && Superseded)
+                return 0;
 
             if (_ended || !Decode())
             {

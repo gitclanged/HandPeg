@@ -363,6 +363,9 @@ internal sealed class VoiceProducer
         var target = Math.Min(liveFrame + lead, _end);
         if (_produced < target)
             state.EnsureRing();
+
+        // Live: a newer request (seek) stops the decoder's post-seek skip early; offline renders read on exactly.
+        _decoder?.AbortWhenSuperseded(exact ? null : state, serial);
         var waitedSince = 0L;
         while (_produced < target && state.RequestSerial == serial)
         {
@@ -458,6 +461,7 @@ internal sealed class VoiceProducer
         if (_decoder is { } decoder)
         {
             (_decoder, _output) = (null, null);
+            decoder.AbortWhenSuperseded(null, 0);
             pool.Return(decoder);
         }
     }

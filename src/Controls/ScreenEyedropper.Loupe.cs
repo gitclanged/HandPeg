@@ -22,8 +22,8 @@ public sealed partial class ScreenEyedropper
     /// </summary>
     private sealed partial class Loupe : Window
     {
-        // Picture size, swatch strip height and pointer gap in 100 % units (monitor scale applied in Place).
-        private const double PictureSide = 120, SwatchHeight = 16, Gap = 20;
+        // Picture size, swatch strip and readout row heights, and pointer gap in 100 % units (monitor scale applied in Place).
+        private const double PictureSide = 120, SwatchHeight = 16, ReadoutHeight = 28, Gap = 20;
 
         private static readonly Brush Frame = FrozenBrush(0x2A, 0x2A, 0x30), Ground = FrozenBrush(0x1E, 0x1E, 0x22), CentreMark = FrozenBrush(0xFF, 0xFF, 0xFF);
 
@@ -31,6 +31,9 @@ public sealed partial class ScreenEyedropper
 
         // Swatch brush, intentionally unfrozen (the only one here): its colour is updated per sample.
         private readonly SolidColorBrush _swatch = new(Colors.Black);
+
+        // The live RGB/Luma readout under the swatch on two lines (TwoClickPick.ReadoutLines), scaled down to fit the loupe's width.
+        private readonly TextBlock _readout = new() { FontSize = 10, Foreground = CentreMark, Margin = new Thickness(3, 1, 3, 1) };
         private nint _window;
 
         public Loupe()
@@ -38,7 +41,7 @@ public sealed partial class ScreenEyedropper
             // Size is set only by Place (UiScale scales content, not window size; Place keeps the picture row square).
             UiScale.SetKeepsItsSize(this, true);
             (WindowStyle, ResizeMode, ShowInTaskbar, ShowActivated, Topmost, Focusable, IsHitTestVisible) = (WindowStyle.None, ResizeMode.NoResize, false, false, true, false, false);
-            (Left, Top, Width, Height) = (-32000, -32000, PictureSide, PictureSide + SwatchHeight);
+            (Left, Top, Width, Height) = (-32000, -32000, PictureSide, PictureSide + SwatchHeight + ReadoutHeight);
             (Background, BorderBrush, BorderThickness) = (Ground, Frame, new Thickness(1));
 
             var image = new Image { Source = _picture, Stretch = Stretch.Fill };
@@ -60,11 +63,15 @@ public sealed partial class ScreenEyedropper
             var root = new Grid();
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(SwatchHeight) });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(ReadoutHeight) });
             root.Children.Add(image);
             root.Children.Add(marks);
             var swatch = new Border { Background = _swatch };
             Grid.SetRow(swatch, 1);
             root.Children.Add(swatch);
+            var readout = new Viewbox { Stretch = Stretch.Uniform, StretchDirection = StretchDirection.DownOnly, HorizontalAlignment = HorizontalAlignment.Left, Child = _readout };
+            Grid.SetRow(readout, 2);
+            root.Children.Add(readout);
             Content = root;
         }
 
@@ -73,6 +80,7 @@ public sealed partial class ScreenEyedropper
         {
             _picture.WritePixels(new Int32Rect(0, 0, PatchSide, PatchSide), patch, PatchSide * 4, 0);
             _swatch.Color = Color.FromRgb(ToByte(colour.R), ToByte(colour.G), ToByte(colour.B));
+            _readout.Text = TwoClickPick.ReadoutLines(colour);
             if (_window == 0)
             {
                 // Create the HWND first so capture exclusion and click-through/no-activate styles apply before it is ever shown.
@@ -86,15 +94,16 @@ public sealed partial class ScreenEyedropper
         }
 
         // Positions beside the pointer on the side with room, in the monitor's physical pixels at its scale. Height exceeds width by the
-        // swatch row's physical height (content pixels per DIP from VisualTreeHelper.GetDpi), keeping the picture row square at any UI
-        // scale (the 1-DIP frame is equal on all sides).
+        // swatch and readout rows' physical heights (content pixels per DIP from VisualTreeHelper.GetDpi), keeping the picture row square
+        // at any UI scale (the 1-DIP frame is equal on all sides).
         private void Place(int x, int y)
         {
             var monitor = MonitorFromPoint(new NativePoint { X = x, Y = y }, MonitorDefaultToNearest);
             var scale = GetDpiForMonitor(monitor, 0, out var dpi, out _) == 0 && dpi > 0 ? dpi / 96.0 : 1;
             var content = VisualTreeHelper.GetDpi(this).DpiScaleX;
             var width = (int)Math.Round(PictureSide * scale);
-            var (height, gap) = (width + (int)Math.Round(SwatchHeight * (content > 0 ? content : scale)), (int)Math.Round(Gap * scale));
+            var rows = (int)Math.Round(ReadoutHeight * (content > 0 ? content : scale));
+            var (height, gap) = (width + (int)Math.Round(SwatchHeight * (content > 0 ? content : scale)) + rows, (int)Math.Round(Gap * scale));
             var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
             var work = GetMonitorInfo(monitor, ref info) ? info.Work : new NativeRect { Left = int.MinValue / 2, Top = int.MinValue / 2, Right = int.MaxValue / 2, Bottom = int.MaxValue / 2 };
             var left = x + gap + width <= work.Right ? x + gap : x - gap - width;

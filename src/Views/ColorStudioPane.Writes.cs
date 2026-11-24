@@ -27,6 +27,7 @@ public partial class ColorStudioPane
         var writer = new GestureWriter<(bool Text, string Key)>(() => _vm, around: AroundWrites);
         writer.Ended += () =>
         {
+            ShowGradeGhost(false);
             QueueRefresh();
             if (_wanted)
                 Want();
@@ -34,14 +35,28 @@ public partial class ColorStudioPane
         return writer;
     }
 
-    private void BeginGesture() => Writes.Begin();
+    private void BeginGesture()
+    {
+        Writes.Begin();
+        ShowGradeGhost(true);
+    }
 
-    private void EndGesture() => _writes?.End();
+    private void EndGesture()
+    {
+        _writes?.End();
+        ShowGradeGhost(false);
+    }
 
-    private void QueueNumber(string key, double value)
+    // Bound to a card (a Match Strength drag), the value lands only while that card is still the target's and the shown one: Undo putting a
+    // new card in, or another target, drops it rather than writing an old blend into the current card.
+    private void QueueNumber(string key, double value, EffectInstance? boundTo = null)
     {
         if (double.IsFinite(value))
-            Writes.Queue((false, key), () => WriteToCard(key, card => WriteNumber(card, key, value)));
+            Writes.Queue((false, key), () =>
+            {
+                if (boundTo is null || (_card is null || ReferenceEquals(_card, boundTo)) && ReferenceEquals(_vm?.FindColorGrade(_target), boundTo))
+                    WriteToCard(key, card => WriteNumber(card, key, value));
+            });
     }
 
     private void QueueText(string key, string text)
@@ -71,6 +86,8 @@ public partial class ColorStudioPane
             _lastOwnWrite = Environment.TickCount64;
             if (!InGesture)
                 QueueRefresh();
+            else
+                WantPost();
         }
     }
 

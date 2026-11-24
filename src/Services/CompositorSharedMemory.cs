@@ -278,7 +278,10 @@ public struct ControlBlock
         _ => OutputContentSequence2,
     };
 
-    // 320..511: free.
+    /// <summary>What limits <see cref="CacheBudgetBytes"/> now (FrameCache.CapAuto, CapOff, CapDxgi, CapCommit, CapRam; FrameCache.CapName).</summary>
+    [FieldOffset(320)] public int CacheBudgetCap;
+
+    // 324..511: free.
 
     // 512..1023: per-shader-slot GPU time of the last frame (ms), when the scene requests timing.
     [FieldOffset(512)] public SlotTimings SlotGpuMs;
@@ -748,6 +751,18 @@ public struct FrameSceneHeader
     /// </summary>
     public const int FlagTimePasses = 1, FlagWaitForTimings = 2, FlagRawOutput = 4, FlagExactFrames = 8, FlagLetterbox = 16, FlagReadback = 32, FlagReadbackNv12 = 64,
         FlagDepthRails = 128, FlagLoopback = 256, FlagReadbackP010 = 512, FlagLoopbackLoupe = 1024;
+
+    /// <summary>
+    /// Bit 11: the editor holds a paused playhead drag (ScrubGate): DecoderPool dwells longer on landing key frames and runs no pre-roll
+    /// or scrub-ahead reads; cleared on release, whose frame chases the exact frame at once. Ignored with <see cref="FlagExactFrames"/>.
+    /// </summary>
+    public const int FlagScrubbing = 2048;
+
+    /// <summary>
+    /// Bit 12 (with <see cref="FlagScrubbing"/>): the held drag ghost-pauses a playing transport (play-scrub), so DecoderPool dwells only
+    /// GhostScrubDwellMs on landing key frames and the exact frame is chased before GhostResume (GpuPreviewEngine.GhostDwell).
+    /// </summary>
+    public const int FlagGhostScrub = 4096;
 }
 
 /// <summary>

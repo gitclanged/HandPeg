@@ -312,7 +312,7 @@ public sealed partial class VideoSurface : HwndHost
         owner.Closed += Owner_Closed;
         _placed = default;
         PlaceOverlay();
-        KeepUnderSideWindow();
+        KeepUnderOwnedWindows();
     }
 
     private IntPtr OverlayMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -355,22 +355,23 @@ public sealed partial class VideoSurface : HwndHost
     }
 
     /// <summary>
-    /// The overlay and side windows share the main window as owner, and among siblings the last shown/raised is topmost, so a re-shown
-    /// overlay would cover side windows. Re-inserts it directly below the lowest visible side window (Docking.WindowOrder) every time.
+    /// The overlay shares the main window as owner with side windows, Settings and every owned dialog, and among siblings the last
+    /// shown/raised is topmost, so a re-shown overlay (the GPU engine starting while Settings is open) would cover them. Re-inserts it
+    /// directly below the lowest visible owned sibling (Docking.WindowOrder) every time.
     /// </summary>
-    private void KeepUnderSideWindow()
+    private void KeepUnderOwnedWindows()
     {
         if (_overlayWindow is not { } overlay || _owner is not { } owner)
             return;
 
-        var sides = new List<IntPtr>();
+        var siblings = new List<IntPtr>();
         foreach (Window other in owner.OwnedWindows)
         {
-            if (other is Docking.SideWindow { IsVisible: true } side && new WindowInteropHelper(side).Handle is var sideHandle && sideHandle != IntPtr.Zero)
-                sides.Add(sideHandle);
+            if (!ReferenceEquals(other, overlay) && other.IsVisible && new WindowInteropHelper(other).Handle is var handle && handle != IntPtr.Zero)
+                siblings.Add(handle);
         }
 
-        var lowest = sides.Count switch { 0 => IntPtr.Zero, 1 => sides[0], _ => Docking.WindowOrder.Lowest(sides) };
+        var lowest = siblings.Count switch { 0 => IntPtr.Zero, 1 => siblings[0], _ => Docking.WindowOrder.Lowest(siblings) };
         if (lowest != IntPtr.Zero)
             SetWindowPos(new WindowInteropHelper(overlay).Handle, lowest, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
     }
@@ -420,7 +421,7 @@ public sealed partial class VideoSurface : HwndHost
         {
             overlay.Show();
             _placed = default;
-            KeepUnderSideWindow();
+            KeepUnderOwnedWindows();
         }
 
         var clip = shown == place ? Int32Rect.Empty : new Int32Rect(shown.X - place.X, shown.Y - place.Y, shown.Width, shown.Height);

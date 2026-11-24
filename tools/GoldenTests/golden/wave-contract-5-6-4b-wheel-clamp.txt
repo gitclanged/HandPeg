@@ -1,0 +1,7 @@
+# Wheel pucks, stems and drags stay inside the rim; a drag shows its R/G/B delta.
+ok: an offset beyond the rim scales back along its direction; inside it is kept; a non-finite one is the centre
+ok: a card value beyond the rim draws its puck and stem on the rim, never past it
+ok: a drag from beyond the rim, pulled far outside, keeps the push within the rim
+ok: the drag delta shows only while dragging
+ok: the delta reads +R/+G/+B with signs and two decimals
+ok: OnRender places the puck through PuckAt and shows DeltaText; DragTo clamps through ClampToDisc

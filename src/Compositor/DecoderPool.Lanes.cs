@@ -183,7 +183,7 @@ internal sealed partial class DecoderPool
     private Demand? MostUrgent(long pick)
     {
         Demand? best = null;
-        bool? idleMayRun = null;
+        bool? idleMayRun = null, scrubbing = null;
         foreach (var demand in _demands)
         {
             if (demand.Lane >= 0 || demand.Cancelled || demand.Done || demand.Source.Failed || demand.Source.Retired || demand.PassedIn == pick)
@@ -227,6 +227,16 @@ internal sealed partial class DecoderPool
             // engine and a second stream halves the chase (SeekBench: cold seeks a third slower alongside pre-roll). While playing, a
             // cut ahead is not held up by one late frame.
             if ((demand.Kind is DemandKind.PreRoll or DemandKind.Hover || demand.HintKind == GpuSeekHintKind.CutEntry && !_lastWasPlaying) && VisibleBeingDecoded())
+                continue;
+
+            // Pre-roll waits PreRollQuietMs past the last paused playhead move: a scrub never shares the decode engine with ranges it leaves.
+            // A held drag (FlagScrubbing) suppresses pre-roll and scrub-ahead outright.
+            if (demand.Kind == DemandKind.PreRoll && !PreRollMayRun(Stopwatch.GetTimestamp(), Volatile.Read(ref _lastMoveAt), Stopwatch.Frequency, Volatile.Read(ref _scrubHeld)))
+                continue;
+
+            // Scrub-ahead never while a visible frame is being decoded, and one read at most during an active scrub.
+            if (demand.HintKind == GpuSeekHintKind.ScrubAhead &&
+                !ScrubAheadMayRun(VisibleBeingDecoded(), scrubbing ??= ScrubbingNow(), ScrubAheadBusy(), Volatile.Read(ref _scrubHeld)))
                 continue;
 
             // Lanes beyond two are reserved for frames due on screen: the GPU has one decoder engine, and deferrable work must not
@@ -382,6 +392,15 @@ internal sealed partial class DecoderPool
             return seconds;
         var frames = _cache.BudgetBytes * share / source.FrameBytes;
         return Math.Min(seconds, Math.Max(frames, 8) * source.FrameDuration);
+    }
+
+    /// <summary>Lanes on scrub-ahead hints (under the lock).</summary>
+    private int ScrubAheadBusy()
+    {
+        var busy = 0;
+        foreach (var demand in _demands)
+            busy += demand.Lane >= 0 && !demand.Done && !demand.Cancelled && demand.HintKind == GpuSeekHintKind.ScrubAhead ? 1 : 0;
+        return busy;
     }
 
     /// <summary>True when a lane is decoding toward a visible frame (under the lock).</summary>
@@ -694,6 +713,16 @@ internal sealed partial class DecoderPool
                 _arrived.Set();
             Pace(demand, decoder);
 
+            // Seek-landing key frame of a visible frame (kept by MfVideoDecoder.Took): shown at once, not after the GOP chase (150-400 ms
+            // on long HEVC GOPs). During an active scrub the chase waits until the pointer dwells or the demand moves on. Never in
+            // exact-frame scenes (export, filmstrips) or while playing.
+            if (!_exactOnly && demand.Kind == DemandKind.Visible && decoder.LastWasLanding)
+            {
+                _arrived.Set();
+                if (until <= target - 1e-6)
+                    DwellOnLanding(demand, source, target);
+            }
+
             // Past the target with no covering frame (FrameCache.CloseGap already joined consecutive frames):
             // - seek landed after it (coarse container index, open GOP leading pictures dropped): re-seek 1, 2, then 4 s before its
             //   key frame;
@@ -769,6 +798,30 @@ internal sealed partial class DecoderPool
         _arrived.Set();
     }
 
+    // Dwell poll while a scrub holds a landing key frame, ms.
+    private const int DwellPollMs = 4;
+
+    /// <summary>
+    /// Holds a visible frame's lane on its landing key frame while the scrub stays active (<see cref="ChaseWaits"/>): returns once the pointer
+    /// dwells <see cref="ScrubDwellMs"/>, play starts, the demand moves or is withdrawn (the caller retargets or stops), or the pool stops.
+    /// </summary>
+    private void DwellOnLanding(Demand demand, SourceState source, double target)
+    {
+        while (Volatile.Read(ref _waitingExact) == 0 && ChaseWaits(_exactOnly, _lastWasPlaying, visible: true, landed: true, Stopwatch.GetTimestamp(), Volatile.Read(ref _lastMoveAt),
+                   Volatile.Read(ref _scrubMoves), Stopwatch.Frequency, Volatile.Read(ref _scrubHeld), Volatile.Read(ref _scrubReleased),
+                   Volatile.Read(ref _scrubGhost)))
+        {
+            lock (_gate)
+            {
+                if (demand.Cancelled || source.Retired || Math.Abs(demand.Target - target) > 1e-6)
+                    return;
+            }
+
+            if (_stopping.WaitOne(DwellPollMs))
+                return;
+        }
+    }
+
     /// <summary>
     /// True when the reader is on (just read) the frame covering <paramref name="target"/> and it is no longer cached, so further reads
     /// come after it. A still-cached frame knows its own end (the next read joins it, FrameCache.CloseGap).
@@ -801,7 +854,8 @@ internal sealed partial class DecoderPool
     {
         foreach (var d in _demands)
         {
-            if (d.Kind == DemandKind.PreRoll && d.ClipKey == clipKey && d.Source == source && Math.Abs(d.Target - to) < 0.25)
+            // A range stopped by a scrub (EndFrame) is queued again, read once the playhead is quiet.
+            if (d.Kind == DemandKind.PreRoll && !d.Cancelled && d.ClipKey == clipKey && d.Source == source && Math.Abs(d.Target - to) < 0.25)
                 return true;
         }
 

@@ -12,12 +12,12 @@ ok: warmer (+40) and greener (-25): target (0.500, 0.500, 0.500) to (0.507, 0.50
 ok: cooler (-60), darker (-0.3): target (0.620, 0.550, 0.480) to (0.521, 0.506, 0.476): dE 0.001, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
 ok: Gain red +0.2 on a highlight: target (0.750, 0.720, 0.700) to (0.862, 0.720, 0.700): dE 0.002, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
 ok: Lift blue +0.15 in a shadow: target (0.080, 0.090, 0.100) to (0.080, 0.090, 0.168): dE 0.000, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
-ok: Gamma green -0.3 on a midtone: target (0.450, 0.500, 0.400) to (0.450, 0.426, 0.400): dE 0.000, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
+ok: Gamma green -0.3 on a midtone: target (0.450, 0.500, 0.400) to (0.450, 0.426, 0.400): dE 0.001, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
 ok: a skin tone to a warmer reference, from a graded card: target (0.648, 0.437, 0.237) to (0.731, 0.480, 0.256): dE 0.000, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
 ok: a teal sky from a graded card, cooler and brighter: target (0.354, 0.508, 0.552) to (0.426, 0.613, 0.779): dE 0.001, within 0.01; the target ungraded first; contrast, saturation, vibrance and LUT mix kept
 ok: the target already the reference: the card is left as it is, no step taken
-ok: a red target to a blue reference (far beyond white balance): closer than it was, dE 0.155, converged False
-ok: F20: matched, undone, matched again to a new reference from the target kept ungraded: dE 0.000; the old stale target would leave dE 0.070 while saying Matched (True)
+ok: a red target to a blue reference (far beyond white balance): closer than it was, dE 0.119, converged False
+ok: F20: matched, undone, matched again to a new reference from the target kept ungraded: dE 0.007; the old stale target would leave dE 0.069 while saying Matched (True)
 ok: Solve is Ungrade then SolveFrom: the same values and distance (its iterations count the ungrading too)
 ok: F22: the curves stage is the GPU's table (each channel's curve, then the master; 256 entries, linear between): within 8.6e-6 of the curves themselves; identity curves: no stage
 ok: F22: a colour graded and curved is ungraded through both (worst 5.4e-7); a card with only curves too (without them it would be taken as ungraded)

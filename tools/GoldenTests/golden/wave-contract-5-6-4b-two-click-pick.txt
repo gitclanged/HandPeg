@@ -1,0 +1,14 @@
+# Pick Target and Reference are two-click picks: arm, move freely, click to sample; Esc or right click cancels.
+ok: an idle pick ignores clicks
+ok: one click on the button arms it (no button held afterwards)
+ok: a left click over nothing readable keeps it armed
+ok: moving the pointer samples live
+ok: one left click samples the colour under the pointer and ends the pick
+ok: a right click cancels
+ok: Esc cancels
+ok: the button clicked again while armed cancels without a colour
+ok: the loupe's readout: 8-bit R, G, B and BT.709 luma
+ok: the loupes show the readout on two compact lines
+ok: neither loupe clips its readout with an ellipsis
+ok: Pick Target: a right click cancels and the player loupe shows the live readout
+ok: Wave 1: ScreenEyedropper arms on a click and samples on the next left click (TwoClickPick); its loupe shows the readout
