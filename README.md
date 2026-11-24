@@ -19,7 +19,7 @@ without the timeline lagging.
 
 ![The Export tab's three columns under the player: Preset & Format with the Export Presets selector on YouTube Shorts and a hardware H.264 encoder; Quality, Bitrate & Resolution at 1080 x 1920 with the project's frame rate; and Audio & Output with the project's sample rate, the Live Encoded Preview button and the Projected Output summary](docs/screenshots/export-tab-v5.4.png)
 
-![The Color tab beside the player: the clip graded with a warmer Temperature, more Contrast and Saturation in the Basics card, under the Master curve drawn over the picture's histogram, while the vertical gameplay frame plays in the player](docs/screenshots/color-studio-v5.6.png)
+![The Color Studio as a three-column deck beside the player: Lift, Gamma and Gain wheels above the Color Match card with Pick Target, Reference and Match Strength; the Master curve lifted over the live YRGB histogram of the graded picture, with its YRGB, RGB and Luma pills; and Basics & LUT with a warmer Temperature, more Contrast and Saturation, while the vertical gameplay frame shows in the player](docs/screenshots/color-studio-deck-v5.6.png)
 
 ![The Cutout Studio opened from the Timeline on a video with an older Overwatch preset: its three Cutouts listed by name (Killfeed with 2 shapes, Health & Name with 4, Abilities & Ammo with 6), their outlines traced over a still of the game, the Source Navigator and Output Stage beside it, and the Game Preset Name filled in as Overwatch](docs/screenshots/cutout-studio-v5.6.png)
 
@@ -52,8 +52,10 @@ without the timeline lagging.
   picture masks traced into editable outlines.
 - **Voiceover recording.** The Voiceover Studio records the microphone through Windows itself (no FFmpeg), places each take
   on the timeline where you pressed Record, and marks it as a voice so other sounds duck under it.
-- **Color Studio.** Grade with lift, gamma and gain wheels, curves and a LUT beside a live Vectorscope; Color Match grades one
-  clip to look like another, and holding `\` shows the picture before the grade.
+- **Color Studio.** Wheels, curves and the Basics & LUT card side by side in three columns on a wide pane, the curves drawn
+  over a live YRGB histogram of the graded picture (Ctrl + Click on the player drops a curve point at that pixel's tone).
+  Color Match grades one clip to look like another by two clicks, blended in with Match Strength, and holding `\` shows the
+  picture before the grade.
 - **Speed & Pitch.** Play a clip from 0.10x to 16x, with Smooth Slow-Mo's optical-flow in-between frames and sound that keeps
   its pitch; Ripple Timeline moves the clips after it to fit.
 - **Multi-track audio.** Each audio stream of a recording gets its own Sub-Lane under its clip. Studio Voice (denoise,
@@ -74,8 +76,8 @@ From the [latest release](https://github.com/gitclanged/HandPeg/releases/latest)
 - `HandPeg-win-Setup.exe`: the installer (Windows 10 or 11, x64). It updates itself.
 - `HandPeg-win-arm64-Setup.exe`: the native installer for Windows on ARM (Snapdragon PCs). It updates itself from the ARM64
   releases.
-- `HandPeg-5.6.0-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
-- `HandPeg-5.6.0-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
+- `HandPeg-5.6.4-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
+- `HandPeg-5.6.4-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
 
 HandPeg runs on Microsoft's .NET 10 Desktop Runtime, and neither the installers nor the zips need it installed first. On a PC
 without it (an older .NET such as .NET 8 is not enough), `HandPeg.exe` asks the first time it starts: download .NET 10 for

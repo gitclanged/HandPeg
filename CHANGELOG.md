@@ -3,6 +3,39 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.6.4 — A Three-Column Color Studio, a Live YRGB Histogram, and Smooth Scrubbing
+
+### New
+- **The Color Studio lays out as a deck.** On a wide pane the wheels and Color Match, the curves and histogram, and the Basics and
+  LUT sit in three columns side by side with no scrolling; a narrow pane stacks the cards at a readable width.
+- **A live YRGB histogram.** The curves and the Video Scopes histogram show the graded picture as translucent red, green and blue
+  fills with luma, red, green and blue traces, `YRGB | RGB | Luma` pills, a faint ghost of the picture before the grade while you
+  drag, and marks when a channel crushes its shadows or clips its highlights.
+- **Curves that read the picture.** The red, green and blue curves are drawn faintly under the Master curve. Hold Ctrl over the
+  player to see the pixel's tones on the curve, and Ctrl + Click to drop a point there (Ctrl + Shift + Click on all four curves).
+- **Color Match by two clicks.** Pick Reference works like Pick Target: click the button, move freely with a zoom loupe and a live
+  RGB and luma readout, click to sample (Esc or right-click cancels). A Match Strength slider (0-100 %, double-click to reset)
+  blends the match in, and matches stay within natural bounds.
+- **The Vectorscope shows the skin-tone line.**
+
+### Changes
+- **Deinterlace moved to Export** (the encoder options card). The Color Studio's Fade In, Fade Out and Denoise were retired: use
+  the timeline's fade handles and transitions and the Denoise effect card. Older projects still open with their values.
+
+### Fixes
+- **Scrubbing keeps up with a fast mouse.** Moving the playhead no longer waits on playback, the player's boxes and the Effects pane
+  update when you let go, a drag shows each landing key frame at once and the exact frame when you rest, and paused scrubs no
+  longer make every track decode on each move.
+- **Scrubbing while playing.** A fast play-scrub pauses invisibly and plays on when you let go; the preview returns to full
+  resolution on release and climbs back after a brief hitch, and only slow drawing (never a seeking decoder) lowers it.
+- **Cutout rows on the Timeline show their own region.** A HUD Cutout's filmstrip is cropped from its video's pictures.
+- **Corner resizing follows the mouse.** Dragging a layer's corner resizes smoothly in any direction, snaps only the moving corner,
+  and the anchor dot no longer steals drags from the middle of the box. Multi-layer scrubs no longer flash black.
+- **Color wheels stay inside their rim.**
+- **Settings and dialogs stay above the player.** The player's picture no longer covers Settings, side windows or dialogs when it
+  starts while they are open.
+- **A single video starts playing on its exact frame.**
+
 ## HandPeg v5.6.3 — Hotfix: Each Tab Keeps Its Own Waveform
 
 ### Fixes
