@@ -369,7 +369,7 @@ public partial class MainWindow
         }
 
         // The 9:16 Social Safe Zones over the stage when shown (player menu), beneath the guides.
-        if (_socialGuideShown)
+        if (_viewerTools.SocialGuideShown)
         {
             var social = new SocialGhostGuide { Width = LayoutCanvas.ActualWidth, Height = LayoutCanvas.ActualHeight, Frame = frame };
             _arrangeVisuals.Add(social);
@@ -385,10 +385,6 @@ public partial class MainWindow
         LayoutCanvas.Children.Add(_layoutGuides);
         RefreshMotionPath();
     }
-
-    // Pointer speed of the gizmo or box drag in progress: snapping is magnetic only below 180 DIP/s (Pass 5.6.5).
-    private readonly SnapGate _snapGate = new();
-
     /// <summary>
     /// A layer's visible box on the frame (fractions) with its corner at (<paramref name="x"/>, <paramref name="y"/>): its box, narrowed to a
     /// Cutout's visible pixels.
@@ -418,7 +414,7 @@ public partial class MainWindow
         var targets = new List<SnapRect>();
         IEnumerable<Layer> shown = guides is null ? []
             : ReferenceEquals(guides, _layoutGuides) ? _arrangeClips
-            : ReferenceEquals(guides, _playerGuides) ? _playerBoxes.Select(b => b.Clip)
+            : ReferenceEquals(guides, _viewerTools.Guides) ? _playerBoxes.Select(b => b.Clip)
             : [];
         var (frameWidth, frameHeight) = (Math.Max(_viewModel.FrameWidth, 1), Math.Max(_viewModel.FrameHeight, 1));
         foreach (var layer in shown)
@@ -506,7 +502,7 @@ public partial class MainWindow
         // Convert to frame fractions (sliders update; the box follows). Layers may extend off-frame (clipped, frame unchanged).
         var (frameWidth, frameHeight) = (_viewModel.FrameWidth, _viewModel.FrameHeight);
         var (x, y) = (element.PositionX + deltaX / frameWidth, element.PositionY + deltaY / frameHeight);
-        var speed = _snapGate.Note(Mouse.GetPosition(this), Environment.TickCount64);
+        var speed = _viewerTools.SnapGate.Note(Mouse.GetPosition(this), Environment.TickCount64);
         var snap = SnapResult.None;
         if (frame.Width > 0 && frame.Height > 0 && GizmoHitRules.Snaps(AppSettings.Current.SnapLayoutGuides, Keyboard.Modifiers.HasFlag(ModifierKeys.Alt), speed))
         {
@@ -563,7 +559,7 @@ public partial class MainWindow
         var height = locked || element.SizeHeight <= 0 ? element.SizeWidth * element.HeightPerWidth : element.SizeHeight;
         var follows = locked || (onGizmo && !free);
         var heightPerWidth = locked ? element.HeightPerWidth : height / Math.Max(element.SizeWidth, 1e-9);
-        var speed = onGizmo ? _snapGate.Note(Mouse.GetPosition(this), Environment.TickCount64) : 0;
+        var speed = onGizmo ? _viewerTools.SnapGate.Note(Mouse.GetPosition(this), Environment.TickCount64) : 0;
         var snaps = onGizmo && GizmoHitRules.Snaps(AppSettings.Current.SnapLayoutGuides, keys.HasFlag(ModifierKeys.Alt) || free, speed);
         var (right, bottom) = LayerGizmoAdorner.SidesOf(corner);
 
@@ -704,7 +700,7 @@ public partial class MainWindow
         // Magnetic snapping of the moving edge, else of the size (1:1).
         var lines = new List<SnapGuide>();
         IReadOnlyList<SnapRect> same = [];
-        var speed = _snapGate.Note(Mouse.GetPosition(this), Environment.TickCount64);
+        var speed = _viewerTools.SnapGate.Note(Mouse.GetPosition(this), Environment.TickCount64);
         if (surfaceScale > 0 && GizmoHitRules.Snaps(AppSettings.Current.SnapLayoutGuides, Keyboard.Modifiers.HasFlag(ModifierKeys.Alt), speed))
         {
             var reach = GizmoHitRules.SnapReachDips / (pixels * surfaceScale);
@@ -949,14 +945,14 @@ public partial class MainWindow
         // Tilted clips: grips on all four drawn corners, stalk on the drawn picture. A Cutout's handles hug its visible pixels.
         adorner.TiltedCorners = () => TiltedCorners(gizmo, frameOf(), scale);
         adorner.TightRect = () => TightRectOf(gizmo);
-        LayoutGuidesView? Guides() => ReferenceEquals(surface, LayoutCanvas) ? _layoutGuides : _playerGuides;
+        LayoutGuidesView? Guides() => ReferenceEquals(surface, LayoutCanvas) ? _layoutGuides : _viewerTools.Guides;
 
         // Each handle drag is one Undo step, taken on its first change (DragStep).
         var resizeStep = new DragStep(_viewModel, $"resize {name}");
         adorner.ResizeStarted += _ =>
         {
             resizeStep.Pressed();
-            _snapGate.Reset();
+            _viewerTools.SnapGate.Reset();
         };
         adorner.ResizeDelta += (corner, moved) =>
         {
@@ -969,7 +965,7 @@ public partial class MainWindow
         adorner.StretchStarted += _ =>
         {
             stretchStep.Pressed();
-            _snapGate.Reset();
+            _viewerTools.SnapGate.Reset();
         };
         adorner.StretchDelta += (edge, along) =>
         {
@@ -1087,7 +1083,7 @@ public partial class MainWindow
         box.DragStarted += (_, _) =>
         {
             moveStep.Pressed();
-            _snapGate.Reset();
+            _viewerTools.SnapGate.Reset();
         };
         box.DragDelta += (_, e) =>
         {

@@ -188,23 +188,29 @@ public partial class MainViewModel
     // stays put (MoveAnchor), so rotating or tilting spins it in place; moving the anchor any other way turns it off. A Cutout whose anchor
     // was never moved takes the automatic anchor with its first bounds. Edits only: document syncs and undo restores carry their own.
 
-    private readonly HashSet<Layer> _tightWatched = [];
-    private bool _tightWatching, _placingTightAnchor;
+    // The watched Cutouts, the watch flag and the anchor-placing guard, in one object (golden shell-budget).
+    private readonly TightWatchState _tightWatch = new();
 
-    // The mask properties the bounds are made from.
-    private static readonly HashSet<string> TightInputs =
-    [
-        nameof(Layer.CustomMask), nameof(Layer.MaskPath), nameof(Layer.MaskShapes), nameof(Layer.MaskFrame), nameof(Layer.MaskGrow),
-        nameof(Layer.MaskInvert), nameof(Layer.MaskOffsetX), nameof(Layer.MaskOffsetY),
-    ];
+    private sealed class TightWatchState
+    {
+        public readonly HashSet<Layer> Watched = [];
+        public bool Watching, PlacingAnchor;
+
+        // The mask properties the bounds are made from.
+        public static readonly HashSet<string> Inputs =
+        [
+            nameof(Layer.CustomMask), nameof(Layer.MaskPath), nameof(Layer.MaskShapes), nameof(Layer.MaskFrame), nameof(Layer.MaskGrow),
+            nameof(Layer.MaskInvert), nameof(Layer.MaskOffsetX), nameof(Layer.MaskOffsetY),
+        ];
+    }
 
     /// <summary>Keeps every layer's tight bounds and automatic anchor current from now on (subscriptions only; idempotent).</summary>
     public void WatchTightBounds()
     {
-        if (_tightWatching)
+        if (_tightWatch.Watching)
             return;
 
-        _tightWatching = true;
+        _tightWatch.Watching = true;
         Layers.CollectionChanged += (_, _) => SyncTightWatch();
         SyncTightWatch();
     }
@@ -212,7 +218,7 @@ public partial class MainViewModel
     private void SyncTightWatch()
     {
         var now = new HashSet<Layer>(Layers);
-        _tightWatched.RemoveWhere(layer =>
+        _tightWatch.Watched.RemoveWhere(layer =>
         {
             if (now.Contains(layer))
                 return false;
@@ -221,7 +227,7 @@ public partial class MainViewModel
         });
         foreach (var layer in now)
         {
-            if (_tightWatched.Add(layer))
+            if (_tightWatch.Watched.Add(layer))
                 layer.PropertyChanged += OnTightInput;
         }
     }
@@ -231,11 +237,11 @@ public partial class MainViewModel
         if (sender is not Layer layer || e.PropertyName is not { } name || _syncingViews || IsRestoringTimeline)
             return;
 
-        if (TightInputs.Contains(name))
+        if (TightWatchState.Inputs.Contains(name))
         {
             RefreshTightBounds(layer);
         }
-        else if (name is nameof(Layer.AnchorX) or nameof(Layer.AnchorY) && !_placingTightAnchor && layer.AutoCenterAnchor
+        else if (name is nameof(Layer.AnchorX) or nameof(Layer.AnchorY) && !_tightWatch.PlacingAnchor && layer.AutoCenterAnchor
                  && layer.TightAnchor() is { } centre && (Math.Abs(centre.X - layer.AnchorX) > 1e-6 || Math.Abs(centre.Y - layer.AnchorY) > 1e-6))
         {
             layer.AutoCenterAnchor = false;
@@ -268,14 +274,14 @@ public partial class MainViewModel
             return;
 
         var (_, _, width, height) = layer.GetOutputRect(FrameWidth, FrameHeight, layer.IsCaptions ? 0 : SourceWidth, layer.IsCaptions ? 0 : SourceHeight);
-        _placingTightAnchor = true;
+        _tightWatch.PlacingAnchor = true;
         try
         {
             layer.MoveAnchor(centre.X, centre.Y, width, height, FrameWidth, FrameHeight);
         }
         finally
         {
-            _placingTightAnchor = false;
+            _tightWatch.PlacingAnchor = false;
         }
     }
 

@@ -31,7 +31,8 @@ public static class Pass565Tests
     {
         yield return Case("dpi-matrix-geometry", "# --dpi-matrix: DPI per scale, the aspect rectangle on the work area, 1 px edge matching, its options and its seams.", DpiMatrixGeometry);
         yield return Case("tab-switch-controller", "# ProjectTabController: one operation at a time, every activation bumps the generation, abort returns or marks, finish ends.", TabSwitchController);
-        yield return Case("color-match-bar-standalone", "# The Color Match bar is a control of its own: it reaches the window only through IColorMatchHost; the grade wipe follows events, no polling timer.", ColorMatchStandalone);
+        yield return Case("hover-preview-view-only", "# Paused hover previews show on the clip's view only; after a nested preview the next clip edit reaches the document.", HoverPreviewViewOnly);
+        yield return Case("color-match-bar-standalone","# The Color Match bar is a control of its own: it reaches the window only through IColorMatchHost; the grade wipe follows events, no polling timer.", ColorMatchStandalone);
         yield return Case("decoder-yield-preemption", "# Urgent-seek yield: in-flight pre-roll, pointer work and a paused cut's first frames give a visible chase the decode engine, park and resume.", DecoderYield);
         yield return Case("touchpad-wheel-consumers", "# One touchpad wheel rule (TouchpadWheel) behind the player, the timeline rows and the Cutout Studio.", TouchpadWheelConsumers);
         yield return Case("voice-scene-solver", "# Couch Voice Auto-Switcher: per-mic levels in, a contiguous shot list out, cuts leading the new speaker, crosstalk Wide, silence never cuts.", VoiceScene);
@@ -235,6 +236,26 @@ public static class Pass565Tests
         Directory.Delete(root, recursive: true);
     }
 
+    // ----- hover-preview-view-only -----
+
+    // A fade hover preview (PausedHoverPreview.ShowFade) writes the clip's view as a sync does: nothing reaches the document, leaving
+    // reloads the view from it, and the sync depth is paired, so after a nested preview a clip edit through a view is taken again.
+    private static void HoverPreviewViewOnly(Action<bool, string> expect)
+    {
+        var clip = DogfoodTests.FileClip("D:/media/hover.mkv", 0, 4);
+        var vm = DogfoodTests.Open(DogfoodTests.Lane(clip));
+        SpeedTimeTests.Fresh(vm);
+        var view = vm.ViewOf(vm.Document.FindClip(clip.Id)!)!;
+        double Fade() => vm.Document.FindClip(clip.Id)!.FadeInSeconds;
+
+        vm.PreviewOnView(view, outer => vm.PreviewOnView(outer, inner => inner.FadeInSeconds = 1.5));
+        expect(view.FadeInSeconds == 1.5 && Fade() == 0, "a nested view-only preview shows the fade on the view and writes nothing to the document");
+        vm.ShowViewAgain(view);
+        expect(view.FadeInSeconds == 0, "leaving reloads the view from its clip");
+        view.FadeInSeconds = 0.5;
+        expect(Math.Abs(Fade() - 0.5) < 1e-9, "after a nested preview the next clip edit through a view reaches the document (the sync depth is back to 0)");
+    }
+
     // ----- color-match-bar-standalone -----
 
     private static void ColorMatchStandalone(Action<bool, string> expect)
@@ -291,7 +312,7 @@ public static class Pass565Tests
     private static void TouchpadWheelConsumers(Action<bool, string> expect)
     {
         var timeline = SourceProbe.Src("MainWindow.TimelineView.cs");
-        expect(timeline.Contains("private readonly TouchpadWheel _timelineWheel", StringComparison.Ordinal),
+        expect(timeline.Contains("public readonly TouchpadWheel Wheel = new();", StringComparison.Ordinal),
             "the timeline rows classify with their own TouchpadWheel");
         var mask = SourceProbe.Src("Dialogs", "MaskDrawWindow.cs");
         expect(mask.Contains("TouchpadWheel", StringComparison.Ordinal) && MaskDrawWindow.TouchpadStreamMs == TouchpadWheel.CarryMs,

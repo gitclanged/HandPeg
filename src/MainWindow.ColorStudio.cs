@@ -28,12 +28,6 @@ public partial class MainWindow
     private Canvas? _gradeWipeLayer;
     private Border? _gradeWipeHandle, _gradeDivider;
     private readonly MatrixTransform _gradeWipeUnzoom = new();
-
-    // Event-driven placement (Pass 5.6.5, replaces a 500 ms re-check timer): hooked once, the first time a split is requested; every
-    // trigger coalesces into one queued PlaceGradeWipe.
-    private bool _gradeWipeHooked, _gradeWipeQueued;
-    private HwndSource? _gradeWipeSource;
-
     private void AttachColorStudio(ColorStudioPane pane)
     {
         _colorStudio = pane;
@@ -198,9 +192,9 @@ public partial class MainWindow
 
     private void HookGradeWipeTriggers()
     {
-        if (_gradeWipeHooked)
+        if (_viewerTools.GradeWipeHooked)
             return;
-        _gradeWipeHooked = true;
+        _viewerTools.GradeWipeHooked = true;
         PlayerOverlay.SizeChanged += (_, _) => QueueGradeWipe();
         ExplodedLayer.IsHitTestVisibleChanged += (_, _) => QueueGradeWipe();
         _viewModel.PropertyChanged += GradeWipe_ViewModelChanged;
@@ -217,11 +211,11 @@ public partial class MainWindow
     // The player overlay's window: its DPI change re-rounds the handle and divider to the new device pixels.
     private void HookGradeWipeDpi(HwndSource? source)
     {
-        if (ReferenceEquals(source, _gradeWipeSource))
+        if (ReferenceEquals(source, _viewerTools.GradeWipeSource))
             return;
-        if (_gradeWipeSource is { } old)
+        if (_viewerTools.GradeWipeSource is { } old)
             old.DpiChanged -= GradeWipe_DpiChanged;
-        _gradeWipeSource = source;
+        _viewerTools.GradeWipeSource = source;
         if (source is not null)
             source.DpiChanged += GradeWipe_DpiChanged;
     }
@@ -249,12 +243,12 @@ public partial class MainWindow
     /// </summary>
     private void QueueGradeWipe()
     {
-        if (_gradeWipeQueued || (GradeCompareNow != GradeCompareMode.Split && _gradeWipeLayer is not { Visibility: Visibility.Visible }))
+        if (_viewerTools.GradeWipeQueued || (GradeCompareNow != GradeCompareMode.Split && _gradeWipeLayer is not { Visibility: Visibility.Visible }))
             return;
-        _gradeWipeQueued = true;
+        _viewerTools.GradeWipeQueued = true;
         Dispatcher.BeginInvoke(() =>
         {
-            _gradeWipeQueued = false;
+            _viewerTools.GradeWipeQueued = false;
             PlaceGradeWipe();
         }, DispatcherPriority.Loaded);
     }

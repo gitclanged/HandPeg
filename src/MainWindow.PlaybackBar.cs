@@ -170,12 +170,10 @@ public partial class MainWindow
     // angle (the end of the clips on a first pass): the other angles' clips there are hidden (TimelineClip.IsHidden), so a later pass
     // re-cuts a stretch without touching the rest. One undo step per press; key repeats are swallowed; locked tracks are left alone.
 
-    private bool _easyCutArmed;
-
     /// <summary>Arms or disarms EasyCut (digits 1-9 then belong to it, ahead of their shortcuts).</summary>
     private void ArmEasyCut(bool armed)
     {
-        _easyCutArmed = armed;
+        _viewerTools.EasyCutArmed = armed;
         var count = EasyCut.Angles(_viewModel.Document).Count;
         _viewModel.StatusText = !armed ? "EasyCut off."
             : count < 2 ? "EasyCut on: needs two or more video tracks (angles)."
@@ -184,7 +182,7 @@ public partial class MainWindow
 
     partial void TakeEasyCutKey(int angle, bool repeat, ref bool handled)
     {
-        if (!_easyCutArmed || !_viewModel.HasSource)
+        if (!_viewerTools.EasyCutArmed || !_viewModel.HasSource)
             return;
 
         handled = true;

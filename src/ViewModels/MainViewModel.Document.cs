@@ -796,7 +796,7 @@ public partial class MainViewModel
     /// </summary>
     internal void PreviewOnView(Layer view, Action<Layer> show)
     {
-        var syncing = _syncingViews;
+        // _syncingViews counts depth: each entry is paired with one exit (a nested preview leaves the outer sync's depth as it was).
         _syncingViews = true;
         try
         {
@@ -804,7 +804,7 @@ public partial class MainViewModel
         }
         finally
         {
-            _syncingViews = syncing;
+            _syncingViews = false;
         }
     }
 

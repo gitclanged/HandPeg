@@ -70,7 +70,7 @@ public partial class EffectsPane : UserControl
     private Window? _addOwner;
 
     // Live paused hover previews of Add Effect items (created with the view model).
-    private PausedHoverPreview? _hoverPreview;
+    private Shell.PausedHoverPreview? _hoverPreview;
 
     // Add Effect flyout close delay after the pointer leaves it and its button (260 ms, matching Settings).
     private readonly DispatcherTimer _addClose;
@@ -144,7 +144,7 @@ public partial class EffectsPane : UserControl
             return;
         Detach();
         _vm = viewModel;
-        _hoverPreview = new PausedHoverPreview(viewModel);
+        _hoverPreview = new Shell.PausedHoverPreview(viewModel);
         DataContext = viewModel;
         Hook();
     }
@@ -1359,7 +1359,7 @@ public partial class EffectsPane : UserControl
     // Live paused hover preview of an effect item on the target clip (not the Sequence Output or the blur fill); leaving puts it back.
     private void PreviewOnHover(Button item, EffectDefinition definition)
     {
-        if (!PausedHoverPreview.Previewable(definition))
+        if (!Shell.PausedHoverPreview.Previewable(definition))
             return;
 
         item.MouseEnter += (_, _) =>

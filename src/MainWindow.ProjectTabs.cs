@@ -387,8 +387,8 @@ public partial class MainWindow
         try
         {
             // Deactivate synchronously (kept live in memory) and reactivate a live tab synchronously: no await between the two.
-            // The outgoing header and document first: a fault inside PutActiveBehind (after the detach) still settles back to them.
-            (behind, parked) = (_tabs.Active, _viewModel.Document);
+            // The outgoing header first: a fault inside PutActiveBehind still settles back to it (its detach is tracked by the controller).
+            behind = _tabs.Active;
             behind = PutActiveBehind(out write);
             parked = _viewModel.Document;
             _tabControl.Commit(switching, tab);
@@ -435,17 +435,19 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A switch faulted while or after the outgoing tab was put behind but before the front settled. While the incoming project has not
-    /// replaced the detached one (<paramref name="parked"/> still in the view model) the outgoing tab comes back from memory: taken back
-    /// (<see cref="TakeBack"/>) after the commit, re-attached in place before it. If that is impossible or faults too, the tab in front
-    /// stays as a failed resume, so the active header never claims a Sequence it does not hold. Runs before the edit guard is released
-    /// (ProjectTabController.Finish).
+    /// A switch faulted while or after the outgoing tab was put behind but before the front settled. After the commit, while the incoming
+    /// project has not replaced the detached one (<paramref name="parked"/> still in the view model), the outgoing tab is taken back
+    /// (<see cref="TakeBack"/>). Before it, the outgoing tab is still in front and is re-attached in place when the controller holds its
+    /// detached context (the detach is tracked there, whatever faulted after it). A rollback that faults before the header in front owns a
+    /// document leaves that header a failed resume, so the active header never claims a Sequence it does not hold. Runs before the edit
+    /// guard is released (ProjectTabController.Finish).
     /// </summary>
     private void SettleFailedSwitch(ProjectTabHeader tab, ProjectTabHeader behind, object? parked)
     {
         var committed = ReferenceEquals(tab, _tabs.Active);
-        if (!ReferenceEquals(_viewModel.Document, parked) || (!committed && !ReferenceEquals(behind, _tabs.Active)))
+        if (committed ? !ReferenceEquals(_viewModel.Document, parked) : !ReferenceEquals(behind, _tabs.Active))
             return;
+        var detached = _viewModel.Document;
         try
         {
             if (committed)
@@ -456,8 +458,10 @@ public partial class MainWindow
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             AppLog.Write("Project tabs: the tab put behind could not be taken back", ex);
-            if (!committed && ReferenceEquals(behind, _tabs.Active))
-                _tabControl.MarkUnresumed(behind.Id);
+
+            // Faulted before the header now in front owned a document (the detached one is still shown): a failed resume, retried later.
+            if (ReferenceEquals(_viewModel.Document, detached))
+                _tabControl.MarkUnresumed(_tabs.Active.Id);
         }
 
         if (ReferenceEquals(tab, _tabs.Active))

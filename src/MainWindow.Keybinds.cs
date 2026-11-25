@@ -665,7 +665,7 @@ public partial class MainWindow
     private DispatcherTimer? _holdTimer;
 
     /// <summary>Tab hold time before X-Ray shows; a shorter tap performs normal Tab navigation.</summary>
-    private static readonly TimeSpan HoldDelay = TimeSpan.FromMilliseconds(250);
+    private static TimeSpan HoldDelay => TimeSpan.FromMilliseconds(250);
 
     private void BeginHold(Key key, string id)
     {

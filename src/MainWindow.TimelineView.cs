@@ -305,8 +305,24 @@ public partial class MainWindow
         SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(TimelineSidewaysWheel);
     }
 
-    // Wheel gesture memory over the timeline rows (TouchpadWheel: a touchpad gesture keeps its kind across both axes).
-    private readonly TouchpadWheel _timelineWheel = new();
+    // Timeline row input state (Pass 5.6.5), in one object (golden shell-budget).
+    private readonly TimelineInputState _timelineInput = new();
+
+    private sealed class TimelineInputState
+    {
+        // Wheel gesture memory over the timeline rows (TouchpadWheel: a touchpad gesture keeps its kind across both axes).
+        public readonly TouchpadWheel Wheel = new();
+
+        // Alt+wheel row height: the row being stepped (its live height is _rowHeightDrag) and the rest timer that commits it.
+        public TimelineRow? RowStepped;
+        public DispatcherTimer? RowStepCommit;
+
+        // Ghost Playhead: the playhead (ms) to snap back to; null while no ghost is shown.
+        public double? GhostHomeMs;
+
+        // Clip whose ducking gesture has taken its Undo step (until release).
+        public Layer? DuckShaping;
+    }
 
     private IntPtr TimelineSidewaysWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
@@ -314,7 +330,7 @@ public partial class MainWindow
             return IntPtr.Zero;
 
         // Touchpad over the rows, either axis: 1:1 two-axis scroll, pinch zoom, Alt heights. A mouse wheel goes on to WPF (OnMouseWheel).
-        if (UnifiedTimeline.Surface is { IsVisible: true, IsMouseOver: true } rows && _timelineWheel.Read(msg, wParam, lParam) is { Touchpad: true } touch)
+        if (UnifiedTimeline.Surface is { IsVisible: true, IsMouseOver: true } rows && _timelineInput.Wheel.Read(msg, wParam, lParam) is { Touchpad: true } touch)
         {
             rows.TakeTouchpadWheel(touch, rows.PointFromScreen(touch.ScreenPixels));
             handled = true;
@@ -635,16 +651,6 @@ public partial class MainWindow
 // double-click runs Auto-Level Speech (-14 LUFS, measured in the background); Alt+drop of one file on a clip swaps its media in place.
 public partial class MainWindow
 {
-    // Alt+wheel row height: the row being stepped (its live height is _rowHeightDrag) and the rest timer that commits it.
-    private TimelineRow? _rowStepped;
-    private DispatcherTimer? _rowStepCommit;
-
-    // Ghost Playhead: the playhead (ms) to snap back to; null while no ghost is shown.
-    private double? _ghostHomeMs;
-
-    // Clip whose ducking gesture has taken its Undo step (until release).
-    private Layer? _duckShaping;
-
     /// <summary>Wires the surface's gesture events (InitializeUnifiedTimeline).</summary>
     private void InitializeTimelineGestures(UnifiedTimelineControl surface)
     {
@@ -675,7 +681,7 @@ public partial class MainWindow
     {
         if (HeightTrackOf(row) is null)
             return;
-        if (_rowStepped is { } other && !Equals(other.Key, row.Key))
+        if (_timelineInput.RowStepped is { } other && !Equals(other.Key, row.Key))
             CommitRowStep();
 
         // The global Track Height's pixels per notch, within the row kind's range.
@@ -683,11 +689,11 @@ public partial class MainWindow
         var perNotch = TrackHeightStepsPerNotch * (TallestPictureRow - LowestPictureRow) / 49;
         var current = _rowHeightDrag is { } live && Equals(live.Key, row.Key) ? live.Height : row.Height;
         _rowHeightDrag = (row.Key, Math.Clamp(current + steps * perNotch, lowest, tallest));
-        _rowStepped = row;
+        _timelineInput.RowStepped = row;
         ScheduleClipRedraw();
-        _rowStepCommit ??= NewRowStepTimer();
-        _rowStepCommit.Stop();
-        _rowStepCommit.Start();
+        _timelineInput.RowStepCommit ??= NewRowStepTimer();
+        _timelineInput.RowStepCommit.Stop();
+        _timelineInput.RowStepCommit.Start();
     }
 
     private DispatcherTimer NewRowStepTimer()
@@ -700,11 +706,11 @@ public partial class MainWindow
     // The wheel rested (or another row was stepped): the stepped height becomes the track's own, one Undo step.
     private void CommitRowStep()
     {
-        _rowStepCommit?.Stop();
-        if (_rowStepped is not { } row)
+        _timelineInput.RowStepCommit?.Stop();
+        if (_timelineInput.RowStepped is not { } row)
             return;
 
-        _rowStepped = null;
+        _timelineInput.RowStepped = null;
         if (_rowHeightDrag is not { } live || !Equals(live.Key, row.Key))
             return;
 
@@ -721,9 +727,9 @@ public partial class MainWindow
     {
         if (double.IsNaN(seconds))
         {
-            if (_ghostHomeMs is { } home)
+            if (_timelineInput.GhostHomeMs is { } home)
             {
-                _ghostHomeMs = null;
+                _timelineInput.GhostHomeMs = null;
                 _viewModel.PositionMs = Math.Clamp(home, 0, _viewModel.DurationMs);
             }
 
@@ -734,7 +740,7 @@ public partial class MainWindow
         if (_viewModel.IsPlaying || !_viewModel.HasSource)
             return;
 
-        _ghostHomeMs ??= _viewModel.PositionMs;
+        _timelineInput.GhostHomeMs ??= _viewModel.PositionMs;
         _viewModel.PositionMs = Math.Clamp(seconds * 1000, 0, _viewModel.DurationMs);
     }
 
@@ -831,17 +837,17 @@ public partial class MainWindow
         if (LiveClip(clip) is not { } live)
             return;
 
-        if (!ReferenceEquals(_duckShaping, live))
+        if (!ReferenceEquals(_timelineInput.DuckShaping, live))
         {
             _viewModel.Checkpoint(keys.Count < live.DuckOverrideKeys.Count ? $"remove a ducking point of {live.Name}" : $"shape the ducking of {live.Name}");
-            _duckShaping = live;
+            _timelineInput.DuckShaping = live;
         }
 
         using (_viewModel.OwnLookScope())
             live.SetDuckOverrideKeys(keys);
         if (done)
         {
-            _duckShaping = null;
+            _timelineInput.DuckShaping = null;
             ScheduleClipRedraw();
         }
     }

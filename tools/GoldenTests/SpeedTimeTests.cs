@@ -56,7 +56,7 @@ public static class SpeedTimeTests
     private static int UndoSteps(MainViewModel vm) => ((System.Collections.ICollection)typeof(MainViewModel).GetField("_undo", Hidden)!.GetValue(vm)!).Count;
 
     // As if the last step were long ago (a test's edits come within the half second and second and a half that merge a user's into one step).
-    private static void Fresh(MainViewModel vm)
+    internal static void Fresh(MainViewModel vm)
     {
         vm.ForgetUndoRuns();
 

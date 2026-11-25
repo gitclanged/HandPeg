@@ -75,7 +75,7 @@ public partial class MainWindow
         menu.Items.Add(new Separator());
         var found = _explodedUi ? null : LayerUnder(at);
         Add(PlayerLayerMenuItems[0], () => FindLayerOnTimeline(found!), found is not null);
-        Add(PlayerLayerMenuItems[1], ToggleSocialGuide, _viewModel.FrameWidth > 0, check: _socialGuideShown);
+        Add(PlayerLayerMenuItems[1], ToggleSocialGuide, _viewModel.FrameWidth > 0, check: _viewerTools.SocialGuideShown);
         menu.IsOpen = true;
     }
 
@@ -122,7 +122,7 @@ public partial class MainWindow
     // ----- Viewport layer items (Pass 5.6.5) -----
 
     /// <summary>Layer items after the view items, in order (Find Layer on Timeline, Social Safe Zones); read by the golden test.</summary>
-    internal static readonly string[] PlayerLayerMenuItems = ["Find Layer on Timeline", "Social Safe Zones"];
+    internal static string[] PlayerLayerMenuItems => ["Find Layer on Timeline", "Social Safe Zones"];
 
     /// <summary>
     /// The topmost drawn picture clip under an overlay point: by the player's hit boxes (masks honoured) while they are up, else by the
@@ -172,29 +172,68 @@ public partial class MainWindow
     // ----- Social Safe Zones: the 9:16 Social UI Ghost Guide (Pass 5.6.5) -----
     // Toggled from the player menu (this session); drawn over the picture (zooming with it) and on the Canvas pane. Made on first use.
 
-    private bool _socialGuideShown;
-    private SocialGhostGuide? _playerSocialGuide;
+    // Pass 5.6.5 player chrome state, in one object (golden shell-budget: the shell's own fields only shrink).
+    private readonly ViewerToolsState _viewerTools = new();
+
+    private sealed class ViewerToolsState
+    {
+        // Social Safe Zones: shown this session; the guide is made on first use.
+        public bool SocialGuideShown;
+        public SocialGhostGuide? SocialGuide;
+
+        // Find Layer X-Ray pill: its parts, the issue, the covering and watched clips; one re-diagnosis per burst of changes.
+        public Border? XrayPill;
+        public TextBlock? XrayText;
+        public Button? XrayFix;
+        public LayerIssue XrayIssue;
+        public Layer? XrayCover, XrayWatched;
+        public bool XrayQueued;
+
+        // The in-place editor of a text clip on the player.
+        public (Popup Popup, TextBox Editor, Layer Clip)? TextEdit;
+
+        // Snap guides, equal-spacing callouts and 1:1 badges of a drag on the player; null while no boxes are up.
+        public LayoutGuidesView? Guides;
+
+        // Views menu, Player section: its two toggles, the Aspect Sandbox and its settle timer, and EasyCut's arm.
+        public CheckBox? AspectSandboxBox, EasyCutBox;
+        public AspectSandboxOverlay? AspectSandbox;
+        public System.Windows.Threading.DispatcherTimer? AspectSandboxSettle;
+        public bool AspectSandboxCapturing, AspectSandboxAgain;
+        public bool EasyCutArmed;
+
+        // Grade wipe placement (replaces a 500 ms re-check timer): hooked once, on the first split; triggers coalesce into one queued
+        // PlaceGradeWipe.
+        public bool GradeWipeHooked, GradeWipeQueued;
+        public System.Windows.Interop.HwndSource? GradeWipeSource;
+
+        // Color Match bars made for the Color Studio (normally one; a re-attached pane makes another). Weak: a discarded pane's is collected.
+        public readonly List<WeakReference<ColorMatchBar>> ColorMatchBars = [];
+
+        // Pointer speed of the gizmo or box drag in progress: snapping is magnetic only below 180 DIP/s.
+        public readonly SnapGate SnapGate = new();
+    }
 
     private void ToggleSocialGuide()
     {
-        _socialGuideShown = !_socialGuideShown;
+        _viewerTools.SocialGuideShown = !_viewerTools.SocialGuideShown;
         PlaceSocialGuide();
         if (_viewModel.IsArrangeActive)
             RedrawLayout();
-        _viewModel.StatusText = _socialGuideShown ? "Social Safe Zones shown: keep HUD Cutouts out of the shaded areas." : "Social Safe Zones hidden.";
+        _viewModel.StatusText = _viewerTools.SocialGuideShown ? "Social Safe Zones shown: keep HUD Cutouts out of the shaded areas." : "Social Safe Zones hidden.";
     }
 
     /// <summary>Shows the player's ghost guide over the letterboxed output frame (hidden when off); made and hooked on first show.</summary>
     private void PlaceSocialGuide()
     {
-        if (!_socialGuideShown && _playerSocialGuide is null)
+        if (!_viewerTools.SocialGuideShown && _viewerTools.SocialGuide is null)
             return;
 
-        if (_playerSocialGuide is null)
+        if (_viewerTools.SocialGuide is null)
         {
-            _playerSocialGuide = new SocialGhostGuide();
+            _viewerTools.SocialGuide = new SocialGhostGuide();
             var after = PlayerOverlay.Children.IndexOf(SafeMarginsCanvas);
-            PlayerOverlay.Children.Insert(after < 0 ? PlayerOverlay.Children.Count : after + 1, _playerSocialGuide);
+            PlayerOverlay.Children.Insert(after < 0 ? PlayerOverlay.Children.Count : after + 1, _viewerTools.SocialGuide);
             PlayerOverlay.SizeChanged += (_, _) => PlaceSocialGuide();
             _viewModel.PropertyChanged += (_, e) =>
             {
@@ -203,18 +242,18 @@ public partial class MainWindow
             };
         }
 
-        _playerSocialGuide.Visibility = _socialGuideShown ? Visibility.Visible : Visibility.Collapsed;
+        _viewerTools.SocialGuide.Visibility = _viewerTools.SocialGuideShown ? Visibility.Visible : Visibility.Collapsed;
         var (width, height) = (PlayerOverlay.ActualWidth, PlayerOverlay.ActualHeight);
         var (frameWidth, frameHeight) = ((double)_viewModel.FrameWidth, (double)_viewModel.FrameHeight);
         if (width <= 0 || height <= 0 || frameWidth <= 0 || frameHeight <= 0)
         {
-            _playerSocialGuide.Frame = Rect.Empty;
+            _viewerTools.SocialGuide.Frame = Rect.Empty;
             return;
         }
 
         // The output frame as the GPU engine fits it (as PictureFocalAt and the player's boxes).
         var scale = Math.Min(width / frameWidth, height / frameHeight);
-        _playerSocialGuide.Frame = new Rect((width - frameWidth * scale) / 2, (height - frameHeight * scale) / 2, frameWidth * scale, frameHeight * scale);
+        _viewerTools.SocialGuide.Frame = new Rect((width - frameWidth * scale) / 2, (height - frameHeight * scale) / 2, frameWidth * scale, frameHeight * scale);
     }
 
     // ----- Find Layer X-Ray pill (Pass 5.6.5) -----
@@ -222,56 +261,46 @@ public partial class MainWindow
     // playhead, hidden, 0% opacity, off the frame, covered by an opaque picture above) or is muted gets a one-click pill at the top of the
     // player naming the issue, with its fix (LayerXRay). Made on first need, never before Frame 1.
 
-    private Border? _xrayPill;
-    private TextBlock? _xrayText;
-    private Button? _xrayFix;
-    private LayerIssue _xrayIssue;
-    private Layer? _xrayCover, _xrayWatched;
-
     /// <summary>Re-diagnoses the selected clip and shows, updates or hides the pill.</summary>
     private void UpdateLayerXRay()
     {
         var layer = !_viewModel.IsPlaying && !_explodedUi && _viewModel.HasSource && _viewModel.FrameWidth > 0 && _viewModel.FrameHeight > 0
             && _selectedClip is Layer { IsCaptions: false, IsAudio: false, IsDeleted: false } picked && picked.IsPicture ? picked : null;
         WatchXRay(layer);
-        (_xrayIssue, _xrayCover) = layer is null ? (LayerIssue.None, null) : DiagnoseLayer(layer);
-        if (_xrayIssue == LayerIssue.None)
+        (_viewerTools.XrayIssue, _viewerTools.XrayCover) = layer is null ? (LayerIssue.None, null) : DiagnoseLayer(layer);
+        if (_viewerTools.XrayIssue == LayerIssue.None)
         {
-            if (_xrayPill is not null)
-                _xrayPill.Visibility = Visibility.Collapsed;
+            if (_viewerTools.XrayPill is not null)
+                _viewerTools.XrayPill.Visibility = Visibility.Collapsed;
             return;
         }
 
-        var (text, fix) = LayerXRay.Words(_xrayIssue);
+        var (text, fix) = LayerXRay.Words(_viewerTools.XrayIssue);
         MakeXRayPill();
-        (_xrayText!.Text, _xrayFix!.Content) = (text, fix);
-        _xrayFix.ToolTip = $"{fix} [{layer!.Name}]";
-        _xrayPill!.Visibility = Visibility.Visible;
+        (_viewerTools.XrayText!.Text, _viewerTools.XrayFix!.Content) = (text, fix);
+        _viewerTools.XrayFix.ToolTip = $"{fix} [{layer!.Name}]";
+        _viewerTools.XrayPill!.Visibility = Visibility.Visible;
     }
 
     // Follows the diagnosed clip's own changes (opacity, hiding, place) while it is the one diagnosed.
     private void WatchXRay(Layer? layer)
     {
-        if (ReferenceEquals(layer, _xrayWatched))
+        if (ReferenceEquals(layer, _viewerTools.XrayWatched))
             return;
-        if (_xrayWatched is { } old)
+        if (_viewerTools.XrayWatched is { } old)
             old.PropertyChanged -= OnXRayLayerChanged;
-        _xrayWatched = layer;
+        _viewerTools.XrayWatched = layer;
         if (layer is not null)
             layer.PropertyChanged += OnXRayLayerChanged;
     }
-
-    // One re-diagnosis per burst of changes (a drag writes many), after them.
-    private bool _xrayQueued;
-
     private void OnXRayLayerChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (_xrayQueued)
+        if (_viewerTools.XrayQueued)
             return;
-        _xrayQueued = true;
+        _viewerTools.XrayQueued = true;
         Dispatcher.BeginInvoke(() =>
         {
-            _xrayQueued = false;
+            _viewerTools.XrayQueued = false;
             UpdateLayerXRay();
         }, System.Windows.Threading.DispatcherPriority.Background);
     }
@@ -326,27 +355,27 @@ public partial class MainWindow
     // The pill: issue text and its fix, top centre of the player (not zoomed), on the inspector card surface.
     private void MakeXRayPill()
     {
-        if (_xrayPill is not null)
+        if (_viewerTools.XrayPill is not null)
             return;
 
         var icon = new TextBlock { Text = char.ConvertFromUtf32(0xE7BA), FontFamily = Glyphs.Font, FontSize = 13, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
         icon.SetResourceReference(TextBlock.ForegroundProperty, "WarningTextBrush");
-        _xrayText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
-        _xrayText.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
-        _xrayFix = new Button { Padding = new Thickness(10, 2, 10, 3), VerticalAlignment = VerticalAlignment.Center, Focusable = false };
-        _xrayFix.Click += (_, _) => RunGuarded("Find Layer", FixLayerIssue);
-        System.Windows.Automation.AutomationProperties.SetName(_xrayFix, "Fix Layer Issue");
-        var row = new StackPanel { Orientation = Orientation.Horizontal, Children = { icon, _xrayText, _xrayFix } };
-        _xrayPill = new Border
+        _viewerTools.XrayText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0) };
+        _viewerTools.XrayText.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
+        _viewerTools.XrayFix = new Button { Padding = new Thickness(10, 2, 10, 3), VerticalAlignment = VerticalAlignment.Center, Focusable = false };
+        _viewerTools.XrayFix.Click += (_, _) => RunGuarded("Find Layer", FixLayerIssue);
+        System.Windows.Automation.AutomationProperties.SetName(_viewerTools.XrayFix, "Fix Layer Issue");
+        var row = new StackPanel { Orientation = Orientation.Horizontal, Children = { icon, _viewerTools.XrayText, _viewerTools.XrayFix } };
+        _viewerTools.XrayPill = new Border
         {
             Child = row, CornerRadius = new CornerRadius(14), BorderThickness = new Thickness(1), Padding = new Thickness(12, 4, 4, 4),
             HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 10, 0, 0),
             Visibility = Visibility.Collapsed,
         };
-        _xrayPill.SetResourceReference(Border.BackgroundProperty, "InspectorCardBrush");
-        _xrayPill.SetResourceReference(Border.BorderBrushProperty, "InspectorCardBorderBrush");
-        System.Windows.Automation.AutomationProperties.SetName(_xrayPill, "Find Layer X-Ray");
-        PlayerHud.Children.Add(_xrayPill);
+        _viewerTools.XrayPill.SetResourceReference(Border.BackgroundProperty, "InspectorCardBrush");
+        _viewerTools.XrayPill.SetResourceReference(Border.BorderBrushProperty, "InspectorCardBorderBrush");
+        System.Windows.Automation.AutomationProperties.SetName(_viewerTools.XrayPill, "Find Layer X-Ray");
+        PlayerHud.Children.Add(_viewerTools.XrayPill);
     }
 
     /// <summary>The pill's one-click fix for the selected clip's issue (one Undo step for a change).</summary>
@@ -355,7 +384,7 @@ public partial class MainWindow
         if (_selectedClip is not Layer layer)
             return;
 
-        switch (_xrayIssue)
+        switch (_viewerTools.XrayIssue)
         {
             case LayerIssue.NotAtPlayhead:
                 _viewModel.PositionMs = Math.Max(layer.GetSpan(_viewModel.SequenceSeconds).Start, 0) * 1000;
@@ -371,7 +400,7 @@ public partial class MainWindow
                 _viewModel.Checkpoint($"center {layer.Name}");
                 CenterTrackLayer(layer);
                 break;
-            case LayerIssue.Covered when _xrayCover is { } cover:
+            case LayerIssue.Covered when _viewerTools.XrayCover is { } cover:
                 SelectClip(cover);
                 break;
             case LayerIssue.Muted:
@@ -386,8 +415,6 @@ public partial class MainWindow
     // Double-clicking a text clip on the player edits its words where they are, in a popup editor centred on its box (the overlay window
     // never takes the keyboard). Enter commits (Shift+Enter: new line), Esc cancels, clicking away commits; one Undo step.
 
-    private (Popup Popup, TextBox Editor, Layer Clip)? _textEdit;
-
     private void BeginTextEdit(FrameworkElement box, Layer clip)
     {
         EndTextEdit(commit: true);
@@ -398,7 +425,7 @@ public partial class MainWindow
         };
         System.Windows.Automation.AutomationProperties.SetName(editor, $"Text of {clip.Name}");
         var popup = new Popup { Child = editor, PlacementTarget = box, Placement = PlacementMode.Center, StaysOpen = false, AllowsTransparency = true };
-        _textEdit = (popup, editor, clip);
+        _viewerTools.TextEdit = (popup, editor, clip);
         editor.PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape)
@@ -425,10 +452,10 @@ public partial class MainWindow
     /// <summary>Closes the in-place editor, writing its text to the clip (one Undo step) when committing and changed.</summary>
     private void EndTextEdit(bool commit)
     {
-        if (_textEdit is not { } edit)
+        if (_viewerTools.TextEdit is not { } edit)
             return;
 
-        _textEdit = null;
+        _viewerTools.TextEdit = null;
         edit.Popup.IsOpen = false;
         var text = edit.Editor.Text;
         if (!commit || text == edit.Clip.TextContent)

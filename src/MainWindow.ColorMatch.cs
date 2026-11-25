@@ -12,24 +12,21 @@ namespace HandPegApp;
 // loupe layer. Pick mode ends itself on playback, seeks, edits, source views and Esc; switching project tabs ends it here (EndColorMatchPicks).
 public partial class MainWindow : IColorMatchHost
 {
-    // Bars created for the Color Studio (normally one; a re-attached pane makes another). Weak, so a discarded pane's bar is collected.
-    private readonly List<WeakReference<ColorMatchBar>> _colorMatchBars = [];
-
     /// <summary>
     /// Creates the Color Studio's Color Match bar; <paramref name="target"/> is evaluated at use time.
     /// </summary>
     internal FrameworkElement? CreateColorMatchBar(Func<ColorGradeTarget> target)
     {
-        _colorMatchBars.RemoveAll(bar => !bar.TryGetTarget(out _));
+        _viewerTools.ColorMatchBars.RemoveAll(bar => !bar.TryGetTarget(out _));
         var created = new ColorMatchBar(this, target);
-        _colorMatchBars.Add(new WeakReference<ColorMatchBar>(created));
+        _viewerTools.ColorMatchBars.Add(new WeakReference<ColorMatchBar>(created));
         return created;
     }
 
     /// <summary>Ends any Color Match pick in progress (project tab switch: its captured frame belongs to the tab being left).</summary>
     private void EndColorMatchPicks()
     {
-        foreach (var weak in _colorMatchBars)
+        foreach (var weak in _viewerTools.ColorMatchBars)
         {
             if (weak.TryGetTarget(out var bar))
                 bar.CancelPick();

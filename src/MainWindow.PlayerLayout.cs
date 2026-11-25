@@ -25,9 +25,6 @@ public partial class MainWindow
     private readonly List<(Layer Layer, PropertyChangedEventHandler Handler)> _playerSubscriptions = [];
     private Adorner? _playerGizmo;
     private Rect _playerFrame;
-
-    // Snap guides, equal-spacing callouts and 1:1 badges of a drag on the player (Pass 5.6.5); null while no boxes are up.
-    private LayoutGuidesView? _playerGuides;
     private double _playerScale;
 
     // Set by a click on empty picture: hides the selection outline until the next selection.
@@ -234,9 +231,9 @@ public partial class MainWindow
             AddPlayerBox(clip);
 
         // Topmost: snap guides of a drag (only motion-path dots would be hit-testable; the player shows none).
-        _playerGuides = new LayoutGuidesView { Width = PlayerLayoutCanvas.ActualWidth, Height = PlayerLayoutCanvas.ActualHeight };
-        System.Windows.Automation.AutomationProperties.SetName(_playerGuides, "Player snap guides");
-        PlayerLayoutCanvas.Children.Add(_playerGuides);
+        _viewerTools.Guides = new LayoutGuidesView { Width = PlayerLayoutCanvas.ActualWidth, Height = PlayerLayoutCanvas.ActualHeight };
+        System.Windows.Automation.AutomationProperties.SetName(_viewerTools.Guides, "Player snap guides");
+        PlayerLayoutCanvas.Children.Add(_viewerTools.Guides);
         UpdatePlayerSelection();
     }
 
@@ -269,16 +266,16 @@ public partial class MainWindow
         box.DragStarted += (_, _) =>
         {
             moveStep.Pressed();
-            _snapGate.Reset();
+            _viewerTools.SnapGate.Reset();
         };
         box.DragDelta += (_, e) =>
         {
             moveStep.Changing();
-            MoveTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale, _playerFrame, _playerGuides);
+            MoveTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale, _playerFrame, _viewerTools.Guides);
         };
         box.DragCompleted += (_, e) =>
         {
-            _playerGuides?.ShowGuides([]);
+            _viewerTools.Guides?.ShowGuides([]);
 
             // Drag-free click on the already-selected layer where others overlap: cycle to the next layer down.
             if (wasHeld && !e.Canceled && Math.Abs(e.HorizontalChange) + Math.Abs(e.VerticalChange) < 2)
@@ -355,7 +352,7 @@ public partial class MainWindow
     private System.Windows.Threading.DispatcherTimer? _clickThrough;
 
     // Click-through delay, so a double-click's second press (center) stays with the original box.
-    private static readonly TimeSpan ClickThroughWait = TimeSpan.FromMilliseconds(300);
+    private static TimeSpan ClickThroughWait => TimeSpan.FromMilliseconds(300);
 
     /// <summary>After a drag-free click on the selected box, selects the next box down at that point unless a double-click follows.</summary>
     /// <param name="boxes">The surface's boxes, bottom first.</param>
@@ -469,9 +466,9 @@ public partial class MainWindow
         foreach (var outline in _playerTiltOutlines.Values)
             PlayerLayoutCanvas.Children.Remove(outline);
         _playerTiltOutlines.Clear();
-        if (_playerGuides is not null)
-            PlayerLayoutCanvas.Children.Remove(_playerGuides);
-        _playerGuides = null;
+        if (_viewerTools.Guides is not null)
+            PlayerLayoutCanvas.Children.Remove(_viewerTools.Guides);
+        _viewerTools.Guides = null;
         PlayerLayoutCanvas.Background = null;
     }
 }

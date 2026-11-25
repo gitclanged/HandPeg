@@ -855,14 +855,10 @@ public partial class MainWindow
 
     // The window's horizontal wheel message (the Timeline's sideways-scroll hook reads it too): TouchpadWheel's.
     private const int WmMouseHWheel = TouchpadWheel.WmMouseHWheel;
-
-    // Gesture memory for a wheel that reaches WPF without passing the player's hook (another window had it first).
-    private readonly TouchpadWheel _explodedWheelKind = new();
-
     // WPF wheel over the 3D layer (normally ExplodedPlayerWheel handles it first at the message level).
     private void ExplodedLayer_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (ExplodedWheel(e.Delta, horizontal: false, Keyboard.Modifiers, _explodedWheelKind.ClassifyNow(e.Delta)))
+        if (ExplodedWheel(e.Delta, horizontal: false, Keyboard.Modifiers, _explodedChrome.WheelKind.ClassifyNow(e.Delta)))
             e.Handled = true;
     }
 
@@ -951,7 +947,7 @@ public partial class MainWindow
     // is built on first open, never before Frame 1, and placed with UiScale.PlaceAgainst like every button flyout.
 
     /// <summary>3D shortcuts card rows: action (at most four words) and its gesture.</summary>
-    internal static readonly IReadOnlyList<(string What, string Gesture)> ExplodedShortcuts =
+    internal static IReadOnlyList<(string What, string Gesture)> ExplodedShortcuts =>
     [
         ("Move layer", "Drag"),
         ("Move through stack", "Shift + drag"),
@@ -971,66 +967,75 @@ public partial class MainWindow
     internal const string ExplodedShortcutsTip = "3D mouse, touchpad and touch shortcuts";
 
     // Hover-close delay after leaving pill and card (time to travel between them).
-    private static readonly TimeSpan ExplodedCardGrace = TimeSpan.FromMilliseconds(300);
+    private static TimeSpan ExplodedCardGrace => TimeSpan.FromMilliseconds(300);
 
-    private Popup? _explodedCard;
-    private ToggleButton? _explodedHelp;
-    private System.Windows.Threading.DispatcherTimer? _explodedCardGrace;
+    // The 3D shortcuts card, its '?' pill and the 3D view's wheel memory (Pass 5.6.5), in one object (golden shell-budget).
+    private readonly ExplodedChromeState _explodedChrome = new();
 
-    // The next Checked comes from hover (not a click), and the card is click-pinned.
-    private bool _explodedCardHovering, _explodedCardPinned;
+    private sealed class ExplodedChromeState
+    {
+        public Popup? Card;
+        public ToggleButton? Help;
+        public System.Windows.Threading.DispatcherTimer? CardGrace;
+
+        // The next Checked comes from hover (not a click), and the card is click-pinned.
+        public bool CardHovering, CardPinned;
+
+        // Gesture memory for a wheel that reaches WPF without passing the player's hook (another window had it first).
+        public readonly TouchpadWheel WheelKind = new();
+    }
 
     /// <summary>Adds the '?' pill to the end of the 3D panel's header row (the Z-Spacing, Reset and Close row).</summary>
     private void AddExplodedShortcuts()
     {
-        if (_explodedHelp is not null || ExplodedPanel.Child is not StackPanel { Children.Count: > 0 } panel || panel.Children[0] is not StackPanel row)
+        if (_explodedChrome.Help is not null || ExplodedPanel.Child is not StackPanel { Children.Count: > 0 } panel || panel.Children[0] is not StackPanel row)
             return;
 
-        var help = _explodedHelp = new ToggleButton
+        var help = _explodedChrome.Help = new ToggleButton
         {
             Content = char.ConvertFromUtf32(0xE897), FontFamily = Glyphs.Font, FontSize = 12, Padding = new Thickness(7, 4, 7, 4),
             Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = ExplodedShortcutsTip, Focusable = false,
         };
         System.Windows.Automation.AutomationProperties.SetName(help, "3D Shortcuts");
-        var card = _explodedCard = new Popup { AllowsTransparency = true, StaysOpen = true, Focusable = false, PlacementTarget = help };
+        var card = _explodedChrome.Card = new Popup { AllowsTransparency = true, StaysOpen = true, Focusable = false, PlacementTarget = help };
         card.SetBinding(Popup.IsOpenProperty, new System.Windows.Data.Binding(nameof(ToggleButton.IsChecked)) { Source = help, Mode = System.Windows.Data.BindingMode.TwoWay });
 
         help.Checked += (_, _) =>
         {
-            _explodedCardPinned = !_explodedCardHovering;
-            _explodedCardHovering = false;
+            _explodedChrome.CardPinned = !_explodedChrome.CardHovering;
+            _explodedChrome.CardHovering = false;
             card.Child ??= ExplodedShortcutsCard();
             UiScale.PlaceAgainst(card, help, UiScale.FlyoutSide.BelowEnd, 4);
             ToolTipService.SetIsEnabled(help, false);
         };
         help.Unchecked += (_, _) =>
         {
-            _explodedCardPinned = false;
-            _explodedCardGrace?.Stop();
+            _explodedChrome.CardPinned = false;
+            _explodedChrome.CardGrace?.Stop();
             ToolTipService.SetIsEnabled(help, true);
         };
 
         // Hover opens; a click while hover-open pins instead of closing.
         help.MouseEnter += (_, _) =>
         {
-            _explodedCardGrace?.Stop();
+            _explodedChrome.CardGrace?.Stop();
             if (help.IsChecked != true)
             {
-                _explodedCardHovering = true;
+                _explodedChrome.CardHovering = true;
                 help.IsChecked = true;
             }
         };
         help.PreviewMouseLeftButtonDown += (_, e) =>
         {
-            if (help.IsChecked == true && !_explodedCardPinned)
+            if (help.IsChecked == true && !_explodedChrome.CardPinned)
             {
-                _explodedCardPinned = true;
+                _explodedChrome.CardPinned = true;
                 e.Handled = true;
             }
         };
         help.MouseLeave += (_, _) => LeftExplodedCard();
         card.MouseLeave += (_, _) => LeftExplodedCard();
-        card.MouseEnter += (_, _) => _explodedCardGrace?.Stop();
+        card.MouseEnter += (_, _) => _explodedChrome.CardGrace?.Stop();
 
         // Leaving 3D (the panel hides) closes it.
         ExplodedPanel.IsVisibleChanged += (_, _) =>
@@ -1044,22 +1049,22 @@ public partial class MainWindow
     // Pointer left pill or card: a hover-opened card closes after the grace unless the pointer came back.
     private void LeftExplodedCard()
     {
-        if (_explodedCardPinned || _explodedHelp is not { IsChecked: true } help)
+        if (_explodedChrome.CardPinned || _explodedChrome.Help is not { IsChecked: true } help)
             return;
 
-        if (_explodedCardGrace is null)
+        if (_explodedChrome.CardGrace is null)
         {
-            _explodedCardGrace = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Input) { Interval = ExplodedCardGrace };
-            _explodedCardGrace.Tick += (_, _) =>
+            _explodedChrome.CardGrace = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Input) { Interval = ExplodedCardGrace };
+            _explodedChrome.CardGrace.Tick += (_, _) =>
             {
-                _explodedCardGrace.Stop();
-                if (!_explodedCardPinned && !help.IsMouseOver && _explodedCard?.Child is not { IsMouseOver: true })
+                _explodedChrome.CardGrace.Stop();
+                if (!_explodedChrome.CardPinned && !help.IsMouseOver && _explodedChrome.Card?.Child is not { IsMouseOver: true })
                     help.IsChecked = false;
             };
         }
 
-        _explodedCardGrace.Stop();
-        _explodedCardGrace.Start();
+        _explodedChrome.CardGrace.Stop();
+        _explodedChrome.CardGrace.Start();
     }
 
     // Card: one row per gesture (action left, gesture right) on the themed inspector card surface.

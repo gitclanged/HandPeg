@@ -13,7 +13,7 @@ namespace HandPegApp;
 // playhead (MainViewModel.ApplyHotbarSlot, one Undo step); right-click assigns any Effect, Transition, Game Preset or one-click tool,
 // saved immediately. Slots live in the Quick FX button's flyout (one button on the row instead of five). Hidden via Settings >
 // Timeline (ShowCreatorHotbar) or its own menu. The row's Undo/Redo buttons are also applied here (ShowTimelineUndoRedo, off by
-// default). Resting on a slot while paused previews an Effect or Transition slot on its clips (PausedHoverPreview); the Quick FX glyph
+// default). Resting on a slot while paused previews an Effect or Transition slot on its clips (Shell.PausedHoverPreview); the Quick FX glyph
 // and the tool row's tinted glyphs keep 3:1 contrast against their faces (ButtonChrome.AdaptiveIcon).
 public partial class MainWindow
 {
@@ -55,16 +55,22 @@ public partial class MainWindow
 
     // ----- Live paused hover previews (Quick FX slots, fade menus) and adaptive tool icons (Pass 5.6.5) -----
 
-    private PausedHoverPreview? _hoverPreview;
+    // The hover preview, the slot hooks and the tool icons' state, in one object (golden shell-budget).
+    private readonly HotbarState _hotbarUi = new();
 
-    // Pointer hooks on the slot buttons (they live in the Timeline pane's flyout): one class handler for every Button, filtered by Tag.
-    private static bool _slotHoverHooked;
+    private sealed class HotbarState
+    {
+        public Shell.PausedHoverPreview? HoverPreview;
 
-    // The tool row's tinted glyphs were marked adaptive (once; they are built with the pane).
-    private bool _toolIconsAdapted;
+        // Pointer hooks on the slot buttons (they live in the Timeline pane's flyout): one class handler for every Button, filtered by Tag.
+        public static bool SlotHoverHooked;
+
+        // The tool row's tinted glyphs were marked adaptive (once; they are built with the pane).
+        public bool ToolIconsAdapted;
+    }
 
     /// <summary>The window's hover preview (Quick FX slots and fade menus).</summary>
-    private PausedHoverPreview HoverPreview => _hoverPreview ??= new PausedHoverPreview(_viewModel);
+    private Shell.PausedHoverPreview HoverPreview => _hotbarUi.HoverPreview ??= new Shell.PausedHoverPreview(_viewModel);
 
     /// <summary>
     /// Marks the Quick FX glyph and the Timeline tool row's tinted glyphs adaptive (ButtonChrome.AdaptiveIcon: 3:1 against their faces,
@@ -72,17 +78,17 @@ public partial class MainWindow
     /// </summary>
     private void AdaptToolIcons()
     {
-        if (!_slotHoverHooked)
+        if (!HotbarState.SlotHoverHooked)
         {
-            _slotHoverHooked = true;
+            HotbarState.SlotHoverHooked = true;
             EventManager.RegisterClassHandler(typeof(Button), MouseEnterEvent, new MouseEventHandler(HotbarSlot_MouseEnter));
             EventManager.RegisterClassHandler(typeof(Button), MouseLeaveEvent, new MouseEventHandler(HotbarSlot_MouseLeave));
             EventManager.RegisterClassHandler(typeof(Button), UnloadedEvent, new RoutedEventHandler(HotbarSlot_Unloaded));
         }
 
-        if (_toolIconsAdapted)
+        if (_hotbarUi.ToolIconsAdapted)
             return;
-        _toolIconsAdapted = true;
+        _hotbarUi.ToolIconsAdapted = true;
         ButtonChrome.AdaptIconsUnder(UnifiedTimeline.Toolbar);
         if (UnifiedTimeline.QuickFxButton.Content is Panel { Children: [TextBlock glyph, ..] })
             ButtonChrome.SetAdaptiveIcon(glyph, true);
@@ -104,7 +110,7 @@ public partial class MainWindow
 
     private static void HotbarSlot_MouseLeave(object sender, MouseEventArgs e)
     {
-        if (sender is Button { Tag: var tag } slot && HotbarIndexOf(tag) is not null && WindowOfSlot(slot) is { _hoverPreview: { } preview })
+        if (sender is Button { Tag: var tag } slot && HotbarIndexOf(tag) is not null && WindowOfSlot(slot) is { _hotbarUi.HoverPreview: { } preview })
             preview.Leave();
     }
 

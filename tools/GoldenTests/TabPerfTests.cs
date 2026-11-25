@@ -870,7 +870,7 @@ public static class TabPerfTests
         "<RateControls>k__BackingField", "<RecentProjects>k__BackingField", "<ResolutionPresets>k__BackingField",
         "<SavesConvertedProjects>k__BackingField", "<SmartRules>k__BackingField", "<StylePresets>k__BackingField", "<TaskbarProgress>k__BackingField",
         "<TimelineSelection>k__BackingField", "<Tunes>k__BackingField", "<VideoEncoders>k__BackingField", "<WhisperModelChoices>k__BackingField", "<WorkspaceForSave>k__BackingField",
-        "ActionLogged", "CaptionsChanged", "ClipLibraryChanged", "EditTargetChanged", "_editTarget", "_gesture", "_lookWrites", "_levelling", "_placingTightAnchor", "_tightWatched", "_tightWatching", "ClipSelectionChanged", "EdgeTuningChanged", "LayerLoaded",
+        "ActionLogged", "CaptionsChanged", "ClipLibraryChanged", "EditTargetChanged", "_editTarget", "_gesture", "_lookWrites", "_levelling", "_tightWatch","ClipSelectionChanged", "EdgeTuningChanged", "LayerLoaded",
         "LayerVisibilityChanged", "MarkersChanged", "MediaLoaded", "PreviewStateInvalidated", "ProjectSaved", "SaveRequested", "SessionCleared",
         "TimelineChanged", "TimelineRestored", "WorkspaceOpened", "_acceptProgressReports", "_activeStyle", "_anyKeys", "_applyingKeys", "_autosaving", "_baking",
         "_beforeEdit", "_checkpointedAt", "_commandDeferrals", "_commandPending", "_commandPreviewWatched", "_commandStale", "_commandTextQueued",

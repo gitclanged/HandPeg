@@ -52,7 +52,7 @@ public partial class MainViewModel
     // yt-dlp targets latest. Custom-path and never-installed tools are skipped. A tool in use is left unchanged and retried next start.
 
     /// <summary>Startup delay before the dependency check (window, project and thumbnails first).</summary>
-    private static readonly TimeSpan AutoUpdateDelay = TimeSpan.FromSeconds(30);
+    private static TimeSpan AutoUpdateDelay => TimeSpan.FromSeconds(30);
 
     private async Task AutoUpdateDependenciesLaterAsync()
     {
@@ -78,7 +78,7 @@ public partial class MainViewModel
     }
 
     /// <summary>Startup delay before sending pending crash reports (after window, project and thumbnails).</summary>
-    private static readonly TimeSpan CrashUploadDelay = TimeSpan.FromSeconds(15);
+    private static TimeSpan CrashUploadDelay => TimeSpan.FromSeconds(15);
 
     /// <summary>
     /// Sends pending crash reports in the Idle lane (unlisted), only when enabled and present. Silent on network failure; retried next

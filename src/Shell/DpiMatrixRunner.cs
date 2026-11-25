@@ -311,9 +311,22 @@ internal static partial class DpiMatrixRunner
         add(new Cell("overlay", scale, aspect, surface is not null && Matches(overlay, surface),
             $"overlay {Describe(overlay)} over video window {Describe(surface)}"));
 
-        var (buttons, missed) = HitTestSettled(main, () => Buttons(main.TransportRow, monitor).Concat(Buttons(main.EffectsView, monitor)));
-        add(new Cell("buttons", scale, aspect, missed.Count == 0,
-            $"{buttons.Count - missed.Count} of {buttons.Count} transport/inspector buttons hit by UIA ElementFromPoint{(missed.Count == 0 ? "" : ": missed " + string.Join(", ", missed.Take(6)))}"));
+        // Each pane on its own: shown on the monitor, every button hit, none cut by the pane's edge or the monitor (only a container inside
+        // the pane - overflow strip, pill, scroll viewer - hides one by design); the transport always has buttons. A vanished pane fails.
+        var parts = new List<string>();
+        var passed = true;
+        foreach (var (pane, root, required) in new (string, FrameworkElement, bool)[] { ("transport", main.TransportRow, true), ("inspector", main.EffectsView, false) })
+        {
+            var onScreen = root.IsVisible && root.ActualWidth >= 1 && root.ActualHeight >= 1 && PresentationSource.FromVisual(root) is not null
+                        && Inside(Physical(root), Inflate(monitor, 1));
+            var cut = new List<string>();
+            var (buttons, missed) = onScreen ? HitTestSettled(main, () => { cut.Clear(); return PaneButtons(root, monitor, cut); }) : (new List<Target>(), new List<string>());
+            passed &= onScreen && cut.Count == 0 && missed.Count == 0 && (!required || buttons.Count > 0);
+            parts.Add((onScreen ? string.Create(CultureInfo.InvariantCulture, $"{pane}: {buttons.Count - missed.Count} of {buttons.Count} hit") : pane + ": not shown")
+                      + (cut.Count == 0 ? "" : ", cut " + string.Join(", ", cut.Take(4))) + (missed.Count == 0 ? "" : ", missed " + string.Join(", ", missed.Take(4))));
+        }
+
+        add(new Cell("buttons", scale, aspect, passed, string.Join("; ", parts) + " (UIA ElementFromPoint)"));
     }
 
     private static void CheckFullscreen(MainWindow main, double scale, string aspect, Int32Rect target, Int32Rect monitor, Action<Cell> add)
@@ -508,6 +521,31 @@ internal static partial class DpiMatrixRunner
         }
     }
 
+    /// <summary>
+    /// A pane's buttons to hit: shown ones (laid out, at least 4 px) not hidden by a container inside the pane (an overflow strip, a pill, a
+    /// scroll viewer: by design). One cut by the pane's own edge or off the monitor is not dropped: its name goes to <paramref name="cut"/>.
+    /// </summary>
+    private static IEnumerable<Target> PaneButtons(FrameworkElement pane, Int32Rect monitor, List<string> cut)
+    {
+        var edge = Inflate(Physical(pane), 1);
+        foreach (var button in Descendants(pane).OfType<ButtonBase>())
+        {
+            if (!button.IsVisible || button.ActualWidth < 4 || button.ActualHeight < 4 || PresentationSource.FromVisual(button) is null)
+                continue;
+            var screen = Physical(button);
+            if (!Unclipped(button, screen, pane))
+                continue;
+            var name = button.Name is { Length: > 0 } n ? n : button.GetType().Name + (button.Content is string text ? " '" + text + "'" : "");
+            if (!Inside(screen, monitor) || !Inside(screen, edge))
+            {
+                cut.Add(name);
+                continue;
+            }
+
+            yield return new Target(name, button.Name ?? "", screen, new Point(screen.X + screen.Width / 2.0, screen.Y + screen.Height / 2.0));
+        }
+    }
+
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {
         var stack = new Stack<DependencyObject>();
@@ -525,12 +563,13 @@ internal static partial class DpiMatrixRunner
 
     // The button and every ancestor up to the window hold its whole rectangle: no layout slot of no size (a row's overflow parks a control
     // there), no layout clip cutting it (a pane edge), no ancestor that does not contain it (a scroll viewport).
-    private static bool Unclipped(FrameworkElement element, Int32Rect screen)
+    // With `within`, only the containers below it are checked (the pane's own edge is judged by the caller).
+    private static bool Unclipped(FrameworkElement element, Int32Rect screen, DependencyObject? within = null)
     {
         var inner = Inflate(screen, -1);
         for (DependencyObject? node = element; node is FrameworkElement current; node = VisualTreeHelper.GetParent(current))
         {
-            if (current is Window)
+            if (current is Window || ReferenceEquals(current, within))
                 return true;
             if (current.ActualWidth <= 0 || current.ActualHeight <= 0)
                 return false;
