@@ -1,0 +1,12 @@
+# --dpi-matrix: DPI per scale, the aspect rectangle on the work area, 1 px edge matching, its options and its seams.
+ok: a scale is its DPI: 96 at 100 %, 120 at 125 %, 168 at 175 %, 240 at 250 %
+ok: the matrix covers 100-250 % in 25 % steps (quick: 100, 175, 250 %) and 16:9, 16:10, 3:2 and 21:9
+ok: each aspect's rectangle keeps its ratio, fills 90 % of the work area one way and is centred on it
+ok: a work area left of the primary origin or below a top taskbar is honoured
+ok: rectangles match when every edge is within 1 px (0 for the fullscreen check); a missing one never matches
+ok: --scales takes factors or percents, held to 100-250 %; nothing usable means the default matrix
+ok: --aspects picks the known ratios in matrix order
+ok: DPI is simulated per window (a synthetic WM_DPICHANGED with the aspect's rectangle), never by changing the display
+ok: everything the windows keep goes into a private data folder (under HANDPEG_DATA_DIR when set), deleted at the end
+ok: buttons are hit with UIA ElementFromPoint from an MTA thread while the UI thread answers
+ok: the overlay is compared with the native video window, transport and inspector buttons are hit, and fullscreen equals rcMonitor

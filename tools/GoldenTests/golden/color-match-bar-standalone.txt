@@ -1,0 +1,5 @@
+# The Color Match bar is a control of its own: it reaches the window only through IColorMatchHost; the grade wipe follows events, no polling timer.
+ok: MainWindow implements IColorMatchHost and the bar is built with a host, not the window
+ok: the bar's code never names MainWindow (no private field reach-ins)
+ok: no polling timer places the grade wipe (nor drives the bar)
+ok: size, view-model, DPI and source changes each queue one placement

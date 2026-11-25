@@ -1,0 +1,10 @@
+# Urgent-seek yield: in-flight pre-roll, pointer work and a paused cut's first frames give a visible chase the decode engine, park and resume.
+ok: pre-roll and pointer work in flight yield to a visible chase, playing or paused
+ok: a cut's first frames yield only while paused (a cut ahead of playback keeps its lane)
+ok: visible and play-ahead reads never yield, and nothing yields without a visible chase
+ok: a parked read resumes half a frame past its last decoded frame
+ok: never past its target
+ok: an invalidated resume (frames evicted, the range moved past it, no point) starts the range over
+ok: an unknown frame length resumes at the point itself
+ok: the read loop yields to a visible chase before its next frame, with no frame minimum, ahead of the 4-frame MoreUrgentWaiting rule
+ok: a finished chase frees the engine at once, a parked read resumes through ResumeAt, and a done demand drops its park

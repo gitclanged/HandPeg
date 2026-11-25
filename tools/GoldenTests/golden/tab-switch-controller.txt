@@ -1,0 +1,11 @@
+# ProjectTabController: one operation at a time, every activation bumps the generation, abort returns or marks, finish ends.
+ok: prepare starts one operation from the active tab; a second waits (refused while the first runs)
+ok: commit activates the next tab, bumps the generation (work queued for the old one drops) and keeps the outgoing tab live behind
+ok: finish ends the operation once (a second finish does nothing) and announces switching on, then off
+ok: an operation that is no longer running cannot commit
+ok: a failed resume aborts back to the tab it came from, as one more activation
+ok: with nowhere to return, the failed tab stays in front, marked to retry its resume
+ok: reinstating puts the failed tab back in front, still marked, as the operation's result
+ok: new work in front of a failed tab goes to a fresh active tab, the failed one unmarked (activation resumes it from its file)
+ok: a live tab behind is taken once (closed or let go to its cache file)
+ok: the window's tab switch goes through the controller's prepare, commit and finish

@@ -1,0 +1,7 @@
+# Cutout tight bounds: drawn outlines' vertices or a mask picture's visible pixels, landing on the box and centring the auto anchor.
+ok: drawn outlines give the bounds of every vertex of every outline
+ok: no outline, or one with no area, gives no bounds
+ok: a mask picture's bounds are its pixels at the visible level or above (faint fringe left out), as picture fractions
+ok: an empty or short coverage map gives no bounds
+ok: the bounds land on the box as fractions of what it shows, and the auto anchor is their centre
+ok: a masked layer's tight bounds follow its mask
