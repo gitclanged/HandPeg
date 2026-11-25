@@ -84,6 +84,27 @@ public sealed partial class GpuScenePlan
                 (ramps ??= [])[entry] = [.. layer.SpeedKeys];
         }
 
+        // A blur fill twin (TimelineLowering.BlurTwinOf) copies only its video's constant speed: it takes the ramp of its own video piece
+        // (same clip, start, file offset and speed), so the fill and the picture over it read the same source frame throughout the ramp.
+        if (ramps is not null)
+        {
+            foreach (var twin in entries)
+            {
+                if (twin.Kind != EntryKind.Twin || twin.ClipKey == 0 || ramps.ContainsKey(twin))
+                    continue;
+
+                foreach (var video in entries)
+                {
+                    if (video.Kind == EntryKind.File && video.ClipKey == twin.ClipKey && video.MediaStart == twin.MediaStart
+                        && video.MediaOffset == twin.MediaOffset && video.Speed == twin.Speed && ramps.TryGetValue(video, out var keys))
+                    {
+                        ramps[twin] = keys;
+                        break;
+                    }
+                }
+            }
+        }
+
         return ramps;
     }
 
