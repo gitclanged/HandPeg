@@ -57,6 +57,10 @@ internal sealed partial class DecoderPool
                     lock (_gate)
                     {
                         held = HeldForColdPlay(demand);
+
+                        // Nor for pre-roll, pointer work or a paused cut when a visible chase began meanwhile (urgent-seek yield): no file
+                        // opened beside it; the demand is picked again once the chase ends.
+                        held |= YieldsToVisibleNow(demand);
                         if (held)
                             demand.Source.Opening = Math.Max(demand.Source.Opening - 1, 0);
                     }
@@ -403,16 +407,67 @@ internal sealed partial class DecoderPool
         return busy;
     }
 
-    /// <summary>True when a lane is decoding toward a visible frame (under the lock).</summary>
+    /// <summary>True when a lane is decoding toward a visible frame (under the lock; one just finished, awaiting its lane's release, is not).</summary>
     private bool VisibleBeingDecoded()
     {
         foreach (var demand in _demands)
         {
-            if (demand.Lane >= 0 && demand.Kind == DemandKind.Visible && !demand.Cancelled)
+            if (demand.Lane >= 0 && demand.Kind == DemandKind.Visible && !demand.Cancelled && !demand.Done)
                 return true;
         }
 
         return false;
+    }
+
+    // ----- Urgent-seek yield (Pass 5.6.5) -----
+    // A cold playhead click (a visible frame chased on a lane) gets the hardware decode engine (VCN, NVDEC, Quick Sync) to itself: pre-roll,
+    // pointer work and a paused cut's first frames already under way give their lanes up before their next frame (MostUrgent only kept new
+    // ones from starting). A parked read stays a pending demand, its range a cache interest and its frames kept, and resumes where its
+    // frames end once the chase is over, on whichever decoder takes it (StartOf); a resume point found invalid (the range moved past it,
+    // its frames were evicted) starts the range over. Visible and play-ahead frames, scrub-ahead, idle work (IdleMayRun) and cuts ahead
+    // of playback never yield here.
+
+    /// <summary>
+    /// True when an in-flight read gives its lane up to a visible frame being chased on another lane (<paramref name="visibleDecoding"/>):
+    /// pre-roll and pointer work (<paramref name="preRollOrHover"/>) always, a cut's first frames (<paramref name="cutEntry"/>) only while
+    /// paused. Never a visible or play-ahead frame itself, nor a cut ahead of playback. Pure; checked by goldens.
+    /// </summary>
+    internal static bool YieldsToVisible(bool preRollOrHover, bool cutEntry, bool playing, bool visibleDecoding) =>
+        visibleDecoding && (preRollOrHover || cutEntry && !playing);
+
+    /// <summary>
+    /// Where a range read resumes (<see cref="StartOf"/>): half a frame past its last decoded frame (<paramref name="readTo"/>) while that
+    /// lies inside [<paramref name="keepFrom"/>, <paramref name="target"/>) and every frame from the range's start up to it is still cached
+    /// (<paramref name="covered"/>); otherwise (invalidated: the range moved, frames were evicted, no point) the range's start. Pure.
+    /// </summary>
+    internal static double ResumeAt(double keepFrom, double target, double readTo, double frameDuration, bool covered) =>
+        covered && double.IsFinite(readTo) && readTo > keepFrom && readTo < target
+            ? Math.Min(readTo + (double.IsFinite(frameDuration) && frameDuration > 0 ? frameDuration : 0) * 0.5, target)
+            : keepFrom;
+
+    // Reads parked for a visible chase: the end of their last decoded frame (weakly keyed: a demand dropped elsewhere takes its entry with it).
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<Demand, ParkedRead> _parkedReads = new();
+
+    /// <summary>A parked read's last decoded frame (media seconds) and the frame duration it was read at.</summary>
+    private sealed record ParkedRead(double ReadTo, double FrameDuration);
+
+    private int _visibleYields;
+
+    /// <summary>In-flight reads that gave their lane up to a visible chase since worker start (urgent-seek yield; lock-free).</summary>
+    public int VisibleYields => Volatile.Read(ref _visibleYields);
+
+    // YieldsToVisible for a demand now (under the lock).
+    private bool YieldsToVisibleNow(Demand demand) =>
+        YieldsToVisible(demand.Kind is DemandKind.PreRoll or DemandKind.Hover, demand.HintKind == GpuSeekHintKind.CutEntry, _lastWasPlaying, VisibleBeingDecoded());
+
+    // Parks a lane's read for a visible chase (under the lock): a range keeps the point its frames reached for the resume. A decoder with
+    // no point inside the range (just sought, nothing read yet) leaves an earlier park's point in place; Done drops it.
+    private void ParkForVisible(Demand demand, MfVideoDecoder decoder)
+    {
+        Interlocked.Increment(ref _visibleYields);
+        var read = decoder.ReadTime;
+        if (demand.Stretch && !double.IsNaN(read) && read > demand.KeepFrom && read < demand.Target)
+            _parkedReads.AddOrUpdate(demand, new ParkedRead(read, decoder.FrameDuration));
     }
 
     /// <summary>Lead (sequence seconds) within which a cut into a file being played may get a decoder opened or sought.</summary>
@@ -623,6 +678,10 @@ internal sealed partial class DecoderPool
         {
             if (HeldForColdPlay(demand))
                 return;
+
+            // Nor beside a visible chase that began meanwhile (urgent-seek yield): no seek; a point parked earlier is kept for the resume.
+            if (YieldsToVisibleNow(demand))
+                return;
         }
 
         decoder.Prepare(StartOf(demand, decoder, target));
@@ -663,6 +722,14 @@ internal sealed partial class DecoderPool
                 // closes or the cut comes within CutSoon.
                 if (HeldForColdPlay(demand))
                     return;
+
+                // Urgent seek: a visible frame chased on another lane takes the decode engine at once (no frame minimum: MostUrgent keeps
+                // this demand back until the chase ends, so it is not re-picked meanwhile). The read parks where its frames end.
+                if (YieldsToVisibleNow(demand))
+                {
+                    ParkForVisible(demand, decoder);
+                    return;
+                }
 
                 // Something more urgent that no lane serves (and this read will not pass): yield after at least a few frames so
                 // nothing starves.
@@ -787,6 +854,7 @@ internal sealed partial class DecoderPool
             if (decoder.FrameDurationKnown)
                 (source.FrameDuration, source.FrameDurationKnown) = (decoder.FrameDuration, true);
             demand.Done = true;
+            _parkedReads.Remove(demand);
             if (demand.Kind == DemandKind.Visible)
             {
                 var ms = (float)Stopwatch.GetElapsedTime(demand.Asked).TotalMilliseconds;
@@ -889,7 +957,8 @@ internal sealed partial class DecoderPool
 
     /// <summary>
     /// Decode start for a demand: pre-roll from the first undecoded time in its range (forward from the decoder when the range is cached up
-    /// to it); others from their target.
+    /// to it; else, for a read parked by a visible chase, from where its frames end on any decoder: <see cref="ResumeAt"/>); others from
+    /// their target.
     /// </summary>
     private double StartOf(Demand demand, MfVideoDecoder decoder, double target)
     {
@@ -898,7 +967,10 @@ internal sealed partial class DecoderPool
         var read = decoder.ReadTime;
         if (!double.IsNaN(read) && read > demand.KeepFrom && read < target && _cache.Covers(demand.Source.Serial, demand.KeepFrom, read))
             return Math.Min(read + decoder.FrameDuration * 0.5, target);
-        return demand.KeepFrom;
+        if (!_parkedReads.TryGetValue(demand, out var parked))
+            return demand.KeepFrom;
+        var inside = parked.ReadTo > demand.KeepFrom && parked.ReadTo < target;
+        return ResumeAt(demand.KeepFrom, target, parked.ReadTo, parked.FrameDuration, inside && _cache.Covers(demand.Source.Serial, demand.KeepFrom, parked.ReadTo));
     }
 
     /// <summary>

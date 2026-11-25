@@ -115,6 +115,77 @@ public sealed class LoudnessMeter
 }
 
 /// <summary>
+/// 1-click speech auto-level (the clip gain line's double-click): a clip's own sound is measured as <see cref="LoudnessMeter"/> measures an
+/// export (BS.1770 gating drops the pauses between phrases) over the file range it plays, and its clip gain set so it reaches
+/// <see cref="TargetLufs"/> integrated, held so its sample peak stays under <see cref="CeilingDb"/>, within the clip gain range.
+/// </summary>
+public static class SpeechLevel
+{
+    /// <summary>Speech target, LUFS integrated (the streaming platforms' level; the meter's gold mark).</summary>
+    public const double TargetLufs = -14;
+
+    /// <summary>Highest sample peak after the gain, dBFS.</summary>
+    public const double CeilingDb = -1;
+
+    /// <summary>Clip gain range (TimelineTransaction.SetClipGain), dB.</summary>
+    public const double LeastGainDb = -40, MostGainDb = 24;
+
+    /// <summary>
+    /// Clip gain (dB, to 0.1) bringing a sound measured at 0 dB to <paramref name="targetLufs"/>, held by its peak's headroom under
+    /// <paramref name="ceilingDb"/> and to the clip gain range; null when nothing was heard (silence, or under one 400 ms block). Pure.
+    /// </summary>
+    public static double? GainDb(double integratedLufs, double samplePeak, double targetLufs = TargetLufs, double ceilingDb = CeilingDb)
+    {
+        if (!double.IsFinite(integratedLufs) || !double.IsFinite(targetLufs))
+            return null;
+        var gain = targetLufs - integratedLufs;
+        if (double.IsFinite(samplePeak) && samplePeak > 0)
+            gain = Math.Min(gain, ceilingDb - 20 * Math.Log10(samplePeak));
+        return Math.Round(Math.Clamp(gain, LeastGainDb, MostGainDb), 1);
+    }
+
+    /// <summary>
+    /// Integrated loudness (LUFS) and sample peak of a file's audio stream over <paramref name="seconds"/> of media time from
+    /// <paramref name="from"/> (the engine's clock: from the first video frame), at the decoder's own rate, 0 dB. Blocking; cancellable.
+    /// </summary>
+    public static (double Lufs, double Peak) Measure(string path, int stream, double from, double seconds, CancellationToken token)
+    {
+        if (!System.IO.File.Exists(path))
+            throw new System.IO.FileNotFoundException("The file is not there.", path);
+
+        var source = new AudioSource(path, Math.Max(stream, 0)) { VideoStart = MediaProbe.KnownVideoStart(path) ?? double.NaN };
+        using var decoder = AudioDecoder.Open(source, 48000);
+        decoder.Seek(Math.Max(from, 0));
+        var rate = decoder.SampleRate;
+        var meter = new LoudnessMeter(rate, 2);
+        var total = (long)Math.Ceiling(Math.Max(seconds, 0) * rate);
+        var (left, right, both) = (new float[4096], new float[4096], new float[8192]);
+        var (done, idle) = (0L, 0);
+        while (done < total)
+        {
+            token.ThrowIfCancellationRequested();
+            var got = decoder.Read(left.AsSpan(0, (int)Math.Min(left.Length, total - done)), right.AsSpan(0, (int)Math.Min(right.Length, total - done)));
+            if (got <= 0)
+            {
+                // A pipe not caught up yet: wait 1 ms, giving up after ~10 s with no new data.
+                if (++idle > 10_000)
+                    break;
+                Thread.Sleep(1);
+                continue;
+            }
+
+            idle = 0;
+            for (var i = 0; i < got; i++)
+                (both[2 * i], both[2 * i + 1]) = (left[i], right[i]);
+            meter.Add(both.AsSpan(0, got * 2), got);
+            done += got;
+        }
+
+        return (meter.IntegratedLufs, meter.SamplePeak);
+    }
+}
+
+/// <summary>
 /// Direct-form double-precision biquad for BS.1770 K-weighting (both stages); LoudnessMeter and LiveLoudness run it on channel pairs via
 /// <see cref="Paired"/> with identical per-lane arithmetic.
 /// </summary>
