@@ -58,6 +58,24 @@ public partial class MainWindow
         return ticks;
     }
 
+    /// <summary>
+    /// Gain line double-click (and the clip's Auto-Level Speech): measures in the background and sets the clip gain for -14 LUFS (one undo
+    /// step), then redraws the rows with the new gain line.
+    /// </summary>
+    internal async Task AutoLevelSpeechAsync(Layer clip)
+    {
+        try
+        {
+            if (await _viewModel.AutoLevelSpeechAsync(clip))
+                ScheduleClipRedraw();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Services.AppLog.Write("Auto-Level Speech", ex);
+            _viewModel.StatusText = $"The speech could not be levelled: {ex.Message}";
+        }
+    }
+
     /// <summary>Clip menu "Detect &amp; Snap to Audio Beats": detects in the background, then redraws rows with the beats.</summary>
     private async Task DetectBeatsAsync(Layer clip)
     {

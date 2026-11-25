@@ -54,8 +54,17 @@ public sealed class AudioVoice
     public required double MediaStart { get; init; }
     public double MediaEnd { get; init; } = double.PositiveInfinity;
 
-    /// <summary>Media seconds per sequence second: clip speed (and track tempo), pitch preserved (WSOLA).</summary>
+    /// <summary>
+    /// Media seconds per sequence second: clip speed (and track tempo), pitch preserved (WSOLA). With a <see cref="Ramp"/>, its mean over
+    /// the clip (timing then follows the ramp: <see cref="MediaAt"/>, <see cref="End"/>).
+    /// </summary>
     public double Rate { get; init; } = 1;
+
+    /// <summary>The clip's keyframed speed ramp (Layer.SpeedKeys) on the voice's clock; null at a constant <see cref="Rate"/>.</summary>
+    public AudioSpeedRamp? Ramp { get; init; }
+
+    /// <summary>The clip's hand-drawn ducking curve (Layer.DuckOverrideKeys) on a ducked sound; null for none.</summary>
+    public DuckOverrideCurve? DuckOverride { get; init; }
 
     /// <summary>Pitch factor (track Pitch filter: 2^(semitones/12)); timing unchanged.</summary>
     public double Pitch { get; init; } = 1;
@@ -84,10 +93,12 @@ public sealed class AudioVoice
     public string Label { get; init; } = "";
 
     /// <summary>Sequence time where it stops: its end, or where the file's playable media runs out.</summary>
-    public double End => Math.Min(SequenceEnd, double.IsPositiveInfinity(MediaEnd) ? double.PositiveInfinity : SequenceStart + (MediaEnd - MediaStart) / Rate);
+    public double End => Math.Min(SequenceEnd, double.IsPositiveInfinity(MediaEnd) ? double.PositiveInfinity
+        : SequenceStart + (Ramp is { } ramp ? ramp.SoundSeconds(MediaEnd - MediaStart) : (MediaEnd - MediaStart) / Rate));
 
-    /// <summary>Media time heard at a sequence time.</summary>
-    public double MediaAt(double sequenceSeconds) => MediaStart + (sequenceSeconds - SequenceStart) * Rate;
+    /// <summary>Media time heard at a sequence time (through the <see cref="Ramp"/> when keyframed).</summary>
+    public double MediaAt(double sequenceSeconds) =>
+        MediaStart + (Ramp is { } ramp ? ramp.MediaSeconds(sequenceSeconds - SequenceStart) : (sequenceSeconds - SequenceStart) * Rate);
 
     /// <summary>True when audible anywhere in [from, to).</summary>
     public bool Overlaps(double from, double to) => SequenceStart < to && End > from;
@@ -235,4 +246,198 @@ public sealed class AudioProgram
 
     /// <summary>Monotonic unique id identifying the program in logs and tests.</summary>
     public long Serial { get; }
+}
+
+/// <summary>
+/// A clip's hand-drawn ducking curve on the sequence (Layer.DuckOverrideKeys: reduction in dB, Layer.DuckOverrideFloorDb..0, eased between
+/// keys at seconds from <see cref="Origin"/>, the clip's sequence start). From its first key to its last it replaces the automatic ducking
+/// of that clip's sound outright; over <see cref="EdgeSeconds"/> outside them the gain glides back to the side chain's (no click); beyond,
+/// the voices duck it as before (AudioMixer). Immutable.
+/// </summary>
+public sealed class DuckOverrideCurve
+{
+    /// <summary>Hand-over glide between the automatic and the drawn gain just outside the curve's ends.</summary>
+    public const double EdgeSeconds = 0.005;
+
+    private readonly Keyframe[] _keys;
+
+    /// <param name="keys">Layer.DuckOverrideKeys (clip-relative seconds, dB).</param>
+    /// <param name="origin">The clip's sequence start (clip-relative 0).</param>
+    public DuckOverrideCurve(IEnumerable<Keyframe> keys, double origin)
+    {
+        _keys = [.. keys.Where(k => double.IsFinite(k.Time) && double.IsFinite(k.Value))
+            .Select(k => k with { Value = Math.Clamp(k.Value, Layer.DuckOverrideFloorDb, 0) }).OrderBy(k => k.Time)];
+        Origin = double.IsFinite(origin) ? origin : 0;
+    }
+
+    /// <summary>Sequence time of clip-relative 0.</summary>
+    public double Origin { get; }
+
+    public IReadOnlyList<Keyframe> Keys => _keys;
+
+    /// <summary>Sequence times of the first and last key (the span the curve rules); an empty curve rules nowhere.</summary>
+    public double From => _keys.Length > 0 ? Origin + _keys[0].Time : double.PositiveInfinity;
+
+    public double To => _keys.Length > 0 ? Origin + _keys[^1].Time : double.NegativeInfinity;
+
+    /// <summary>True when the curve (or its edge glide) touches [<paramref name="from"/>, <paramref name="to"/>).</summary>
+    public bool Overlaps(double from, double to) => From - EdgeSeconds < to && To + EdgeSeconds >= from;
+
+    /// <summary>Drawn reduction (dB) at a sequence time; null outside the first and last key (Layer.DuckOverrideAt on the sequence).</summary>
+    public double? DecibelsAt(double sequenceSeconds) =>
+        sequenceSeconds >= From && sequenceSeconds <= To ? Math.Clamp(EasingCurves.ValueAt(_keys, sequenceSeconds - Origin), Layer.DuckOverrideFloorDb, 0) : null;
+
+    /// <summary>
+    /// Gain at a sequence time given the automatic ducking factor there (<paramref name="automatic"/>, 1 when nothing ducks): the drawn
+    /// curve's between its ends, gliding to <paramref name="automatic"/> over <see cref="EdgeSeconds"/> outside them, else the automatic.
+    /// </summary>
+    public float GainAt(double sequenceSeconds, float automatic)
+    {
+        var outside = Math.Max(From - sequenceSeconds, sequenceSeconds - To);
+        if (!(outside < EdgeSeconds))
+            return automatic;
+        var held = Math.Clamp(sequenceSeconds, From, To) - Origin;
+        var drawn = Math.Pow(10, Math.Clamp(EasingCurves.ValueAt(_keys, held), Layer.DuckOverrideFloorDb, 0) / 20);
+        var weight = outside <= 0 ? 1 : 1 - outside / EdgeSeconds;
+        return (float)(automatic + (drawn - automatic) * weight);
+    }
+}
+
+/// <summary>
+/// A voice's keyframed speed ramp on its own clock (seconds since its sequence start; the clip's slip only shifts it): media seconds played
+/// since the voice's <see cref="AudioVoice.MediaStart"/> are the contract's SpeedRamp.MediaSeconds times the strip's net Pitch/Tempo factor.
+/// Tabulated once (at every key and every <see cref="Step"/> between keys, each cell by 3-point Gauss-Legendre at interior points, so held
+/// segments stay exact and the table matches the contract at the keys); the held speeds before the first key and after the last extrapolate
+/// linearly. Lookups (<see cref="MediaSeconds"/>, its inverse <see cref="SoundSeconds"/>) are allocation-free. Immutable.
+/// </summary>
+public sealed class AudioSpeedRamp
+{
+    /// <summary>Table step between keys, seconds (2 ms: well under a sample of drift for any ramp in 0.1x..16x).</summary>
+    public const double Step = 0.002;
+
+    private const int MostNodes = 200_000;
+
+    private readonly Keyframe[] _keys;
+    private readonly double _constant, _net, _first, _last, _before, _after, _zero;
+    private readonly double[] _times, _media;
+
+    /// <param name="keys">Layer.SpeedKeys (clip-relative seconds, speed in x).</param>
+    /// <param name="constantSpeed">Layer.Speed (used without keys).</param>
+    /// <param name="net">The strip's net Pitch/Tempo rate factor (1 without one).</param>
+    public AudioSpeedRamp(IEnumerable<Keyframe> keys, double constantSpeed, double net)
+    {
+        _keys = [.. SpeedRamp.Normalized(keys)];
+        (_constant, _net) = (constantSpeed, double.IsFinite(net) && net > 0 ? net : 1);
+        if (_keys.Length == 0)
+        {
+            (_first, _last, _times, _media, _zero) = (0, 0, [0], [0], 0);
+            _before = _after = SpeedRamp.SpeedAt(_keys, _constant, 0) * _net;
+            return;
+        }
+
+        (_first, _last) = (_keys[0].Time, _keys[^1].Time);
+        (_before, _after) = (SpeedRamp.SpeedAt(_keys, _constant, _first - 1) * _net, SpeedRamp.SpeedAt(_keys, _constant, _last + 1) * _net);
+        var step = Math.Max(Step, (_last - _first) / MostNodes);
+        var times = new List<double> { _first };
+        var media = new List<double> { SpeedRamp.MediaSeconds(_keys, _constant, _first) * _net };
+        for (var k = 1; k < _keys.Length; k++)
+        {
+            var (a, b) = (_keys[k - 1].Time, _keys[k].Time);
+            var cells = Math.Max((int)Math.Ceiling((b - a) / step - 1e-9), 1);
+            for (var c = 1; c <= cells; c++)
+            {
+                var (from, to) = (times[^1], c == cells ? b : a + (b - a) * c / cells);
+                if (to <= from)
+                    continue;
+                times.Add(to);
+                media.Add(c == cells ? SpeedRamp.MediaSeconds(_keys, _constant, b) * _net : media[^1] + Cell(from, to));
+            }
+        }
+
+        (_times, _media) = (times.ToArray(), media.ToArray());
+
+        // Exactly 0 at the voice's start (a key before clip-relative 0 puts it inside a cell).
+        _zero = MediaAtTable(0);
+    }
+
+    // Integral of the speed (x net) over one cell inside a key segment: 3-point Gauss-Legendre at interior points only.
+    private double Cell(double from, double to)
+    {
+        var (middle, half) = ((from + to) / 2, (to - from) / 2);
+        var offset = half * Math.Sqrt(0.6);
+        return half * _net * (5.0 / 9 * SpeedRamp.SpeedAt(_keys, _constant, middle - offset) + 8.0 / 9 * SpeedRamp.SpeedAt(_keys, _constant, middle)
+                              + 5.0 / 9 * SpeedRamp.SpeedAt(_keys, _constant, middle + offset));
+    }
+
+    /// <summary>The ramp's keys (normalized as Layer.SetSpeedKeys keeps them).</summary>
+    public IReadOnlyList<Keyframe> Keys => _keys;
+
+    /// <summary>Media rate (speed x net) at a moment of the voice's clock.</summary>
+    public double RateAt(double soundSeconds) => SpeedRamp.SpeedAt(_keys, _constant, soundSeconds) * _net;
+
+    /// <summary>Fastest and slowest media rate anywhere on the ramp (the held ends included).</summary>
+    public double MostRate => _keys.Length == 0 ? _before : _keys.Max(k => k.Value) * _net;
+
+    public double LeastRate => _keys.Length == 0 ? _before : _keys.Min(k => k.Value) * _net;
+
+    /// <summary>Media seconds played from the voice's start to a moment of its clock (negative before it).</summary>
+    public double MediaSeconds(double soundSeconds) => double.IsFinite(soundSeconds) ? MediaAtTable(soundSeconds) - _zero : 0;
+
+    /// <summary>The moment of the voice's clock at which <paramref name="mediaSeconds"/> have played (inverse of <see cref="MediaSeconds"/>).</summary>
+    public double SoundSeconds(double mediaSeconds)
+    {
+        if (!double.IsFinite(mediaSeconds))
+            return mediaSeconds;
+        var (times, media) = (_times, _media);
+        var wanted = mediaSeconds + _zero;
+        if (wanted <= media[0])
+            return times[0] - (media[0] - wanted) / _before;
+        if (wanted >= media[^1])
+            return times[^1] + (wanted - media[^1]) / _after;
+        var at = IndexIn(media, wanted);
+        var u = (wanted - media[at]) / Math.Max(media[at + 1] - media[at], 1e-15);
+        return times[at] + (times[at + 1] - times[at]) * u;
+    }
+
+    // The table's media value at a clock moment: the integral from clip-relative 0, the held speeds extrapolated outside the keys.
+    private double MediaAtTable(double soundSeconds)
+    {
+        var (times, media) = (_times, _media);
+        if (soundSeconds <= times[0])
+            return media[0] - (times[0] - soundSeconds) * _before;
+        if (soundSeconds >= times[^1])
+            return media[^1] + (soundSeconds - times[^1]) * _after;
+        var at = IndexIn(times, soundSeconds);
+        return media[at] + (media[at + 1] - media[at]) * (soundSeconds - times[at]) / (times[at + 1] - times[at]);
+    }
+
+    // Index of the table cell [values[i], values[i + 1]) holding a value inside the table (binary search; values ascending).
+    private static int IndexIn(double[] values, double value)
+    {
+        var (low, high) = (0, values.Length - 1);
+        while (high - low > 1)
+        {
+            var middle = (low + high) >>> 1;
+            if (values[middle] <= value)
+                low = middle;
+            else
+                high = middle;
+        }
+
+        return low;
+    }
+
+    /// <summary>Identity of the mapping (keys, constant speed, net factor) for keying decoded audio (AudioMixer.VoiceKey).</summary>
+    public string Identity()
+    {
+        var hash = new HashCode();
+        foreach (var key in _keys)
+        {
+            hash.Add(key.Time);
+            hash.Add(key.Value);
+            hash.Add(key.Easing);
+        }
+
+        return string.Create(System.Globalization.CultureInfo.InvariantCulture, $"ramp{_keys.Length}:{hash.ToHashCode():x8}:{_constant:R}:{_net:R}");
+    }
 }

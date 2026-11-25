@@ -239,6 +239,16 @@ internal static class AudioProgramBuilder
             ChannelPair = pair,
         };
 
+        // A keyframed speed ramp (Layer.SpeedKeys) times the sound through the contract's mapping (SpeedRamp) on the voice's own clock (a slip
+        // only shifts it): media from the clip's start is its integral, the voice's Rate its mean. A ramp keeps pitch (the engine stretches
+        // by a varying tempo; Keep Pitch off has no tape glide on a ramp).
+        var ramp = layer.HasSpeed && layer.HasSpeedRamp ? new AudioSpeedRamp(layer.SpeedKeys, layer.Speed, net) : null;
+        var mediaSpan = !timed ? double.PositiveInfinity : ramp is not null ? layer.MediaSecondsAt(layer.Duration) : layer.Duration * speed;
+        var rate = ramp is not null && timed && mediaSpan > 0 ? mediaSpan / layer.Duration * net : speed * net;
+
+        // A hand-drawn ducking curve (Layer.DuckOverrideKeys) only shapes a ducked sound, from the clip's sequence start like its keys.
+        var drawn = sound.Ducked && layer.HasDuckOverrides ? new DuckOverrideCurve(layer.DuckOverrideKeys, sound.Clip?.Start ?? layer.StartTime) : null;
+
         var fadeIn = Math.Clamp(layer.FadeInSeconds, 0, 60);
         var fadeOut = Math.Clamp(layer.FadeOutSeconds, 0, 60);
         return new AudioVoice
@@ -247,9 +257,11 @@ internal static class AudioProgramBuilder
             SequenceStart = startsAt,
             SequenceEnd = timed ? startsAt + layer.Duration : double.PositiveInfinity,
             MediaStart = layer.MediaOffset,
-            MediaEnd = timed ? layer.MediaOffset + layer.Duration * speed : double.PositiveInfinity,
-            Rate = speed * net,
-            Pitch = layer.KeepPitch ? pitch : pitch * speed,
+            MediaEnd = timed ? layer.MediaOffset + mediaSpan : double.PositiveInfinity,
+            Rate = rate,
+            Ramp = ramp,
+            DuckOverride = drawn,
+            Pitch = layer.KeepPitch || ramp is not null ? pitch : pitch * speed,
             Spectral = layer.SpectralAudio,
             Gain = gain,
             FadeIn = new AudioFade(fadeIn > 0.01 ? fadeIn : 0),

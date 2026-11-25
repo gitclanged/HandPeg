@@ -48,8 +48,19 @@ internal sealed class AudioPhaseVocoder : IStereoSource
     private int _inCount, _ready, _readyAt, _fluxCount, _fluxNext;
     private long _frame, _analysedAt, _resetAt;
     private float _fluxBefore;
+    private ITempoMap? _map;
 
     public double Tempo { get; private set; } = 1;
+
+    /// <summary>
+    /// Restarts at a varying tempo (a speed ramp: analysis frames follow <paramref name="map"/>, each frame's phase advance measured over its
+    /// own analysis hop); null keeps <paramref name="tempo"/>. Callers keep the ramp's fastest tempo within <see cref="FastestTempo"/>.
+    /// </summary>
+    public void Reset(IStereoSource source, double tempo, int sampleRate, ITempoMap? map)
+    {
+        Reset(source, tempo, sampleRate);
+        _map = map;
+    }
 
     /// <summary>Frame length for a sample rate (~43 ms).</summary>
     public static int FrameFor(int sampleRate) => sampleRate > 64000 ? 4096 : sampleRate < 32000 ? 1024 : 2048;
@@ -59,7 +70,7 @@ internal sealed class AudioPhaseVocoder : IStereoSource
 
     public void Reset(IStereoSource source, double tempo, int sampleRate)
     {
-        (_source, Tempo) = (source, Math.Clamp(tempo, 0.05, 64));
+        (_source, Tempo, _map) = (source, Math.Clamp(tempo, 0.05, 64), null);
         var size = FrameFor(sampleRate);
         if (size != _size)
         {
@@ -121,8 +132,12 @@ internal sealed class AudioPhaseVocoder : IStereoSource
         _readyAt = 0;
     }
 
-    // Input position of frame k: its centre (output k x hop + half a frame) mapped onto the tempo line.
-    private long AnalysisAt(long frame) => (long)Math.Round((frame * _hop + _half) * Tempo - _half);
+    // Input position of frame k: its centre (output k x hop + half a frame) mapped onto the tempo line (a ramp's map: its integral).
+    private long AnalysisAt(long frame)
+    {
+        var centre = frame * _hop + _half;
+        return (long)Math.Round((_map is { } map ? map.InputAt(centre) : centre * Tempo) - _half);
+    }
 
     private bool NextFrame()
     {

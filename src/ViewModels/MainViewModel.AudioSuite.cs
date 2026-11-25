@@ -193,6 +193,79 @@ public partial class MainViewModel
         return true;
     }
 
+    // ----- Speech auto-level (double-click the gain line) -----
+    // Measures a clip's own sound in the background (SpeechLevel: BS.1770 integrated loudness of the file range it plays, at 0 dB) and sets
+    // its clip gain to reach -14 LUFS, held by its peak's headroom, in one undo step.
+
+    // Clip ids being measured; a repeat request while one runs does nothing.
+    private readonly HashSet<Guid> _levelling = [];
+
+    /// <summary>Whether speech auto-level applies (file clip with sound, not already being measured).</summary>
+    public bool CanAutoLevelSpeech(Layer? clip) => ClipOf(clip) is { HasSound: true, SourcePath.Length: > 0 } model && !_levelling.Contains(model.Id);
+
+    /// <summary>
+    /// 1-click speech auto-level: sets a clip's gain so its sound reaches <see cref="SpeechLevel.TargetLufs"/> (one undo step). False when
+    /// nothing changed (no sound, silent, unreadable, the clip removed or its tab sent behind meanwhile; the reason in the status bar).
+    /// </summary>
+    public async Task<bool> AutoLevelSpeechAsync(Layer clip)
+    {
+        if (ClipOf(clip) is not { HasSound: true, SourcePath: { Length: > 0 } path } model)
+        {
+            StatusText = "Auto-Level Speech needs a clip with sound.";
+            return false;
+        }
+
+        if (!_levelling.Add(model.Id))
+            return false;
+
+        var (id, name, stream, generation) = (model.Id, clip.Name, model.AudioStreamIndex, _projectGeneration);
+        var (from, span) = (clip.MediaOffset, clip.HasSpeedRamp ? clip.MediaSecondsAt(clip.Duration) : clip.Duration * Math.Max(clip.Speed, Layer.SlowestSpeed));
+        StatusText = $"Measuring the loudness of {name}...";
+        (double Lufs, double Peak) measured;
+        using var adding = BeginAdd();
+        try
+        {
+            measured = await Task.Run(() => SpeechLevel.Measure(path, stream, from, span, _shutdown.Token), _shutdown.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or InvalidOperationException or UnauthorizedAccessException or NotSupportedException
+                                       or System.Runtime.InteropServices.COMException)
+        {
+            AppLog.Write($"Speech level of {path}", ex);
+            StatusText = $"The loudness of {name} could not be measured: {ex.Message}";
+            return false;
+        }
+        finally
+        {
+            _levelling.Remove(id);
+        }
+
+        // Its project tab went behind meanwhile: never applied to the active tab (duplicates share clip ids).
+        if (generation != _projectGeneration)
+        {
+            StatusText = $"{name} was not levelled: its project tab went behind first.";
+            return false;
+        }
+
+        if (Document.FindClip(id) is not { } now)
+            return false;
+        if (SpeechLevel.GainDb(measured.Lufs, measured.Peak) is not { } gain)
+        {
+            StatusText = $"{name} is silent: nothing to level.";
+            return false;
+        }
+
+        if (!Edit($"auto-level the speech of {name}", edit => edit.SetClipGain(now, gain)))
+            return false;
+
+        StatusText = string.Create(CultureInfo.InvariantCulture,
+            $"{name}: {measured.Lufs:0.0} LUFS, gain {gain:+0.0;-0.0;0} dB for {SpeechLevel.TargetLufs:0} LUFS{(measured.Lufs + gain < SpeechLevel.TargetLufs - 0.05 ? " (held by its peak)" : "")}.");
+        return true;
+    }
+
     /// <summary>Clear Audio Beats: removes a clip's beats in one undo step.</summary>
     public void ClearClipBeats(Layer clip)
     {
