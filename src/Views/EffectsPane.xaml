@@ -6,7 +6,7 @@
              AutomationProperties.Name="Effects Pane">
     <!--
         Effects pane: effect stack of the selected clip or the Sequence Output. Title row: target, Add Effect (hover
-        for a categorized list with search), Bypass All and the stack menu. Cards are built in code
+        for a categorized list with search; resting on an effect while paused previews it on the clip), Bypass All and the stack menu. Cards are built in code
         (EffectsPane.xaml.cs): one per effect, grip-dragged to reorder within their zone (ReorderBehavior), with a
         slider and number box per value (double-click resets).
     -->
@@ -23,7 +23,7 @@
                 <Button x:Name="AddButton" Padding="8,3" Click="AddButton_Click" AutomationProperties.Name="Add Effect" PreviewKeyDown="AddButton_PreviewKeyDown"
                         ToolTip="Add Effect: rest the pointer here (or press Down) for the effects by category, with a search box. A click opens the list too.">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="11" VerticalAlignment="Center" />
+                        <TextBlock Text="&#xE710;" FontFamily="Segoe MDL2 Assets" FontSize="11" VerticalAlignment="Center" local:ButtonChrome.AdaptiveIcon="True" />
                         <TextBlock Text="Add Effect" Margin="5,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>

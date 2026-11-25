@@ -69,6 +69,9 @@ public partial class EffectsPane : UserControl
     // Window hooked for click-away close while the Add Effect flyout is open.
     private Window? _addOwner;
 
+    // Live paused hover previews of Add Effect items (created with the view model).
+    private PausedHoverPreview? _hoverPreview;
+
     // Add Effect flyout close delay after the pointer leaves it and its button (260 ms, matching Settings).
     private readonly DispatcherTimer _addClose;
 
@@ -141,6 +144,7 @@ public partial class EffectsPane : UserControl
             return;
         Detach();
         _vm = viewModel;
+        _hoverPreview = new PausedHoverPreview(viewModel);
         DataContext = viewModel;
         Hook();
     }
@@ -148,6 +152,8 @@ public partial class EffectsPane : UserControl
     /// <summary>Unbinds the view model: removes all handlers from <see cref="Attach"/> and the target, flushing pending writes.</summary>
     public void Detach()
     {
+        _hoverPreview?.Dispose();
+        _hoverPreview = null;
         Unhook();
         _vm = null;
         DataContext = null;
@@ -1007,6 +1013,7 @@ public partial class EffectsPane : UserControl
             return;
 
         CloseAdd();
+        _hoverPreview?.Leave();
         if (definition.Pinned)
         {
             AddPinned(definition);
@@ -1318,6 +1325,7 @@ public partial class EffectsPane : UserControl
 
     private void BuildAddList(string search)
     {
+        _hoverPreview?.Leave();
         AddList.Children.Clear();
         bool Matches(string text) => search.Length == 0 || text.Contains(search, StringComparison.OrdinalIgnoreCase);
         var available = EffectRegistry.All.Where(d => Fits(d) && (Matches(d.Name) || Matches(d.Category)))
@@ -1326,7 +1334,11 @@ public partial class EffectsPane : UserControl
         {
             AddList.Children.Add(MenuHeading(group.Key));
             foreach (var definition in group)
-                AddList.Children.Add(MenuButton(definition.Name, $"{definition.Description} ({definition.Cost} cost in the preview.)", () => Add(definition)));
+            {
+                var item = MenuButton(definition.Name, $"{definition.Description} ({definition.Cost} cost in the preview.)", () => Add(definition));
+                PreviewOnHover(item, definition);
+                AddList.Children.Add(item);
+            }
         }
 
         // Effect presets (.hpfx) saved from this pane.
@@ -1342,6 +1354,20 @@ public partial class EffectsPane : UserControl
 
         if (AddList.Children.Count == 0)
             AddList.Children.Add(MenuHeading(_stack is null ? "Nothing selected." : "No effect matches."));
+    }
+
+    // Live paused hover preview of an effect item on the target clip (not the Sequence Output or the blur fill); leaving puts it back.
+    private void PreviewOnHover(Button item, EffectDefinition definition)
+    {
+        if (!PausedHoverPreview.Previewable(definition))
+            return;
+
+        item.MouseEnter += (_, _) =>
+        {
+            if (_layer is { IsBackground: false } layer)
+                _hoverPreview?.HoverEffect([layer], definition);
+        };
+        item.MouseLeave += (_, _) => _hoverPreview?.Leave();
     }
 
     private TextBlock MenuHeading(string text)
@@ -1394,6 +1420,7 @@ public partial class EffectsPane : UserControl
     private void CloseAdd()
     {
         _addClose.Stop();
+        _hoverPreview?.Leave();
         var hadFocus = AddFlyoutPanel.IsKeyboardFocusWithin;
         AddPopup.IsOpen = false;
         if (hadFocus)
@@ -1414,6 +1441,7 @@ public partial class EffectsPane : UserControl
 
     private void AddPopup_Closed(object? sender, EventArgs e)
     {
+        _hoverPreview?.Leave();
         if (_addOwner is not null)
         {
             _addOwner.PreviewMouseDown -= AddOwner_PreviewMouseDown;

@@ -20,7 +20,8 @@ namespace HandPegApp;
 public sealed class ButtonChrome : Decorator
 {
     public static readonly DependencyProperty BackgroundProperty = DependencyProperty.Register(
-        nameof(Background), typeof(Brush), typeof(ButtonChrome), new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+        nameof(Background), typeof(Brush), typeof(ButtonChrome),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender, (d, _) => ((ButtonChrome)d).SurfaceChanged?.Invoke(d, EventArgs.Empty)));
 
     public Brush? Background
     {
@@ -292,5 +293,165 @@ public sealed class ButtonChrome : Decorator
         shade.Freeze();
         drawing.DrawGeometry(null, upper, lit);
         drawing.DrawGeometry(null, lower, shade);
+    }
+
+    // ----- Adaptive icon contrast (Pass 5.6.5) -----
+    // Opt-in per icon (AdaptiveIcon on a glyph TextBlock or a Shape): its colour is kept at UiBrushes.IconContrast (3:1) against the
+    // surface behind it, re-checked whenever the nearest ButtonChrome's fill changes (hover, press, check, theme) and whenever its own
+    // colour is replaced (a theme's accent). The icon's own colour stays its tint: the adapted one is a current value (SetCurrentValue),
+    // so a DynamicResource behind it keeps working. Faces without adaptive icons pay one null check per fill change.
+
+    /// <summary>Raised when <see cref="Background"/> changes (adaptive icons inside re-check their contrast).</summary>
+    public event EventHandler? SurfaceChanged;
+
+    public static readonly DependencyProperty AdaptiveIconProperty = DependencyProperty.RegisterAttached(
+        "AdaptiveIcon", typeof(bool), typeof(ButtonChrome), new PropertyMetadata(false, OnAdaptiveIconChanged));
+
+    /// <summary>True on an icon (glyph TextBlock or Shape) whose colour keeps 3:1 contrast against the face behind it.</summary>
+    public static bool GetAdaptiveIcon(DependencyObject element) => (bool)element.GetValue(AdaptiveIconProperty);
+
+    public static void SetAdaptiveIcon(DependencyObject element, bool value) => element.SetValue(AdaptiveIconProperty, value);
+
+    // Per-icon listeners while adaptive.
+    private static readonly DependencyProperty IconStateProperty = DependencyProperty.RegisterAttached(
+        "IconState", typeof(AdaptiveIconState), typeof(ButtonChrome), new PropertyMetadata(null));
+
+    /// <summary>
+    /// Marks every coloured glyph under <paramref name="root"/> (logical tree, so before it is shown): a TextBlock in an icon font
+    /// (Segoe MDL2 / Fluent Icons) whose Foreground is set on it or by its style rather than inherited (accent-tinted tool icons).
+    /// </summary>
+    public static void AdaptIconsUnder(DependencyObject root)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+        {
+            if (child is TextBlock glyph && IsIconFont(glyph.FontFamily)
+                && DependencyPropertyHelper.GetValueSource(glyph, TextBlock.ForegroundProperty).BaseValueSource is BaseValueSource.Local or BaseValueSource.Style)
+                SetAdaptiveIcon(glyph, true);
+            AdaptIconsUnder(child);
+        }
+    }
+
+    private static bool IsIconFont(FontFamily? family) => family?.Source is { } name
+        && (name.Contains("MDL2", StringComparison.OrdinalIgnoreCase) || name.Contains("Fluent", StringComparison.OrdinalIgnoreCase));
+
+    private static void OnAdaptiveIconChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not FrameworkElement icon || IconPropertyOf(icon) is not { } property)
+            return;
+
+        if (e.NewValue is true)
+        {
+            if (icon.GetValue(IconStateProperty) is AdaptiveIconState)
+                return;
+            var state = new AdaptiveIconState(icon, property);
+            icon.SetValue(IconStateProperty, state);
+            state.Start();
+        }
+        else if (icon.GetValue(IconStateProperty) is AdaptiveIconState state)
+        {
+            state.Stop();
+            icon.ClearValue(IconStateProperty);
+        }
+    }
+
+    // The colour property an icon is drawn with: a glyph's Foreground, a shape's Fill (or Stroke when unfilled).
+    private static DependencyProperty? IconPropertyOf(FrameworkElement icon) => icon switch
+    {
+        TextBlock => TextBlock.ForegroundProperty,
+        System.Windows.Shapes.Shape { Fill: not null } => System.Windows.Shapes.Shape.FillProperty,
+        System.Windows.Shapes.Shape => System.Windows.Shapes.Shape.StrokeProperty,
+        _ => null,
+    };
+
+    /// <summary>One adaptive icon's listeners, attached only while it is loaded (so neither the face nor the descriptor keeps it alive).</summary>
+    private sealed class AdaptiveIconState(FrameworkElement icon, DependencyProperty property)
+    {
+        private ButtonChrome? _face;
+        private Color? _tint;
+        private bool _writing;
+        private System.ComponentModel.DependencyPropertyDescriptor? _descriptor;
+
+        public void Start()
+        {
+            icon.Loaded += Icon_Loaded;
+            icon.Unloaded += Icon_Unloaded;
+            if (icon.IsLoaded)
+                Attach();
+        }
+
+        public void Stop()
+        {
+            icon.Loaded -= Icon_Loaded;
+            icon.Unloaded -= Icon_Unloaded;
+            Detach();
+            if (_tint is not null)
+                icon.InvalidateProperty(property);
+        }
+
+        private void Icon_Loaded(object sender, RoutedEventArgs e) => Attach();
+
+        private void Icon_Unloaded(object sender, RoutedEventArgs e) => Detach();
+
+        private void Attach()
+        {
+            Detach();
+            for (var at = VisualTreeHelper.GetParent(icon); at is not null; at = VisualTreeHelper.GetParent(at))
+            {
+                if (at is ButtonChrome face)
+                {
+                    _face = face;
+                    face.SurfaceChanged += Face_SurfaceChanged;
+                    break;
+                }
+            }
+
+            _descriptor = System.ComponentModel.DependencyPropertyDescriptor.FromProperty(property, icon.GetType());
+            _descriptor?.AddValueChanged(icon, Icon_ColorChanged);
+            Adapt();
+        }
+
+        private void Detach()
+        {
+            if (_face is not null)
+                _face.SurfaceChanged -= Face_SurfaceChanged;
+            _face = null;
+            _descriptor?.RemoveValueChanged(icon, Icon_ColorChanged);
+            _descriptor = null;
+        }
+
+        private void Face_SurfaceChanged(object? sender, EventArgs e) => Adapt();
+
+        // A colour written by someone else (a theme's accent, a trigger) is the new tint.
+        private void Icon_ColorChanged(object? sender, EventArgs e)
+        {
+            if (_writing)
+                return;
+            _tint = null;
+            Adapt();
+        }
+
+        private void Adapt()
+        {
+            if (_tint is null)
+            {
+                if (icon.GetValue(property) is not SolidColorBrush own)
+                    return;
+                _tint = own.Color;
+            }
+
+            var shown = UiBrushes.ContrastSafe(_tint.Value, UiBrushes.SurfaceBehind(VisualTreeHelper.GetParent(icon)));
+            if (icon.GetValue(property) is SolidColorBrush current && current.Color == shown)
+                return;
+
+            _writing = true;
+            try
+            {
+                icon.SetCurrentValue(property, UiBrushes.Frozen(shown));
+            }
+            finally
+            {
+                _writing = false;
+            }
+        }
     }
 }
