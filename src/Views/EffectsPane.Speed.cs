@@ -75,6 +75,7 @@ public partial class EffectsPane
         (_rippleCheck, _smoothCheck, _keepPitchCheck, _spectralCheck) = (null, null, null, null);
         _speedPillButtons.Clear();
         _typedBoxes.Clear();
+        (_ramp, _rampNote, _rampStepTaken) = (null, null, false);
         _opacityCardShown = _layer is { HasStyle: true, IsAdjustment: false } shown && OpacityShows(shown);
 
         if (_vm is null || _noClip || _layer is not { HasSpeed: true, IsBackground: false } layer)
@@ -109,6 +110,7 @@ public partial class EffectsPane
         body.Children.Add(SpeedRow());
         body.Children.Add(PillRow());
         body.Children.Add(DurationRow());
+        body.Children.Add(RampRow(target, sound));
         _rippleCheck = SpeedCheck("Ripple Timeline", AppSettings.Current.SpeedRipplesTimeline, "Later clips move with the new length.", on =>
             _vm?.SetViewSetting(s => s.SpeedRipplesTimeline = on));
         body.Children.Add(_rippleCheck);
@@ -116,7 +118,7 @@ public partial class EffectsPane
         // Video: Smooth Slow-Mo and the interpolation engine (a machine setting).
         if (!sound)
         {
-            _smoothCheck = SpeedCheck("Smooth Slow-Mo", target.SmoothSlowMo, "Optical-flow in-betweens when slower than 1x.", on =>
+            _smoothCheck = SpeedCheck("Smooth Slow-Mo", target.SmoothSlowMo, "Optical-flow in-betweens below 1x; auto-on when a ramp dips.", on =>
                 SetOption($"switch Smooth Slow-Mo {(on ? "on" : "off")}", l => l.SmoothSlowMo = on));
             body.Children.Add(_smoothCheck);
             body.Children.Add(EngineRow());
@@ -558,6 +560,8 @@ public partial class EffectsPane
                 if (_pitchBox is { } pitchBox && !_typedBoxes.Contains(pitchBox))
                     pitchBox.Text = pitch.Value.ToString("0", CultureInfo.InvariantCulture);
             }
+
+            ShowRamp(target);
         }
         finally
         {
@@ -571,7 +575,8 @@ public partial class EffectsPane
         {
             // Speed, length or option changed (edit or Undo): refresh, unless a drag is in progress.
             case nameof(Layer.Speed) or nameof(Layer.ClipSpeed) or nameof(Layer.Duration) or nameof(Layer.MediaOffset)
-                or nameof(Layer.SmoothSlowMo) or nameof(Layer.KeepPitch) or nameof(Layer.SpectralAudio) or nameof(Layer.AudioFilters):
+                or nameof(Layer.SmoothSlowMo) or nameof(Layer.KeepPitch) or nameof(Layer.SpectralAudio) or nameof(Layer.AudioFilters)
+                or nameof(Layer.SpeedKeys) or nameof(Layer.HasSpeedRamp):
                 if (!_speedHeld && ReferenceEquals(_layer, _speedFor))
                     ShowSpeed();
                 break;

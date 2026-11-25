@@ -119,6 +119,19 @@ public interface ITimelineTransaction : IDisposable
     /// </summary>
     double CloseGap(TimelineTrackModel track, double gapStart, double gapEnd, bool rippleAllUnlockedTracks);
 
+    /// <summary>
+    /// Ripple-closes the gap containing <paramref name="sequenceTime"/> on <paramref name="track"/> (<see cref="TimelineDocument.GapAround"/>):
+    /// a double-click in empty track space. Returns the distance moved; 0 when the time is on a clip or after the track's last clip.
+    /// </summary>
+    double CloseGapAt(TimelineTrackModel track, double sequenceTime, bool rippleAllUnlockedTracks);
+
+    /// <summary>
+    /// Media swap in place (Alt+drop on a clip): the clip and its children sharing its file play <paramref name="path"/> instead, keeping
+    /// their timing, look and effects. The in-point moves back (then the end in) only as far as the new file is too short; beats are
+    /// cleared. Refused on locked tracks.
+    /// </summary>
+    void ReplaceClipSource(TimelineClip clip, string path, double sourceDuration, double pictureDuration);
+
     // ----- Clip and track properties (atomic, clamped, refused on locked tracks) -----
 
     /// <summary>

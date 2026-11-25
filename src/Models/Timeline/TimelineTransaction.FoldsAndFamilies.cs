@@ -795,3 +795,41 @@ internal sealed partial class TimelineTransaction
         return tracks;
     }
 }
+
+// ----- Gap close at a time and media swap in place (Pass 5.6.5: timeline double-click and Alt+drop) -----
+internal sealed partial class TimelineTransaction
+{
+    public double CloseGapAt(TimelineTrackModel track, double sequenceTime, bool rippleAllUnlockedTracks) => Step(() =>
+        _doc.GapAround(track, sequenceTime) is { } gap ? CloseUp(track, gap.Start, gap.End, rippleAllUnlockedTracks) : 0);
+
+    public void ReplaceClipSource(TimelineClip clip, string path, double sourceDuration, double pictureDuration) => Step(() =>
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new TimelineEditException("There is no file to swap in.");
+
+        // The family is found before the clip changes file: its children follow the clip's old path.
+        List<TimelineClip> family = [clip, .. _doc.Tracks.SelectMany(t => t.Clips)
+            .Where(c => c.ParentClipId == clip.Id && c.PlaysFile && string.Equals(c.SourcePath, clip.SourcePath, StringComparison.OrdinalIgnoreCase))];
+        var whole = double.IsFinite(sourceDuration) ? Math.Max(sourceDuration, 0) : 0;
+        var picture = double.IsFinite(pictureDuration) && pictureDuration > 0 && pictureDuration < whole ? pictureDuration : 0;
+        var changed = false;
+        foreach (var piece in family)
+        {
+            changed |= Change(piece, c =>
+            {
+                (c.SourcePath, c.SourceDuration, c.PictureDuration, c.BeatTimes) = (path, whole, picture, null);
+                if (!c.PlaysFile || c.WholeDuration <= 0)
+                    return;
+
+                // Too short for the clip's source span: the in-point moves back first, then the end comes in (never below the minimum).
+                var span = c.Duration * c.Speed;
+                if (c.MediaOffset + span > c.WholeDuration)
+                    c.MediaOffset = Math.Max(c.WholeDuration - span, 0);
+                if (c.MediaOffset + span > c.WholeDuration)
+                    c.End = c.Start + Math.Max((c.WholeDuration - c.MediaOffset) / c.Speed, TimelineDocument.MinimumClipSeconds);
+            });
+        }
+
+        return changed;
+    });
+}

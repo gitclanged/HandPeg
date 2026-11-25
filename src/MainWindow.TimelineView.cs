@@ -300,8 +300,22 @@ public partial class MainWindow
         SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(TimelineSidewaysWheel);
     }
 
+    // Wheel gesture memory over the timeline rows (TouchpadWheel: a touchpad gesture keeps its kind across both axes).
+    private readonly TouchpadWheel _timelineWheel = new();
+
     private IntPtr TimelineSidewaysWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg is not (WmMouseWheel or WmMouseHWheel))
+            return IntPtr.Zero;
+
+        // Touchpad over the rows, either axis: 1:1 two-axis scroll, pinch zoom, Alt heights. A mouse wheel goes on to WPF (OnMouseWheel).
+        if (UnifiedTimeline.Surface is { IsVisible: true, IsMouseOver: true } rows && _timelineWheel.Read(msg, wParam, lParam) is { Touchpad: true } touch)
+        {
+            rows.TakeTouchpadWheel(touch, rows.PointFromScreen(touch.ScreenPixels));
+            handled = true;
+            return TouchpadWheel.HandledResult(touch.Horizontal);
+        }
+
         if (msg != WmMouseHWheel)
             return IntPtr.Zero;
 

@@ -96,6 +96,38 @@ public partial class MainViewModel
     /// Close-gap pill: shifts later content on the track back by the gap (all unlocked tracks with Ripple All Tracks, keeping sync).
     /// A leading gap (from 0 s) brings the track's first clip to the start. One undo step.
     /// </summary>
+    /// <summary>
+    /// Double-click in empty track space: ripple-closes the gap around <paramref name="seconds"/> on the row's track
+    /// (ITimelineTransaction.CloseGapAt, Ripple All Tracks per the setting). One undo step.
+    /// </summary>
+    public bool CloseGapAt(Layer row, double seconds)
+    {
+        if (TrackOfRow(row) is not { } track || Document.GapAround(track, seconds) is not { } gap || !(gap.End - gap.Start > TimelineDocument.MinimumClipSeconds))
+            return false;
+
+        if (!Edit($"close a gap of {gap.End - gap.Start:0.##} s", edit => edit.CloseGapAt(track, seconds, AppSettings.Current.RippleAllTracks)))
+            return false;
+
+        StatusText = $"Closed the gap of {TimeDisplay.Format(gap.End - gap.Start)} on {track.DisplayName}.";
+        return true;
+    }
+
+    /// <summary>
+    /// Alt+drop of a file on a clip: it (and its Cutouts) play <paramref name="path"/> instead, keeping place, length, look and effects
+    /// (ITimelineTransaction.ReplaceClipSource). One undo step.
+    /// </summary>
+    public bool SwapClipMedia(Layer clip, string path, double sourceDuration, double pictureDuration)
+    {
+        if (ClipOf(clip) is not { PlaysFile: true } model || IsRestoringTimeline)
+            return false;
+
+        if (!Edit($"swap the media of {clip.Name}", edit => edit.ReplaceClipSource(model, path, sourceDuration, pictureDuration)))
+            return false;
+
+        StatusText = $"Swapped in {System.IO.Path.GetFileName(path)}: same place, length and effects.";
+        return true;
+    }
+
     public bool CloseGapOn(Layer row, double from, double to)
     {
         from = Math.Max(from, 0);

@@ -145,6 +145,9 @@ public partial class MainWindow
         surface.CloseGapRequested += Timeline_CloseGapRequested;
         surface.RazorRequested += Timeline_RazorRequested;
 
+        // Alt+wheel track height, gap double-click, Ghost Playhead (MainWindow.UnifiedTimeline.Gestures.cs).
+        InitializeTimelineGestures(surface);
+
         // Global track height from the surface: Alt+Shift+wheel, lower-edge drag or double-click.
         surface.TrackHeightStepped += notches => _viewModel.LayerTrackHeight = Math.Clamp(_viewModel.LayerTrackHeight + notches * TrackHeightStepsPerNotch, 1, 50);
         surface.TrackHeightDragStarted += () => _trackHeightAtDrag = _viewModel.LayerTrackHeight;

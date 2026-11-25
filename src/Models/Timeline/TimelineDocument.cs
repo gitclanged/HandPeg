@@ -1065,3 +1065,29 @@ public sealed partial class TimelineDocument : IJsonOnDeserialized
         }
     }
 }
+// ----- Gaps (Pass 5.6.5: double-click ripple close) -----
+public sealed partial class TimelineDocument
+{
+    /// <summary>
+    /// The empty stretch of <paramref name="track"/> around <paramref name="time"/> (Sequence seconds): from the end of the clip before it
+    /// (or 0) to the start of the clip after it. Null on a clip, after the last clip, or for a stretch shorter than a microsecond.
+    /// </summary>
+    public (double Start, double End)? GapAround(TimelineTrackModel track, double time)
+    {
+        if (!double.IsFinite(time) || time < 0)
+            return null;
+
+        var (start, end) = (0.0, double.PositiveInfinity);
+        foreach (var clip in track.Clips)
+        {
+            if (clip.Start <= time && clip.End > time)
+                return null;
+            if (clip.End <= time)
+                start = Math.Max(start, clip.End);
+            else
+                end = Math.Min(end, clip.Start);
+        }
+
+        return double.IsPositiveInfinity(end) || end - start <= 1e-6 ? null : (start, end);
+    }
+}

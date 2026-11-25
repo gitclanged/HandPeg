@@ -257,7 +257,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         // Thumbnails are many and downscaled: use the cheapest bitmap scaling (smooth scaling costs most while scrolling).
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.LowQuality);
 
-        _scroller.Transform = _shift;
+        // Scroll shift, then the Spring-Zoom magnification about the pointer (identity unless a drag springs it; Gestures.cs).
+        _scroller.Transform = new TransformGroup { Children = { _shift, _springScale } };
         _scroller.Children.Add(_content);
         _scroller.Children.Add(_overlay);
         _labels.Transform = _labelsRise;
@@ -721,7 +722,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     }
 
     /// <summary>True while a block, fade, gain line, J/L cut or started track-header drag is active; the host must not replace rows meanwhile.</summary>
-    public bool IsDragging => _drag is not null || _gainDrag is not null || _fadeDrag is not null || _splitDrag is not null || _crossfadeDrag is not null
+    public bool IsDragging => _drag is not null || _duckDrag is not null || _gainDrag is not null || _fadeDrag is not null || _splitDrag is not null || _crossfadeDrag is not null
         || _rowDrag is { Started: true };
 
     // ----- Laying out -----
