@@ -37,6 +37,11 @@ public static class Program
         string? Option(string name) => Array.IndexOf(args, name) is var at && at >= 0 && at + 1 < args.Length ? args[at + 1] : null;
         double Number(string name, double fallback) => double.TryParse(Option(name), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : fallback;
 
+        // The S-F hardware grade of a HandPeg.exe --hw-benchmark run (its JSON lines saved to a file), by the app's own tier rules: one line,
+        // "System <letter> (<score>): <parts>", or "System -" when the run measured nothing.
+        if (Option("--tier") is { } benchmark)
+            return Tier(benchmark);
+
         // A project played across its cuts (Pass 5.0-Release): its own mode, on the user's own data folder (the project's
         // seek indexes and proxies are what the app would use; the settings file is put back as it was).
         if (Option("--project") is { } project && File.Exists(project))
@@ -48,7 +53,8 @@ public static class Program
 
         if (args.Length == 0 || !File.Exists(args[0]))
         {
-            Console.WriteLine("HandPeg.SeekBench <video> [--ffprobe path] [--ffmpeg path] [--duration s] [--seeks n] [--cache-mb n] [--threads n] [--software-decode] [--out file.json]");
+            Console.WriteLine("HandPeg.SeekBench <video> [--ffprobe path] [--ffmpeg path] [--duration s] [--seeks n] [--cache-mb n] [--threads n] [--software-decode] [--out file.json] [--compare before.json]");
+            Console.WriteLine("HandPeg.SeekBench --tier <hw-benchmark output.jsonl>");
             Console.WriteLine("HandPeg.SeekBench --project <file.hproj> [--from s] [--seconds s] [--refresh hz] [--runs n] [--rest ms] [--hints horizon|legacy|none] [--cache-mb n] [--threads n] [--software-decode]");
             return 2;
         }
@@ -103,6 +109,7 @@ public static class Program
             bench.Scrub(),
             bench.HoverThenClick(seeks / 2, 150),
             bench.HoverThenClick(seeks / 2, 300),
+            bench.UrgentSeeks(seeks),
             bench.Playback(10),
         };
 
@@ -113,6 +120,9 @@ public static class Program
         var decoded = Volatile.Read(ref client.Memory.Control.DecodedFrames);
         report.AppendLine(FormattableString.Invariant(
             $"Cache: {stats.Frames} frames, {stats.Bytes >> 20} of {stats.BudgetBytes >> 20} MB, {stats.Hits} hits, {stats.Misses} misses, {stats.PredictedHits} decoded ahead, {stats.Evictions} evicted; worst exact {stats.WorstExactLatencyMs:0.0} ms"));
+        report.AppendLine(UrgentSummary(results));
+        if (Option("--compare") is { } before && File.Exists(before))
+            report.Append(Compare(before, results));
         Console.Write(report.ToString());
         if (Option("--out") is { } outPath)
         {
@@ -134,6 +144,92 @@ public static class Program
 
         return 0;
     }
+
+    /// <summary>
+    /// Seek-to-first-frame of a cold playhead click with the decode engine busy (pre-roll, hover play-ahead and a paused cut's first frames
+    /// in flight) against one with it idle: what the urgent-seek yield (DecoderPool.Lanes, Pass 5.6.5) is meant to close.
+    /// </summary>
+    private static string UrgentSummary(List<Result> results)
+    {
+        var (urgent, cold) = (results.FirstOrDefault(r => r.Name == UrgentName), results.FirstOrDefault(r => r.Name == ColdName));
+        if (urgent is null || cold is null)
+            return "";
+        string Line(string what, List<double> busy, List<double> idle)
+        {
+            var (b50, b95, i50, i95) = (Result.Percentile(busy, 0.5), Result.Percentile(busy, 0.95), Result.Percentile(idle, 0.5), Result.Percentile(idle, 0.95));
+            return FormattableString.Invariant($"{what}: busy engine p50 {b50:0.0} / p95 {b95:0.0} ms vs idle p50 {i50:0.0} / p95 {i95:0.0} ms (contention {Signed(b50 - i50)} / {Signed(b95 - i95)} ms)");
+        }
+
+        static string Signed(double ms) => Math.Round(ms, 1) is var r && r >= 0 ? FormattableString.Invariant($"+{r:0.0}") : FormattableString.Invariant($"{r:0.0}");
+
+        // The exact frame is the seek's own decode (a first frame is often the nearest cached stand-in, shown at once).
+        return Line("Urgent seek to the exact frame", urgent.ExactMs, cold.ExactMs) + Environment.NewLine + Line("Urgent seek to any first frame", urgent.FirstMs, cold.FirstMs);
+    }
+
+    /// <summary>
+    /// Before/after table against an earlier run's --out file (e.g. a build without the urgent-seek yield): first-frame and exact p50/p95
+    /// per scenario both runs have.
+    /// </summary>
+    private static string Compare(string beforePath, List<Result> results)
+    {
+        var text = new StringBuilder().AppendLine($"Compared with {Path.GetFileName(beforePath)} (before -> after, ms):");
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(beforePath));
+            foreach (var old in json.RootElement.EnumerateArray())
+            {
+                var name = old.GetProperty("Name").GetString();
+                if (results.FirstOrDefault(r => r.Name == name) is not { } now)
+                    continue;
+                static double Read(System.Text.Json.JsonElement e, string p) =>
+                    e.TryGetProperty(p, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.Number ? v.GetDouble() : double.NaN;
+                var after = now.Summary();
+                text.AppendLine(FormattableString.Invariant(
+                    $"  {name,-26} first p50 {Read(old, "FirstP50"),6:0.0} -> {after.FirstP50,6:0.0}  p95 {Read(old, "FirstP95"),6:0.0} -> {after.FirstP95,6:0.0} | exact p50 {Read(old, "ExactP50"),7:0.0} -> {after.ExactP50,7:0.0}  p95 {Read(old, "ExactP95"),7:0.0} -> {after.ExactP95,7:0.0}"));
+            }
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or InvalidOperationException or KeyNotFoundException or IOException)
+        {
+            text.AppendLine("  (the earlier report could not be read: " + ex.Message + ")");
+        }
+
+        return text.ToString();
+    }
+
+    private static int Tier(string path)
+    {
+        if (!File.Exists(path))
+        {
+            Console.WriteLine("System - (no benchmark output)");
+            return 1;
+        }
+
+        var json = new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web);
+        HardwareBenchmarkResult? result = null;
+        foreach (var line in File.ReadLines(path))
+        {
+            try
+            {
+                if (line.TrimStart().StartsWith('{') && System.Text.Json.JsonSerializer.Deserialize<HardwareBenchmarkLine>(line, json) is { Type: "result", Result: { } found })
+                    result = found;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                // A line that is not the benchmark's (a log line): skipped.
+            }
+        }
+
+        if (result is null || PerformanceTiers.System(result) is not { } tier)
+        {
+            Console.WriteLine("System - (nothing measured)");
+            return 1;
+        }
+
+        Console.WriteLine(PerformanceTiers.SystemTip(result, tier));
+        return 0;
+    }
+
+    private const string ColdName = "cold seeks", UrgentName = "urgent seeks (engine busy)";
 
     private static string? FindOnPath(string exe) =>
         (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).Select(d => Path.Combine(d.Trim(), exe)).FirstOrDefault(File.Exists);
@@ -176,7 +272,7 @@ public static class Program
 
     private sealed record Result(string Name, List<double> FirstMs, List<double> ExactMs, int Decodes, int Approximate, int Total, string Note = "")
     {
-        private static double Percentile(List<double> values, double p)
+        public static double Percentile(List<double> values, double p)
         {
             if (values.Count == 0)
                 return double.NaN;
@@ -186,6 +282,9 @@ public static class Program
 
         public string Describe() => FormattableString.Invariant(
             $"{Name,-26} first p50 {Percentile(FirstMs, 0.5),6:0.0} p95 {Percentile(FirstMs, 0.95),6:0.0} | exact p50 {Percentile(ExactMs, 0.5),7:0.0} p95 {Percentile(ExactMs, 0.95),7:0.0} max {Percentile(ExactMs, 1),7:0.0} ms | {Decodes} decodes, {Approximate}/{Total} stand-ins {Note}");
+
+        public (double FirstP50, double FirstP95, double ExactP50, double ExactP95) Summary() =>
+            (Percentile(FirstMs, 0.5), Percentile(FirstMs, 0.95), Percentile(ExactMs, 0.5), Percentile(ExactMs, 0.95));
 
         public object ToJson() => new
         {
@@ -277,7 +376,7 @@ public static class Program
         }
 
         public Result ColdSeeks(int count) =>
-            Seeks("cold seeks", Enumerable.Range(0, count).Select(_ => RandomMoment()).ToList(), () =>
+            Seeks(ColdName, Enumerable.Range(0, count).Select(_ => RandomMoment()).ToList(), () =>
             {
                 client.ClearFrameCache();
                 Thread.Sleep(30);
@@ -358,6 +457,37 @@ public static class Program
 
             client.SetHints([]);
             return new Result(FormattableString.Invariant($"hover {restMs} ms then click"), firsts, exacts, Decoded - decoded, approximate, count);
+        }
+
+        /// <summary>
+        /// Cold clicks while the decode engine is busy: a click (its pre-roll starts), a resting pointer's play-ahead and a paused cut's first
+        /// frames hinted elsewhere, then 40 ms later a click at a third far moment, timed to its first and exact frame.
+        /// </summary>
+        public Result UrgentSeeks(int count)
+        {
+            var (firsts, exacts) = (new List<double>(), new List<double>());
+            var (approximate, decoded) = (0, Decoded);
+            Span<GpuSeekHint> hints = stackalloc GpuSeekHint[2];
+            for (var i = 0; i < count; i++)
+            {
+                client.ClearFrameCache();
+                Thread.Sleep(30);
+                var (busy, hover, cut, target) = (RandomMoment(), RandomMoment(), RandomMoment(), RandomMoment());
+                hints[0] = new GpuSeekHint { SourceId = 0, Kind = (int)GpuSeekHintKind.HoverRoll, MediaSeconds = hover, Span = 2 };
+                hints[1] = new GpuSeekHint { SourceId = 0, Kind = (int)GpuSeekHintKind.CutEntry, MediaSeconds = cut, Span = 2, At = 1 };
+                client.SetHints(hints);
+                Show(busy);
+                Thread.Sleep(40);
+                var (first, exact, wasApproximate) = Time(target);
+                if (double.IsFinite(first))
+                    firsts.Add(first);
+                if (double.IsFinite(exact))
+                    exacts.Add(exact);
+                approximate += wasApproximate ? 1 : 0;
+            }
+
+            client.SetHints([]);
+            return new Result(UrgentName, firsts, exacts, Decoded - decoded, approximate, count, "(pre-roll, hover and cut reads in flight)");
         }
 
         public Result Playback(double seconds)

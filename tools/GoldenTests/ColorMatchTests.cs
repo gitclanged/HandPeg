@@ -266,12 +266,13 @@ public static class ColorMatchTests
                && !ColorMatch.ShownAt(hidden, 5) && ColorMatch.ShownAt(open, 600) && !ColorMatch.ShownAt(open, 0.5) && ColorMatch.ShownAt(fill, 0),
             "F23: a clip is on screen from its start to its end (not hidden; a Duration of 0 runs to the end), the blur fill always");
 
-        var bar = SourceProbe.Src("MainWindow.ColorMatch.cs");
+        // The bar is a control of its own since Pass 5.6.5 (Controls/ColorMatchBar.cs), reaching the window through IColorMatchHost.
+        var bar = SourceProbe.Src("Controls", "ColorMatchBar.cs");
         var refusal = SourceProbe.Member(bar, "private string? Refusal()");
         expect(refusal.Contains("if (target.Layer is { } layer && !ColorMatch.ShownAt(layer, viewModel.PositionMs / 1000))", StringComparison.Ordinal)
                && refusal.Contains("return \"Target not shown\";", StringComparison.Ordinal) && refusal.Contains("return ColorMatch.DrawnRefusal(card, Bypassed(target)) ?? ColorMatch.CardRefusal(card);", StringComparison.Ordinal),
             "F23, F22, F24, G3: Pick Target refuses a target off screen at the playhead (\"Target not shown\"), a grade not drawn, a card with a LUT mixed in or a keyframed value");
-        expect(bar.Contains("private bool Bypassed(ColorGradeTarget target) => target.Layer?.EffectsBypassed ?? _window._viewModel.SequenceEffectsBypassed;", StringComparison.Ordinal),
+        expect(bar.Contains("private bool Bypassed(ColorGradeTarget target) => target.Layer?.EffectsBypassed ?? _host.ViewModel.SequenceEffectsBypassed;", StringComparison.Ordinal),
             "G3: a stack is bypassed by its clip's (or the blur fill's) Bypass All, the Sequence Output's by the Sequence's");
 
         // F20: the grade the frame was read under, kept with it; the click ungrades the colour once under it; Match solves from it.
@@ -306,9 +307,10 @@ public static class ColorMatchTests
         var end = SourceProbe.Member(bar, "private void EndPick()");
         var changed = SourceProbe.Member(bar, "private void ViewModel_PropertyChanged(");
         var move = SourceProbe.Member(bar, "private void Overlay_PreviewMouseMove(");
-        expect(begin.Contains("_window._viewModel.PreviewStateInvalidated += Picture_Invalidated;", StringComparison.Ordinal) && end.Contains("_window._viewModel.PreviewStateInvalidated -= Picture_Invalidated;", StringComparison.Ordinal)
+        expect(begin.Contains("_host.ViewModel.PreviewStateInvalidated += Picture_Invalidated;", StringComparison.Ordinal) && end.Contains("_host.ViewModel.PreviewStateInvalidated -= Picture_Invalidated;", StringComparison.Ordinal)
                && SourceProbe.Member(bar, "private void Picture_Invalidated()").Contains("Status(\"Pick the target again\");", StringComparison.Ordinal)
-               && changed.Contains("nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer) => true", StringComparison.Ordinal),
+               && changed.Contains("EndsFrame(e.PropertyName, _pickedAtMs)", StringComparison.Ordinal)
+               && SourceProbe.Member(bar, "private bool EndsFrame(").Contains("nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer) => true", StringComparison.Ordinal),
             "F25: an edit, Undo, a grade moved (the preview state invalidated), Interactive Crop or a Draw target end the pick (\"Pick the target again\")");
         expect(press.IndexOf("if (EndedByRefusal())", StringComparison.Ordinal) is > 0 and var refusedAt && refusedAt < press.IndexOf("e.Handled = true;", StringComparison.Ordinal)
                && move.Contains("if (_frame is not null && EndedByRefusal())", StringComparison.Ordinal)

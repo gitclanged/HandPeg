@@ -1,0 +1,20 @@
+# HandPeg.exe --dpi-matrix at 100 % and 250 %, 16:9 and 21:9: overlay on the video window (1 px), buttons hit by UIA, fullscreen on the monitor.
+ok: HandPeg.exe is built beside the goldens
+ok: HandPeg.exe --dpi-matrix exits with its pass code
+ok: every window was checked at each of the 2 x 2 configurations
+  main: 4 configurations
+ok: main holds at 100 % and 250 %, 16:9 and 21:9
+  overlay: 4 configurations
+ok: overlay holds at 100 % and 250 %, 16:9 and 21:9
+  buttons: 4 configurations
+ok: buttons holds at 100 % and 250 %, 16:9 and 21:9
+  fullscreen: 4 configurations
+ok: fullscreen holds at 100 % and 250 %, 16:9 and 21:9
+  mask: 4 configurations
+ok: mask holds at 100 % and 250 %, 16:9 and 21:9
+  mask-buttons: 4 configurations
+ok: mask-buttons holds at 100 % and 250 %, 16:9 and 21:9
+  first-run: 4 configurations
+ok: first-run holds at 100 % and 250 %, 16:9 and 21:9
+  first-run-buttons: 4 configurations
+ok: first-run-buttons holds at 100 % and 250 %, 16:9 and 21:9

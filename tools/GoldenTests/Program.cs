@@ -72,6 +72,7 @@ public static class Program
         run.Suite("TimelineDocumentTests", TimelineDocumentTests.All);
         run.Suite("ModelSeamTests", ModelSeamTests.All);
         run.Suite("ContractSeamTests", ContractSeamTests.All);
+        run.Suite("Pass565Tests", Pass565Tests.All);
         run.Suite("ShellBudgetTests", ShellBudgetTests.All);
         run.Suite("ShellArchitectureTests", ShellArchitectureTests.All);
         run.Suite("TimelineGraphCases", TimelineGraphCases.All);
@@ -198,6 +199,8 @@ public static class Program
         run.Suite("SpeedTimeTests.Live", SpeedTimeTests.Live);
         run.Suite("CutPacingTests.Live", CutPacingTests.Live);
         run.Suite("EngineCorrectnessTests.Live", EngineCorrectnessTests.Live);
+
+        run.Suite("Pass565Tests.Live", Pass565Tests.Live);
 
         // Last: no thread rule was broken by any suite but the case that breaks one on purpose.
         run.Suite("ThreadLifetimeTests.Final", ThreadLifetimeTests.Final);

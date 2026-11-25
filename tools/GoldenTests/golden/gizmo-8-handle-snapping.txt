@@ -1,0 +1,11 @@
+# The 8-handle gizmo: anchor hit square, Shift steps and frees, velocity-gated magnetic snapping to frame, boxes, gaps and sizes.
+ok: the anchor takes a press only within its 6 x 6 square, and never on a box under 36 DIP
+ok: Shift turns in 45 degree steps; angles wrap to -180..180 at a tenth of a degree
+ok: a corner keeps the shape until Shift frees it
+ok: snapping is magnetic only slower than 180 DIP/s, with the setting on and no free key
+ok: the gate's first move is slow, 10 DIP in 10 ms reads 600 DIP/s (smoothed), and a pause reads slow
+ok: a box whose centre is near the frame's centre line snaps onto it within reach, with a guide
+ok: a box nearer another's top line than the frame's centre snaps to it, shows a guide, and marks the two as the same size
+ok: no reach, no snap
+ok: a resize snaps its size to another layer's within reach
+ok: the gizmo's handles follow these rules (edge handles only on sides of 30 DIP or more)
