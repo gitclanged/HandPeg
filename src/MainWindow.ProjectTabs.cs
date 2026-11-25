@@ -381,10 +381,14 @@ public partial class MainWindow
 
         var switching = _tabControl.Prepare("switch project tabs");
         TabWrite? write = null;
+        ProjectTabHeader? behind = null;
+        object? parked = null;
+        var settled = false;
         try
         {
             // Deactivate synchronously (kept live in memory) and reactivate a live tab synchronously: no await between the two.
-            var behind = PutActiveBehind(out write);
+            behind = PutActiveBehind(out write);
+            parked = _viewModel.Document;
             _tabControl.Commit(switching, tab);
             ShowTabs();
 
@@ -404,12 +408,16 @@ public partial class MainWindow
                 await ResumeTabAsync(tab, behind);
             }
 
+            // The front is settled: the incoming project attached, or its failure handled (TakeBack / failed resume).
+            settled = true;
             RefreshActiveTab(fingerprint: !hot);
             WriteTabManifest();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             NoteTabFault("switch project tabs", ex);
+            if (!settled && behind is not null)
+                SettleFailedSwitch(tab, behind, parked);
         }
         finally
         {
@@ -422,6 +430,30 @@ public partial class MainWindow
         // Pre-roll the Ctrl+Tab target: decode its playhead frames ahead.
         PrewarmLikelyTabs(null);
         LetGoForMemory();
+    }
+
+    /// <summary>
+    /// A switch faulted after the outgoing tab was put behind but before the front settled. While the incoming project has not replaced the
+    /// detached one (<paramref name="parked"/> still in the view model) the outgoing tab is taken back from memory (<see cref="TakeBack"/>);
+    /// if that is impossible or faults too, the incoming tab stays active as a failed resume, so the active header never claims a Sequence
+    /// it does not hold. Runs before the edit guard is released (ProjectTabController.Finish).
+    /// </summary>
+    private void SettleFailedSwitch(ProjectTabHeader tab, ProjectTabHeader behind, object? parked)
+    {
+        if (!ReferenceEquals(tab, _tabs.Active) || !ReferenceEquals(_viewModel.Document, parked))
+            return;
+        try
+        {
+            TakeBack(tab, behind);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Project tabs: the tab put behind could not be taken back", ex);
+        }
+
+        if (ReferenceEquals(tab, _tabs.Active))
+            _tabControl.MarkUnresumed(tab.Id);
+        ShowTabs();
     }
 
     /// <summary>Retries resuming the active failed-resume tab from its file or memory (nothing to deactivate: the shown project is empty).</summary>

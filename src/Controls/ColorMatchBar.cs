@@ -129,6 +129,11 @@ internal sealed class ColorMatchBar : StackPanel
     private bool _overlayForced;
     private double _pickedAtMs;
 
+    // Pick Target capture in flight: its generation (a tab switch, seek, playback, preview change or unload bumps it, so the late frame is
+    // dropped) and the playhead it was asked at.
+    private int _captureGeneration;
+    private double _readingAtMs;
+
     public ColorMatchBar(IColorMatchHost host, Func<ColorGradeTarget> target)
     {
         (_host, _target) = (host, target);
@@ -183,6 +188,7 @@ internal sealed class ColorMatchBar : StackPanel
         // Unloaded (Color tab moved or hidden): end pick mode and any Match Strength drag (its card subscription released).
         Unloaded += (_, _) =>
         {
+            InvalidateCapture("");
             EndPick();
             if (_strengthDragging)
                 CancelStrengthDrag();
@@ -202,7 +208,11 @@ internal sealed class ColorMatchBar : StackPanel
     public void CancelPick()
     {
         if (_frame is null)
+        {
+            // Still reading (tab switch during the capture): the frame arriving later is dropped.
+            InvalidateCapture(Next());
             return;
+        }
         EndPick();
         Status(Next());
     }
@@ -410,18 +420,31 @@ internal sealed class ColorMatchBar : StackPanel
 
         // Grade at capture time (used to ungrade the target colour on click).
         var shot = ShotOf(_target());
-        _reading = true;
+        var capture = ++_captureGeneration;
+        var viewModel = _host.ViewModel;
+        (_reading, _readingAtMs) = (true, viewModel.PositionMs);
         Status("Reading the frame");
         (byte[] Bgra, int Width, int Height)? frame;
+        viewModel.PropertyChanged += Reading_PropertyChanged;
+        viewModel.PreviewStateInvalidated += Reading_Invalidated;
         try
         {
-            // The capture slot is shared with Export/Copy Frame (a newer request cancels an older one with null): retry once on null.
-            frame = await _host.CaptureFrameAsync() ?? await _host.CaptureFrameAsync();
+            // The capture slot is shared with Export/Copy Frame (a newer request cancels an older one with null): retry once on null,
+            // unless the capture was invalidated meanwhile.
+            frame = await _host.CaptureFrameAsync();
+            if (frame is null && capture == _captureGeneration)
+                frame = await _host.CaptureFrameAsync();
         }
         finally
         {
             _reading = false;
+            viewModel.PropertyChanged -= Reading_PropertyChanged;
+            viewModel.PreviewStateInvalidated -= Reading_Invalidated;
         }
+
+        // Invalidated during the read (tab switch, seek, playback, preview change, unload): the status already says so.
+        if (capture != _captureGeneration)
+            return;
 
         if (frame is not { Width: > 0, Height: > 0 } read || read.Bgra.Length < read.Width * read.Height * 4)
         {
@@ -539,19 +562,42 @@ internal sealed class ColorMatchBar : StackPanel
     // longer matches what is shown).
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        var viewModel = _host.ViewModel;
-        var ends = e.PropertyName switch
-        {
-            nameof(MainViewModel.IsPlaying) => viewModel.IsPlaying,
-            nameof(MainViewModel.HasSource) or nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer) => true,
-            nameof(MainViewModel.PositionMs) => Math.Abs(viewModel.PositionMs - _pickedAtMs) > 1,
-            _ => false,
-        };
-        if (ends && _frame is not null)
+        if (EndsFrame(e.PropertyName, _pickedAtMs) && _frame is not null)
         {
             EndPick();
             Status("");
         }
+    }
+
+    // True when a view-model change makes a frame taken at playhead atMs no longer match what is shown.
+    private bool EndsFrame(string? property, double atMs)
+    {
+        var viewModel = _host.ViewModel;
+        return property switch
+        {
+            nameof(MainViewModel.IsPlaying) => viewModel.IsPlaying,
+            nameof(MainViewModel.HasSource) or nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer) => true,
+            nameof(MainViewModel.PositionMs) => Math.Abs(viewModel.PositionMs - atMs) > 1,
+            _ => false,
+        };
+    }
+
+    // While Pick Target reads its frame: the same changes that end a pick drop the frame being read.
+    private void Reading_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (EndsFrame(e.PropertyName, _readingAtMs))
+            InvalidateCapture("Pick the target again");
+    }
+
+    private void Reading_Invalidated() => InvalidateCapture("Pick the target again");
+
+    // Drops the capture in flight (no-op when none): its frame is ignored on arrival and not retried.
+    private void InvalidateCapture(string status)
+    {
+        if (!_reading)
+            return;
+        _captureGeneration++;
+        Status(status);
     }
 
     // Preview inputs changed (edit, Undo/Redo, grade or setting): the held frame is stale, so end the pick (a spurious invalidation
