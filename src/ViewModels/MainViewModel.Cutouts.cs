@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
@@ -156,6 +157,7 @@ public partial class MainViewModel
     /// </summary>
     private static List<LayerState>? CutoutStates(IReadOnlyList<CutoutPiece> pieces)
     {
+        // Each with its visible-pixel bounds (the outlines') and its anchor kept at their centre (Pass 5.6.5).
         var states = pieces.Where(piece => MaskStore.DrawnKey(piece.Shapes).Length > 0).Select(piece => new LayerState
         {
             Name = piece.Name,
@@ -163,8 +165,118 @@ public partial class MainViewModel
             SourceX = piece.Source.X, SourceY = piece.Source.Y, SourceWidth = piece.Source.Width, SourceHeight = piece.Source.Height,
             PositionX = piece.X, PositionY = piece.Y, SizeWidth = piece.Width,
             CustomMask = true, MaskPath = "", MaskFrame = true, MaskShapes = piece.Shapes, Feather = true, FeatherRadius = 1,
+            TightBounds = MaskStore.BoundsOfOutlines(piece.Shapes)?.ToArray(),
+            AutoCenterAnchor = true,
         }).ToList();
+        foreach (var state in states)
+            CentreAnchorOn(state);
         return states.Count > 0 ? states : null;
+    }
+
+    // A new Cutout's anchor at the centre of its visible pixels, as fractions of its box (its source rect: no crop yet).
+    private static void CentreAnchorOn(LayerState state)
+    {
+        if (SourceBounds.From(state.TightBounds) is not { } tight || !(state.SourceWidth > 0 && state.SourceHeight > 0))
+            return;
+        var (x, y) = ((tight.UMin + tight.UMax) / 2, (tight.VMin + tight.VMax) / 2);
+        (state.AnchorX, state.AnchorY) = (Layer.Anchor((x - state.SourceX) / state.SourceWidth), Layer.Anchor((y - state.SourceY) / state.SourceHeight));
+    }
+
+    // ----- Visible-pixel tight bounds and the auto-centred anchor (Pass 5.6.5) -----
+    // A masked layer's TightBounds follow its mask (MaskStore.TightBoundsOf: drawn outlines or visible mask pixels), so the selection box
+    // and the gizmo hug the HUD element. While AutoCenterAnchor is on, the anchor sits at their centre (Layer.TightAnchor) and the layer
+    // stays put (MoveAnchor), so rotating or tilting spins it in place; moving the anchor any other way turns it off. A Cutout whose anchor
+    // was never moved takes the automatic anchor with its first bounds. Edits only: document syncs and undo restores carry their own.
+
+    private readonly HashSet<Layer> _tightWatched = [];
+    private bool _tightWatching, _placingTightAnchor;
+
+    // The mask properties the bounds are made from.
+    private static readonly HashSet<string> TightInputs =
+    [
+        nameof(Layer.CustomMask), nameof(Layer.MaskPath), nameof(Layer.MaskShapes), nameof(Layer.MaskFrame), nameof(Layer.MaskGrow),
+        nameof(Layer.MaskInvert), nameof(Layer.MaskOffsetX), nameof(Layer.MaskOffsetY),
+    ];
+
+    /// <summary>Keeps every layer's tight bounds and automatic anchor current from now on (subscriptions only; idempotent).</summary>
+    public void WatchTightBounds()
+    {
+        if (_tightWatching)
+            return;
+
+        _tightWatching = true;
+        Layers.CollectionChanged += (_, _) => SyncTightWatch();
+        SyncTightWatch();
+    }
+
+    private void SyncTightWatch()
+    {
+        var now = new HashSet<Layer>(Layers);
+        _tightWatched.RemoveWhere(layer =>
+        {
+            if (now.Contains(layer))
+                return false;
+            layer.PropertyChanged -= OnTightInput;
+            return true;
+        });
+        foreach (var layer in now)
+        {
+            if (_tightWatched.Add(layer))
+                layer.PropertyChanged += OnTightInput;
+        }
+    }
+
+    private void OnTightInput(object? sender, PropertyChangedEventArgs e)
+    {
+        if (sender is not Layer layer || e.PropertyName is not { } name || _syncingViews || IsRestoringTimeline)
+            return;
+
+        if (TightInputs.Contains(name))
+        {
+            RefreshTightBounds(layer);
+        }
+        else if (name is nameof(Layer.AnchorX) or nameof(Layer.AnchorY) && !_placingTightAnchor && layer.AutoCenterAnchor
+                 && layer.TightAnchor() is { } centre && (Math.Abs(centre.X - layer.AnchorX) > 1e-6 || Math.Abs(centre.Y - layer.AnchorY) > 1e-6))
+        {
+            layer.AutoCenterAnchor = false;
+        }
+    }
+
+    /// <summary>
+    /// Recomputes a layer's visible-pixel bounds from its mask (<see cref="MaskStore.TightBoundsOf"/>) and, with the automatic anchor (or a
+    /// Cutout's untouched centre anchor), puts the anchor at their centre without moving the layer.
+    /// </summary>
+    public void RefreshTightBounds(Layer layer)
+    {
+        var bounds = MaskStore.TightBoundsOf(layer);
+        if (Nullable.Equals(bounds, layer.TightBounds))
+            return;
+
+        var untouched = !layer.AutoCenterAnchor && Math.Abs(layer.AnchorX - 0.5) < 1e-9 && Math.Abs(layer.AnchorY - 0.5) < 1e-9 && IsCutout(layer);
+        using var batch = BatchLookWrites();
+        layer.TightBounds = bounds;
+        if (untouched && bounds is not null)
+            layer.AutoCenterAnchor = true;
+        CentreTightAnchor(layer);
+    }
+
+    /// <summary>With the automatic anchor on, moves the anchor to the centre of the visible pixels; the layer stays where it is.</summary>
+    public void CentreTightAnchor(Layer layer)
+    {
+        if (!layer.AutoCenterAnchor || layer.TightAnchor() is not { } centre
+            || (Math.Abs(centre.X - layer.AnchorX) < 1e-9 && Math.Abs(centre.Y - layer.AnchorY) < 1e-9))
+            return;
+
+        var (_, _, width, height) = layer.GetOutputRect(FrameWidth, FrameHeight, layer.IsCaptions ? 0 : SourceWidth, layer.IsCaptions ? 0 : SourceHeight);
+        _placingTightAnchor = true;
+        try
+        {
+            layer.MoveAnchor(centre.X, centre.Y, width, height, FrameWidth, FrameHeight);
+        }
+        finally
+        {
+            _placingTightAnchor = false;
+        }
     }
 
     /// <summary>

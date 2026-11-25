@@ -20,13 +20,24 @@ internal enum GripCorner
     BottomLeft,
 }
 
+/// <summary>Clip box edge of the Pro Gizmo's midpoint handles (Pass 5.6.5).</summary>
+internal enum GripEdge
+{
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
 /// <summary>
-/// Clip box handles on the Canvas pane and the player: a bottom-right resize grip, a rotation handle on a stalk above the top edge,
-/// and the anchor dot (rotation and scale pivot). As an adorner they track the box's position and rotation and render above all
-/// boxes. If the stalk would leave the surface (box at the frame top), it folds down into the box so the handle stays reachable.
-/// During rotation, a ring around the anchor and an angle readout are shown. Tilted clips (<see cref="TiltedCorners"/>) get grips on
-/// all four drawn corners and a stalk off the drawn top edge; grip drags are reported as the equivalent flat-box corner delta
-/// (<see cref="FlatDelta"/>). Flat clips keep the single bottom-right grip.
+/// The 8-handle Pro Gizmo (Pass 5.6.5) on the Canvas pane and the player: four corner grips (resize keeping the shape; Shift frees it),
+/// four edge grips (stretch one axis), a rotation handle on a stalk above the top edge (Shift: 45 degree steps) and the anchor dot (rotation
+/// and scale pivot). As an adorner they track the box's position and rotation and render above all boxes. If the stalk would leave the
+/// surface (box at the frame top), it folds down into the box so the handle stays reachable. During rotation, a ring around the anchor and
+/// an angle readout are shown. A Cutout with visible-pixel bounds (<see cref="TightRect"/>) gets its outline and handles on them, so the
+/// gizmo hugs the HUD element rather than the whole source frame. Tilted clips (<see cref="TiltedCorners"/>) get grips on the four drawn
+/// corners, no edge grips, and a stalk off the drawn top edge; grip drags are reported as the equivalent flat-box corner delta
+/// (<see cref="FlatDelta"/>).
 /// </summary>
 internal sealed class LayerGizmoAdorner : Adorner
 {
@@ -35,9 +46,13 @@ internal sealed class LayerGizmoAdorner : Adorner
     private readonly VisualCollection _visuals;
     private readonly Thumb _turn, _anchor;
 
-    // One grip per corner in GripCorner order; flat clips show only the bottom-right one.
+    // One grip per corner in GripCorner order, and one per edge in GripEdge order (flat clips only).
     private readonly Thumb[] _grips = new Thumb[4];
+    private readonly Thumb[] _edges = new Thumb[4];
     private readonly Line _stalk;
+
+    // The visible-pixel outline (Cutout tight bounds); collapsed when the box's own outline is the selection.
+    private readonly Rectangle _outline;
     private readonly Ellipse _ring;
     private readonly Border _readout;
     private readonly TextBlock _readoutText;
@@ -48,6 +63,14 @@ internal sealed class LayerGizmoAdorner : Adorner
     public event Action<GripCorner, Vector>? ResizeDelta;
 
     public event Action<GripCorner>? ResizeStarted;
+
+    /// <summary>Edge grip drag: the edge and its move along the box's local axis across it (x for left/right, y for top/bottom; screen units).</summary>
+    public event Action<GripEdge, double>? StretchDelta;
+
+    public event Action<GripEdge>? StretchStarted;
+
+    /// <summary>Any corner or edge grip released (snap guides clear).</summary>
+    public event Action? HandleReleased;
 
     /// <summary>Rotation handle drag started; the host reads the pointer relative to the anchor point.</summary>
     public event Action? TurnStarted;
@@ -71,7 +94,7 @@ internal sealed class LayerGizmoAdorner : Adorner
             IsHitTestVisible = false, Visibility = Visibility.Collapsed,
         };
 
-        // Bottom-right is the flat-clip grip (legacy name and tooltip kept); the other three appear only for tilted clips.
+        // Four corner grips (bottom-right keeps its legacy name) and four edge grips; edges show on flat clips only.
         for (var k = 0; k < _grips.Length; k++)
         {
             var corner = (GripCorner)k;
@@ -80,17 +103,32 @@ internal sealed class LayerGizmoAdorner : Adorner
             {
                 Style = gripStyle,
                 Cursor = corner is GripCorner.TopLeft or GripCorner.BottomRight ? Cursors.SizeNWSE : Cursors.SizeNESW,
-                ToolTip = corner == GripCorner.BottomRight
-                    ? "Drag to resize about the anchor point. Ctrl: the opposite corner stays where it is."
-                    : $"Drag the {words.ToLowerInvariant()} corner, where the tilted picture is drawn, to resize about the anchor point. Ctrl: the opposite corner stays where it is.",
-                Visibility = corner == GripCorner.BottomRight ? Visibility.Visible : Visibility.Collapsed,
+                ToolTip = "Resize (Shift: free shape, no snap; Ctrl: from opposite corner)",
             };
             System.Windows.Automation.AutomationProperties.SetName(grip, corner == GripCorner.BottomRight ? $"Resize {name}" : $"Resize {name} from Its {words} Corner");
             grip.DragDelta += (_, e) => ResizeDelta?.Invoke(corner, Flattened(e, corner));
             grip.DragStarted += (_, _) => ResizeStarted?.Invoke(corner);
+            grip.DragCompleted += (_, _) => HandleReleased?.Invoke();
         }
 
-        _turn = new Thumb { Width = 12, Height = 12, Cursor = Cursors.Hand, Template = RoundTemplate(Brushes.White, Brushes.DodgerBlue), ToolTip = "Drag to turn the clip about its anchor point. Shift: in steps of 15 degrees." };
+        for (var k = 0; k < _edges.Length; k++)
+        {
+            var edge = (GripEdge)k;
+            var across = edge is GripEdge.Left or GripEdge.Right;
+            var grip = _edges[k] = new Thumb
+            {
+                Style = gripStyle,
+                Cursor = across ? Cursors.SizeWE : Cursors.SizeNS,
+                ToolTip = "Stretch one side (Ctrl: from opposite side)",
+                Visibility = Visibility.Collapsed,
+            };
+            System.Windows.Automation.AutomationProperties.SetName(grip, $"Stretch {name} from Its {edge} Edge");
+            grip.DragDelta += (_, e) => StretchDelta?.Invoke(edge, across ? e.HorizontalChange : e.VerticalChange);
+            grip.DragStarted += (_, _) => StretchStarted?.Invoke(edge);
+            grip.DragCompleted += (_, _) => HandleReleased?.Invoke();
+        }
+
+        _turn = new Thumb { Width = 12, Height = 12, Cursor = Cursors.Hand, Template = RoundTemplate(Brushes.White, Brushes.DodgerBlue), ToolTip = "Rotate about the anchor (Shift: 45\u00B0 steps)" };
         System.Windows.Automation.AutomationProperties.SetName(_turn, $"Rotate {name}");
         _turn.DragStarted += (_, _) =>
         {
@@ -110,15 +148,18 @@ internal sealed class LayerGizmoAdorner : Adorner
         _anchor = new AnchorThumb(() => box.RenderSize)
         {
             Width = GizmoHitRules.AnchorDotSize, Height = GizmoHitRules.AnchorDotSize, Cursor = Cursors.Cross, Template = RoundTemplate(Brushes.Gold, Brushes.Black, hitTestable: false),
-            ToolTip = "The anchor point: the clip turns and grows about it. Drag it to move it; the clip stays where it is.",
+            ToolTip = "Anchor point: the pivot for rotation and scale",
         };
         System.Windows.Automation.AutomationProperties.SetName(_anchor, $"Anchor Point of {name}");
         _anchor.DragStarted += (_, _) => AnchorStarted?.Invoke();
         _anchor.DragDelta += (_, _) => AnchorDelta?.Invoke();
 
         _stalk = new Line { Stroke = Brushes.White, StrokeThickness = 1, IsHitTestVisible = false, Opacity = 0.8 };
-        _visuals = new VisualCollection(this) { _ring, _stalk };
+        _outline = new Rectangle { Stroke = OutlineStroke, StrokeThickness = 1.5, IsHitTestVisible = false, Visibility = Visibility.Collapsed };
+        _visuals = new VisualCollection(this) { _outline, _ring, _stalk };
         foreach (var grip in _grips)
+            _visuals.Add(grip);
+        foreach (var grip in _edges)
             _visuals.Add(grip);
         _visuals.Add(_turn);
         _visuals.Add(_anchor);
@@ -143,6 +184,7 @@ internal sealed class LayerGizmoAdorner : Adorner
     };
 
     private static readonly SolidColorBrush ReadoutBack = FrozenBrush(Color.FromArgb(0xD0, 0x10, 0x10, 0x14));
+    private static readonly SolidColorBrush OutlineStroke = FrozenBrush(Color.FromRgb(0x4F, 0xC3, 0xF7));
 
     private static SolidColorBrush FrozenBrush(Color color)
     {
@@ -156,6 +198,15 @@ internal sealed class LayerGizmoAdorner : Adorner
     /// or null result means a flat clip with handles on its box.
     /// </summary>
     public Func<PointCollection?>? TiltedCorners { get; set; }
+
+    /// <summary>
+    /// Provider of a Cutout's visible-pixel bounds as fractions of the box (Layer.TightBoxBounds: x, y, width, height); null provider or
+    /// result means the whole box. Ignored for tilted clips.
+    /// </summary>
+    public Func<Rect?>? TightRect { get; set; }
+
+    /// <summary>True while the visible-pixel outline is drawn (the host then hides the box's own border).</summary>
+    public bool HugsTight { get; private set; }
 
     // Tilted corners in the box's local (unrotated) frame at its current placement; null for a flat clip.
     private Point[]? LocalCorners(Size size)
@@ -267,6 +318,9 @@ internal sealed class LayerGizmoAdorner : Adorner
     {
         foreach (var grip in _grips)
             grip.Measure(constraint);
+        foreach (var grip in _edges)
+            grip.Measure(constraint);
+        _outline.Measure(constraint);
         _turn.Measure(constraint);
         _anchor.Measure(constraint);
         _stalk.Measure(constraint);
@@ -279,19 +333,36 @@ internal sealed class LayerGizmoAdorner : Adorner
     {
         var size = AdornedElement.RenderSize;
 
-        // Grip corners and stalk edge: the box itself (bottom-right grip only), or the tilted clip's drawn corners (four grips).
-        var corners = LocalCorners(size);
-        var (edgeFrom, edgeTo) = corners is null ? (new Point(0, 0), new Point(size.Width, 0)) : (corners[0], corners[1]);
+        // Grip corners and stalk edge: the tilted clip's drawn corners, else the visible-pixel bounds (Cutout tight bounds), else the box.
+        var drawn = LocalCorners(size);
+        var hug = drawn is null && TightRect?.Invoke() is { Width: > 0, Height: > 0 } t && (t.Width < 0.999 || t.Height < 0.999)
+            ? new Rect(t.X * size.Width, t.Y * size.Height, t.Width * size.Width, t.Height * size.Height)
+            : (Rect?)null;
+        var shape = hug ?? new Rect(size);
+        var corners = drawn ?? [shape.TopLeft, shape.TopRight, shape.BottomRight, shape.BottomLeft];
+        var (edgeFrom, edgeTo) = (corners[0], corners[1]);
         for (var k = 0; k < _grips.Length; k++)
         {
-            var grip = _grips[k];
-            var shown = corners is not null || (GripCorner)k == GripCorner.BottomRight;
-            grip.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
-            if (!shown)
-                continue;
-
-            var at = corners?[k] ?? new Point(size.Width, size.Height);
+            var (grip, at) = (_grips[k], corners[k]);
             grip.Arrange(new Rect(at.X - grip.Width / 2, at.Y - grip.Height / 2, grip.Width, grip.Height));
+        }
+
+        // Edge grips at the side midpoints of a flat box, on sides long enough to keep clear of the corners.
+        for (var k = 0; k < _edges.Length; k++)
+        {
+            var (grip, from, to) = (_edges[k], corners[k], corners[(k + 1) % 4]);
+            var shown = drawn is null && (to - from).Length >= GizmoHitRules.EdgeHandleMinSide;
+            grip.Visibility = shown ? Visibility.Visible : Visibility.Collapsed;
+            if (shown)
+                grip.Arrange(new Rect((from.X + to.X) / 2 - grip.Width / 2, (from.Y + to.Y) / 2 - grip.Height / 2, grip.Width, grip.Height));
+        }
+
+        HugsTight = hug is not null;
+        _outline.Visibility = HugsTight ? Visibility.Visible : Visibility.Collapsed;
+        if (hug is { } outline)
+        {
+            (_outline.Width, _outline.Height) = (outline.Width, outline.Height);
+            _outline.Arrange(outline);
         }
 
         // Stalk from the top-edge midpoint along the outward normal (pointing away from the box centre); without room, fold inward by
@@ -299,7 +370,7 @@ internal sealed class LayerGizmoAdorner : Adorner
         var middle = new Point((edgeFrom.X + edgeTo.X) / 2, (edgeFrom.Y + edgeTo.Y) / 2);
         var edge = edgeTo - edgeFrom;
         var outward = edge.Length > 1e-6 ? new Vector(edge.Y, -edge.X) / edge.Length : new Vector(0, -1);
-        var centre = corners is null ? new Point(size.Width / 2, size.Height / 2) : new Point(corners.Average(c => c.X), corners.Average(c => c.Y));
+        var centre = new Point(corners.Average(c => c.X), corners.Average(c => c.Y));
         if (Vector.Multiply(middle - centre, outward) < 0)
             outward = -outward;
         var reach = HandleInside(size, middle + outward * (Stalk + 7)) ? -Math.Min(Stalk, Math.Max(size.Height * 0.25, 9)) : Stalk;
@@ -322,8 +393,9 @@ internal sealed class LayerGizmoAdorner : Adorner
 }
 
 /// <summary>
-/// Canvas pane overlay drawn in OnRender: snap guides for a dragged box (frame centre, action-safe and title-safe margins) and the
-/// selected clip's motion path (anchor trajectory sampled with export easing) with a dot per position keyframe. Only dots are
+/// Canvas pane and player overlay drawn in OnRender: snap guides for a dragged box (frame centre, safe margins, other layers' edges and
+/// centres), equal-spacing callouts <c>|← px →|</c> and 1:1 equal-size badges (Pass 5.6.5, <see cref="LayoutSnap"/>), and on the Canvas
+/// the selected clip's motion path (anchor trajectory sampled with export easing) with a dot per position keyframe. Only dots are
 /// hit-testable; other presses pass through to the boxes beneath.
 /// </summary>
 internal sealed class LayoutGuidesView : FrameworkElement
@@ -333,6 +405,15 @@ internal sealed class LayoutGuidesView : FrameworkElement
     private static readonly Pen GuidePen = Frozen(new Pen(Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0x40, 0x81))), 1) { DashStyle = DashStyles.Dash });
     private static readonly Pen PathPen = Frozen(new Pen(Frozen(new SolidColorBrush(Color.FromArgb(220, 0xFF, 0xD5, 0x4F))), 1.5));
     private static readonly Pen DotPen = Frozen(new Pen(Brushes.Black, 1));
+    private static readonly Brush CalloutBrush = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0x40, 0x81)));
+    private static readonly Pen CalloutPen = Frozen(new Pen(CalloutBrush, 1));
+    private static readonly Brush LabelBack = Frozen(new SolidColorBrush(Color.FromArgb(0xE6, 0x10, 0x10, 0x14)));
+    private static readonly Brush BadgeBack = Frozen(new SolidColorBrush(Color.FromRgb(0x4F, 0xC3, 0xF7)));
+    private static readonly Typeface LabelFace = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+
+    // Equal-spacing callouts (surface points and label) and 1:1 badge corners, from the last snapped drag.
+    private IReadOnlyList<(Point From, Point To, string Label)> _callouts = [];
+    private IReadOnlyList<Point> _badges = [];
 
     private IReadOnlyList<Point> _path = [];
     private IReadOnlyList<(double Time, Point At)> _dots = [];
@@ -368,13 +449,34 @@ internal sealed class LayoutGuidesView : FrameworkElement
         InvalidateVisual();
     }
 
-    /// <summary>Sets the snap guide lines for a dragged box; empty when nothing is snapped.</summary>
+    /// <summary>Sets the snap guide lines for a dragged box; empty clears guides, callouts and badges.</summary>
     public void ShowGuides(IReadOnlyList<(Point From, Point To)> guides)
     {
-        if (guides.Count == 0 && _guides.Count == 0)
+        if (guides.Count == 0 && _guides.Count == 0 && _callouts.Count == 0 && _badges.Count == 0)
             return;
 
         _guides = guides;
+        if (guides.Count == 0)
+            (_callouts, _badges) = ([], []);
+        InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Shows a snapped drag (<see cref="LayoutSnap"/>): its guides, equal-spacing callouts and 1:1 badges, mapped from frame fractions onto
+    /// <paramref name="frame"/> (the output frame on this surface).
+    /// </summary>
+    public void ShowSnaps(SnapResult snap, Rect frame)
+    {
+        Point At(double x, double y) => new(frame.X + x * frame.Width, frame.Y + y * frame.Height);
+        var guides = snap.Guides.Select(g => g.Vertical ? (At(g.At, g.From), At(g.At, g.To)) : (At(g.From, g.At), At(g.To, g.At))).ToList();
+        var callouts = snap.Spacings.Where(c => c.To > c.From).Select(c => c.Horizontal
+            ? (At(c.From, c.Across), At(c.To, c.Across), $"{c.Pixels} px")
+            : (At(c.Across, c.From), At(c.Across, c.To), $"{c.Pixels} px")).ToList();
+        var badges = snap.SameSize.Select(r => At(r.X, r.Y)).ToList();
+        if (guides.Count == 0 && callouts.Count == 0 && badges.Count == 0 && _guides.Count == 0 && _callouts.Count == 0 && _badges.Count == 0)
+            return;
+
+        (_guides, _callouts, _badges) = (guides, callouts, badges);
         InvalidateVisual();
     }
 
@@ -396,6 +498,23 @@ internal sealed class LayoutGuidesView : FrameworkElement
     {
         foreach (var (from, to) in _guides)
             drawing.DrawLine(GuidePen, from, to);
+
+        // |← px →|: the gap with end ticks and its size in output pixels; 1:1 on every box of the same size.
+        var dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        foreach (var (from, to, label) in _callouts)
+        {
+            var along = to - from;
+            if (along.Length < 1)
+                continue;
+            var tick = new Vector(-along.Y, along.X) / along.Length * 4;
+            drawing.DrawLine(CalloutPen, from, to);
+            drawing.DrawLine(CalloutPen, from - tick, from + tick);
+            drawing.DrawLine(CalloutPen, to - tick, to + tick);
+            Pill(drawing, label, new Point((from.X + to.X) / 2, (from.Y + to.Y) / 2), LabelBack, Brushes.White, dpi, centred: true);
+        }
+
+        foreach (var corner in _badges)
+            Pill(drawing, "1:1", corner + new Vector(4, 4), BadgeBack, Brushes.Black, dpi, centred: false);
 
         if (_path.Count > 1)
         {
@@ -462,6 +581,16 @@ internal sealed class LayoutGuidesView : FrameworkElement
 
         _drag = null;
         InvalidateVisual();
+    }
+
+    // A small rounded label: centred on the point, or with its top-left there.
+    private static void Pill(DrawingContext drawing, string text, Point at, Brush back, Brush fore, double dpi, bool centred)
+    {
+        var label = new FormattedText(text, System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, LabelFace, 10.5, fore, dpi);
+        var size = new Size(label.Width + 8, label.Height + 2);
+        var box = centred ? new Rect(at.X - size.Width / 2, at.Y - size.Height / 2, size.Width, size.Height) : new Rect(at, size);
+        drawing.DrawRoundedRectangle(back, null, box, 3, 3);
+        drawing.DrawText(label, new Point(box.X + 4, box.Y + 1));
     }
 
     private static T Frozen<T>(T freezable) where T : Freezable
