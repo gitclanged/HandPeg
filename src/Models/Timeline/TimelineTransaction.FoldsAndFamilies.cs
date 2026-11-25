@@ -828,13 +828,15 @@ internal sealed partial class TimelineTransaction
                     return;
 
                 // Too short for the clip's source span: the in-point moves back first, then the end comes in (never below the minimum).
-                var span = c.Duration * c.Speed;
+                // File seconds follow the speed ramp's integral (SpeedRamp; the constant speed without keys), its inverse for clip time.
+                var ramp = c.State.KeysSpeed ?? [];
+                var span = SpeedRamp.MediaSeconds(ramp, c.Speed, c.Duration);
                 if (c.MediaOffset + span > c.WholeDuration)
                     c.MediaOffset = Math.Max(c.WholeDuration - span, 0);
                 if (c.MediaOffset + span > c.WholeDuration)
                 {
                     // In to the frame grid (never past the file's end); a file too short for the shortest legal clip is refused.
-                    var end = Down(c.Start + (c.WholeDuration - c.MediaOffset) / c.Speed, false);
+                    var end = Down(c.Start + SpeedRamp.ClipSeconds(ramp, c.Speed, c.WholeDuration - c.MediaOffset), false);
                     if (end - c.Start < ShortestFor(c, false) - Slack)
                         throw new TimelineEditException("The new file is too short for this clip.");
                     c.End = end;
@@ -844,10 +846,11 @@ internal sealed partial class TimelineTransaction
                 // in-point, the tail to the file's end; sound left shorter than the shortest clip falls back to the picture's span.
                 if (c.HasSound && c.AudioLinked)
                 {
-                    var leadMost = Math.Min(c.Start, c.MediaOffset / c.Speed);
+                    var leadMost = Math.Min(c.Start, -SpeedRamp.ClipSeconds(ramp, c.Speed, -c.MediaOffset));
                     if (c.AudioLeadInSeconds > leadMost + Slack)
                         c.AudioLeadInSeconds = Math.Max(Down(leadMost, false), 0);
-                    var tailMost = Math.Max((c.SourceDuration - c.MediaEnd) / c.Speed, 0);
+                    // The tail runs until the ramp has played the file from the in-point to its end.
+                    var tailMost = Math.Max(SpeedRamp.ClipSeconds(ramp, c.Speed, c.SourceDuration - c.MediaOffset) - c.Duration, 0);
                     if (c.AudioTailOutSeconds > tailMost + Slack)
                         c.AudioTailOutSeconds = Math.Max(Down(tailMost, false), 0);
                     if (c.Duration + c.AudioLeadInSeconds + c.AudioTailOutSeconds < MinimumLength(false) - Slack)
