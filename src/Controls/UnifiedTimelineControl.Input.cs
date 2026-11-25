@@ -210,7 +210,8 @@ public sealed partial class UnifiedTimelineControl
         : ReferenceEquals(block, _fadeDrag?.Block) || ReferenceEquals(block, _gainDrag?.Block) || ReferenceEquals(block, _splitDrag?.Block);
 
     // Control point to layout space (x in block layout pixels, y from the top of all rows).
-    private Point Laid(Point point) => new(point.X - _headerWidth + ViewOffsetX, point.Y + _verticalOffset);
+    // While spring-zoomed, x is first unmagnified about the anchor (SpringX), so pointer travel maps 1/4.
+    private Point Laid(Point point) => new(SpringX(point.X) - _headerWidth + ViewOffsetX, point.Y + _verticalOffset);
 
     /// <summary>
     /// Invokes a host event/callback, routing any exception to <see cref="CallbackFailed"/> (or the log if unsubscribed) instead of the
@@ -317,6 +318,10 @@ public sealed partial class UnifiedTimelineControl
 
         var lane = _lanes[index];
         var row = lane.Row;
+
+        // Quick-edit icons, ducking nodes and double-clicks (gain auto-level, gap ripple close, parent fold) come first (gestures, Parenting.cs).
+        if (TakePress(index, laid, e))
+            return;
 
         // Crossfade box: its button removes it and its edges resize it; any other press falls through to the clips beneath.
         if (CrossfadeAt(lane, laid) is { Part: not CrossfadePart.Inside } crossfade)
@@ -851,6 +856,7 @@ public sealed partial class UnifiedTimelineControl
 
     private void EndDrag()
     {
+        SpringRelease();
         LeaveOutside();
         StopSettleTimer();
         _snapTimes = [];
@@ -897,6 +903,12 @@ public sealed partial class UnifiedTimelineControl
     // was refused or failed.
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
+        if (EndDuckDrag())
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (_heightDrag is { } heightDrag)
         {
             _heightDrag = null;
@@ -1197,6 +1209,10 @@ public sealed partial class UnifiedTimelineControl
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
+
+        // Capture lost mid ducking drag: put the curve back as it was.
+        if (_duckDrag is not null && !IsMouseCaptured)
+            EndDuckDrag(keep: false);
 
         // Capture lost mid middle-drag: not a flick, no coast (a normal release clears capture after handling).
         if (_panFrom is not null)

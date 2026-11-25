@@ -1,10 +1,15 @@
+using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using HandPegApp.Models;
+using HandPegApp.Models.Effects;
+using HandPegApp.Services;
 
 namespace HandPegApp;
 
@@ -300,8 +305,22 @@ public partial class MainWindow
         SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(TimelineSidewaysWheel);
     }
 
+    // Wheel gesture memory over the timeline rows (TouchpadWheel: a touchpad gesture keeps its kind across both axes).
+    private readonly TouchpadWheel _timelineWheel = new();
+
     private IntPtr TimelineSidewaysWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg is not (WmMouseWheel or WmMouseHWheel))
+            return IntPtr.Zero;
+
+        // Touchpad over the rows, either axis: 1:1 two-axis scroll, pinch zoom, Alt heights. A mouse wheel goes on to WPF (OnMouseWheel).
+        if (UnifiedTimeline.Surface is { IsVisible: true, IsMouseOver: true } rows && _timelineWheel.Read(msg, wParam, lParam) is { Touchpad: true } touch)
+        {
+            rows.TakeTouchpadWheel(touch, rows.PointFromScreen(touch.ScreenPixels));
+            handled = true;
+            return TouchpadWheel.HandledResult(touch.Horizontal);
+        }
+
         if (msg != WmMouseHWheel)
             return IntPtr.Zero;
 
@@ -606,5 +625,315 @@ public partial class MainWindow
     {
         DrawTimelineMarkers();
         UpdateTimelineChrome();
+    }
+}
+
+// ----- Timeline gestures host (Pass 5.6.5 L3; the surface side is the gestures section of UnifiedTimelineControl.Parenting.cs) -----
+// Alt+wheel sizes one track (live rows, one Undo step once the wheel rests); a gap double-click ripple-closes it (CloseGapAt); the Ghost
+// Playhead skims the live composite at a dragged edge while paused and snaps back on release; Z toggles Spring-Zoom mid-drag; inline
+// quick-edit icons act on a clip's effects, one effect or a crossfade; the amber ducking curve writes Layer.DuckOverrideKeys; a gain-line
+// double-click auto-levels to -14 LUFS from the waveform peaks; Alt+drop of one file on a clip swaps its media in place.
+public partial class MainWindow
+{
+    /// <summary>Loudness target of a gain-line double-click (LUFS).</summary>
+    internal const double AutoLevelLufs = -14;
+
+    // Alt+wheel row height: the row being stepped (its live height is _rowHeightDrag) and the rest timer that commits it.
+    private TimelineRow? _rowStepped;
+    private DispatcherTimer? _rowStepCommit;
+
+    // Ghost Playhead: the playhead (ms) to snap back to; null while no ghost is shown.
+    private double? _ghostHomeMs;
+
+    // Clip whose ducking gesture has taken its Undo step (until release).
+    private Layer? _duckShaping;
+
+    /// <summary>Wires the surface's gesture events (InitializeUnifiedTimeline).</summary>
+    private void InitializeTimelineGestures(UnifiedTimelineControl surface)
+    {
+        surface.RowHeightStepped += Timeline_RowHeightStepped;
+        surface.GapDoubleClicked += (row, seconds) =>
+        {
+            if (row.Data is Layer track)
+                RunGuarded("closing a gap", () => _viewModel.CloseGapAt(track, seconds));
+        };
+        surface.GhostPlayheadMoved += Timeline_GhostPlayhead;
+    }
+
+    /// <summary>Z (TakeSeamKey): toggles Spring-Zoom during a drag that spring-zooms; repeats are swallowed so Z never also steps edits.</summary>
+    partial void TakeSpringZoomKey(bool repeat, ref bool handled)
+    {
+        var surface = UnifiedTimeline.Surface;
+        if (!surface.CanSpringZoom)
+            return;
+
+        handled = true;
+        if (!repeat)
+            surface.SpringZoomKey();
+    }
+
+    // ----- Alt+wheel track height -----
+
+    private void Timeline_RowHeightStepped(TimelineRow row, int steps)
+    {
+        if (HeightTrackOf(row) is null)
+            return;
+        if (_rowStepped is { } other && !Equals(other.Key, row.Key))
+            CommitRowStep();
+
+        // The global Track Height's pixels per notch, within the row kind's range.
+        var (lowest, tallest) = row.Kind == TimelineRowKind.Audio ? (LowestSoundRow, TallestSoundRow) : (LowestPictureRow, TallestPictureRow);
+        var perNotch = TrackHeightStepsPerNotch * (TallestPictureRow - LowestPictureRow) / 49;
+        var current = _rowHeightDrag is { } live && Equals(live.Key, row.Key) ? live.Height : row.Height;
+        _rowHeightDrag = (row.Key, Math.Clamp(current + steps * perNotch, lowest, tallest));
+        _rowStepped = row;
+        ScheduleClipRedraw();
+        _rowStepCommit ??= NewRowStepTimer();
+        _rowStepCommit.Stop();
+        _rowStepCommit.Start();
+    }
+
+    private DispatcherTimer NewRowStepTimer()
+    {
+        var timer = new DispatcherTimer(DispatcherPriority.Input, Dispatcher) { Interval = TimeSpan.FromMilliseconds(450) };
+        timer.Tick += (_, _) => CommitRowStep();
+        return timer;
+    }
+
+    // The wheel rested (or another row was stepped): the stepped height becomes the track's own, one Undo step.
+    private void CommitRowStep()
+    {
+        _rowStepCommit?.Stop();
+        if (_rowStepped is not { } row)
+            return;
+
+        _rowStepped = null;
+        if (_rowHeightDrag is not { } live || !Equals(live.Key, row.Key))
+            return;
+
+        var height = RowHeightOf(live.Key, null, row.Kind);
+        _rowHeightDrag = null;
+        if (HeightTrackOf(row) is { } track)
+            RunGuarded("a track's height", () => _viewModel.SetTrackHeight(track, height));
+        ScheduleClipRedraw();
+    }
+
+    // ----- Ghost Playhead -----
+
+    private void Timeline_GhostPlayhead(double seconds)
+    {
+        if (double.IsNaN(seconds))
+        {
+            if (_ghostHomeMs is { } home)
+            {
+                _ghostHomeMs = null;
+                _viewModel.PositionMs = Math.Clamp(home, 0, _viewModel.DurationMs);
+            }
+
+            return;
+        }
+
+        // Paused only: during playback the transport keeps its place.
+        if (_viewModel.IsPlaying || !_viewModel.HasSource)
+            return;
+
+        _ghostHomeMs ??= _viewModel.PositionMs;
+        _viewModel.PositionMs = Math.Clamp(seconds * 1000, 0, _viewModel.DurationMs);
+    }
+
+    // ----- Quick-edit icons -----
+
+    /// <summary>A clip block's icons: its effects ("fx N") or its crossfade (Edit, Remove).</summary>
+    private void ClipQuickEdit(Layer clip, QuickEditTarget target, QuickEditVerb verb)
+    {
+        if (LiveClip(clip) is not { } live)
+            return;
+
+        RunGuarded("a quick edit", () =>
+        {
+            switch (target, verb)
+            {
+                case (QuickEditTarget.Transition, QuickEditVerb.Remove):
+                    _viewModel.SetCrossfade(live, 0);
+                    break;
+                case (_, QuickEditVerb.Edit):
+                    ShowClipIn(live, keyframes: false);
+                    break;
+                case (_, QuickEditVerb.Keyframes):
+                    ShowClipIn(live, keyframes: true);
+                    break;
+                case (QuickEditTarget.Effects, QuickEditVerb.Toggle):
+                    var cards = BadgeCards(live);
+                    var on = !cards.Exists(card => card.Enabled);
+                    foreach (var card in cards)
+                        _viewModel.SetEffectOn(live, card, on);
+                    break;
+                case (QuickEditTarget.Effects, QuickEditVerb.Remove):
+                    foreach (var card in BadgeCards(live))
+                        _viewModel.RemoveEffect(live, card);
+                    break;
+            }
+        });
+        ScheduleClipRedraw();
+    }
+
+    /// <summary>An effect lane block's icons: open it, its keys, On/Off, remove.</summary>
+    private void EffectQuickEdit(Layer clip, EffectInstance effect, QuickEditVerb verb)
+    {
+        if (LiveClip(clip) is not { } live)
+            return;
+
+        RunGuarded("a quick edit of an effect", () =>
+        {
+            switch (verb)
+            {
+                case QuickEditVerb.Edit:
+                    ShowClipIn(live, keyframes: false);
+                    break;
+                case QuickEditVerb.Keyframes:
+                    ShowClipIn(live, keyframes: true);
+                    break;
+                case QuickEditVerb.Toggle:
+                    _viewModel.SetEffectOn(live, effect, !effect.Enabled);
+                    break;
+                default:
+                    _viewModel.RemoveEffect(live, effect);
+                    break;
+            }
+        });
+        ScheduleClipRedraw();
+    }
+
+    // Selects the clip and shows the Effects (or Keyframes) pane for it.
+    private void ShowClipIn(Layer clip, bool keyframes)
+    {
+        SelectClip(clip);
+        if (keyframes)
+            _viewModel.ShowKeyframesPane = true;
+        else
+            _viewModel.ShowEffectsPane = true;
+    }
+
+    // The cards counted by its "fx N" badge.
+    private List<EffectInstance> BadgeCards(Layer clip)
+    {
+        var cutout = CountsAsCutout(_viewModel, clip);
+        var builtIns = AppSettings.Current.ShowBuiltInMaskEffectLanes;
+        return clip.IsAudio || clip.IsCaptions ? [] : clip.Effects.Where(effect => ShowsCard(effect, cutout, builtIns)).ToList();
+    }
+
+    // ----- Ducking curve -----
+
+    /// <summary>Automatic duck depth drawn under the hand-drawn keys (the track's Duck Amount, -15 dB unless set).</summary>
+    private static double DuckDepthOf(Models.Timeline.TimelineTrackModel? track) =>
+        Math.Clamp(track?.DuckAmountDb is { } db && double.IsFinite(db) ? -Math.Abs(db) : -15, Layer.DuckOverrideFloorDb, 0);
+
+    // Live keys while dragging; the gesture's first change takes the Undo step, release ends it.
+    private void DuckEdited(Layer clip, IReadOnlyList<Keyframe> keys, bool done)
+    {
+        if (LiveClip(clip) is not { } live)
+            return;
+
+        if (!ReferenceEquals(_duckShaping, live))
+        {
+            _viewModel.Checkpoint(keys.Count < live.DuckOverrideKeys.Count ? $"remove a ducking point of {live.Name}" : $"shape the ducking of {live.Name}");
+            _duckShaping = live;
+        }
+
+        using (_viewModel.OwnLookScope())
+            live.SetDuckOverrideKeys(keys);
+        if (done)
+        {
+            _duckShaping = null;
+            ScheduleClipRedraw();
+        }
+    }
+
+    // ----- Auto-level -----
+
+    // Gain-line double-click: clip gain so the clip's sound measures about -14 LUFS (one Undo step).
+    private void AutoLevelClip(Layer clip)
+    {
+        if (LiveClip(clip) is not { } live || _viewModel.ClipOf(live) is not { } model)
+            return;
+
+        if (Waveforms.DataOf(_viewModel.WaveformOf(live)) is not { } data || EstimateLufs(data, model.MediaOffset, model.MediaEnd) is not { } lufs)
+        {
+            _viewModel.StatusText = "Auto-level waits for the waveform.";
+            return;
+        }
+
+        var gain = Math.Round(Math.Clamp(AutoLevelLufs - lufs, -40, 24), 1);
+        RunGuarded("auto-level", () => _viewModel.SetClipGain(live, gain));
+        _viewModel.StatusText = string.Create(CultureInfo.InvariantCulture, $"Auto-level: {live.Name} at {gain:+0.0;-0.0;0} dB, about {AutoLevelLufs:0} LUFS.");
+    }
+
+    /// <summary>
+    /// Integrated loudness estimate (LUFS) of waveform peaks between file seconds: 400 ms blocks of the peak envelope as a sine's mean
+    /// square, the BS.1770 absolute (-70) and relative (-10 LU) gates, no K-weighting. Null when silent or out of range.
+    /// </summary>
+    internal static double? EstimateLufs(WaveformData data, double mediaFrom, double mediaTo)
+    {
+        var lows = data.LowsAt(0);
+        var highs = data.HighsAt(0);
+        var rate = data.PairsPerSecond;
+        var count = Math.Min(lows.Length, highs.Length);
+        if (rate <= 0 || count == 0 || !(mediaTo > mediaFrom))
+            return null;
+
+        var first = (int)Math.Clamp(Math.Floor(mediaFrom * rate), 0, count);
+        var end = (int)Math.Clamp(Math.Ceiling(mediaTo * rate), 0, count);
+        var perBlock = Math.Max((int)Math.Round(0.4 * rate), 1);
+        var blocks = new List<double>();
+        for (var at = first; at < end; at += perBlock)
+        {
+            var stop = Math.Min(at + perBlock, end);
+            var sum = 0.0;
+            for (var i = at; i < stop; i++)
+            {
+                var amplitude = (highs[i] - lows[i]) / 2.0;
+                sum += amplitude * amplitude / 2;
+            }
+
+            if (sum > 0)
+                blocks.Add(10 * Math.Log10(sum / (stop - at)));
+        }
+
+        var gated = blocks.Where(level => level > -70).ToList();
+        if (gated.Count == 0)
+            return null;
+
+        var relative = Energy(gated) - 10;
+        var kept = gated.Where(level => level > relative).ToList();
+        return kept.Count == 0 ? null : Energy(kept);
+
+        static double Energy(List<double> levels) => 10 * Math.Log10(levels.Average(level => Math.Pow(10, level / 10)));
+    }
+
+    // ----- Media swap in place (Alt+drop of one file on a clip) -----
+
+    /// <summary>The clip view on <paramref name="track"/> under <paramref name="seconds"/>; null for none.</summary>
+    private Layer? ClipViewAt(Layer track, double seconds) =>
+        _viewModel.GetTrackClips(track).FirstOrDefault(clip => !clip.IsLoading && _viewModel.ClipOf(clip) is { } model && model.Start <= seconds && model.End > seconds);
+
+    /// <summary>Probes the file, then swaps it into the clip (and its Cutouts) keeping place, length, look and effects; kinds must match.</summary>
+    private async Task SwapDroppedMediaAsync(Layer clip, string file)
+    {
+        var info = await MediaProbe.ProbeAsync(file, CancellationToken.None);
+        var name = Path.GetFileName(file);
+        if (info is null || !(info.DurationSeconds > 0))
+        {
+            _viewModel.StatusText = $"{name} could not be read, so nothing was swapped.";
+            return;
+        }
+
+        if (clip.IsAudio ? info.Audio.Count == 0 : info.Video is null)
+        {
+            _viewModel.StatusText = clip.IsAudio ? $"{name} has no sound to swap in." : $"{name} has no picture to swap in.";
+            return;
+        }
+
+        if (LiveClip(clip) is { } live)
+            RunGuarded("a media swap", () => _viewModel.SwapClipMedia(live, file, info.DurationSeconds, 0, info.Video is null ? 0 : 1, info.Audio.Count));
     }
 }

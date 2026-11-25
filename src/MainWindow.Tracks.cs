@@ -466,6 +466,15 @@ public partial class MainWindow
                 // Edge at a folded dead-air seam: dragging outward unfolds, inward folds more.
                 SeamRange = model is null || clip.IsLoading ? null : startEdge => SeamRangeOf(clip, startEdge),
                 SeamTrim = model is null || clip.IsLoading ? null : (startEdge, outward) => TrimAtSeam(clip, built, startEdge, outward),
+
+                // Ghost Trim Tails (unused media beyond each edge), the amber ducking curve, gain auto-level and quick-edit icons.
+                HeadRoom = model is { PlaysFile: true, Speed: > 0 } ? Math.Max(model.MediaOffset, 0) / model.Speed : 0,
+                TailRoom = model is { PlaysFile: true, Speed: > 0, WholeDuration: > 0 } ? Math.Max(model.WholeDuration - model.MediaEnd, 0) / model.Speed : 0,
+                Duck = showsSound && !clip.IsLoading && (clip.AutoDuck || trackModel?.DuckAgainstVoice == true) ? (clip.DuckOverrideKeys, DuckDepthOf(trackModel)) : null,
+                DuckEdit = (keys, done) => DuckEdited(clip, keys, done),
+                AutoLevel = gainLine && waveforms ? () => AutoLevelClip(clip) : null,
+                QuickEditOf = BadgeEffects(clip, cutout, settings) > 0 ? QuickEditTarget.Effects : QuickEditTarget.None,
+                QuickEdit = (target, verb) => ClipQuickEdit(clip, target, verb),
             });
 
             // Unlinked video audio: starts with its video or at its slipped offset; follows the video's moves and edge trims.
@@ -828,6 +837,8 @@ public partial class MainWindow
                     IsOn = effect.Enabled,
                     IsLocked = locked,
                     Switched = which => EffectSwitched(clip, effect, which),
+                    QuickEditOf = QuickEditTarget.Effect,
+                    QuickEdit = (_, verb) => EffectQuickEdit(clip, effect, verb),
 
                     // Locked: spans its clip and follows it. Unlocked: draggable and trimmable within the clip.
                     CanDrag = locked ? null : AlwaysDraggable,

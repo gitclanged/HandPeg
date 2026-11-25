@@ -244,6 +244,14 @@ public partial class MainWindow
             // Timeline drop with media open: clips at the drop time by the target row (FindDropPlace); an audio row adds audio clips.
             // Multiple files go end to end on one track, or one track each at the same time on a header or with Alt (IsStackDrop).
             case DropRoute.TimelinePlace when place is { } on:
+                // Alt with one file on a clip: swap its media in place (same place, length, look and effects).
+                if (files.Length == 1 && range is null && !on.OnHeader && e.KeyStates.HasFlag(DragDropKeyStates.AltKey) && on.Row?.Data is Layer swapTrack
+                    && ClipViewAt(swapTrack, on.Seconds) is { } swapped)
+                {
+                    DropLater("a media swap", () => SwapDroppedMediaAsync(swapped, file));
+                    return;
+                }
+
                 var stack = IsStackDrop(e, on.OnHeader, files.Length);
                 if (on.Row is { Kind: TimelineRowKind.Audio })
                     DropLater("a drop of sound", () => AddDroppedAudioAsync(files, on.Seconds, range));
