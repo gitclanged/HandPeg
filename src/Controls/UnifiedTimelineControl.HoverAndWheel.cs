@@ -224,7 +224,7 @@ public sealed partial class UnifiedTimelineControl
         base.OnMouseMove(e);
         var point = e.GetPosition(this);
 
-        // Spring-Zoom rest and Ghost Playhead while dragging, the ducking drag, hover strips (Gestures.cs).
+        // Spring-Zoom rest and Ghost Playhead while dragging, the ducking drag, hover strips (gestures, Parenting.cs).
         if (TakeMove(point))
             return;
         if (_panFrom is not null)

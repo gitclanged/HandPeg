@@ -145,7 +145,7 @@ public partial class MainWindow
         surface.CloseGapRequested += Timeline_CloseGapRequested;
         surface.RazorRequested += Timeline_RazorRequested;
 
-        // Alt+wheel track height, gap double-click, Ghost Playhead (MainWindow.UnifiedTimeline.Gestures.cs).
+        // Alt+wheel track height, gap double-click, Ghost Playhead (timeline gestures host, MainWindow.TimelineView.cs).
         InitializeTimelineGestures(surface);
 
         // Global track height from the surface: Alt+Shift+wheel, lower-edge drag or double-click.

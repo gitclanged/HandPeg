@@ -127,10 +127,12 @@ public interface ITimelineTransaction : IDisposable
 
     /// <summary>
     /// Media swap in place (Alt+drop on a clip): the clip and its children sharing its file play <paramref name="path"/> instead, keeping
-    /// their timing, look and effects. The in-point moves back (then the end in) only as far as the new file is too short; beats are
-    /// cleared. Refused on locked tracks.
+    /// their timing, look and effects. The in-point moves back (then the end in) only as far as the new file is too short; J/L cuts
+    /// re-clamp to it, crossfades that no longer meet go and children follow a shortened end; beats are cleared. Stream picks the new file
+    /// (<paramref name="videoStreams"/> picture and <paramref name="audioStreams"/> sound streams, probed) lacks fall back to its first;
+    /// refused when it has no picture (or sound) for a member, for a stream lane whose stream it lacks, and on locked tracks.
     /// </summary>
-    void ReplaceClipSource(TimelineClip clip, string path, double sourceDuration, double pictureDuration);
+    void ReplaceClipSource(TimelineClip clip, string path, double sourceDuration, double pictureDuration, int videoStreams, int audioStreams);
 
     // ----- Clip and track properties (atomic, clamped, refused on locked tracks) -----
 

@@ -114,14 +114,15 @@ public partial class MainViewModel
 
     /// <summary>
     /// Alt+drop of a file on a clip: it (and its Cutouts) play <paramref name="path"/> instead, keeping place, length, look and effects
-    /// (ITimelineTransaction.ReplaceClipSource). One undo step.
+    /// (ITimelineTransaction.ReplaceClipSource, checked against the file's probed <paramref name="videoStreams"/> and
+    /// <paramref name="audioStreams"/>). One undo step.
     /// </summary>
-    public bool SwapClipMedia(Layer clip, string path, double sourceDuration, double pictureDuration)
+    public bool SwapClipMedia(Layer clip, string path, double sourceDuration, double pictureDuration, int videoStreams, int audioStreams)
     {
         if (ClipOf(clip) is not { PlaysFile: true } model || IsRestoringTimeline)
             return false;
 
-        if (!Edit($"swap the media of {clip.Name}", edit => edit.ReplaceClipSource(model, path, sourceDuration, pictureDuration)))
+        if (!Edit($"swap the media of {clip.Name}", edit => edit.ReplaceClipSource(model, path, sourceDuration, pictureDuration, videoStreams, audioStreams)))
             return false;
 
         StatusText = $"Swapped in {System.IO.Path.GetFileName(path)}: same place, length and effects.";

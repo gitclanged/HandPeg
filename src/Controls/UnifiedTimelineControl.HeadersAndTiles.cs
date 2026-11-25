@@ -457,7 +457,7 @@ public sealed partial class UnifiedTimelineControl
             DrawGapPill(drawing, _lanes[gapLane], left - _originX, right - _originX);
         }
 
-        // Ghost Trim Tails, ducking curve, quick-edit icons and Ghost Playhead (Gestures.cs).
+        // Ghost Trim Tails, ducking curve, quick-edit icons and Ghost Playhead (gestures, Parenting.cs).
         DrawGestures(drawing, scale, from, to);
 
         if (_dropMark is { } mark && scale > 0)

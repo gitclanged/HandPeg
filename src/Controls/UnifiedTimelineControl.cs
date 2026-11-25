@@ -257,7 +257,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         // Thumbnails are many and downscaled: use the cheapest bitmap scaling (smooth scaling costs most while scrolling).
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.LowQuality);
 
-        // Scroll shift, then the Spring-Zoom magnification about the pointer (identity unless a drag springs it; Gestures.cs).
+        // Scroll shift, then the Spring-Zoom magnification about the pointer (identity unless a drag springs it; gestures, Parenting.cs).
         _scroller.Transform = new TransformGroup { Children = { _shift, _springScale } };
         _scroller.Children.Add(_content);
         _scroller.Children.Add(_overlay);

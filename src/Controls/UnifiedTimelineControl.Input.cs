@@ -319,7 +319,7 @@ public sealed partial class UnifiedTimelineControl
         var lane = _lanes[index];
         var row = lane.Row;
 
-        // Quick-edit icons, ducking nodes and double-clicks (gain auto-level, gap ripple close, parent fold) come first (Gestures.cs).
+        // Quick-edit icons, ducking nodes and double-clicks (gain auto-level, gap ripple close, parent fold) come first (gestures, Parenting.cs).
         if (TakePress(index, laid, e))
             return;
 
