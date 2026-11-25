@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using HandPegApp.Models;
 using HandPegApp.Models.Effects;
 using HandPegApp.Services;
@@ -12,7 +13,8 @@ namespace HandPegApp;
 // playhead (MainViewModel.ApplyHotbarSlot, one Undo step); right-click assigns any Effect, Transition, Game Preset or one-click tool,
 // saved immediately. Slots live in the Quick FX button's flyout (one button on the row instead of five). Hidden via Settings >
 // Timeline (ShowCreatorHotbar) or its own menu. The row's Undo/Redo buttons are also applied here (ShowTimelineUndoRedo, off by
-// default).
+// default). Resting on a slot while paused previews an Effect or Transition slot on its clips (PausedHoverPreview); the Quick FX glyph
+// and the tool row's tinted glyphs keep 3:1 contrast against their faces (ButtonChrome.AdaptiveIcon).
 public partial class MainWindow
 {
     /// <summary>Current hotbar slots from settings.</summary>
@@ -26,6 +28,7 @@ public partial class MainWindow
     {
         UnifiedTimeline.ShowHotbar(HotbarSlots, AppSettings.Current.ShowCreatorHotbar);
         UnifiedTimeline.ShowUndoRedo(AppSettings.Current.ShowTimelineUndoRedo);
+        AdaptToolIcons();
     }
 
     /// <summary>Applies slot <paramref name="index"/> to the group selection, else the single selection, else the video clip at the playhead.</summary>
@@ -34,16 +37,96 @@ public partial class MainWindow
         if (index < 0 || index >= HotbarSlot.Count)
             return;
 
+        // A slot's own step starts from the clips as they were, not from its hover preview.
+        HoverPreview.Leave();
         LetGoOfDrag();
-        IReadOnlyList<Layer> clips = GroupHolds ? _viewModel.SelectedClips : _selectedClip switch
-        {
-            Layer one => [one],
-            LayerSound sound => [sound.Layer],
-            _ when _viewModel.Layers.Contains(_viewModel.PlayheadVideo) => [_viewModel.PlayheadVideo],
-            _ => [],
-        };
-        if (_viewModel.ApplyHotbarSlot(HotbarSlots[index], clips))
+        if (_viewModel.ApplyHotbarSlot(HotbarSlots[index], HotbarTargets()))
             ScheduleClipRedraw();
+    }
+
+    /// <summary>What a slot goes on: the group selection, else the single selection, else the video clip at the playhead.</summary>
+    private IReadOnlyList<Layer> HotbarTargets() => GroupHolds ? _viewModel.SelectedClips : _selectedClip switch
+    {
+        Layer one => [one],
+        LayerSound sound => [sound.Layer],
+        _ when _viewModel.Layers.Contains(_viewModel.PlayheadVideo) => [_viewModel.PlayheadVideo],
+        _ => [],
+    };
+
+    // ----- Live paused hover previews (Quick FX slots, fade menus) and adaptive tool icons (Pass 5.6.5) -----
+
+    private PausedHoverPreview? _hoverPreview;
+
+    // Pointer hooks on the slot buttons (they live in the Timeline pane's flyout): one class handler for every Button, filtered by Tag.
+    private static bool _slotHoverHooked;
+
+    // The tool row's tinted glyphs were marked adaptive (once; they are built with the pane).
+    private bool _toolIconsAdapted;
+
+    /// <summary>The window's hover preview (Quick FX slots and fade menus).</summary>
+    private PausedHoverPreview HoverPreview => _hoverPreview ??= new PausedHoverPreview(_viewModel);
+
+    /// <summary>
+    /// Marks the Quick FX glyph and the Timeline tool row's tinted glyphs adaptive (ButtonChrome.AdaptiveIcon: 3:1 against their faces,
+    /// hover and press included), and hooks the slot buttons' hover previews. Once; a logical-tree walk of the row, no layout.
+    /// </summary>
+    private void AdaptToolIcons()
+    {
+        if (!_slotHoverHooked)
+        {
+            _slotHoverHooked = true;
+            EventManager.RegisterClassHandler(typeof(Button), MouseEnterEvent, new MouseEventHandler(HotbarSlot_MouseEnter));
+            EventManager.RegisterClassHandler(typeof(Button), MouseLeaveEvent, new MouseEventHandler(HotbarSlot_MouseLeave));
+            EventManager.RegisterClassHandler(typeof(Button), UnloadedEvent, new RoutedEventHandler(HotbarSlot_Unloaded));
+        }
+
+        if (_toolIconsAdapted)
+            return;
+        _toolIconsAdapted = true;
+        ButtonChrome.AdaptIconsUnder(UnifiedTimeline.Toolbar);
+        if (UnifiedTimeline.QuickFxButton.Content is Panel { Children: [TextBlock glyph, ..] })
+            ButtonChrome.SetAdaptiveIcon(glyph, true);
+    }
+
+    /// <summary>Slot index of a Quick FX slot button's Tag ("Hotbar0".."Hotbar4"); null for any other button.</summary>
+    internal static int? HotbarIndexOf(object? tag) =>
+        tag is string text && text.StartsWith("Hotbar", StringComparison.Ordinal) && int.TryParse(text.AsSpan("Hotbar".Length), out var index)
+        && index is >= 0 and < HotbarSlot.Count ? index : null;
+
+    // The window a slot belongs to (its flyout's owner; the main window when the flyout has none).
+    private static MainWindow? WindowOfSlot(Button slot) => GetWindow(slot) as MainWindow ?? Application.Current?.MainWindow as MainWindow;
+
+    private static void HotbarSlot_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is Button { Tag: var tag } slot && HotbarIndexOf(tag) is { } index && WindowOfSlot(slot) is { } window)
+            window.PreviewHotbarSlot(index);
+    }
+
+    private static void HotbarSlot_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is Button { Tag: var tag } slot && HotbarIndexOf(tag) is not null && WindowOfSlot(slot) is { _hoverPreview: { } preview })
+            preview.Leave();
+    }
+
+    // The flyout closing under the pointer raises no MouseLeave.
+    private static void HotbarSlot_Unloaded(object sender, RoutedEventArgs e) => HotbarSlot_MouseLeave(sender, null!);
+
+    /// <summary>Previews slot <paramref name="index"/> on its clips (Effect and Transition slots; the others only end a preview).</summary>
+    private void PreviewHotbarSlot(int index)
+    {
+        var slot = HotbarSlots[index];
+        switch (slot.Kind)
+        {
+            case HotbarKind.Effect when EffectRegistry.Find(slot.Id) is { } definition:
+                HoverPreview.HoverEffect(HotbarTargets(), definition);
+                break;
+            case HotbarKind.Transition when Enum.TryParse<TransitionStyle>(slot.Id, out var style):
+                HoverPreview.HoverFade(HotbarTargets(), fadeIn: true, style);
+                break;
+            default:
+                HoverPreview.Leave();
+                break;
+        }
     }
 
     /// <summary>

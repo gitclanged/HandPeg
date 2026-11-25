@@ -987,8 +987,8 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Fade menu items: transition styles (current ticked; none for audio), default-length fade (Settings) or none, and a crossfade over
-    /// the overlap with any clip on another track spanning that end.
+    /// Fade menu items: transition styles (current ticked; none for audio; resting on one while paused previews it, PausedHoverPreview),
+    /// default-length fade (Settings) or none, and a crossfade over the overlap with any clip on another track spanning that end.
     /// </summary>
     private List<object> FadeMenuItems(object? clip, bool fadeIn)
     {
@@ -1016,6 +1016,8 @@ public partial class MainWindow
             var item = new MenuItem { Header = header, IsCheckable = ticked, IsChecked = ticked, ToolTip = tip };
             item.Click += (_, _) =>
             {
+                // The choice's own step starts from the clip as it was, not from its hover preview.
+                HoverPreview.Leave();
                 RunGuarded(header, action);
                 ScheduleClipRedraw();
             };
@@ -1038,6 +1040,12 @@ public partial class MainWindow
                 var styleItem = Item(TransitionStyles.Label(chosen), () => setStyle(chosen), ticked: seconds > 0.005 && chosen == style,
                     tip: seconds > 0.005 ? null : $"Adds a fade {name.ToLowerInvariant()} of the default transition length (Settings > Timeline & Player), in this style.");
                 styleItem.Icon = TransitionIcon(chosen, styleItem);
+
+                // Live paused hover preview: resting on a style shows it in the fade (the playhead moved into it); leaving, or the menu
+                // closing, puts the fade back.
+                styleItem.MouseEnter += (_, _) => HoverPreview.HoverFade([layer!], fadeIn, chosen);
+                styleItem.MouseLeave += (_, _) => HoverPreview.Leave();
+                styleItem.Unloaded += (_, _) => HoverPreview.Leave();
                 items.Add(styleItem);
             }
 
