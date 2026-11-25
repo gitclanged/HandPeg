@@ -10,5 +10,7 @@ ok: a look brings the bounds with its mask and the auto anchor with its anchor; 
 ok: the bounds land on the box as fractions of what it shows (source rect less crop), and the auto anchor is their centre
 ok: bounds outside what the box shows, or none, give no auto anchor
 ok: the speed ramp and the ducking curve are motion channels: split, join, trim and speed change carry them
-ok: doubling the constant speed halves both curves' times, as it does every keyframe's
+ok: doubling the constant speed halves both curves' times and doubles the ramp's speeds (held to 16x); the ducking dB stay
+ok: a ramped clip's length is solved so it still ends on the same source frame, even where a speed was held to 16x
+ok: a four-second clip with one 1x key, doubled, lasts two seconds at 2x and still plays its four source seconds
 ok: a head trim shifts both curves with what the clip shows

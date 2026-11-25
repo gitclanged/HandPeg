@@ -304,6 +304,7 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>
     /// Sets speed over the same source range, rescaling timeline length and all timeline-relative times so keyframes stay on their frames.
+    /// A speed ramp scales with it (its speeds too), and a ramped clip's length is solved so it still ends on the same source frame.
     /// </summary>
     public void SetSpeed(double value)
     {
@@ -316,6 +317,9 @@ public sealed partial class Layer : ObservableObject
             return;
 
         var length = Duration;
+
+        // A ramped clip's source range, measured before re-timing (its speeds may be held to SlowestSpeed..FastestSpeed below).
+        var sourceSpan = HasSpeedRamp ? MediaSecondsAt(length) : 0;
         foreach (var property in Enum.GetValues<KeyProperty>())
         {
             var list = _keys[(int)property];
@@ -325,11 +329,15 @@ public sealed partial class Layer : ObservableObject
                 NotifyKeys(property);
         }
 
-        // The speed ramp and the manual ducking curve are clip-relative too (LayerState.MotionChannels).
-        RetimeClipKeys(k => k with { Time = Math.Round(k.Time * stretch, 3) });
+        // Clip-relative too (LayerState.MotionChannels): the speed ramp keeps its shape at the new speed (times x stretch, speeds / stretch);
+        // the manual ducking curve (dB) is only re-timed.
+        if (HasSpeedRamp)
+            SetSpeedKeys(_speedKeys.Select(k => k with { Time = Math.Round(k.Time * stretch, 3), Value = k.Value / stretch }).ToList());
+        if (HasDuckOverrides)
+            SetDuckOverrideKeys(_duckOverrideKeys.Select(k => k with { Time = Math.Round(k.Time * stretch, 3) }).ToList());
         Speed = value;
         if (length > 0.001)
-            Duration = Math.Max(Math.Round(length * stretch, 3), 0.05);
+            Duration = Math.Max(Math.Round(HasSpeedRamp ? SpeedRamp.ClipSeconds(_speedKeys, Speed, sourceSpan) : length * stretch, 3), 0.05);
     }
 
     /// <summary>Kept in the list but left out of the picture, and (for a video layer) out of the sound.</summary>

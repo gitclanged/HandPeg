@@ -126,9 +126,18 @@ public static class ContractSeamTests
 
         expect(LayerState.MotionChannels.Any(c => c.Name == nameof(LayerState.KeysSpeed)) && LayerState.MotionChannels.Any(c => c.Name == nameof(LayerState.DuckOverrideKeys)),
             "the speed ramp and the ducking curve are motion channels: split, join, trim and speed change carry them");
+        var span = layer.MediaSecondsAt(layer.Duration);
         layer.SetSpeed(2);
-        expect(layer.SpeedKeys is [{ Time: 0 }, { Time: 1 }, { Time: 2 }] && layer.DuckOverrideKeys is [{ Time: 0.5 }, { Time: 1 }, { Time: 1.5 }],
-            "doubling the constant speed halves both curves' times, as it does every keyframe's");
+        expect(layer.SpeedKeys is [{ Time: 0, Value: 2 }, { Time: 1, Value: 0.2 }, { Time: 2, Value: Layer.FastestSpeed }]
+               && layer.DuckOverrideKeys is [{ Time: 0.5, Value: -12 }, { Time: 1, Value: 0 }, { Time: 1.5, Value: Layer.DuckOverrideFloorDb }],
+            "doubling the constant speed halves both curves' times and doubles the ramp's speeds (held to 16x); the ducking dB stay");
+        expect(Math.Abs(layer.MediaSecondsAt(layer.Duration) - span) <= 0.0005 * Layer.FastestSpeed,
+            "a ramped clip's length is solved so it still ends on the same source frame, even where a speed was held to 16x");
+        var single = new Layer { Kind = LayerKind.VideoFile, Duration = 4 };
+        single.SetSpeedKeys([new Keyframe(0, 1)]);
+        single.SetSpeed(2);
+        expect(single is { Duration: 2, SpeedKeys: [{ Time: 0, Value: 2 }] } && Near(single.MediaSecondsAt(single.Duration), 4),
+            "a four-second clip with one 1x key, doubled, lasts two seconds at 2x and still plays its four source seconds");
         layer.ShiftKeys(-0.5);
         expect(layer.SpeedKeys is [{ Time: -0.5 }, { Time: 0.5 }, { Time: 1.5 }] && layer.DuckOverrideKeys is [{ Time: 0 }, { Time: 0.5 }, { Time: 1 }],
             "a head trim shifts both curves with what the clip shows");
