@@ -310,7 +310,7 @@ public partial class MainWindow
 
     private IntPtr TimelineSidewaysWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg is not (WmMouseWheel or WmMouseHWheel))
+        if (msg is not (TouchpadWheel.WmMouseWheel or WmMouseHWheel))
             return IntPtr.Zero;
 
         // Touchpad over the rows, either axis: 1:1 two-axis scroll, pinch zoom, Alt heights. A mouse wheel goes on to WPF (OnMouseWheel).
