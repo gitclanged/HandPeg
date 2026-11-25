@@ -276,6 +276,12 @@ public readonly record struct BlockFamily(object Key, object? Parent, bool Rides
 /// <summary>Per-block switch identifier.</summary>
 public enum BlockSwitch { OnOff, Lock }
 
+/// <summary>What a block's inline quick-edit icons act on: none, its effect (effect lane), its effects ("fx N" badge), its crossfade.</summary>
+public enum QuickEditTarget { None, Effect, Effects, Transition }
+
+/// <summary>Inline quick-edit verbs, in drawn order.</summary>
+public enum QuickEditVerb { Edit, Keyframes, Toggle, Remove }
+
 /// <summary>One block of a Timeline row: a clip, cut segment, audio track part or subtitle.</summary>
 public sealed class TimelineBlock
 {
@@ -444,6 +450,33 @@ public sealed class TimelineBlock
 
     /// <summary>Seam edge commit: edge (true = start) and outward travel in seconds (negative = inward).</summary>
     public Action<bool, double>? SeamTrim { get; init; }
+
+    /// <summary>
+    /// Unused media beyond its edges in timeline seconds (before the start, after the end): drawn as 25%-opacity Ghost Trim Tails while
+    /// an edge is trimmed; 0 for none or unbounded (stills).
+    /// </summary>
+    public double HeadRoom { get; init; }
+
+    /// <summary>See <see cref="HeadRoom"/>: media left after the end, in timeline seconds.</summary>
+    public double TailRoom { get; init; }
+
+    /// <summary>
+    /// Ducked sound: the hand-drawn ducking keys (dB at clip-relative seconds, Layer.DuckOverrideKeys) and the automatic depth (dB) drawn
+    /// dashed where no keys rule. The amber curve shows on hover; null when the clip is not ducked.
+    /// </summary>
+    public (IReadOnlyList<Models.Keyframe> Keys, double AutoDb)? Duck { get; init; }
+
+    /// <summary>Ducking curve edit: the new keys (empty = reset to automatic) and whether the gesture ended (false = live).</summary>
+    public Action<IReadOnlyList<Models.Keyframe>, bool>? DuckEdit { get; init; }
+
+    /// <summary>Double-click on the gain line: auto-level the clip to -14 LUFS. Null when not offered.</summary>
+    public Action? AutoLevel { get; init; }
+
+    /// <summary>What the inline quick-edit icons act on when this block is hovered (effect lane block, or a clip's "fx N" badge).</summary>
+    public QuickEditTarget QuickEditOf { get; init; }
+
+    /// <summary>Inline quick-edit icon pressed: the target (Effect, Effects badge, or Transition = its crossfade) and the verb.</summary>
+    public Action<QuickEditTarget, QuickEditVerb>? QuickEdit { get; init; }
 
     /// <summary>Drawn as a collapsed mini-stack lane; set by the unified timeline during layout, not by the host.</summary>
     public bool IsMini { get; internal set; }

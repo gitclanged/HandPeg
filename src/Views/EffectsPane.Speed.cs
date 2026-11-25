@@ -5,6 +5,7 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using HandPegApp.Models;
 using HandPegApp.Models.Effects;
@@ -75,6 +76,7 @@ public partial class EffectsPane
         (_rippleCheck, _smoothCheck, _keepPitchCheck, _spectralCheck) = (null, null, null, null);
         _speedPillButtons.Clear();
         _typedBoxes.Clear();
+        (_ramp, _rampNote, _rampStepTaken) = (null, null, false);
         _opacityCardShown = _layer is { HasStyle: true, IsAdjustment: false } shown && OpacityShows(shown);
 
         if (_vm is null || _noClip || _layer is not { HasSpeed: true, IsBackground: false } layer)
@@ -109,6 +111,7 @@ public partial class EffectsPane
         body.Children.Add(SpeedRow());
         body.Children.Add(PillRow());
         body.Children.Add(DurationRow());
+        body.Children.Add(RampRow(target, sound));
         _rippleCheck = SpeedCheck("Ripple Timeline", AppSettings.Current.SpeedRipplesTimeline, "Later clips move with the new length.", on =>
             _vm?.SetViewSetting(s => s.SpeedRipplesTimeline = on));
         body.Children.Add(_rippleCheck);
@@ -116,7 +119,7 @@ public partial class EffectsPane
         // Video: Smooth Slow-Mo and the interpolation engine (a machine setting).
         if (!sound)
         {
-            _smoothCheck = SpeedCheck("Smooth Slow-Mo", target.SmoothSlowMo, "Optical-flow in-betweens when slower than 1x.", on =>
+            _smoothCheck = SpeedCheck("Smooth Slow-Mo", target.SmoothSlowMo, "Optical-flow in-betweens below 1x; auto-on when a ramp dips.", on =>
                 SetOption($"switch Smooth Slow-Mo {(on ? "on" : "off")}", l => l.SmoothSlowMo = on));
             body.Children.Add(_smoothCheck);
             body.Children.Add(EngineRow());
@@ -558,6 +561,8 @@ public partial class EffectsPane
                 if (_pitchBox is { } pitchBox && !_typedBoxes.Contains(pitchBox))
                     pitchBox.Text = pitch.Value.ToString("0", CultureInfo.InvariantCulture);
             }
+
+            ShowRamp(target);
         }
         finally
         {
@@ -571,7 +576,8 @@ public partial class EffectsPane
         {
             // Speed, length or option changed (edit or Undo): refresh, unless a drag is in progress.
             case nameof(Layer.Speed) or nameof(Layer.ClipSpeed) or nameof(Layer.Duration) or nameof(Layer.MediaOffset)
-                or nameof(Layer.SmoothSlowMo) or nameof(Layer.KeepPitch) or nameof(Layer.SpectralAudio) or nameof(Layer.AudioFilters):
+                or nameof(Layer.SmoothSlowMo) or nameof(Layer.KeepPitch) or nameof(Layer.SpectralAudio) or nameof(Layer.AudioFilters)
+                or nameof(Layer.SpeedKeys) or nameof(Layer.HasSpeedRamp):
                 if (!_speedHeld && ReferenceEquals(_layer, _speedFor))
                     ShowSpeed();
                 break;
@@ -678,5 +684,307 @@ public partial class EffectsPane
         if (GpuAdapters.IsListed)
             _vendorFlowReason = reason;
         return reason;
+    }
+}
+
+// ----- Speed Ramp (Speed & Time card, Pass 5.6.5) -----
+// A keyframed speed curve (Layer.SpeedKeys; SpeedRamp maps sequence to file time): clip time across, log speed up (0.1x-16x, 1x marked,
+// the sub-1x band shaded as the optical-flow zone). Click adds a key (the first click seeds start and end at the clip's speed), drag
+// shapes, double-click removes; Clear returns to constant speed. A gesture is one Undo step (Checkpoint on its first change). On release,
+// a ramp that newly dips below 1x switches Smooth Slow-Mo (optical flow) on for the video and its family; the Smooth Slow-Mo check stays
+// the per-clip override, and is never switched back on while the dip stays.
+public partial class EffectsPane
+{
+    private SpeedRampEditor? _ramp;
+    private TextBlock? _rampNote;
+
+    // A ramp gesture has taken its Undo step; whether the ramp dipped below 1x before it.
+    private bool _rampStepTaken, _rampDippedBefore;
+
+    private StackPanel RampRow(Layer target, bool sound)
+    {
+        var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 2) };
+        var head = new DockPanel();
+        var clear = new Button { Content = "Clear", Padding = new Thickness(6, 0, 6, 0), FontSize = 11, ToolTip = "Back to constant speed" };
+        AutomationProperties.SetName(clear, "Clear Speed Ramp");
+        DockPanel.SetDock(clear, Dock.Right);
+        head.Children.Add(clear);
+        head.Children.Add(new TextBlock { Text = "Speed Ramp", VerticalAlignment = VerticalAlignment.Center, ToolTip = "Click adds a key, drag shapes, double-click removes" });
+        panel.Children.Add(head);
+
+        var editor = new SpeedRampEditor { Height = 84, Margin = new Thickness(0, 3, 0, 0) };
+        AutomationProperties.SetName(editor, "Speed Ramp Curve");
+        panel.Children.Add(editor);
+        _rampNote = new TextBlock { FontSize = 11, Margin = new Thickness(0, 2, 0, 0), Visibility = Visibility.Collapsed };
+        _rampNote.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+        panel.Children.Add(_rampNote);
+
+        _ramp = editor;
+        editor.Shaped += (keys, done) => ShapeRamp(keys, done, sound);
+        clear.Click += (_, _) =>
+        {
+            if (_speedTarget is { HasSpeedRamp: true })
+                ShapeRamp([], done: true, sound);
+        };
+        ShowRamp(target);
+        return panel;
+    }
+
+    // Applies a ramp edit to the target and its family (Cutouts, stream lanes share its source time).
+    private void ShapeRamp(IReadOnlyList<Keyframe> keys, bool done, bool sound)
+    {
+        if (_vm is not { } vm || _speedTarget is not { } target)
+            return;
+
+        if (!_rampStepTaken)
+        {
+            _rampDippedBefore = target.SpeedKeys.Any(k => k.Value < 1);
+            vm.Checkpoint(keys.Count == 0 ? $"clear the speed ramp of {target.Name}" : $"ramp the speed of {target.Name}");
+            _rampStepTaken = true;
+        }
+
+        var family = SpeedFamily(target);
+        using (OwnLooks())
+        {
+            target.SetSpeedKeys(keys);
+            foreach (var member in family)
+                member.SetSpeedKeys(keys);
+
+            // Auto optical flow: only when this gesture made the first dip (an explicit Off stays off while the dip stays).
+            if (done && !sound && !_rampDippedBefore && keys.Any(k => k.Value < 1) && !target.SmoothSlowMo)
+            {
+                target.SmoothSlowMo = true;
+                foreach (var member in family)
+                    member.SmoothSlowMo = true;
+            }
+        }
+
+        if (done)
+        {
+            _rampStepTaken = false;
+            ShowSpeed();
+        }
+        else
+        {
+            ShowRampNote(target);
+        }
+    }
+
+    // Refreshes the editor and its note from the clip (ShowSpeed).
+    private void ShowRamp(Layer target)
+    {
+        if (_ramp is not { } ramp)
+            return;
+
+        var length = _vm?.ClipOf(target) is { } clip ? clip.Duration : target.Duration;
+        ramp.Show(target.SpeedKeys, target.Speed, Math.Max(length, 0.05));
+        ShowRampNote(target);
+    }
+
+    // Optical flow on the dip, or a ramp reading past the file's end.
+    private void ShowRampNote(Layer target)
+    {
+        if (_rampNote is not { } note)
+            return;
+
+        string? text = null;
+        if (target.HasSpeedRamp && _vm?.ClipOf(target) is { PlaysFile: true, WholeDuration: > 0 } clip
+            && clip.MediaOffset + SpeedRamp.MediaSeconds(target.SpeedKeys, target.Speed, clip.Duration) > clip.WholeDuration + 1e-3)
+            text = "Runs past the file's end";
+        else if (target.SpeedKeys.Any(k => k.Value < 1))
+            text = target.SmoothSlowMo ? "Optical Flow on for the slow-mo" : "Optical Flow off (override)";
+
+        note.Text = text ?? "";
+        note.Visibility = text is null ? Visibility.Collapsed : Visibility.Visible;
+    }
+}
+
+/// <summary>
+/// Speed ramp curve editor: time 0..clip length across, log2 speed (Layer.SlowestSpeed..FastestSpeed) up. Raises <see cref="Shaped"/> with
+/// the whole key list on every change (false) and on release (true); the host applies them.
+/// </summary>
+internal sealed class SpeedRampEditor : FrameworkElement
+{
+    private const double Pad = 6, NodeReach = 6;
+    private static readonly double Low = Math.Log2(Layer.SlowestSpeed), High = Math.Log2(Layer.FastestSpeed);
+    private static readonly double[] Marks = [0.25, 0.5, 1, 2, 4];
+
+    private static readonly Brush Surface = Frozen(new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x22)));
+    private static readonly Pen Border = Frozen(new Pen(Frozen(new SolidColorBrush(Color.FromRgb(0x2A, 0x2A, 0x30))), 1));
+    private static readonly Brush FlowZone = Frozen(new SolidColorBrush(Color.FromArgb(36, 0x4F, 0xC3, 0xF7)));
+    private static readonly Pen Grid = Frozen(new Pen(Frozen(new SolidColorBrush(Color.FromArgb(50, 0xFF, 0xFF, 0xFF))), 1));
+    private static readonly Pen Unity = Frozen(new Pen(Frozen(new SolidColorBrush(Color.FromArgb(120, 0xFF, 0xFF, 0xFF))), 1) { DashStyle = DashStyles.Dash });
+    private static readonly Pen Curve = Frozen(new Pen(Frozen(new SolidColorBrush(Color.FromRgb(0x4F, 0xC3, 0xF7))), 1.8));
+    private static readonly Brush Node = Frozen(new SolidColorBrush(Color.FromRgb(0xFF, 0xFF, 0xFF)));
+    private static readonly Pen NodeEdge = Frozen(new Pen(Frozen(new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x22))), 1.2));
+    private static readonly Brush MarkText = Frozen(new SolidColorBrush(Color.FromArgb(150, 0xFF, 0xFF, 0xFF)));
+
+    private List<Keyframe> _keys = [];
+    private double _speed = 1, _length = 1;
+
+    // Key being dragged (-1 for none) and whether the gesture changed anything.
+    private int _dragged = -1;
+    private bool _changed;
+
+    /// <summary>The keys after a change, and whether the gesture ended.</summary>
+    public event Action<IReadOnlyList<Keyframe>, bool>? Shaped;
+
+    public SpeedRampEditor()
+    {
+        Focusable = false;
+        Cursor = Cursors.Cross;
+    }
+
+    /// <summary>Shows a clip's ramp (ignored mid-drag: the drag owns the keys).</summary>
+    public void Show(IReadOnlyList<Keyframe> keys, double speed, double length)
+    {
+        if (_dragged >= 0)
+            return;
+
+        (_keys, _speed, _length) = (keys.ToList(), speed, Math.Max(length, 0.05));
+        InvalidateVisual();
+    }
+
+    private double Width0 => Math.Max(ActualWidth - 2 * Pad, 1);
+
+    private double Height0 => Math.Max(ActualHeight - 2 * Pad, 1);
+
+    private double XOf(double seconds) => Pad + Math.Clamp(seconds / _length, 0, 1) * Width0;
+
+    private double YOf(double speed) =>
+        Pad + (1 - (Math.Log2(Math.Clamp(speed, Layer.SlowestSpeed, Layer.FastestSpeed)) - Low) / (High - Low)) * Height0;
+
+    private double SecondsAt(double x) => Math.Round(Math.Clamp((x - Pad) / Width0, 0, 1) * _length, 3);
+
+    // Pointer height to speed: the speed slider's rule (2^place to 0.01, detents at the pill speeds).
+    private double SpeedAt(double y) => EffectsPane.SpeedOfSlider(Low + (1 - Math.Clamp((y - Pad) / Height0, 0, 1)) * (High - Low));
+
+    protected override void OnRender(DrawingContext drawing)
+    {
+        var box = new Rect(0.5, 0.5, Math.Max(ActualWidth - 1, 0), Math.Max(ActualHeight - 1, 0));
+        drawing.DrawRoundedRectangle(Surface, Border, box, 4, 4);
+        if (ActualWidth < 2 * Pad + 4 || ActualHeight < 2 * Pad + 4)
+            return;
+
+        // Optical-flow zone (below 1x), speed marks, then the curve and its keys.
+        var unity = YOf(1);
+        drawing.DrawRectangle(FlowZone, null, new Rect(Pad, unity, Width0, Math.Max(Pad + Height0 - unity, 0)));
+        var pixelsPerDip = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+        foreach (var mark in Marks)
+        {
+            var y = YOf(mark);
+            drawing.DrawLine(mark == 1 ? Unity : Grid, new Point(Pad, y), new Point(Pad + Width0, y));
+            var label = new FormattedText(EffectsPane.SpeedLabel(mark), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 9, MarkText, pixelsPerDip);
+            drawing.DrawText(label, new Point(Pad + 2, y - label.Height));
+        }
+
+        var curve = new StreamGeometry();
+        using (var context = curve.Open())
+        {
+            const int Steps = 96;
+            for (var i = 0; i <= Steps; i++)
+            {
+                var seconds = _length * i / Steps;
+                var point = new Point(XOf(seconds), YOf(SpeedRamp.SpeedAt(_keys, _speed, seconds)));
+                if (i == 0)
+                    context.BeginFigure(point, false, false);
+                else
+                    context.LineTo(point, true, false);
+            }
+        }
+
+        curve.Freeze();
+        drawing.DrawGeometry(null, Curve, curve);
+        foreach (var key in _keys)
+            drawing.DrawEllipse(Node, NodeEdge, new Point(XOf(key.Time), YOf(key.Value)), 4, 4);
+    }
+
+    protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonDown(e);
+        e.Handled = true;
+        var at = e.GetPosition(this);
+        var hit = _keys.FindIndex(key => (new Point(XOf(key.Time), YOf(key.Value)) - at).Length <= NodeReach);
+        if (hit >= 0 && e.ClickCount >= 2)
+        {
+            // Double-click removes a key; fewer than two left is no ramp at all.
+            _keys.RemoveAt(hit);
+            if (_keys.Count < 2)
+                _keys.Clear();
+            InvalidateVisual();
+            Shaped?.Invoke(_keys.ToList(), true);
+            return;
+        }
+
+        if (hit < 0)
+        {
+            // The first key seeds the clip's ends at its constant speed, so the curve starts where the clip runs now.
+            if (_keys.Count == 0)
+                _keys = [new Keyframe(0, _speed), new Keyframe(Math.Round(_length, 3), _speed)];
+            var added = new Keyframe(SecondsAt(at.X), SpeedAt(at.Y));
+            hit = _keys.FindIndex(key => key.Time > added.Time);
+            hit = hit < 0 ? _keys.Count : hit;
+            _keys.Insert(hit, added);
+            _changed = true;
+        }
+
+        if (!CaptureMouse())
+            return;
+
+        _dragged = hit;
+        InvalidateVisual();
+        if (_changed)
+            Shaped?.Invoke(_keys.ToList(), false);
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (_dragged < 0 || !IsMouseCaptured)
+            return;
+
+        var at = e.GetPosition(this);
+        var (low, high) = (_dragged > 0 ? _keys[_dragged - 1].Time + 0.01 : 0, _dragged < _keys.Count - 1 ? _keys[_dragged + 1].Time - 0.01 : _length);
+        var moved = _keys[_dragged] with { Time = Math.Round(Math.Clamp(SecondsAt(at.X), Math.Min(low, high), Math.Max(low, high)), 3), Value = SpeedAt(at.Y) };
+        if (moved == _keys[_dragged])
+            return;
+
+        _keys[_dragged] = moved;
+        _changed = true;
+        InvalidateVisual();
+        Shaped?.Invoke(_keys.ToList(), false);
+    }
+
+    protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonUp(e);
+        if (_dragged >= 0)
+            Finish();
+    }
+
+    protected override void OnLostMouseCapture(MouseEventArgs e)
+    {
+        base.OnLostMouseCapture(e);
+        if (_dragged >= 0)
+            Finish();
+    }
+
+    // Ends the gesture; a changed ramp is committed.
+    private void Finish()
+    {
+        _dragged = -1;
+        if (IsMouseCaptured)
+            ReleaseMouseCapture();
+        if (!_changed)
+            return;
+
+        _changed = false;
+        Shaped?.Invoke(_keys.ToList(), true);
+    }
+
+    private static T Frozen<T>(T freezable) where T : Freezable
+    {
+        freezable.Freeze();
+        return freezable;
     }
 }
