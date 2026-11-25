@@ -614,7 +614,9 @@ public partial class MainWindow
         ExplodedLayer.MouseUp += ExplodedLayer_MouseUp;
         ExplodedLayer.MouseWheel += ExplodedLayer_MouseWheel;
         ExplodedLayer.LostMouseCapture += (_, _) => EndExplodedDrag(cancelled: true);
-        VideoView.OverlayMessageHook += ExplodedOverlayMessage;
+
+        // Both wheel messages of the native video window and the overlay, classified by the player's one TouchpadWheel (Pass 5.6.5).
+        VideoView.PlayerWheel += ExplodedPlayerWheel;
         ExplodedLayer.IsManipulationEnabled = true;
         ExplodedLayer.ManipulationStarting += ExplodedLayer_ManipulationStarting;
         ExplodedLayer.ManipulationDelta += ExplodedLayer_ManipulationDelta;
@@ -622,15 +624,14 @@ public partial class MainWindow
 
         // Runs after the window's own key handling (an open dial or tour consumes Esc first).
         AddHandler(Keyboard.PreviewKeyDownEvent, new KeyEventHandler(ExplodedWindow_PreviewKeyDown));
+        AddExplodedShortcuts();
     }
 
     private const int WmMiddleButtonDown = 0x0207;
 
-    // Native video HWND hook: its input bypasses WPF, so Alt+middle and (in 3D) wheel messages are read from its message stream.
+    // Native video HWND hook: its input bypasses WPF, so Alt+middle is read from its message stream (wheels: ExplodedPlayerWheel).
     private IntPtr ExplodedSurfaceMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg is WmMouseWheel or WmMouseHWheel)
-            return ExplodedOverlayMessage(hwnd, msg, wParam, lParam, ref handled);
         if (msg != WmMiddleButtonDown || _explodedUi || _gpu is null || !Keyboard.Modifiers.HasFlag(ModifierKeys.Alt))
             return IntPtr.Zero;
 
@@ -852,42 +853,32 @@ public partial class MainWindow
         RunGuarded("3D view", () => EndExplodedDrag(cancelled: false));
     }
 
-    // WPF wheel over the 3D layer (normally ExplodedOverlayMessage handles it first at the message level).
+    // The window's horizontal wheel message (the Timeline's sideways-scroll hook reads it too): TouchpadWheel's.
+    private const int WmMouseHWheel = TouchpadWheel.WmMouseHWheel;
+
+    // Gesture memory for a wheel that reaches WPF without passing the player's hook (another window had it first).
+    private readonly TouchpadWheel _explodedWheelKind = new();
+
+    // WPF wheel over the 3D layer (normally ExplodedPlayerWheel handles it first at the message level).
     private void ExplodedLayer_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (ExplodedWheel(e.Delta, horizontal: false, Keyboard.Modifiers, FromTouchpad()))
+        if (ExplodedWheel(e.Delta, horizontal: false, Keyboard.Modifiers, _explodedWheelKind.ClassifyNow(e.Delta)))
             e.Handled = true;
     }
 
-    private const int WmMouseWheel = 0x020A, WmMouseHWheel = 0x020E, MkShift = 0x0004, MkControl = 0x0008;
-
     /// <summary>
-    /// Message-level wheel handler for the overlay and native video windows: reads modifiers from the message (touchpad pinch arrives as
-    /// Ctrl+wheel) and handles WM_MOUSEHWHEEL (touchpad sideways scroll, tilt wheel), which WPF does not surface.
+    /// Wheel over the player in 3D (VideoSurface.PlayerWheel: WM_MOUSEWHEEL and WM_MOUSEHWHEEL of the native video window and the overlay,
+    /// modifiers from the message so a touchpad pinch arrives as Ctrl, and one shared <see cref="TouchpadWheel"/> gesture rule): two-finger
+    /// vertical scroll tips the stack (pitch), sideways turns it (yaw), a pinch or a notched wheel zooms. Consumed only while 3D is active.
     /// </summary>
-    private IntPtr ExplodedOverlayMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    private void ExplodedPlayerWheel(object? sender, PlayerWheelEventArgs e)
     {
-        if (msg is not (WmMouseWheel or WmMouseHWheel) || !_explodedUi)
-            return IntPtr.Zero;
+        if (!_explodedUi || e.Handled)
+            return;
 
-        var word = wParam.ToInt64();
-        var keys = Keyboard.Modifiers & ModifierKeys.Alt;
-        if ((word & MkShift) != 0)
-            keys |= ModifierKeys.Shift;
-        if ((word & MkControl) != 0)
-            keys |= ModifierKeys.Control;
-        var delta = (short)((word >> 16) & 0xFFFF);
-        var horizontal = msg == WmMouseHWheel;
-        var touchpad = FromTouchpad();
-        if (ExplodedWheel(delta, horizontal, keys, touchpad))
-        {
-            handled = true;
-
-            // Return TRUE for WM_MOUSEHWHEEL, or Windows re-sends it as legacy tilt-wheel clicks.
-            return horizontal ? new IntPtr(1) : IntPtr.Zero;
-        }
-
-        return IntPtr.Zero;
+        var input = e.Input;
+        if (ExplodedWheel(input.Delta, input.Horizontal, input.Keys, input.Touchpad))
+            e.Handled = true;
     }
 
     // Orbit degrees per 120-unit touchpad/tilt delta; spacing change per Shift+wheel notch; Alt+wheel accumulator toward the next layer step.
@@ -954,20 +945,150 @@ public partial class MainWindow
         : fromTouchpad ? ExplodedWheelAction.Tip
         : ExplodedWheelAction.Zoom;
 
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    private struct InputMessageSource
+    // ----- ? shortcuts card (Pass 5.6.5, 5.6E Q2b) -----
+    // A compact '?' pill at the end of the 3D panel's header row lists every mouse, touchpad, wheel and touch gesture of the view. Hover
+    // opens it (closing once the pointer has left pill and card); a click pins it until the pill is clicked again or 3D closes. The card
+    // is built on first open, never before Frame 1, and placed with UiScale.PlaceAgainst like every button flyout.
+
+    /// <summary>3D shortcuts card rows: action (at most four words) and its gesture.</summary>
+    internal static readonly IReadOnlyList<(string What, string Gesture)> ExplodedShortcuts =
+    [
+        ("Move layer", "Drag"),
+        ("Move through stack", "Shift + drag"),
+        ("Move along axis", "Drag gizmo arrow"),
+        ("Resize layer", "Drag corner handle"),
+        ("Orbit", "Right-drag / one finger"),
+        ("Tip and turn", "Two-finger scroll"),
+        ("Zoom", "Wheel / pinch"),
+        ("Front or behind layer", "Alt + wheel / [ ]"),
+        ("Z-spacing", "Shift + wheel / two-finger drag"),
+        ("Reset camera", "Double-click empty space"),
+        ("Enter 3D", "Alt + middle-drag"),
+        ("Leave 3D", "Esc"),
+    ];
+
+    /// <summary>'?' pill tooltip.</summary>
+    internal const string ExplodedShortcutsTip = "3D mouse, touchpad and touch shortcuts";
+
+    // Hover-close delay after leaving pill and card (time to travel between them).
+    private static readonly TimeSpan ExplodedCardGrace = TimeSpan.FromMilliseconds(300);
+
+    private Popup? _explodedCard;
+    private ToggleButton? _explodedHelp;
+    private System.Windows.Threading.DispatcherTimer? _explodedCardGrace;
+
+    // The next Checked comes from hover (not a click), and the card is click-pinned.
+    private bool _explodedCardHovering, _explodedCardPinned;
+
+    /// <summary>Adds the '?' pill to the end of the 3D panel's header row (the Z-Spacing, Reset and Close row).</summary>
+    private void AddExplodedShortcuts()
     {
-        public int DeviceType, OriginId;
+        if (_explodedHelp is not null || ExplodedPanel.Child is not StackPanel { Children.Count: > 0 } panel || panel.Children[0] is not StackPanel row)
+            return;
+
+        var help = _explodedHelp = new ToggleButton
+        {
+            Content = char.ConvertFromUtf32(0xE897), FontFamily = Glyphs.Font, FontSize = 12, Padding = new Thickness(7, 4, 7, 4),
+            Margin = new Thickness(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = ExplodedShortcutsTip, Focusable = false,
+        };
+        System.Windows.Automation.AutomationProperties.SetName(help, "3D Shortcuts");
+        var card = _explodedCard = new Popup { AllowsTransparency = true, StaysOpen = true, Focusable = false, PlacementTarget = help };
+        card.SetBinding(Popup.IsOpenProperty, new System.Windows.Data.Binding(nameof(ToggleButton.IsChecked)) { Source = help, Mode = System.Windows.Data.BindingMode.TwoWay });
+
+        help.Checked += (_, _) =>
+        {
+            _explodedCardPinned = !_explodedCardHovering;
+            _explodedCardHovering = false;
+            card.Child ??= ExplodedShortcutsCard();
+            UiScale.PlaceAgainst(card, help, UiScale.FlyoutSide.BelowEnd, 4);
+            ToolTipService.SetIsEnabled(help, false);
+        };
+        help.Unchecked += (_, _) =>
+        {
+            _explodedCardPinned = false;
+            _explodedCardGrace?.Stop();
+            ToolTipService.SetIsEnabled(help, true);
+        };
+
+        // Hover opens; a click while hover-open pins instead of closing.
+        help.MouseEnter += (_, _) =>
+        {
+            _explodedCardGrace?.Stop();
+            if (help.IsChecked != true)
+            {
+                _explodedCardHovering = true;
+                help.IsChecked = true;
+            }
+        };
+        help.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (help.IsChecked == true && !_explodedCardPinned)
+            {
+                _explodedCardPinned = true;
+                e.Handled = true;
+            }
+        };
+        help.MouseLeave += (_, _) => LeftExplodedCard();
+        card.MouseLeave += (_, _) => LeftExplodedCard();
+        card.MouseEnter += (_, _) => _explodedCardGrace?.Stop();
+
+        // Leaving 3D (the panel hides) closes it.
+        ExplodedPanel.IsVisibleChanged += (_, _) =>
+        {
+            if (!ExplodedPanel.IsVisible)
+                help.IsChecked = false;
+        };
+        row.Children.Add(help);
     }
 
-    private const int ImdtTouchpad = 0x10;
+    // Pointer left pill or card: a hover-opened card closes after the grace unless the pointer came back.
+    private void LeftExplodedCard()
+    {
+        if (_explodedCardPinned || _explodedHelp is not { IsChecked: true } help)
+            return;
 
-    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static partial bool GetCurrentInputMessageSource(out InputMessageSource source);
+        if (_explodedCardGrace is null)
+        {
+            _explodedCardGrace = new System.Windows.Threading.DispatcherTimer(System.Windows.Threading.DispatcherPriority.Input) { Interval = ExplodedCardGrace };
+            _explodedCardGrace.Tick += (_, _) =>
+            {
+                _explodedCardGrace.Stop();
+                if (!_explodedCardPinned && !help.IsMouseOver && _explodedCard?.Child is not { IsMouseOver: true })
+                    help.IsChecked = false;
+            };
+        }
 
-    /// <summary>True when the current input message came from a touchpad (GetCurrentInputMessageSource, Windows 8.1+).</summary>
-    internal static bool FromTouchpad() => GetCurrentInputMessageSource(out var source) && (source.DeviceType & ImdtTouchpad) != 0;
+        _explodedCardGrace.Stop();
+        _explodedCardGrace.Start();
+    }
+
+    // Card: one row per gesture (action left, gesture right) on the themed inspector card surface.
+    private static Border ExplodedShortcutsCard()
+    {
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        for (var i = 0; i < ExplodedShortcuts.Count; i++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var (what, gesture) = ExplodedShortcuts[i];
+            var name = new TextBlock { Text = what, Margin = new Thickness(0, 2, 18, 2) };
+            name.SetResourceReference(TextBlock.ForegroundProperty, "TextBrush");
+            var keys = new TextBlock { Text = gesture, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 2, 0, 2) };
+            keys.SetResourceReference(TextBlock.ForegroundProperty, "MutedTextBrush");
+            Grid.SetRow(name, i);
+            Grid.SetRow(keys, i);
+            Grid.SetColumn(keys, 1);
+            grid.Children.Add(name);
+            grid.Children.Add(keys);
+        }
+
+        var card = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(6), Padding = new Thickness(12, 8, 12, 8), Child = grid };
+        card.SetResourceReference(Border.BackgroundProperty, "InspectorCardBrush");
+        card.SetResourceReference(Border.BorderBrushProperty, "InspectorCardBorderBrush");
+        System.Windows.Automation.AutomationProperties.SetName(card, "3D View shortcuts");
+        return card;
+    }
 
     // ----- Touch -----
 

@@ -369,7 +369,8 @@ public static partial class TimelineLowering
         var first = track.Clips[index];
         var file = first.SourceDuration;
         bool Whole(TimelineClip clip) => Math.Abs(clip.MediaEnd - file) <= 0.001;
-        if (first.ContentKind != LayerKind.VideoFile || file <= 0.05 || !Whole(first) || first.FadeOutSeconds > 0.001
+        // A speed-ramped clip never loops as rounds: its ramp is its own clip's (one file pass), not the merged layer's.
+        if (first.ContentKind != LayerKind.VideoFile || file <= 0.05 || !Whole(first) || first.FadeOutSeconds > 0.001 || first.State.KeysSpeed is { Count: > 0 }
             || (first.AudioLinked && (Math.Abs(first.AudioLeadInSeconds) > 0.0005 || Math.Abs(first.AudioTailOutSeconds) > 0.0005)))
         {
             return rounds;
@@ -584,11 +585,13 @@ public static partial class TimelineLowering
 
         var sound = Layer.FromState(layer.ToState(), layer.ImageWidth, layer.ImageHeight, document.Width, document.Height);
         sound.ClipId = layer.ClipId;
-        var speed = MediaSpeed(layer);
-        var early = Math.Min(Math.Min(lead, layer.StartTime), PlaysFile(layer) ? layer.MediaOffset / speed : double.PositiveInfinity);
+        var early = Math.Min(Math.Min(lead, layer.StartTime), MediaBefore(layer));
         sound.StartTime = layer.StartTime - early;
-        sound.MediaOffset = Math.Max(layer.MediaOffset - early * speed, 0);
+        sound.MediaOffset = Math.Max(layer.MediaOffset + MediaInto(layer, -early), 0);
         sound.Duration = Math.Max(layer.Duration + early + tail, 0.001);
+
+        // Its start moved earlier but its content did not: the speed ramp and the ducking curve keep their sequence moments.
+        ShiftClipCurves(sound, early);
         return sound;
     }
 
@@ -597,16 +600,26 @@ public static partial class TimelineLowering
     /// <summary>Playback speed of a layer's media (clamped).</summary>
     private static double MediaSpeed(Layer clip) => clip.HasSpeed ? Math.Clamp(clip.Speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;
 
+    /// <summary>
+    /// File seconds a layer plays from its start to a clip-relative moment (negative before it): its speed ramp's integral
+    /// (<see cref="Layer.MediaSecondsAt"/>, Pass 5.6.5), else the constant speed.
+    /// </summary>
+    private static double MediaInto(Layer clip, double clipSeconds) => clip.HasSpeedRamp ? clip.MediaSecondsAt(clipSeconds) : clipSeconds * MediaSpeed(clip);
+
+    /// <summary>The clip-relative moment at which a layer has played <paramref name="mediaSeconds"/> of its file (inverse of <see cref="MediaInto"/>).</summary>
+    private static double ClipInto(Layer clip, double mediaSeconds) =>
+        clip.HasSpeedRamp ? SpeedRamp.ClipSeconds(clip.SpeedKeys, clip.Speed, mediaSeconds) : mediaSeconds / MediaSpeed(clip);
+
     /// <summary>True when a layer plays a span of a file (video or audio), so its start maps to a file time.</summary>
     private static bool PlaysFile(Layer clip) => clip.IsVideoFile || clip.IsAudio;
 
     /// <summary>Media remaining after a layer's end, in timeline seconds; infinite for stills and text.</summary>
     private static double MediaAfter(Layer clip) => PlaysFile(clip) && clip.MediaDuration > 0.05
-        ? Math.Max((clip.MediaDuration - clip.MediaOffset - clip.Duration * MediaSpeed(clip)) / MediaSpeed(clip), 0)
+        ? Math.Max(ClipInto(clip, clip.MediaDuration - clip.MediaOffset) - clip.Duration, 0)
         : double.PositiveInfinity;
 
     /// <summary>Media available before a layer's start, in timeline seconds; infinite for stills and text.</summary>
-    private static double MediaBefore(Layer clip) => PlaysFile(clip) ? clip.MediaOffset / MediaSpeed(clip) : double.PositiveInfinity;
+    private static double MediaBefore(Layer clip) => PlaysFile(clip) ? Math.Max(-ClipInto(clip, -clip.MediaOffset), 0) : double.PositiveInfinity;
 
     /// <summary>
     /// Overlaps two same-track layers across a crossfade cut: the earlier extends past the cut and the later starts before it, into the
@@ -629,7 +642,7 @@ public static partial class TimelineLowering
 
         before.Duration += late;
         if (PlaysFile(after))
-            after.MediaOffset = Math.Max(after.MediaOffset - early * MediaSpeed(after), 0);
+            after.MediaOffset = Math.Max(after.MediaOffset + MediaInto(after, -early), 0);
         ShiftKeys(after, early);
         (after.StartTime, after.Duration) = (after.StartTime - early, after.Duration + early);
         var window = late + early;
@@ -658,6 +671,20 @@ public static partial class TimelineLowering
             if (effect.Range is { } range)
                 effect.SetRange((Math.Round(range.Start + seconds, 3), Math.Round(range.End + seconds, 3)));
         }
+
+        ShiftClipCurves(layer, seconds);
+    }
+
+    /// <summary>
+    /// Shifts the clip-relative curves kept beside the motion lanes (speed ramp, hand-drawn ducking curve; Pass 5.6.5) by
+    /// <paramref name="seconds"/> when the layer's start moved but its content did not, so file time and ducking stay on their moments.
+    /// </summary>
+    private static void ShiftClipCurves(Layer layer, double seconds)
+    {
+        if (layer.HasSpeedRamp)
+            layer.SetSpeedKeys(layer.SpeedKeys.Select(k => k with { Time = Math.Round(k.Time + seconds, 3) }).ToList());
+        if (layer.HasDuckOverrides)
+            layer.SetDuckOverrideKeys(layer.DuckOverrideKeys.Select(k => k with { Time = Math.Round(k.Time + seconds, 3) }).ToList());
     }
 
     /// <summary>

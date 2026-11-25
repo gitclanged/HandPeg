@@ -119,3 +119,56 @@ public sealed partial class XRayOverlay : FrameworkElement
     private const long WsExTransparent = 0x20, WsExLayered = 0x80000, WsExNoActivate = 0x8000000;
 
 }
+
+/// <summary>Why a selected clip cannot be seen or heard (the Find Layer X-Ray pill, Pass 5.6.5), in the order a fix reveals it.</summary>
+public enum LayerIssue
+{
+    None,
+    NotAtPlayhead,
+    Hidden,
+    Transparent,
+    OffCanvas,
+    Covered,
+    Muted,
+}
+
+/// <summary>
+/// "Find Layer / why can't I see or hear this?" (Pass 5.6.5, pure; golden-tested): the first issue of a selected clip at the playhead and
+/// the pill's words (at most four each) for it and its one-click fix.
+/// </summary>
+public static class LayerXRay
+{
+    /// <summary>
+    /// The first issue: not at the playhead, hidden, at 0% opacity, wholly off the frame (<paramref name="box"/> in frame fractions), covered
+    /// by an opaque picture above, or (with sound) muted; <see cref="LayerIssue.None"/> when it shows and sounds.
+    /// </summary>
+    public static LayerIssue Diagnose(bool atPlayhead, bool hidden, double opacityPercent, Rect box, bool covered, bool hasSound, bool soundMuted) =>
+        !atPlayhead ? LayerIssue.NotAtPlayhead
+        : hidden ? LayerIssue.Hidden
+        : opacityPercent <= 0.5 ? LayerIssue.Transparent
+        : !OnFrame(box) ? LayerIssue.OffCanvas
+        : covered ? LayerIssue.Covered
+        : hasSound && soundMuted ? LayerIssue.Muted
+        : LayerIssue.None;
+
+    /// <summary>True when some of a box (frame fractions) lies on the frame.</summary>
+    public static bool OnFrame(Rect box) =>
+        box.Width > 0 && box.Height > 0 && box.Right > 0 && box.X < 1 && box.Bottom > 0 && box.Y < 1;
+
+    /// <summary>True when an upper box (frame fractions) covers all of a lower one, to a thousandth of the frame.</summary>
+    public static bool Covers(Rect upper, Rect lower) =>
+        upper.Width > 0 && upper.Height > 0 && upper.X <= lower.X + 1e-3 && upper.Y <= lower.Y + 1e-3
+        && upper.Right >= lower.Right - 1e-3 && upper.Bottom >= lower.Bottom - 1e-3;
+
+    /// <summary>The pill's text and its fix button's label for an issue; empty for none.</summary>
+    public static (string Text, string Fix) Words(LayerIssue issue) => issue switch
+    {
+        LayerIssue.NotAtPlayhead => ("Not at playhead", "Go to clip"),
+        LayerIssue.Hidden => ("Layer hidden", "Show"),
+        LayerIssue.Transparent => ("Opacity 0%", "Set 100%"),
+        LayerIssue.OffCanvas => ("Off canvas", "Center"),
+        LayerIssue.Covered => ("Covered by upper layer", "Select cover"),
+        LayerIssue.Muted => ("Sound muted", "Unmute"),
+        _ => ("", ""),
+    };
+}
