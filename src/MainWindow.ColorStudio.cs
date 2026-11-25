@@ -199,7 +199,6 @@ public partial class MainWindow
         ExplodedLayer.IsHitTestVisibleChanged += (_, _) => QueueGradeWipe();
         _viewModel.PropertyChanged += GradeWipe_ViewModelChanged;
         _viewModel.ClipSelectionChanged += QueueGradeWipe;
-        _gpuStateTimer.Tick += (_, _) => QueueGradeWipe();
         PresentationSource.AddSourceChangedHandler(PlayerOverlay, (_, e) =>
         {
             HookGradeWipeDpi(e.NewSource as HwndSource);

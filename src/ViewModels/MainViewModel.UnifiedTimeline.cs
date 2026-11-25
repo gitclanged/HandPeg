@@ -105,10 +105,19 @@ public partial class MainViewModel
         if (TrackOfRow(row) is not { } track || Document.GapAround(track, seconds) is not { } gap || !(gap.End - gap.Start > TimelineDocument.MinimumClipSeconds))
             return false;
 
-        if (!Edit($"close a gap of {gap.End - gap.Start:0.##} s", edit => edit.CloseGapAt(track, seconds, AppSettings.Current.RippleAllTracks)))
+        // The shift the transaction made (Ripple All Tracks can stop it at a clip); none is refused, so no empty undo step is kept.
+        var moved = 0.0;
+        if (!Edit($"close a gap of {gap.End - gap.Start:0.##} s", edit =>
+            {
+                moved = edit.CloseGapAt(track, seconds, AppSettings.Current.RippleAllTracks);
+                if (!(moved > 1e-9))
+                    throw new TimelineEditException($"The gap on {track.DisplayName} cannot close: a clip on another track is in the way.");
+            }))
             return false;
 
-        StatusText = $"Closed the gap of {TimeDisplay.Format(gap.End - gap.Start)} on {track.DisplayName}.";
+        StatusText = moved < gap.End - gap.Start - 1e-6
+            ? $"Closed {TimeDisplay.Format(moved)} of the {TimeDisplay.Format(gap.End - gap.Start)} gap on {track.DisplayName}."
+            : $"Closed the gap of {TimeDisplay.Format(moved)} on {track.DisplayName}.";
         return true;
     }
 

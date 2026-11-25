@@ -130,13 +130,19 @@ public partial class MainWindow
     /// </summary>
     private Layer? LayerUnder(Point at)
     {
+        var boxed = false;
         for (var i = _playerBoxes.Count - 1; i >= 0; i--)
         {
             var (box, clip, _) = _playerBoxes[i];
             var point = PlayerOverlay.TranslatePoint(at, box);
             if (!clip.IsCaptions && LayerBox.Holds(box, point) && IsDrawnNow(clip) && LayerBox.Shows(box, point))
                 return clip;
+            boxed |= box.IsVisible;
         }
+
+        // Hit boxes up are authoritative (a transparent mask hole is no hit); the frame boxes stand in only while none shows.
+        if (boxed)
+            return null;
 
         if (PictureFocalAt(at) is not { } focal || _viewModel.FrameWidth <= 0 || _viewModel.FrameHeight <= 0)
             return null;
@@ -342,6 +348,11 @@ public partial class MainWindow
             if (!above || upper.TrackId == layer.TrackId || !upper.IsVideoFile || upper.IsHidden || upper.IsDeleted || upper.CustomMask || upper.ChromaKey
                 || upper.Opacity < 100 || upper.AnimatesOpacity || upper.Effects.Count > 0 || DrawnTilted(upper)
                 || (upper.HasFilters && Math.Abs(upper.Rotation % 360) >= 0.05) || !_viewModel.IsPictureDrawn(upper, at))
+                continue;
+
+            // A fade or transition at the playhead lets the lower picture through: only full evaluated opacity covers.
+            var (upperStart, upperEnd) = upper.GetSpan(_viewModel.SequenceSeconds);
+            if (at < upperStart + Math.Max(upper.FadeInSeconds, upper.TransitionIn) || at > upperEnd - upper.FadeOutSeconds)
                 continue;
 
             var (x, y, width, height) = TrackLayerRect(upper);

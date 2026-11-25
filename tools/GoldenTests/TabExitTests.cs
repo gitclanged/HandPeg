@@ -430,8 +430,8 @@ public static class TabExitTests
                    "await BringRestoredTabForwardAsync(forward, Show)", "Show();", "WriteTabManifest();", "RestoredLine(broughtForward ? forward!.Title : null, adopted.Count)"),
             "Law 1: at idle after the first frame (the blank Timeline, the strip collapsed), and only once the tabs are taken in; the strip shown once, tabs.json written, the status line set");
         var bring = SourceProbe.Member(exit, "private async Task<bool> BringRestoredTabForwardAsync(");
-        expect(SourceProbe.InOrder(bring, "_tabControl.Prepare(", "PutActiveBehind(out var write);", "SwapStartTabFor(_tabs, blank, front);", "shown();", "await ResumeTabAsync(front, null);",
-                   "RefreshActiveTab();", "finally", "PutStartTabBack(_tabs, at);", "AppLog.Write(", "_tabControl.Finish(restoring);"),
+        expect(SourceProbe.InOrder(bring, "_tabControl.Prepare(", "PutActiveBehind(out var write);", "SwapStartTabFor(_tabs, blank, front, tab => _tabControl.Commit(restoring, tab));", "shown();", "await ResumeTabAsync(front, null);",
+                   "RefreshActiveTab();", "finally", "PutStartTabBack(_tabs, at, tab => _tabControl.Commit(restoring, tab));", "AppLog.Write(", "_tabControl.Finish(restoring);"),
             "through a switch's own steps: the blank tab put behind and gone, the tab shown in front (the slide comes out from it), then resumed from its cache file; a failure puts a blank tab back in front and is logged");
         expect(bring.Length > 0 && recover.Length > 0 && !bring.Contains("ApplyTabLayout", StringComparison.Ordinal) && !bring.Contains("_dock.Load", StringComparison.Ordinal)
                && !recover.Contains("ApplyTabLayout", StringComparison.Ordinal),

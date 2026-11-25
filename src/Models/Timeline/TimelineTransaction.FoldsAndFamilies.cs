@@ -832,7 +832,13 @@ internal sealed partial class TimelineTransaction
                 if (c.MediaOffset + span > c.WholeDuration)
                     c.MediaOffset = Math.Max(c.WholeDuration - span, 0);
                 if (c.MediaOffset + span > c.WholeDuration)
-                    c.End = c.Start + Math.Max((c.WholeDuration - c.MediaOffset) / c.Speed, TimelineDocument.MinimumClipSeconds);
+                {
+                    // In to the frame grid (never past the file's end); a file too short for the shortest legal clip is refused.
+                    var end = Down(c.Start + (c.WholeDuration - c.MediaOffset) / c.Speed, false);
+                    if (end - c.Start < ShortestFor(c, false) - Slack)
+                        throw new TimelineEditException("The new file is too short for this clip.");
+                    c.End = end;
+                }
 
                 // The J/L cut re-clamped to the new file and the final span (SplitSound's bounds, on frames): the lead to time 0 and the
                 // in-point, the tail to the file's end; sound left shorter than the shortest clip falls back to the picture's span.

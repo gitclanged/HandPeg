@@ -1204,9 +1204,9 @@ public sealed partial class UnifiedTimelineControl
 
         DrawGhostTails(drawing, scale, from, to);
         if (_duckDrag is { } duck && LaneOf(duck.Row) is >= 0 and var duckLane)
-            DrawDuck(drawing, _lanes[duckLane], duck.Block, duck.Keys, duck.Block.Duck?.AutoDb ?? 0, scale, _originX);
+            DrawDuck(drawing, _lanes[duckLane], duck.Block, duck.Keys, duck.Block.Duck?.AutoDb ?? 0, scale, _originX, -3, ActualWidth + 3);
         else if (_duckShown is { } shown && LaneOf(shown.Row) is >= 0 and var shownLane && shown.Block.Duck is { } ducking)
-            DrawDuck(drawing, _lanes[shownLane], shown.Block, ducking.Keys, ducking.AutoDb, scale, _originX);
+            DrawDuck(drawing, _lanes[shownLane], shown.Block, ducking.Keys, ducking.AutoDb, scale, _originX, -3, ActualWidth + 3);
 
         if (!IsDragging && _quickShown is { } quick && LaneOf(quick.Row) is >= 0 and var quickLane)
             DrawQuickStrip(drawing, _lanes[quickLane], quick.Block, quick.Target);
@@ -1237,7 +1237,8 @@ public sealed partial class UnifiedTimelineControl
         drawing.Pop();
     }
 
-    private static void DrawDuck(DrawingContext drawing, in Lane lane, TimelineBlock block, IReadOnlyList<Keyframe> keys, double autoDb, double scale, double originX)
+    private static void DrawDuck(DrawingContext drawing, in Lane lane, TimelineBlock block, IReadOnlyList<Keyframe> keys, double autoDb, double scale, double originX,
+        double visibleLeft = double.NegativeInfinity, double visibleRight = double.PositiveInfinity)
     {
         var rect = BlockRect(lane, block, originX);
         var auto = DuckY(rect, autoDb);
@@ -1252,13 +1253,14 @@ public sealed partial class UnifiedTimelineControl
             drawing.DrawLine(DuckAutoLine, new Point(rect.Left, auto), new Point(Math.Min(first, rect.Right), auto));
         if (last < rect.Right)
             drawing.DrawLine(DuckAutoLine, new Point(Math.Max(last, rect.Left), auto), new Point(rect.Right, auto));
-        var shown = rect;
+        // Sampled across the visible part of the key span only (a long clip at high zoom stays a few hundred segments).
+        var (shown, stop) = (rect, Math.Min(last, visibleRight));
 
         var curve = new StreamGeometry();
         using (var context = curve.Open())
         {
             var started = false;
-            for (var x = Math.Max(first, rect.Left); ; x = Math.Min(x + 3, last))
+            for (var x = Math.Max(Math.Max(first, rect.Left), visibleLeft); ; x = Math.Min(x + 3, stop))
             {
                 var point = new Point(x, DuckY(shown, DuckAt(keys, autoDb, (x - rect.Left) / scale)));
                 if (started)
@@ -1266,7 +1268,7 @@ public sealed partial class UnifiedTimelineControl
                 else
                     context.BeginFigure(point, false, false);
                 started = true;
-                if (x >= last)
+                if (x >= stop)
                     break;
             }
         }

@@ -201,18 +201,19 @@ public static class LayoutSnap
     private static (double Offset, (SnapRect[] Row, int Moving)? Spaced) Axis(SnapRect moving, IReadOnlyList<SnapRect> others, double reach, bool horizontal)
     {
         var (start, size) = horizontal ? (moving.X, moving.Width) : (moving.Y, moving.Height);
-        var (best, spaced) = (double.NaN, ((SnapRect[] Row, int Moving)?)null);
+        // The best offset and, for an equal-gap snap, its pair's index in the level row and the moving box's place among the three.
+        var (best, pair, place) = (double.NaN, -1, 0);
 
-        void Offer(double offset, (SnapRect[] Row, int Moving)? row)
+        void Offer(double offset, int at = -1, int where = 0)
         {
             if (double.IsFinite(offset) && Math.Abs(offset) <= reach && (double.IsNaN(best) || Math.Abs(offset) < Math.Abs(best) - 1e-12))
-                (best, spaced) = (offset, row);
+                (best, pair, place) = (offset, at, where);
         }
 
         foreach (var line in FrameLines)
         {
             for (var part = 0; part <= 2; part++)
-                Offer(line - (start + size * part / 2), null);
+                Offer(line - (start + size * part / 2));
         }
 
         foreach (var other in others)
@@ -221,35 +222,39 @@ public static class LayoutSnap
             for (var mine = 0; mine <= 2; mine++)
             {
                 for (var theirs = 0; theirs <= 2; theirs++)
-                    Offer(otherStart + otherSize * theirs / 2 - (start + size * mine / 2), null);
+                    Offer(otherStart + otherSize * theirs / 2 - (start + size * mine / 2));
             }
         }
 
         // Equal gaps: only boxes level with the moving one on the other axis form a row (or column).
         var level = others.Where(o => Overlaps(o, moving, !horizontal)).OrderBy(o => horizontal ? o.X : o.Y).ToList();
-        for (var i = 0; i < level.Count; i++)
+        // Neighbours in order only (never a callout across a box between them): O(n) per move, no allocation until the winner's row.
+        for (var i = 0; i + 1 < level.Count; i++)
         {
-            for (var j = i + 1; j < level.Count; j++)
+            var (a, b) = (level[i], level[i + 1]);
+            var (aEnd, bStart, bEnd, aStart) = horizontal ? (a.Right, b.X, b.Right, a.X) : (a.Bottom, b.Y, b.Bottom, a.Y);
+            var gap = bStart - aEnd;
+
+            // Between a and b, an equal gap each side.
+            var between = (aEnd + bStart - size) / 2;
+            if (between >= aEnd - 1e-9 && between + size <= bStart + 1e-9)
+                Offer(between - start, i, 1);
+
+            // After b, or before a, at the gap a and b keep.
+            if (gap > 1e-6)
             {
-                var (a, b) = (level[i], level[j]);
-                var (aEnd, bStart, bEnd, aStart) = horizontal ? (a.Right, b.X, b.Right, a.X) : (a.Bottom, b.Y, b.Bottom, a.Y);
-                var gap = bStart - aEnd;
-
-                // Between a and b, an equal gap each side.
-                var between = (aEnd + bStart - size) / 2;
-                if (between >= aEnd - 1e-9 && between + size <= bStart + 1e-9)
-                    Offer(between - start, ([a, moving, b], 1));
-
-                // After b, or before a, at the gap a and b keep.
-                if (gap > 1e-6)
-                {
-                    Offer(bEnd + gap - start, ([a, b, moving], 2));
-                    Offer(aStart - gap - size - start, ([moving, a, b], 0));
-                }
+                Offer(bEnd + gap - start, i, 2);
+                Offer(aStart - gap - size - start, i, 0);
             }
         }
 
-        return double.IsNaN(best) ? (0, null) : (best, spaced);
+        if (double.IsNaN(best))
+            return (0, null);
+        if (pair < 0)
+            return (best, null);
+        var (first, second) = (level[pair], level[pair + 1]);
+        SnapRect[] row = place switch { 0 => [moving, first, second], 1 => [first, moving, second], _ => [first, second, moving] };
+        return (best, (row, place));
     }
 
     // True when two boxes share some extent across the axis (x when acrossX).

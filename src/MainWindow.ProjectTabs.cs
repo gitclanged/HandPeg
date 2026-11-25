@@ -756,8 +756,12 @@ public partial class MainWindow
         (tab.Title, tab.Empty, tab.Dirty) = (ActiveTabTitle(), false, TabDirtyNow(tab));
         TakeProjectPath(tab, _viewModel.CurrentProjectPath);
         (tab.NewProjectName, tab.NewProjectFolder, tab.WaitingTemplate) = (_viewModel.NewProjectName, _viewModel.NewProjectFolder, _viewModel.TemplateWaitingForTab);
-        (tab.PlayheadMs, tab.ViewStart, tab.ViewSpan, tab.ViewFit, tab.VerticalOffset) =
-            (_viewModel.PositionMs, _viewStart, _viewSpan, _viewFit, UnifiedTimeline.Surface.VerticalOffset);
+        // A view restore still queued (cold resume) keeps the saved view: the window's is not this tab's yet.
+        if (!tab.ViewPending)
+        {
+            (tab.PlayheadMs, tab.ViewStart, tab.ViewSpan, tab.ViewFit, tab.VerticalOffset) =
+                (_viewModel.PositionMs, _viewStart, _viewSpan, _viewFit, UnifiedTimeline.Surface.VerticalOffset);
+        }
         TakeFrameForTab(tab);
 
         // Written from the view model, the cache file is the exact current project (a lagged crash-recovery copy marks itself as such).
@@ -880,6 +884,7 @@ public partial class MainWindow
         if (tab.ExplodedOpen)
             _explodedWaitingTab = tab;
         var activation = _tabControl.Generation;
+        tab.ViewPending = true;
         _ = Dispatcher.BeginInvoke(() => RestoreTabView(tab, activation), DispatcherPriority.Background);
         return true;
     }
@@ -938,6 +943,7 @@ public partial class MainWindow
         if (!ReferenceEquals(tab, _tabs.Active))
             return;
 
+        tab.ViewPending = false;
         if (!_viewModel.HasSource)
         {
             // Active but empty: stay flat and clear the wait.

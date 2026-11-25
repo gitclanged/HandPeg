@@ -40,6 +40,10 @@ public sealed record ProjectTabHeader
     /// <summary>How far the Timeline's rows were scrolled down, in DIPs.</summary>
     public double VerticalOffset { get; set; }
 
+    /// <summary>A cold resume's view restore is queued: the saved view stays this tab's until it runs (never saved).</summary>
+    [JsonIgnore]
+    public bool ViewPending { get; set; }
+
     /// <summary>Monotonic last-active counter; least recently used tabs drop their stills first.</summary>
     public long LastActive { get; set; }
 

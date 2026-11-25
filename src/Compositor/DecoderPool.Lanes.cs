@@ -456,9 +456,10 @@ internal sealed partial class DecoderPool
     /// <summary>In-flight reads that gave their lane up to a visible chase since worker start (urgent-seek yield; lock-free).</summary>
     public int VisibleYields => Volatile.Read(ref _visibleYields);
 
-    // YieldsToVisible for a demand now (under the lock).
+    // YieldsToVisible for a demand now (under the lock): the demand scan only for a read that can yield (pre-roll, hover, a paused cut).
     private bool YieldsToVisibleNow(Demand demand) =>
-        YieldsToVisible(demand.Kind is DemandKind.PreRoll or DemandKind.Hover, demand.HintKind == GpuSeekHintKind.CutEntry, _lastWasPlaying, VisibleBeingDecoded());
+        (demand.Kind is DemandKind.PreRoll or DemandKind.Hover || demand.HintKind == GpuSeekHintKind.CutEntry && !_lastWasPlaying)
+        && YieldsToVisible(demand.Kind is DemandKind.PreRoll or DemandKind.Hover, demand.HintKind == GpuSeekHintKind.CutEntry, _lastWasPlaying, VisibleBeingDecoded());
 
     // Parks a lane's read for a visible chase (under the lock): a range keeps the point its frames reached for the resume. A decoder with
     // no point inside the range (just sought, nothing read yet) leaves an earlier park's point in place; Done drops it.

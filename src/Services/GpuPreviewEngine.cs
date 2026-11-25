@@ -223,8 +223,11 @@ public sealed partial class GpuPreviewEngine : IDisposable
         {
             var plan = GpuScenePlan.Create(state, _broker);
             ReleaseUnusedKeptSources();
+            var canvasMoved = plan.CanvasWidth != _plan.CanvasWidth || plan.CanvasHeight != _plan.CanvasHeight;
             Volatile.Write(ref _plan, plan);
             _state = state;
+            if (canvasMoved)
+                CanvasChanged?.Invoke();
             Volatile.Write(ref _canvasFps, state.Timeline.FrameRate.IsValid ? state.Timeline.FrameRate.Fps : 0);
             var heard = audio is null ? AudioProgram.Build(state) : AudioProgram.Build(state, audio);
             _audio.SetProgram(heard);
@@ -1193,6 +1196,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
     /// Raised on the pump thread when the mirrored aspect ratio changes, so side windows resize their surfaces to avoid distortion.
     /// </summary>
     public event Action<double>? MirrorAspectChanged;
+
+    /// <summary>Raised on the UI thread when an installed scene plan's canvas size (the letterboxed picture) changes.</summary>
+    public event Action? CanvasChanged;
 
     private void TakeMirrorRequests()
     {

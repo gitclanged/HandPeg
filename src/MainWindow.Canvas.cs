@@ -589,14 +589,24 @@ public partial class MainWindow
         var (pivotX, pivotY) = fromOpposite
             ? (right == 1 ? shown.X : shown.Right, bottom == 1 ? shown.Y : shown.Bottom)
             : (box.X + element.AnchorX * box.Width, box.Y + element.AnchorY * box.Height);
-        var (signX, signY) = (right == 1 ? 1 : -1, bottom == 1 ? 1 : -1);
-        var armX = signX * Math.Max(signX * (cornerX - pivotX), 0.1 * Math.Max(shown.Width, 1e-9));
-        var armY = signY * Math.Max(signY * (cornerY - pivotY), 0.1 * Math.Max(shown.Height, 1e-9));
+        // The lever keeps the grip-to-pivot vector's own sign (an anchor placed beyond the grip reverses it, so the grip still follows the
+        // pointer), the grip's side only where the two meet; an aspect-kept drag projects on that same diagonal.
+        var (signX, signY) = (Math.Abs(cornerX - pivotX) > 1e-12 ? Math.Sign(cornerX - pivotX) : right == 1 ? 1 : -1,
+            Math.Abs(cornerY - pivotY) > 1e-12 ? Math.Sign(cornerY - pivotY) : bottom == 1 ? 1 : -1);
+        var along = (signX > 0, signY > 0) switch
+        {
+            (true, true) => GripCorner.BottomRight,
+            (true, false) => GripCorner.TopRight,
+            (false, true) => GripCorner.BottomLeft,
+            _ => GripCorner.TopLeft,
+        };
+        var armX = signX * Math.Max(Math.Abs(cornerX - pivotX), 0.1 * Math.Max(shown.Width, 1e-9));
+        var armY = signY * Math.Max(Math.Abs(cornerY - pivotY), 0.1 * Math.Max(shown.Height, 1e-9));
         var (moveX, moveY) = (deltaX / frameWidth, deltaY / frameHeight);
         if (follows)
         {
             // Aspect kept: the pointer's move along the corner's diagonal (DiagonalDelta), so vertical, horizontal and diagonal drags all resize.
-            (moveX, moveY) = DiagonalDelta(corner, shown.Width, shown.Height, moveX, moveY, frameWidth, frameHeight,
+            (moveX, moveY) = DiagonalDelta(along, shown.Width, shown.Height, moveX, moveY, frameWidth, frameHeight,
                 Math.Abs(armX) / Math.Max(shown.Width, 1e-9), Math.Abs(armY) / Math.Max(shown.Height, 1e-9));
         }
 
@@ -612,8 +622,9 @@ public partial class MainWindow
             var (fixedX, fixedY) = ((pivotX - scaled.X) / Math.Max(scaled.Width, 1e-9), (pivotY - scaled.Y) / Math.Max(scaled.Height, 1e-9));
             var (reachX, reachY) = (GizmoHitRules.SnapReachDips / (frameWidth * surfaceScale), GizmoHitRules.SnapReachDips / (frameHeight * surfaceScale));
             var others = SnapTargets(element, guides);
-            var snapped = SnappedCorner((scaled.X, scaled.Y, scaled.Width, scaled.Height), corner, fixedX, fixedY, follows,
-                scaled.Height / Math.Max(scaled.Width, 1e-9), reachX, reachY);
+            // Frame lines only for an unturned box; solved on the visible rect, the layer's size limits applied once back on its box (below).
+            var snapped = !SnapsToFrameLines(element) ? (scaled.X, scaled.Y, scaled.Width, scaled.Height) : SnappedCorner((scaled.X, scaled.Y, scaled.Width, scaled.Height), corner, fixedX, fixedY, follows,
+                scaled.Height / Math.Max(scaled.Width, 1e-9), reachX, reachY, leastWidth: 0, leastHeight: 0, most: double.PositiveInfinity);
             if (snapped == (scaled.X, scaled.Y, scaled.Width, scaled.Height))
             {
                 var width = LayoutSnap.MatchSize(scaled.Width, others.Select(o => o.Width), reachX);
@@ -658,6 +669,9 @@ public partial class MainWindow
             element.SizeHeight = height;
     }
 
+    // Frame lines snap only an unturned box's edges (a turned box's local edges are not the screen's); sizes snap at any angle.
+    private static bool SnapsToFrameLines(Layer element) => !element.HasFilters || Math.Abs(element.Rotation % 360) < 0.05;
+
     /// <summary>Frees an aspect-locked layer's shape (a Shift corner or an edge stretch): its height becomes its own, as it is now.</summary>
     private static void Unlock(Layer element)
     {
@@ -693,7 +707,8 @@ public partial class MainWindow
         var fromOpposite = Keyboard.Modifiers.HasFlag(ModifierKeys.Control);
         var pivot = fromOpposite ? (far ? shownStart : shownStart + shownSize) : start + anchor * size;
         var sign = far ? 1 : -1;
-        var arm = sign * Math.Max(sign * (edgeAt - pivot), 0.1 * Math.Max(shownSize, 1e-9));
+        sign = Math.Abs(edgeAt - pivot) > 1e-12 ? Math.Sign(edgeAt - pivot) : sign; // the edge-to-pivot vector's own sign, as the corners
+        var arm = sign * Math.Max(Math.Abs(edgeAt - pivot), 0.1 * Math.Max(shownSize, 1e-9));
         var (least, most) = (across ? 0.02 : 0.01, 4.0);
         var scale = Math.Clamp(size * (1 + delta / pixels / arm), least, most) / size;
 
@@ -709,7 +724,7 @@ public partial class MainWindow
             double? line = null;
             foreach (var guide in LayoutSnap.FrameLines)
             {
-                if (Math.Abs(guide - moved) <= reach && (line is not { } l || Math.Abs(guide - moved) < Math.Abs(l - moved)))
+                if (SnapsToFrameLines(element) && Math.Abs(guide - moved) <= reach && (line is not { } l || Math.Abs(guide - moved) < Math.Abs(l - moved)))
                     line = guide;
             }
 
@@ -818,7 +833,8 @@ public partial class MainWindow
     /// Ctrl); with <paramref name="heightFollows"/> the nearer edge (in its own reach) decides and the shape is kept.
     /// </summary>
     internal static (double X, double Y, double Width, double Height) SnappedCorner((double X, double Y, double Width, double Height) box, GripCorner corner,
-        double fixedX, double fixedY, bool heightFollows, double heightPerWidth, double reachX, double reachY)
+        double fixedX, double fixedY, bool heightFollows, double heightPerWidth, double reachX, double reachY, double leastWidth = 0.02, double leastHeight = 0.01,
+        double most = 4)
     {
         var (right, bottom) = LayerGizmoAdorner.SidesOf(corner);
         var (pointX, pointY) = (box.X + fixedX * box.Width, box.Y + fixedY * box.Height);
@@ -831,13 +847,13 @@ public partial class MainWindow
                 width = height / heightPerWidth;
             if (double.IsNaN(width))
                 return box;
-            width = Math.Clamp(width, 0.02, 4);
+            width = Math.Clamp(width, leastWidth, most);
             height = width * heightPerWidth;
         }
         else
         {
-            width = double.IsNaN(width) ? box.Width : Math.Clamp(width, 0.02, 4);
-            height = double.IsNaN(height) ? box.Height : Math.Clamp(height, 0.01, 4);
+            width = double.IsNaN(width) ? box.Width : Math.Clamp(width, leastWidth, most);
+            height = double.IsNaN(height) ? box.Height : Math.Clamp(height, leastHeight, most);
         }
 
         return (pointX - fixedX * width, pointY - fixedY * height, width, height);

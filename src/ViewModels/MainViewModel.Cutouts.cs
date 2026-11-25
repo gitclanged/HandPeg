@@ -196,6 +196,13 @@ public partial class MainViewModel
         public readonly HashSet<Layer> Watched = [];
         public bool Watching, PlacingAnchor;
 
+        // Layers whose anchor was placed (not by the automatic centring) this session: the untouched-anchor rule never re-centres them.
+        public readonly HashSet<Layer> Placed = [];
+
+        // The box's crop over the source: a picture mask's bounds and the automatic anchor's fraction of the box follow it.
+        public static readonly HashSet<string> Crop =
+            [nameof(Layer.SourceX), nameof(Layer.SourceY), nameof(Layer.SourceWidth), nameof(Layer.SourceHeight)];
+
         // The mask properties the bounds are made from.
         public static readonly HashSet<string> Inputs =
         [
@@ -223,6 +230,7 @@ public partial class MainViewModel
             if (now.Contains(layer))
                 return false;
             layer.PropertyChanged -= OnTightInput;
+            _tightWatch.Placed.Remove(layer);
             return true;
         });
         foreach (var layer in now)
@@ -236,6 +244,19 @@ public partial class MainViewModel
     {
         if (sender is not Layer layer || e.PropertyName is not { } name || _syncingViews || IsRestoringTimeline)
             return;
+
+        // An anchor placed other than by the automatic centring: the untouched-anchor rule never applies to the layer again.
+        if (name is nameof(Layer.AnchorX) or nameof(Layer.AnchorY) && !_tightWatch.PlacingAnchor)
+            _tightWatch.Placed.Add(layer);
+
+        if (TightWatchState.Crop.Contains(name))
+        {
+            // Reframed: the bounds of a mask that follows the crop, and the automatic anchor's place in the moved box.
+            RefreshTightBounds(layer);
+            using (BatchLookWrites())
+                CentreTightAnchor(layer);
+            return;
+        }
 
         if (TightWatchState.Inputs.Contains(name))
         {
@@ -258,7 +279,8 @@ public partial class MainViewModel
         if (Nullable.Equals(bounds, layer.TightBounds))
             return;
 
-        var untouched = !layer.AutoCenterAnchor && Math.Abs(layer.AnchorX - 0.5) < 1e-9 && Math.Abs(layer.AnchorY - 0.5) < 1e-9 && IsCutout(layer);
+        // Legacy initialization, once: a Cutout taking its first bounds whose anchor was never placed (still the box centre).
+        var untouched = layer.TightBounds is null && !_tightWatch.Placed.Contains(layer) && !layer.AutoCenterAnchor && Math.Abs(layer.AnchorX - 0.5) < 1e-9 && Math.Abs(layer.AnchorY - 0.5) < 1e-9 && IsCutout(layer);
         using var batch = BatchLookWrites();
         layer.TightBounds = bounds;
         if (untouched && bounds is not null)

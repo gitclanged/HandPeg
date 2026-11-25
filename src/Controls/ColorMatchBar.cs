@@ -119,6 +119,9 @@ internal sealed class ColorMatchBar : StackPanel
     private (byte[] Bgra, int Width, int Height)? _frame;
     private GradeShot _shot;
     private bool _reading;
+
+    // Where Esc cancels Pick Target: the host's key scope and the windows holding this bar and the player (Color Studio can float).
+    private readonly List<UIElement> _escScopes = [];
     private Canvas? _loupeLayer;
     private FrameworkElement? _loupe;
     private readonly MatrixTransform _loupeUnzoom = new();
@@ -148,7 +151,8 @@ internal sealed class ColorMatchBar : StackPanel
         {
             if (dragging)
             {
-                EndPick();
+                // CancelPick, not EndPick: a Pick Target capture still reading is dropped too (it never arms the player under the eyedropper).
+                CancelPick();
                 Status("Click a colour anywhere");
             }
             else
@@ -522,7 +526,14 @@ internal sealed class ColorMatchBar : StackPanel
         surface.PreviewMouseRightButtonDown += Overlay_PreviewMouseRightButtonDown;
         surface.PreviewMouseMove += Overlay_PreviewMouseMove;
         surface.MouseLeave += Overlay_MouseLeave;
-        _host.KeyScope.PreviewKeyDown += KeyScope_PreviewKeyDown;
+        foreach (var scope in new UIElement?[] { _host.KeyScope, Window.GetWindow(this), Window.GetWindow(surface) })
+        {
+            if (scope is not null && !_escScopes.Exists(kept => ReferenceEquals(kept, scope)))
+            {
+                _escScopes.Add(scope);
+                scope.PreviewKeyDown += KeyScope_PreviewKeyDown;
+            }
+        }
         _host.ViewModel.PropertyChanged += ViewModel_PropertyChanged;
         _host.ViewModel.PreviewStateInvalidated += Picture_Invalidated;
         Status("Click the target");
@@ -539,7 +550,9 @@ internal sealed class ColorMatchBar : StackPanel
         surface.PreviewMouseRightButtonDown -= Overlay_PreviewMouseRightButtonDown;
         surface.PreviewMouseMove -= Overlay_PreviewMouseMove;
         surface.MouseLeave -= Overlay_MouseLeave;
-        _host.KeyScope.PreviewKeyDown -= KeyScope_PreviewKeyDown;
+        foreach (var scope in _escScopes)
+            scope.PreviewKeyDown -= KeyScope_PreviewKeyDown;
+        _escScopes.Clear();
         _host.ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
         _host.ViewModel.PreviewStateInvalidated -= Picture_Invalidated;
         if (_overlayCursor == DependencyProperty.UnsetValue)

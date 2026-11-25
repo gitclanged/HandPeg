@@ -162,7 +162,7 @@ public static class Program
 
         static string Signed(double ms) => Math.Round(ms, 1) is var r && r >= 0 ? FormattableString.Invariant($"+{r:0.0}") : FormattableString.Invariant($"{r:0.0}");
 
-        // The exact frame is the seek's own decode (a first frame is often the nearest cached stand-in, shown at once).
+        // The exact frame is the seek's own decode; first frames compare like for like (no cached frame near either run's target).
         return Line("Urgent seek to the exact frame", urgent.ExactMs, cold.ExactMs) + Environment.NewLine + Line("Urgent seek to any first frame", urgent.FirstMs, cold.FirstMs);
     }
 
@@ -472,11 +472,16 @@ public static class Program
             {
                 client.ClearFrameCache();
                 Thread.Sleep(30);
-                var (busy, hover, cut, target) = (RandomMoment(), RandomMoment(), RandomMoment(), RandomMoment());
+                // The target lies outside the busy, hover and cut reads' GOPs: no shared decode, no cached stand-in near it (as in ColdSeeks).
+                var (busy, hover, cut) = (RandomMoment(), RandomMoment(), RandomMoment());
+                var target = MomentApartFrom(UrgentApartSeconds, busy, hover, cut);
+
+                // The click's exact frame first (its visible chase over, so nothing yields yet); then its pre-roll and the hover and cut
+                // reads are in flight when the urgent click lands.
+                Time(busy);
                 hints[0] = new GpuSeekHint { SourceId = 0, Kind = (int)GpuSeekHintKind.HoverRoll, MediaSeconds = hover, Span = 2 };
                 hints[1] = new GpuSeekHint { SourceId = 0, Kind = (int)GpuSeekHintKind.CutEntry, MediaSeconds = cut, Span = 2, At = 1 };
                 client.SetHints(hints);
-                Show(busy);
                 Thread.Sleep(40);
                 var (first, exact, wasApproximate) = Time(target);
                 if (double.IsFinite(first))
@@ -488,6 +493,28 @@ public static class Program
 
             client.SetHints([]);
             return new Result(UrgentName, firsts, exacts, Decoded - decoded, approximate, count, "(pre-roll, hover and cut reads in flight)");
+        }
+
+        // Seconds between an urgent seek's target and every in-flight read's start (beyond a long GOP and the hinted 2 s spans).
+        private const double UrgentApartSeconds = 12;
+
+        // A random moment at least `apart` seconds from each taken one; on a short source, the farthest of 32 tries.
+        private double MomentApartFrom(double apart, params double[] taken)
+        {
+            var (best, bestGap) = (0.0, -1.0);
+            for (var tries = 0; tries < 32; tries++)
+            {
+                var moment = RandomMoment();
+                var gap = double.MaxValue;
+                foreach (var t in taken)
+                    gap = Math.Min(gap, Math.Abs(moment - t));
+                if (gap >= apart)
+                    return moment;
+                if (gap > bestGap)
+                    (best, bestGap) = (moment, gap);
+            }
+
+            return best;
         }
 
         public Result Playback(double seconds)
