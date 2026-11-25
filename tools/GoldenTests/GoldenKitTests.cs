@@ -12,7 +12,7 @@ namespace HandPegGoldenTests;
 public static partial class GoldenKitTests
 {
     // The ceilings: today's counts. A count above its ceiling fails; a count below it is reported so the ceiling can come down.
-    private const int ReflectionCeiling = 169, CaseWrapperCeiling = 2, RootCopyCeiling = 1, HiddenCopyCeiling = 2;
+    private const int ReflectionCeiling = 168, CaseWrapperCeiling = 2, RootCopyCeiling = 1, HiddenCopyCeiling = 2;
 
     private static readonly string[] Kit = ["GoldenKit.cs", "SourceProbe.cs", "ViewModelFixture.cs", "GoldenKitTests.cs"];
 

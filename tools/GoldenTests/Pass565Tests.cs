@@ -23,6 +23,10 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class Pass565Tests
 {
+    // The --dpi-matrix report's cells, as DpiMatrixRunner writes them (JSON).
+    private sealed record DpiCell(string Window, double Scale, string Aspect, bool Passed, string Detail);
+    private sealed record DpiReport(List<DpiCell> Cells);
+
     public static IEnumerable<GraphResult> All()
     {
         yield return Case("dpi-matrix-geometry", "# --dpi-matrix: DPI per scale, the aspect rectangle on the work area, 1 px edge matching, its options and its seams.", DpiMatrixGeometry);
@@ -122,12 +126,9 @@ public static class Pass565Tests
             return;
         }
 
-        using var json = JsonDocument.Parse(File.ReadAllText(report));
+        var parsed = JsonSerializer.Deserialize<DpiReport>(File.ReadAllText(report));
         File.Delete(report);
-        var cells = json.RootElement.GetProperty("Cells").EnumerateArray()
-            .Select(c => (Window: c.GetProperty("Window").GetString()!, Scale: c.GetProperty("Scale").GetDouble(), Aspect: c.GetProperty("Aspect").GetString()!,
-                Passed: c.GetProperty("Passed").GetBoolean(), Detail: c.GetProperty("Detail").GetString()!))
-            .ToList();
+        var cells = (parsed?.Cells ?? []).Select(c => (c.Window, c.Scale, c.Aspect, c.Passed, c.Detail)).ToList();
         string[] windows = ["main", "overlay", "buttons", "fullscreen", "mask", "mask-buttons", "first-run", "first-run-buttons"];
         expect(cells.Count == 2 * 2 * windows.Length, "every window was checked at each of the 2 x 2 configurations");
         foreach (var window in windows)

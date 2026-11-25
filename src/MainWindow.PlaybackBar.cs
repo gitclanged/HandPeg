@@ -289,21 +289,29 @@ internal static class EasyCut
     public static List<TimelineTrackModel> Angles(TimelineDocument document) =>
         [.. document.Tracks.Where(t => t is { Kind: TimelineTrackKind.Video, ParentTrackId: null }).OrderBy(t => t.TrackNumber)];
 
+    // Splits each unlocked top-level angle clip spanning `at` (by more than Edge on both sides) there.
+    private static void SplitSpanning(ITimelineTransaction edit, List<TimelineTrackModel> open, double at)
+    {
+        foreach (var clip in open.SelectMany(t => t.Clips).Where(c => c.ParentClipId is null && c.Start < at - Edge && c.End > at + Edge).ToList())
+            edit.SplitClipAt(clip, at);
+    }
+
     /// <summary>The first clip edge on any angle later than <paramref name="at"/> (plus <see cref="Edge"/>); +Infinity when none.</summary>
     public static double Until(IEnumerable<TimelineTrackModel> angles, double at) =>
         angles.SelectMany(t => t.Clips).SelectMany(c => new[] { c.Start, c.End }).Where(edge => edge > at + Edge).DefaultIfEmpty(double.PositiveInfinity).Min();
 
     /// <summary>
-    /// Splits every unlocked angle's clip spanning <paramref name="at"/> there, then shows <paramref name="chosen"/>'s clips and hides
-    /// the other angles' clips that start in [at, <see cref="Until"/>).
+    /// Splits every unlocked angle's clip spanning <paramref name="at"/> or the next cut (<see cref="Until"/>) there, then shows
+    /// <paramref name="chosen"/>'s clips and hides the other angles' clips in [at, Until): nothing past the next cut changes.
     /// </summary>
     public static void Switch(ITimelineTransaction edit, IReadOnlyList<TimelineTrackModel> angles, TimelineTrackModel chosen, double at)
     {
-        var open = angles.Where(t => !t.IsLocked).ToList();
-        foreach (var clip in open.SelectMany(t => t.Clips).Where(c => c.ParentClipId is null && c.Start < at - Edge && c.End > at + Edge).ToList())
-            edit.SplitClipAt(clip, at);
-
         var until = Until(angles, at);
+        var open = angles.Where(t => !t.IsLocked).ToList();
+        SplitSpanning(edit, open, at);
+        if (double.IsFinite(until))
+            SplitSpanning(edit, open, until);
+
         foreach (var track in open)
         {
             foreach (var clip in track.Clips.Where(c => c.ParentClipId is null && c.Start >= at - Edge && c.Start < until - Edge).ToList())

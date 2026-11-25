@@ -3,4 +3,4 @@ ok: no test file keeps a private Method/MemberOf/MethodText/InOrder/Ordered copy
 ok: case wrappers (a shared Case with setup round it): at most 2
 ok: repository-root helpers outside SourceProbe: at most 1
 ok: BindingFlags Hidden copies outside Reflect: at most 2
-ok: string-named reflection lookups (GetField/GetMethod/GetProperty): at most 169
+ok: string-named reflection lookups (GetField/GetMethod/GetProperty): at most 168

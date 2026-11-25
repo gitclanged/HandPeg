@@ -791,6 +791,31 @@ public partial class MainViewModel
     }
 
     /// <summary>
+    /// A view-only change of clip-owned values (a hover preview): <paramref name="show"/> sets them on <paramref name="view"/> as a sync
+    /// does, so no clip edit, Undo step or save sees them; <see cref="ShowViewAgain"/> reloads the clip's values.
+    /// </summary>
+    internal void PreviewOnView(Layer view, Action<Layer> show)
+    {
+        var syncing = _syncingViews;
+        _syncingViews = true;
+        try
+        {
+            show(view);
+        }
+        finally
+        {
+            _syncingViews = syncing;
+        }
+    }
+
+    /// <summary>Reloads a view's clip-owned values from the document as it holds them now (after an Undo too); no edit.</summary>
+    internal void ShowViewAgain(Layer view)
+    {
+        if (ClipOf(view) is { } clip)
+            ShowClipAgain(view, clip);
+    }
+
+    /// <summary>
     /// Whether a box's clip-field change takes its own undo step: not right after a manual Checkpoint, nor for the same field
     /// of the same clip within 1.5 s (a dragged box writes on every mouse move).
     /// </summary>

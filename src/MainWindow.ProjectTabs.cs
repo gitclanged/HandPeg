@@ -387,6 +387,8 @@ public partial class MainWindow
         try
         {
             // Deactivate synchronously (kept live in memory) and reactivate a live tab synchronously: no await between the two.
+            // The outgoing header and document first: a fault inside PutActiveBehind (after the detach) still settles back to them.
+            (behind, parked) = (_tabs.Active, _viewModel.Document);
             behind = PutActiveBehind(out write);
             parked = _viewModel.Document;
             _tabControl.Commit(switching, tab);
@@ -433,22 +435,29 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// A switch faulted after the outgoing tab was put behind but before the front settled. While the incoming project has not replaced the
-    /// detached one (<paramref name="parked"/> still in the view model) the outgoing tab is taken back from memory (<see cref="TakeBack"/>);
-    /// if that is impossible or faults too, the incoming tab stays active as a failed resume, so the active header never claims a Sequence
-    /// it does not hold. Runs before the edit guard is released (ProjectTabController.Finish).
+    /// A switch faulted while or after the outgoing tab was put behind but before the front settled. While the incoming project has not
+    /// replaced the detached one (<paramref name="parked"/> still in the view model) the outgoing tab comes back from memory: taken back
+    /// (<see cref="TakeBack"/>) after the commit, re-attached in place before it. If that is impossible or faults too, the tab in front
+    /// stays as a failed resume, so the active header never claims a Sequence it does not hold. Runs before the edit guard is released
+    /// (ProjectTabController.Finish).
     /// </summary>
     private void SettleFailedSwitch(ProjectTabHeader tab, ProjectTabHeader behind, object? parked)
     {
-        if (!ReferenceEquals(tab, _tabs.Active) || !ReferenceEquals(_viewModel.Document, parked))
+        var committed = ReferenceEquals(tab, _tabs.Active);
+        if (!ReferenceEquals(_viewModel.Document, parked) || (!committed && !ReferenceEquals(behind, _tabs.Active)))
             return;
         try
         {
-            TakeBack(tab, behind);
+            if (committed)
+                TakeBack(tab, behind);
+            else if (_hydrated.TryGetValue(behind.Id, out var live) && !AttachHydrated(behind, live))
+                _tabControl.MarkUnresumed(behind.Id);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             AppLog.Write("Project tabs: the tab put behind could not be taken back", ex);
+            if (!committed && ReferenceEquals(behind, _tabs.Active))
+                _tabControl.MarkUnresumed(behind.Id);
         }
 
         if (ReferenceEquals(tab, _tabs.Active))

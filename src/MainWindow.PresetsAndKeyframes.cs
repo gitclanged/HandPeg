@@ -871,37 +871,40 @@ internal sealed class PausedHoverPreview : IDisposable
 
     private void ShowFade(IReadOnlyList<Layer> layers, bool fadeIn, TransitionStyle style)
     {
-        var clips = layers.Where(l => l is { IsPicture: true, IsCaptions: false, IsLoading: false } && _vm.Layers.Contains(l))
-            .Select(_vm.ClipOf).OfType<Models.Timeline.TimelineClip>().ToList();
-        if (clips.Count == 0)
-            return;
-
-        // As the clips were, by id (an undo in between may replace the clip objects).
-        var saved = clips.Select(c => (c.Id, c.FadeInSeconds, c.FadeOutSeconds, c.FadeInStyle, c.FadeOutStyle)).ToList();
+        var shown = new List<(Layer View, Models.Timeline.TimelineClip Clip, double Seconds)>();
         var standard = AppSettings.Current.DefaultTransitionSeconds;
-        if (!_vm.Edit($"Preview {TransitionStyles.Label(style)}", edit =>
-            {
-                foreach (var clip in clips)
-                {
-                    var (own, other) = fadeIn ? (clip.FadeInSeconds, clip.FadeOutSeconds) : (clip.FadeOutSeconds, clip.FadeInSeconds);
-                    var seconds = own >= 0.01 ? own : Math.Round(Math.Clamp(standard, 0, Math.Max(clip.Duration - other, 0)), 2);
-                    edit.SetClipFades(clip, fadeIn ? seconds : clip.FadeInSeconds, fadeIn ? clip.FadeOutSeconds : seconds, fadeIn ? style : null, fadeIn ? null : style);
-                }
-            }, undoable: false))
+        foreach (var layer in layers)
+        {
+            if (layer is not { IsPicture: true, IsCaptions: false, IsLoading: false } || !_vm.Layers.Contains(layer) || _vm.ClipOf(layer) is not { } clip)
+                continue;
+            var (own, other) = fadeIn ? (clip.FadeInSeconds, clip.FadeOutSeconds) : (clip.FadeOutSeconds, clip.FadeInSeconds);
+            shown.Add((layer, clip, own >= 0.01 ? own : Math.Round(Math.Clamp(standard, 0, Math.Max(clip.Duration - other, 0)), 2)));
+        }
+
+        if (shown.Count == 0)
             return;
 
-        _restore.Add(() => _vm.Edit("Preview over", edit =>
+        // On the views only, as a sync shows them (no edit: a save or an Undo during the hover never sees the preview); leaving reloads
+        // each view from its clip as the document then holds it. Choosing the fade commits it through its own Edit.
+        foreach (var (view, _, seconds) in shown)
         {
-            foreach (var (id, fadeInSeconds, fadeOutSeconds, inStyle, outStyle) in saved)
+            _vm.PreviewOnView(view, v =>
             {
-                if (_vm.Document.FindClip(id) is { } clip)
-                    edit.SetClipFades(clip, fadeInSeconds, fadeOutSeconds, inStyle, outStyle);
-            }
-        }, undoable: false));
+                if (fadeIn)
+                    (v.FadeInSeconds, v.FadeInStyle) = (seconds, style);
+                else
+                    (v.FadeOutSeconds, v.FadeOutStyle) = (seconds, style);
+            });
+        }
+
+        _restore.Add(() =>
+        {
+            foreach (var (view, _, _) in shown)
+                _vm.ShowViewAgain(view);
+        });
 
         // Into the middle of the first clip's fade.
-        var first = clips[0];
-        var fade = fadeIn ? first.FadeInSeconds : first.FadeOutSeconds;
+        var (_, first, fade) = shown[0];
         SeekInto(first.Start, first.End, fadeIn ? first.Start + fade / 2 : first.End - fade / 2, always: fade > 0.01);
     }
 

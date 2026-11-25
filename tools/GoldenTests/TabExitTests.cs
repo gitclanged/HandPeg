@@ -40,6 +40,10 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class TabExitTests
 {
+    /// <summary>MainWindow's ProjectTabController field type (its context type is private), found by its generic definition, not a name.</summary>
+    internal static Type TabControlType => typeof(MainWindow).GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
+        .Single(f => f.FieldType.IsGenericType && f.FieldType.GetGenericTypeDefinition() == typeof(HandPegApp.Shell.ProjectTabController<>)).FieldType;
+
     private const string First = "D:/media/first.mkv", Second = "D:/media/second.mkv";
 
     /// <summary>The cases that need no WPF Application (run before UiScaleTests makes one).</summary>
@@ -511,7 +515,7 @@ public static class TabExitTests
         // The window's thread's dispatcher (a window made the usual way has it from its constructor), its tabs, a view model, a strip, the
         // paused still's timer taken as made (showing the strip starts none), the strip's keys set, and a close asking.
         typeof(DispatcherObject).GetField("_dispatcher", Hidden)!.SetValue(window, Dispatcher.CurrentDispatcher);
-        Set("_tabControl", Activator.CreateInstance(typeof(MainWindow).GetField("_tabControl", Hidden)!.FieldType, tabs));
+        Set("_tabControl", Activator.CreateInstance(TabControlType, tabs));
         Set("_viewModel", vm);
         Set("ProjectTabStrip", new ProjectTabStrip { Visibility = Visibility.Visible });
         Set("_stillSettle", new DispatcherTimer());
@@ -549,7 +553,7 @@ public static class TabExitTests
         tabs.WriteTab(front.Id, vm.CaptureStateForTab("Front"), vm.SavedFingerprintForTab, ProjectTabs.HeaderJson(front));
         var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
         void Set(string name, object? value) => typeof(MainWindow).GetField(name, Hidden)!.SetValue(window, value);
-        Set("_tabControl", Activator.CreateInstance(typeof(MainWindow).GetField("_tabControl", Hidden)!.FieldType, tabs));
+        Set("_tabControl", Activator.CreateInstance(TabControlType, tabs));
         Set("_viewModel", vm);
         Set("_frontRecovery", Activator.CreateInstance(typeof(MainWindow).GetNestedType("FrontLook", BindingFlags.NonPublic)!, front.Id, vm.HistoryPosition, true));
         void Tick() => typeof(MainWindow).GetMethod("KeepFrontRecovery", Hidden)!.Invoke(window, null);
@@ -734,7 +738,7 @@ public static class TabExitTests
         var vm = Holding(1);
         var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
         void Set(string name, object? value) => typeof(MainWindow).GetField(name, Hidden)!.SetValue(window, value);
-        Set("_tabControl", Activator.CreateInstance(typeof(MainWindow).GetField("_tabControl", Hidden)!.FieldType, tabs));
+        Set("_tabControl", Activator.CreateInstance(TabControlType, tabs));
         Set("_viewModel", vm);
         var front = tabs.Active;
         (front.Title, front.Empty) = ("Front", false);
@@ -825,7 +829,7 @@ public static class TabExitTests
         var vm = new MainViewModel();
         var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
         void Set(string name, object? value) => typeof(MainWindow).GetField(name, Hidden)!.SetValue(window, value);
-        Set("_tabControl", Activator.CreateInstance(typeof(MainWindow).GetField("_tabControl", Hidden)!.FieldType, tabs));
+        Set("_tabControl", Activator.CreateInstance(TabControlType, tabs));
         Set("_viewModel", vm);
         Set("ProjectTabStrip", new ProjectTabStrip { Visibility = Visibility.Visible });
         Set("_stillSettle", new DispatcherTimer());

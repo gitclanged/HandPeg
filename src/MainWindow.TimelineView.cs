@@ -321,7 +321,7 @@ public partial class MainWindow
             return TouchpadWheel.HandledResult(touch.Horizontal);
         }
 
-        if (msg != TouchpadWheel.WmMouseHWheel)
+        if (msg != WmMouseHWheel)
             return IntPtr.Zero;
 
         // Positive = right (later). Return TRUE, or Windows re-sends it as legacy tilt-wheel scroll clicks.
@@ -865,7 +865,12 @@ public partial class MainWindow
     /// <summary>Probes the file, then swaps it into the clip (and its Cutouts) keeping place, length, look and effects; kinds must match.</summary>
     private async Task SwapDroppedMediaAsync(Layer clip, string file)
     {
+        // The drop's own project: a tab switch during the probe (a duplicate tab shares clip ids) or a reload drops the swap.
+        var (document, generation) = (_viewModel.Document, _viewModel.ProjectGeneration);
         var info = await MediaProbe.ProbeAsync(file, CancellationToken.None);
+        if (!ReferenceEquals(_viewModel.Document, document) || _viewModel.ProjectGeneration != generation)
+            return;
+
         var name = Path.GetFileName(file);
         if (info is null || !(info.DurationSeconds > 0))
         {

@@ -197,9 +197,10 @@ public static class WaveContract5_6_4B_ReleaseTests
         expect(TwoClickPick.Readout((1.0, 0.5, 0.0)) == $"R 255  G 128  B 0  Y {VideoScopes.Luma(255, 128, 0)}", "the loupe's readout: 8-bit R, G, B and BT.709 luma");
 
         expect(TwoClickPick.ReadoutLines((1, 1, 1)) == "R 255  G 255  B 255\nY 255", "the loupes show the readout on two compact lines");
-        var match = SourceProbe.Src("MainWindow.ColorMatch.cs");
+        // The Color Match bar is a control of its own since Pass 5.6.5 (its loupe is a layer over the player).
+        var match = SourceProbe.Src("Controls", "ColorMatchBar.cs");
         var loupes = match + SourceProbe.Src("Controls", "ScreenEyedropper.Loupe.cs");
-        expect(Has(loupes, "TwoClickPick.ReadoutLines(") && !Has(SourceProbe.Member(match, "private Popup MakeLoupe("), "CharacterEllipsis"),
+        expect(Has(loupes, "TwoClickPick.ReadoutLines(") && !Has(SourceProbe.Member(match, "private Canvas MakeLoupeLayer("), "CharacterEllipsis"),
             "neither loupe clips its readout with an ellipsis");
         expect(Has(match, "PreviewMouseRightButtonDown += Overlay_PreviewMouseRightButtonDown") && Has(match, "TwoClickPick.ReadoutLines("),
             "Pick Target: a right click cancels and the player loupe shows the live readout");
@@ -310,7 +311,7 @@ public static class WaveContract5_6_4B_ReleaseTests
             "Match Strength 0 % keeps the grade before, 100 % (and NaN) the solved grade, between them a blend");
         expect(ColorMatchBounds.StrengthText(0.75) == "75%" && ColorMatchBounds.StrengthText(3) == "100%" && ColorMatchBounds.FullStrength == 1, "the strength reads as a whole percentage");
 
-        var match = SourceProbe.Src("MainWindow.ColorMatch.cs");
+        var match = SourceProbe.Src("Controls", "ColorMatchBar.cs");
         expect(SourceProbe.InOrder(SourceProbe.Member(match, "private void Match("), "ApplyColorGrade(", "ResetStrength(") && Has(match, "ColorMatchBounds.Blend(")
                && Has(match, "slider.MouseDoubleClick += (_, _) => slider.Value = 100;"),
             "a new match resets the strength to 100 % (user decision); double-click resets it; moves blend live");

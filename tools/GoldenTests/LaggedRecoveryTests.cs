@@ -555,7 +555,7 @@ public static class LaggedRecoveryTests
 
         // The window as far as these paths reach (none made, nothing shown): its tabs, its view model, and its tick's last look (a file written).
         var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
-        SetField(window, "_tabControl", Activator.CreateInstance(typeof(MainWindow).GetField("_tabControl", BindingFlags.NonPublic | BindingFlags.Instance)!.FieldType, tabs));
+        SetField(window, "_tabControl", Activator.CreateInstance(TabExitTests.TabControlType, tabs));
         SetField(window, "_viewModel", vm);
         LookWritten(window, front.Id);
         var onSaved = typeof(MainWindow).GetMethod("ViewModel_ProjectSaved", Hidden)!;

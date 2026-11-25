@@ -137,6 +137,7 @@ internal static partial class DpiMatrixRunner
         }
         catch (Exception ex)
         {
+            AppLog.Write("dpi-matrix: could not run", ex);
             output.WriteLine("dpi-matrix: could not run: " + ex.GetType().Name + ": " + ex.Message);
             exit = NotRun;
         }
@@ -474,13 +475,14 @@ internal static partial class DpiMatrixRunner
     /// <summary>Hits the buttons <paramref name="collect"/> finds; a miss is measured again once the window settles, and hit once more.</summary>
     private static (List<Target> Buttons, List<string> Missed) HitTestSettled(Window window, Func<IEnumerable<Target>> collect)
     {
+        var handle = new WindowInteropHelper(window).Handle;
         var buttons = collect().ToList();
-        var missed = HitTest(buttons);
+        var missed = HitTest(buttons, handle);
         if (missed.Count == 0)
             return (buttons, missed);
         Settle(window);
         buttons = collect().ToList();
-        return (buttons, HitTest(buttons));
+        return (buttons, HitTest(buttons, handle));
     }
 
     // ----- Hit testing -----
@@ -547,17 +549,30 @@ internal static partial class DpiMatrixRunner
 
     private static Int32Rect Inflate(Int32Rect r, int by) => new(r.X - by, r.Y - by, Math.Max(0, r.Width + 2 * by), Math.Max(0, r.Height + 2 * by));
 
+    /// <summary>Whether <paramref name="element"/> is inside <paramref name="window"/>: the nearest native window at or above it is that HWND.</summary>
+    private static bool InWindow(TreeWalker walker, AutomationElement element, IntPtr window)
+    {
+        for (AutomationElement? node = element; node is not null; node = walker.GetParent(node))
+        {
+            if (node.Current.NativeWindowHandle is not 0 and var handle)
+                return new IntPtr(handle) == window;
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// UIA ElementFromPoint at each button's centre, from an MTA thread while this thread pumps (WPF answers UIA on its own thread). A hit
-    /// is the button itself or a part of it: its AutomationId, or an element at most four levels up whose rectangle is the button's.
-    /// Returns the names of buttons missed.
+    /// is the button itself or a part of it, in this process and inside <paramref name="window"/>'s HWND: an element at most four levels up
+    /// with the button's rectangle and (when the button has one) its AutomationId. Returns the names of buttons missed.
     /// </summary>
-    private static List<string> HitTest(List<Target> targets)
+    private static List<string> HitTest(List<Target> targets, IntPtr window)
     {
         if (targets.Count == 0)
             return [];
         var missed = new List<string>();
         var done = false;
+        var process = Environment.ProcessId;
         var worker = new Thread(() =>
         {
             try
@@ -572,12 +587,15 @@ internal static partial class DpiMatrixRunner
                         var element = AutomationElement.FromPoint(target.Centre);
                         if (element is not null)
                             found = string.Create(CultureInfo.InvariantCulture, $" (hit {element.Current.ControlType.ProgrammaticName.Replace("ControlType.", "", StringComparison.Ordinal)} '{element.Current.AutomationId}{element.Current.Name}' {element.Current.ClassName} pid {element.Current.ProcessId} {element.Current.BoundingRectangle}, wanted {Describe(target.Screen)})");
+                        // Only this process's element inside the window under test counts: another window at the same place does not.
+                        if (element is not null && (element.Current.ProcessId != process || !InWindow(walker, element, window)))
+                            element = null;
                         for (var level = 0; element is not null && level < 5 && !hit; level++, element = walker.GetParent(element))
                         {
                             var current = element.Current;
                             var r = current.BoundingRectangle;
-                            hit = (target.AutomationId.Length > 0 && current.AutomationId == target.AutomationId)
-                                  || (!r.IsEmpty && Matches(new Int32Rect((int)Math.Round(r.X), (int)Math.Round(r.Y), (int)Math.Round(r.Width), (int)Math.Round(r.Height)), target.Screen, 2));
+                            hit = (target.AutomationId.Length == 0 || current.AutomationId == target.AutomationId)
+                                  && !r.IsEmpty && Matches(new Int32Rect((int)Math.Round(r.X), (int)Math.Round(r.Y), (int)Math.Round(r.Width), (int)Math.Round(r.Height)), target.Screen, 2);
                         }
                     }
                     catch (Exception ex) when (ex is ElementNotAvailableException or COMException or InvalidOperationException)
