@@ -13,8 +13,23 @@ public readonly record struct GpuMediaHint(int SourceId, double MediaSeconds);
 /// </summary>
 public readonly record struct GpuCutEntry(double Start, double End, int SourceId, long PathHash, double Media, double MediaEnd, double Speed)
 {
+    /// <summary>
+    /// A speed-ramped clip's keys (Layer.SpeedKeys, snapshotted at plan creation; Pass 5.6.5), null for a constant speed. Then
+    /// <see cref="Speed"/> is the ramp's fastest speed (read-ahead spans cover its fastest stretch) and file time follows the ramp from
+    /// <see cref="RampMedia"/> at the clip's start <see cref="RampStart"/>.
+    /// </summary>
+    public Keyframe[]? Ramp { get; init; }
+
+    /// <summary>Sequence time of the ramped clip's start (its keys' zero).</summary>
+    public double RampStart { get; init; }
+
+    /// <summary>File time at the ramped clip's start (its MediaOffset).</summary>
+    public double RampMedia { get; init; }
+
     /// <summary>File time read at a sequence time within the entry.</summary>
-    public double MediaAt(double sequenceSeconds) => Math.Min(Media + Math.Max(sequenceSeconds - Start, 0) * Speed, MediaEnd);
+    public double MediaAt(double sequenceSeconds) => Math.Min(Ramp is { } ramp
+        ? RampMedia + Math.Max(SpeedRamp.MediaSeconds(ramp, Speed, Math.Max(sequenceSeconds, Start) - RampStart), 0)
+        : Media + Math.Max(sequenceSeconds - Start, 0) * Speed, MediaEnd);
 }
 
 /// <summary>Identity of a layer written by <see cref="GpuScenePlan.Evaluate"/>, for 3D exploded view labels and picking (UI thread).</summary>
@@ -48,12 +63,37 @@ public sealed partial class GpuScenePlan
     private readonly GpuCutEntry[] _cuts;
     private int _warned;
 
+    // Keyframed speed ramps (Pass 5.6.5) of file-reading entries, keys snapshotted from their clips here on the UI thread so evaluation
+    // (any thread) never reads a live Layer; null when no clip is ramped (the constant-speed path costs nothing).
+    private readonly Dictionary<Entry, Keyframe[]>? _ramps;
+
     private GpuScenePlan(int width, int height, double sequenceSeconds, Entry[] entries, GpuResourceBroker? resources)
     {
         (CanvasWidth, CanvasHeight, SequenceSeconds) = (width, height, sequenceSeconds);
         (_entries, _resources) = (entries, resources);
-        _cuts = CutsOf(entries);
+        _ramps = RampsOf(entries);
+        _cuts = CutsOf(entries, _ramps);
     }
+
+    private static Dictionary<Entry, Keyframe[]>? RampsOf(Entry[] entries)
+    {
+        Dictionary<Entry, Keyframe[]>? ramps = null;
+        foreach (var entry in entries)
+        {
+            if (entry.Kind is EntryKind.File or EntryKind.Twin && entry.Layer is { HasSpeedRamp: true } layer)
+                (ramps ??= [])[entry] = [.. layer.SpeedKeys];
+        }
+
+        return ramps;
+    }
+
+    /// <summary>
+    /// File seconds an entry reads from its clip's start to sequence time <paramref name="t"/> (negative before it): its speed ramp's
+    /// integral (<see cref="SpeedRamp.MediaSeconds"/>, the one mapping picture, sound and captions share), else the constant speed.
+    /// Allocation-free.
+    /// </summary>
+    private static double Into(Entry e, Dictionary<Entry, Keyframe[]>? ramps, double t) =>
+        ramps is not null && ramps.TryGetValue(e, out var ramp) ? SpeedRamp.MediaSeconds(ramp, e.Speed, t - e.MediaStart) : (t - e.MediaStart) * e.Speed;
 
     /// <summary>A plan that draws nothing (black 1920 x 1080 frame).</summary>
     public static GpuScenePlan Empty { get; } = new(1920, 1080, 0, [], null);
@@ -226,7 +266,7 @@ public sealed partial class GpuScenePlan
         return found;
     }
 
-    private static GpuCutEntry[] CutsOf(Entry[] entries)
+    private static GpuCutEntry[] CutsOf(Entry[] entries, Dictionary<Entry, Keyframe[]>? ramps)
     {
         var cuts = new List<GpuCutEntry>(entries.Length);
 
@@ -235,8 +275,8 @@ public sealed partial class GpuScenePlan
         {
             if (entry.Kind is not (EntryKind.File or EntryKind.Twin) || entry.SourceId < 0 || !double.IsFinite(entry.From) || entry.Speed <= 0)
                 continue;
-            var media = entry.MediaOffset + Math.Max((entry.From - entry.MediaStart) * entry.Speed, 0);
-            var end = double.IsFinite(entry.To) ? entry.MediaOffset + Math.Max((entry.To - entry.MediaStart) * entry.Speed, 0) : double.PositiveInfinity;
+            var media = entry.MediaOffset + Math.Max(Into(entry, ramps, entry.From), 0);
+            var end = double.IsFinite(entry.To) ? entry.MediaOffset + Math.Max(Into(entry, ramps, entry.To), 0) : double.PositiveInfinity;
             if (entry.MediaDuration > 0.05)
             {
                 // A looping video's next round restarts at frame 0 (read on from there: no separate entry).
@@ -250,8 +290,22 @@ public sealed partial class GpuScenePlan
                 end = double.PositiveInfinity;
             }
 
-            if (end > media)
+            if (end <= media)
+                continue;
+            if (ramps is not null && ramps.TryGetValue(entry, out var ramp) && !entry.Loops)
+            {
+                var fastest = entry.Speed;
+                foreach (var key in ramp)
+                    fastest = Math.Max(fastest, Math.Clamp(key.Value, Layer.SlowestSpeed, Layer.FastestSpeed));
+                cuts.Add(new GpuCutEntry(entry.From, entry.To, entry.SourceId, entry.PathHash, media, end, fastest)
+                {
+                    Ramp = ramp, RampStart = entry.MediaStart, RampMedia = entry.MediaOffset,
+                });
+            }
+            else
+            {
                 cuts.Add(new GpuCutEntry(entry.From, entry.To, entry.SourceId, entry.PathHash, media, end, entry.Speed));
+            }
         }
 
         cuts.Sort(static (a, b) => a.Start != b.Start ? a.Start.CompareTo(b.Start) : a.SourceId != b.SourceId ? a.SourceId.CompareTo(b.SourceId) : a.Media.CompareTo(b.Media));
@@ -391,7 +445,7 @@ public sealed partial class GpuScenePlan
                     return false;
                 if (e.Loops)
                     return true;
-                var media = e.MediaOffset + (t - e.MediaStart) * e.Speed;
+                var media = e.MediaOffset + Into(e, _ramps, t);
                 return !(e.MediaDuration > 0.05 && media >= e.MediaDuration);
             case EntryKind.Fade:
                 return FadeLevel(e, t) > 0.0005;
@@ -423,13 +477,13 @@ public sealed partial class GpuScenePlan
     }
 
     /// <summary>Source and media time a file-reading entry reads at a sequence time.</summary>
-    private static bool MediaOf(Entry e, double t, out int source, out double media)
+    private bool MediaOf(Entry e, double t, out int source, out double media)
     {
         (source, media) = (e.SourceId, 0);
         switch (e.Kind)
         {
             case EntryKind.File or EntryKind.Twin:
-                var into = (t - e.MediaStart) * e.Speed;
+                var into = Into(e, _ramps, t);
                 media = e.Loops && e.MediaDuration > 0.05 ? Repeat(e.MediaOffset + into, e.MediaDuration) : e.MediaOffset + Math.Max(into, 0);
                 return source >= 0;
             default:
