@@ -42,7 +42,7 @@ public sealed partial class MaskDrawWindow : Window
 
     // Window after a touchpad scroll during which wheel messages count as the same gesture: precision touchpads occasionally emit
     // a full 120 notch, which must not zoom mid-pan.
-    internal const long TouchpadStreamMs = 250;
+    internal const long TouchpadStreamMs = TouchpadWheel.CarryMs;
 
     // TickCount64 of the last touchpad wheel message (initially far in the past).
     private long _touchpadWheelAt = long.MinValue / 2;
@@ -779,18 +779,18 @@ public sealed partial class MaskDrawWindow : Window
     private bool TouchpadNow(int delta)
     {
         var now = Environment.TickCount64;
-        var touchpad = IsTouchpadWheel(delta, MainWindow.FromTouchpad(), now - _touchpadWheelAt <= TouchpadStreamMs);
+        var touchpad = IsTouchpadWheel(delta, TouchpadWheel.FromMessageSource(), now - _touchpadWheelAt <= TouchpadStreamMs);
         if (touchpad)
             _touchpadWheelAt = now;
         return touchpad;
     }
 
     /// <summary>
-    /// Pure touchpad detection (golden cutout-studio-wheel): GetCurrentInputMessageSource reports IMDT_TOUCHPAD, or the delta is not a
-    /// multiple of 120 (precision touchpads send finger distance), or a touchpad wheel arrived just before (same gesture).
+    /// Pure touchpad detection (golden cutout-studio-wheel), the shared <see cref="TouchpadWheel.IsTouchpad"/> rule: IMDT_TOUCHPAD, a
+    /// delta that is not a multiple of 120 (precision touchpads send finger distance), or a touchpad wheel just before (same gesture).
     /// </summary>
     internal static bool IsTouchpadWheel(int delta, bool sourceIsTouchpad, bool touchpadJustBefore) =>
-        sourceIsTouchpad || touchpadJustBefore || delta % 120 != 0;
+        TouchpadWheel.IsTouchpad(delta, sourceIsTouchpad, touchpadJustBefore);
 
     /// <summary>Vertical wheel action in the view.</summary>
     internal enum WheelAction { Zoom, PanSideways, PanUpDown }

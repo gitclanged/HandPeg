@@ -1,0 +1,10 @@
+# One touchpad wheel rule (TouchpadWheel): IMDT_TOUCHPAD, a part notch or a 250 ms gesture carry-over on either axis; raw wheel messages decoded; the player raises both windows' wheels.
+ok: whole notches with no touchpad source and no gesture before are a mouse wheel's
+ok: IMDT_TOUCHPAD, a part notch, or a touchpad wheel just before make a touchpad's
+ok: the Cutout Studio decides with the same rule and the same 250 ms carry-over
+ok: a whole notch within 250 ms of a touchpad wheel is the same gesture, on either axis; 251 ms after the last one it is a mouse's again
+ok: Reset forgets the gesture
+ok: WM_MOUSEHWHEEL decodes to its signed delta, axis, Shift from the message (Ctrl only when the message says so), Alt from the keyboard and the signed screen point
+ok: WM_MOUSEWHEEL with MK_CONTROL (a pinch) decodes as Ctrl; any other message is not a wheel
+ok: a handled WM_MOUSEHWHEEL answers TRUE (no legacy tilt clicks), a handled WM_MOUSEWHEEL 0
+ok: the player raises PlayerWheel from the native video window and from the overlay, before their other hooks

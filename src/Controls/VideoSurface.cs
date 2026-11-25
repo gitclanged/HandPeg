@@ -91,6 +91,17 @@ public sealed partial class VideoSurface : HwndHost
     public event HwndSourceHook? OverlayMessageHook;
 
     /// <summary>
+    /// Wheel over the player (Pass 5.6.5 contract): WM_MOUSEWHEEL and WM_MOUSEHWHEEL from the native video HWND and from the overlay,
+    /// decoded and classified by one shared <see cref="TouchpadWheel"/> (a gesture crossing between the two windows keeps its kind), ahead
+    /// of WPF, <see cref="HwndHost.MessageHook"/> and <see cref="OverlayMessageHook"/>. A handler that sets
+    /// <see cref="PlayerWheelEventArgs.Handled"/> consumes the message; otherwise it continues as before. Decoded only while subscribed.
+    /// </summary>
+    public event EventHandler<PlayerWheelEventArgs>? PlayerWheel;
+
+    // Gesture memory shared by both windows' wheel messages (UI thread).
+    private readonly TouchpadWheel _wheel = new();
+
+    /// <summary>
     /// Pointer position over the player in element DIPs, from either the native window or the overlay (wipe handle, clip boxes); null after
     /// leaving both. Used by the Live Encoded Preview Magnifier. Leave tracking is armed only while a handler is attached.
     /// </summary>
@@ -176,7 +187,28 @@ public sealed partial class VideoSurface : HwndHost
         if (msg == WmWindowPosChanged && hwnd == SurfaceHandle)
             QueuePlaceOverlay();
 
+        if (TellWheel(hwnd, msg, wParam, lParam, ref handled) is { } answer)
+            return answer;
+
         return base.WndProc(hwnd, msg, wParam, lParam, ref handled);
+    }
+
+    /// <summary>
+    /// Raises <see cref="PlayerWheel"/> for a wheel message of either window; the message's result when a handler consumed it, else null
+    /// (the message continues to the window's other hooks).
+    /// </summary>
+    private IntPtr? TellWheel(IntPtr window, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (PlayerWheel is not { } listeners || _wheel.Read(msg, wParam, lParam) is not { } input)
+            return null;
+
+        var args = new PlayerWheelEventArgs(input, window);
+        listeners(this, args);
+        if (!args.Handled)
+            return null;
+
+        handled = true;
+        return TouchpadWheel.HandledResult(input.Horizontal);
     }
 
     /// <summary>
@@ -320,6 +352,8 @@ public sealed partial class VideoSurface : HwndHost
         // Overlay is pixel-coincident with the surface, so its moves are player moves too (Magnifier over the wipe handle).
         if (msg is WmMouseMove or WmMouseLeave && PointerMoved is not null)
             TellPointer(hwnd, msg, lParam);
+        if (TellWheel(hwnd, msg, wParam, lParam, ref handled) is { } answer)
+            return answer;
         return OverlayMessageHook is { } hook ? hook(hwnd, msg, wParam, lParam, ref handled) : IntPtr.Zero;
     }
 

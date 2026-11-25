@@ -1,0 +1,14 @@
+# The speed ramp, the hand-drawn ducking curve, Cutout tight bounds and the auto-centred anchor: held on read, saved only when set, carried by speed change and trims.
+ok: a layer without them saves none of the four (older projects read unchanged)
+ok: speed keys are kept ascending, held to 0.1x..16x, and a key that is not a number is dropped
+ok: setting the same speed keys again raises nothing
+ok: ducking keys are kept ascending and held to -40..0 dB, announced as a look change
+ok: the drawn curve rules from its first key to its last; the automatic envelope outside
+ok: all four survive a save and a read (bounds saved ordered as [UMin, VMin, UMax, VMax])
+ok: saved bounds with no area, a number missing or not a number read as unknown; out-of-frame values are held to it
+ok: a look brings the bounds with its mask and the auto anchor with its anchor; a placement brings only the anchor's
+ok: the bounds land on the box as fractions of what it shows (source rect less crop), and the auto anchor is their centre
+ok: bounds outside what the box shows, or none, give no auto anchor
+ok: the speed ramp and the ducking curve are motion channels: split, join, trim and speed change carry them
+ok: doubling the constant speed halves both curves' times, as it does every keyframe's
+ok: a head trim shifts both curves with what the clip shows

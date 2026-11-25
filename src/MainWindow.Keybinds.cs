@@ -433,7 +433,47 @@ public partial class MainWindow
             return true;
         }
 
-        return false;
+        return TakeSeamKey(e, key);
+    }
+
+    // ----- Lane seams: EasyCut 1-9 and Z spring-zoom (Pass 5.6.5 contract) -----
+    // Optional partial methods: one MainWindow part implements each; until then the call compiles away. They run from TakeOverlayKey,
+    // ahead of bound shortcuts (Z is Previous Edit Point; digits may be bound), for unmodified keys only (never while typing, nor a key the
+    // focused control owns), and set handled only when they consume the key (otherwise it continues to its shortcut).
+
+    /// <summary>EasyCut (live multi-angle switcher): angle 1-9 pressed (top row or keypad); consumed only while EasyCut is armed.</summary>
+    partial void TakeEasyCutKey(int angle, bool repeat, ref bool handled);
+
+    /// <summary>
+    /// Spring-zoom: Z pressed; consumed only during a drag that spring-zooms (clip move, trim, fade, keyframe, ducking), as the 300 ms
+    /// dwell would.
+    /// </summary>
+    partial void TakeSpringZoomKey(bool repeat, ref bool handled);
+
+    /// <summary>An EasyCut angle: digits 1-9 on the top row or the keypad; null for any other key.</summary>
+    internal static int? EasyCutAngleOf(Key key) => key switch
+    {
+        >= Key.D1 and <= Key.D9 => key - Key.D0,
+        >= Key.NumPad1 and <= Key.NumPad9 => key - Key.NumPad0,
+        _ => null,
+    };
+
+    /// <summary>Offers an unmodified EasyCut digit or Z to its seam (TakeOverlayKey); true when consumed.</summary>
+    private bool TakeSeamKey(KeyEventArgs e, Key key)
+    {
+        var focused = Keyboard.FocusedElement;
+        if (Keyboard.Modifiers != ModifierKeys.None || focused is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem
+            || KeyBelongsToFocus(KeybindManager.ChordOf(e), focused))
+            return false;
+
+        var handled = false;
+        if (EasyCutAngleOf(key) is { } angle)
+            TakeEasyCutKey(angle, e.IsRepeat, ref handled);
+        else if (key == Key.Z)
+            TakeSpringZoomKey(e.IsRepeat, ref handled);
+        if (handled)
+            e.Handled = true;
+        return handled;
     }
 
     /// <summary>

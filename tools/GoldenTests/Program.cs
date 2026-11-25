@@ -71,6 +71,7 @@ public static class Program
             run.Suite("RunnerTests", () => RunnerTests.All(GoldenFilter.Active ? GoldenFilter.Unfiltered(() => GraphCases.All().ToList()) : graphs));
         run.Suite("TimelineDocumentTests", TimelineDocumentTests.All);
         run.Suite("ModelSeamTests", ModelSeamTests.All);
+        run.Suite("ContractSeamTests", ContractSeamTests.All);
         run.Suite("ShellBudgetTests", ShellBudgetTests.All);
         run.Suite("ShellArchitectureTests", ShellArchitectureTests.All);
         run.Suite("TimelineGraphCases", TimelineGraphCases.All);

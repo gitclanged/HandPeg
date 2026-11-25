@@ -483,6 +483,9 @@
                 <TextBlock x:Name="EngineRecoveredText" Text="Preview engine recovered" FontSize="11.5" Foreground="{DynamicResource MutedTextBrush}" VerticalAlignment="Center" />
             </StackPanel>
             <!-- Hit-testable in chrome (also via style); hit-tested in device pixels under any UI scale (MainWindow.TitleBar.cs, FrameHitTest). -->
+            <!-- 4th caption button: + Side Window, a Live Video Preview side window (as the Layout Selector's footer row). -->
+            <Button x:Name="SideWindowButton" Style="{StaticResource CaptionButton}" Content="&#xE710;" Click="SideWindowButton_Click" AutomationProperties.Name="New Side Window"
+                    ToolTip="New side window" WindowChrome.IsHitTestVisibleInChrome="True" />
             <Button x:Name="MinimizeButton" Style="{StaticResource CaptionButton}" Content="&#xE921;" Click="MinimizeWindow_Click" AutomationProperties.Name="Minimize" ToolTip="Minimize"
                     WindowChrome.IsHitTestVisibleInChrome="True" />
             <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}" Content="&#xE922;" Click="MaximizeWindow_Click" AutomationProperties.Name="Maximize" ToolTip="Maximize"
@@ -798,6 +801,12 @@
                                     </StackPanel>
                                 </Border>
                             </Grid>
+                            <!--
+                                Color Match host (Pass 5.6.5 seam): the standalone ColorMatchBar's player layer (crosshair loupe while picking
+                                the target), topmost over the picture; empty and collapsed until a pick starts.
+                            -->
+                            <Canvas x:Name="ColorMatchHost" IsHitTestVisible="False" Visibility="Collapsed" ClipToBounds="True"
+                                    AutomationProperties.Name="Color Match Pick" />
                         </Grid>
                     </Grid>
                 </local:VideoSurface>
