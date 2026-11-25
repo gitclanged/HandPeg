@@ -1,10 +1,13 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using HandPegApp.Services;
+using HandPegApp.ViewModels;
 using HandPegApp.Views;
 
 namespace HandPegApp;
@@ -25,7 +28,11 @@ public partial class MainWindow
     private Canvas? _gradeWipeLayer;
     private Border? _gradeWipeHandle, _gradeDivider;
     private readonly MatrixTransform _gradeWipeUnzoom = new();
-    private DispatcherTimer? _gradeWipeRecheck;
+
+    // Event-driven placement (Pass 5.6.5, replaces a 500 ms re-check timer): hooked once, the first time a split is requested; every
+    // trigger coalesces into one queued PlaceGradeWipe.
+    private bool _gradeWipeHooked, _gradeWipeQueued;
+    private HwndSource? _gradeWipeSource;
 
     private void AttachColorStudio(ColorStudioPane pane)
     {
@@ -167,7 +174,6 @@ public partial class MainWindow
         _gradeWipeLayer.Children.Add(_gradeDivider);
         _gradeWipeLayer.Children.Add(handle);
         PlayerOverlay.Children.Add(_gradeWipeLayer);
-        PlayerOverlay.SizeChanged += (_, _) => PlaceGradeWipe();
     }
 
     /// <summary>Moves the divider to <paramref name="x"/> (handle layer, player units) using the same span and formula as line placement.</summary>
@@ -183,26 +189,90 @@ public partial class MainWindow
         ApplyGradeCompare();
     }
 
+    // ----- Grade wipe triggers: layout, size, view transform, DPI, 3D, overlay modes, Live Encoded Preview, frame size, selection -----
+    // PlaceGradeWipe's inputs change independently of the compare state: the player's size (SizeChanged), zoom and pan (ApplyPlayerView and
+    // ResetNavigationViews call it), DPI (the overlay's HwndSource, re-hooked when the player moves to another window), 3D Exploded View (the
+    // exploded layer turns hit-testable on entry and back once the engine draws flat again), Interactive Crop / Draw Target, Live Encoded
+    // Preview and the output frame size (view-model properties), the canvas the engine letterboxes (each scene-plan push) and the selection.
+    // Each trigger only queues one placement, and only while a split is requested or the handle is still showing.
+
+    private void HookGradeWipeTriggers()
+    {
+        if (_gradeWipeHooked)
+            return;
+        _gradeWipeHooked = true;
+        PlayerOverlay.SizeChanged += (_, _) => QueueGradeWipe();
+        ExplodedLayer.IsHitTestVisibleChanged += (_, _) => QueueGradeWipe();
+        _viewModel.PropertyChanged += GradeWipe_ViewModelChanged;
+        _viewModel.ClipSelectionChanged += QueueGradeWipe;
+        _gpuStateTimer.Tick += (_, _) => QueueGradeWipe();
+        PresentationSource.AddSourceChangedHandler(PlayerOverlay, (_, e) =>
+        {
+            HookGradeWipeDpi(e.NewSource as HwndSource);
+            QueueGradeWipe();
+        });
+        HookGradeWipeDpi(PresentationSource.FromVisual(PlayerOverlay) as HwndSource);
+    }
+
+    // The player overlay's window: its DPI change re-rounds the handle and divider to the new device pixels.
+    private void HookGradeWipeDpi(HwndSource? source)
+    {
+        if (ReferenceEquals(source, _gradeWipeSource))
+            return;
+        if (_gradeWipeSource is { } old)
+            old.DpiChanged -= GradeWipe_DpiChanged;
+        _gradeWipeSource = source;
+        if (source is not null)
+            source.DpiChanged += GradeWipe_DpiChanged;
+    }
+
+    private void GradeWipe_DpiChanged(object? sender, HwndDpiChangedEventArgs e) => QueueGradeWipe();
+
+    private void GradeWipe_ViewModelChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        switch (e.PropertyName)
+        {
+            case nameof(MainViewModel.IsExportQualityPreview):
+            case nameof(MainViewModel.IsInteractiveCropActive):
+            case nameof(MainViewModel.DrawTargetLayer):
+            case nameof(MainViewModel.FrameWidth):
+            case nameof(MainViewModel.FrameHeight):
+            case nameof(MainViewModel.HasSource):
+                QueueGradeWipe();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Queues one PlaceGradeWipe after the current dispatcher work (other handlers of the same change, e.g. Live Encoded Preview's engine
+    /// switch, run first); idle unless a split is requested or the handle still shows.
+    /// </summary>
+    private void QueueGradeWipe()
+    {
+        if (_gradeWipeQueued || (GradeCompareNow != GradeCompareMode.Split && _gradeWipeLayer is not { Visibility: Visibility.Visible }))
+            return;
+        _gradeWipeQueued = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _gradeWipeQueued = false;
+            PlaceGradeWipe();
+        }, DispatcherPriority.Loaded);
+    }
+
     /// <summary>
     /// Positions handle and divider on the engine's split line (device-pixel rounded, 2 px wide), only while splitting; hidden in the 3D
-    /// view, Live Encoded Preview or a source view, where the engine shows plain Before.
+    /// view, Live Encoded Preview or a source view, where the engine shows plain Before. Called directly on compare, zoom and pan changes,
+    /// and queued by the triggers above.
     /// </summary>
     private void PlaceGradeWipe()
     {
-        // While split is requested, re-check every 500 ms (timer created lazily): 3D view, Live Encoded Preview and source views toggle
-        // independently, and the handle must follow.
         var splitting = GradeCompareNow == GradeCompareMode.Split;
-        if (splitting && _gradeWipeRecheck is null)
-        {
-            _gradeWipeRecheck = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(500) };
-            _gradeWipeRecheck.Tick += (_, _) => PlaceGradeWipe();
-        }
-
-        if (_gradeWipeRecheck is { } recheck && recheck.IsEnabled != splitting)
-            recheck.IsEnabled = splitting;
+        if (splitting)
+            HookGradeWipeTriggers();
 
         var (viewWidth, viewHeight) = _loopback.LoopbackViewSize();
-        var shown = splitting && _gpu is { IsDrawingExploded: false, LoopbackOn: false } && CurrentOverlayMode == OverlayMode.None
+        // 3D: from entry until the engine draws flat again (the exploded layer is hit-testable exactly that long, and its change is a trigger).
+        var shown = splitting && !_explodedUi && !ExplodedLayer.IsHitTestVisible && _gpu is { LoopbackOn: false } && CurrentOverlayMode == OverlayMode.None
             && viewWidth > 1 && viewHeight > 1;
         if (!shown)
         {
