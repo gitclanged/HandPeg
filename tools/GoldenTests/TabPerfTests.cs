@@ -396,12 +396,12 @@ public static class TabPerfTests
     {
         var tabs = (SourceProbe.Src("MainWindow.ProjectTabs.cs") + SourceProbe.Src("MainWindow.TabCache.cs") + SourceProbe.Src("MainWindow.TabMenu.cs"));
         var switching = SourceProbe.Member(tabs, "private async Task SwitchToTabAsync(");
-        var put = switching.IndexOf("var behind = PutActiveBehind(out write);", StringComparison.Ordinal);
+        var put = switching.IndexOf("behind = PutActiveBehind(out write);", StringComparison.Ordinal);
         var attach = switching.IndexOf("AttachHydrated(tab, live!)", StringComparison.Ordinal);
         expect(put > 0 && attach > put && !switching[put..attach].Contains("await ", StringComparison.Ordinal)
-               && SourceProbe.InOrder(switching, "var behind = PutActiveBehind(out write);", "_tabs.Activate(tab);", "ShowTabs();", "ApplyTabLayout(tab);", "_hydrated.TryGetValue(tab.Id, out var live)", "AttachHydrated(tab, live!)", "else", "await ResumeTabAsync(tab, behind);"),
+               && SourceProbe.InOrder(switching, "behind = PutActiveBehind(out write);", "_tabControl.Commit(switching, tab);", "ShowTabs();", "ApplyTabLayout(tab);", "_hydrated.TryGetValue(tab.Id, out var live)", "AttachHydrated(tab, live!)", "else", "await ResumeTabAsync(tab, behind);"),
             "SwitchToTabAsync: the tab in front put behind, the next in front, its layout, then a live tab attached at once: no await between putting one behind and bringing the other back");
-        expect(SourceProbe.InOrder(switching, "AttachHydrated(tab, live!)", "RefreshActiveTab(fingerprint: !hot);", "finally", "_switchingTab = false;", "QueueTabWrite(write);"),
+        expect(SourceProbe.InOrder(switching, "AttachHydrated(tab, live!)", "RefreshActiveTab(fingerprint: !hot);", "finally", "_tabControl.Finish(switching);", "QueueTabWrite(write);"),
             "the tab put behind's cache file is queued after the switch (in its finally, once the next tab is in front), and a live switch makes no fingerprint");
 
         var behind = SourceProbe.Member(tabs, "private ProjectTabHeader PutActiveBehind(") + SourceProbe.Member(tabs, "private TabViewContext DetachActive(") + SourceProbe.Member(tabs, "private void TakeHeaderForTab(");
@@ -409,10 +409,10 @@ public static class TabPerfTests
         string[] cold = ["ReadState(", "ReadSaved(", "ResumeTabAsync(", "RestoreStateAsync(", "MarkSaved(", "HasUnsavedChanges", "CaptureThumbnailAsync(", "await ", "Task.Run(", ".Wait("];
         expect(behind.Length > 0 && front.Length > 0 && !HasAny(behind, cold) && !HasAny(front, cold),
             "putting a tab behind and bringing a live one back read no cache file, open nothing, make no fingerprint, capture no still and wait for nothing");
-        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private ProjectTabHeader PutActiveBehind("), "var live = DetachActive(tab, out write);", "_hydrated[tab.Id] = live;", "LeaveExplodedAtOnce();", "_gpu?.Suspend();", "ClearProgramStrip();"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private ProjectTabHeader PutActiveBehind("), "var live = DetachActive(tab, out write);", "_tabControl.PutBehind(tab, live);", "LeaveExplodedAtOnce();", "_gpu?.Suspend();", "ClearProgramStrip();"),
             "the tab put behind is kept live, its 3D view left, and the engine lets go of it (GpuPreviewEngine.Suspend, as before)");
-        expect(SourceProbe.InOrder(front, "ShowTabStill(live.Still);", "_viewModel.AttachTab(project)", "_hydrated.Remove(tab.Id);", "live.Write?.Cancel();", "DeleteTabFiles(tab.Id);", "AdoptProgramSheet(sheet, live.ProgramSheetMark);",
-                   "RestoreExpansion(live.Expansion);", "RestorePlayerView(live.PlayerView);", "RestoreTabView(tab);"),
+        expect(SourceProbe.InOrder(front, "ShowTabStill(live.Still);", "_viewModel.AttachTab(project)", "_tabControl.TakeFront(tab);", "live.Write?.Cancel();", "DeleteTabFiles(tab.Id);", "AdoptProgramSheet(sheet, live.ProgramSheetMark);",
+                   "RestoreExpansion(live.Expansion);", "RestorePlayerView(live.PlayerView);", "RestoreTabView(tab, _tabControl.Generation);"),
             "AttachHydrated: its still shown first, its project swapped in, its cache file let go after any write, its sheet, open stacks and player view back, its view restored inline (no Background wait)");
         expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private void QueueTabWrite("), "_unwritten.Add(write);", "_tabs.Enqueue(write.Id, () => WriteTabNow(write));")
                && SourceProbe.InOrder(SourceProbe.Member(tabs, "private void WriteTabNow("), "MainViewModel.FrozenStateDiffers(frozen, project.SavedFingerprint)", "_tabs.WriteTab(write.Id, frozen,", "Dispatcher.BeginInvoke(() => TabWritten(write)"),
@@ -611,9 +611,9 @@ public static class TabPerfTests
         var close = SourceProbe.Member(tabs, "private async Task CloseProjectTabAsync(");
         const string Closed = "CompactWhenQuiet(\"a project tab closed\");";
         expect(Count(close, Closed) == 3
-               && SourceProbe.InOrder(close, "_tabs.Close(tab);", Closed, "ForgetKeptTab(tab.Id);", "DeleteTabFiles(tab.Id);", Closed, "_tabs.Close(tab);", "finally", "_switchingTab = false;", Closed),
+               && SourceProbe.InOrder(close, "_tabs.Close(tab);", Closed, "ForgetKeptTab(tab.Id);", "DeleteTabFiles(tab.Id);", Closed, "_tabs.Close(tab);", "finally", "_tabControl.Finish(closing);", Closed),
             "a compaction is asked for after each way a tab is closed (behind, the last one emptied, the one in front), once it is let go and the switch is over");
-        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task LetGoForMemoryAsync("), "_hydrated.Remove(id);", "KeptTabsChanged();", "CompactWhenQuiet(\"a project tab let go to its cache file\");"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task LetGoForMemoryAsync("), "_tabControl.TryTakeBehind(id, out _);", "KeptTabsChanged();", "CompactWhenQuiet(\"a project tab let go to its cache file\");"),
             "and after a tab kept live is let go to its cache file (the valve)");
     }
 
@@ -870,7 +870,7 @@ public static class TabPerfTests
         "<RateControls>k__BackingField", "<RecentProjects>k__BackingField", "<ResolutionPresets>k__BackingField",
         "<SavesConvertedProjects>k__BackingField", "<SmartRules>k__BackingField", "<StylePresets>k__BackingField", "<TaskbarProgress>k__BackingField",
         "<TimelineSelection>k__BackingField", "<Tunes>k__BackingField", "<VideoEncoders>k__BackingField", "<WhisperModelChoices>k__BackingField", "<WorkspaceForSave>k__BackingField",
-        "ActionLogged", "CaptionsChanged", "ClipLibraryChanged", "EditTargetChanged", "_editTarget", "_gesture", "_lookWrites", "ClipSelectionChanged", "EdgeTuningChanged", "LayerLoaded",
+        "ActionLogged", "CaptionsChanged", "ClipLibraryChanged", "EditTargetChanged", "_editTarget", "_gesture", "_lookWrites", "_levelling", "_placingTightAnchor", "_tightWatched", "_tightWatching", "ClipSelectionChanged", "EdgeTuningChanged", "LayerLoaded",
         "LayerVisibilityChanged", "MarkersChanged", "MediaLoaded", "PreviewStateInvalidated", "ProjectSaved", "SaveRequested", "SessionCleared",
         "TimelineChanged", "TimelineRestored", "WorkspaceOpened", "_acceptProgressReports", "_activeStyle", "_anyKeys", "_applyingKeys", "_autosaving", "_baking",
         "_beforeEdit", "_checkpointedAt", "_commandDeferrals", "_commandPending", "_commandPreviewWatched", "_commandStale", "_commandTextQueued",

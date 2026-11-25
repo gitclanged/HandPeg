@@ -155,12 +155,13 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Viewport right-click Find Layer on Timeline: selects the clip under the pointer (the Timeline follows its selection) and, when the
-    /// playhead is off the clip, puts the playhead on its first frame.
+    /// Viewport right-click Find Layer on Timeline: selects the clip under the pointer, reveals it on the Timeline (its stacks unfolded,
+    /// its row scrolled into view, its block pulsed) and, when the playhead is off the clip, puts the playhead on its first frame.
     /// </summary>
     private void FindLayerOnTimeline(Layer layer)
     {
         SelectClip(layer);
+        UnifiedTimeline.Surface.RevealClip(layer);
         var at = _viewModel.PositionMs / 1000;
         var (start, end) = layer.GetSpan(_viewModel.SequenceSeconds);
         if (at < start - 0.0005 || at >= end)

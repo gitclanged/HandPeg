@@ -310,7 +310,7 @@ public partial class MainWindow
 
     private IntPtr TimelineSidewaysWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg is not (TouchpadWheel.WmMouseWheel or WmMouseHWheel))
+        if (msg is not (TouchpadWheel.WmMouseWheel or TouchpadWheel.WmMouseHWheel))
             return IntPtr.Zero;
 
         // Touchpad over the rows, either axis: 1:1 two-axis scroll, pinch zoom, Alt heights. A mouse wheel goes on to WPF (OnMouseWheel).
@@ -321,7 +321,7 @@ public partial class MainWindow
             return TouchpadWheel.HandledResult(touch.Horizontal);
         }
 
-        if (msg != WmMouseHWheel)
+        if (msg != TouchpadWheel.WmMouseHWheel)
             return IntPtr.Zero;
 
         // Positive = right (later). Return TRUE, or Windows re-sends it as legacy tilt-wheel scroll clicks.
@@ -632,12 +632,9 @@ public partial class MainWindow
 // Alt+wheel sizes one track (live rows, one Undo step once the wheel rests); a gap double-click ripple-closes it (CloseGapAt); the Ghost
 // Playhead skims the live composite at a dragged edge while paused and snaps back on release; Z toggles Spring-Zoom mid-drag; inline
 // quick-edit icons act on a clip's effects, one effect or a crossfade; the amber ducking curve writes Layer.DuckOverrideKeys; a gain-line
-// double-click auto-levels to -14 LUFS from the waveform peaks; Alt+drop of one file on a clip swaps its media in place.
+// double-click runs Auto-Level Speech (-14 LUFS, measured in the background); Alt+drop of one file on a clip swaps its media in place.
 public partial class MainWindow
 {
-    /// <summary>Loudness target of a gain-line double-click (LUFS).</summary>
-    internal const double AutoLevelLufs = -14;
-
     // Alt+wheel row height: the row being stepped (its live height is _rowHeightDrag) and the rest timer that commits it.
     private TimelineRow? _rowStepped;
     private DispatcherTimer? _rowStepCommit;
@@ -851,63 +848,12 @@ public partial class MainWindow
 
     // ----- Auto-level -----
 
-    // Gain-line double-click: clip gain so the clip's sound measures about -14 LUFS (one Undo step).
+    // Gain-line double-click: Auto-Level Speech, as the clip menu's item (the clip's sound measured in the background, its gain set for
+    // -14 LUFS in one Undo step); nothing while that clip is still being measured.
     private void AutoLevelClip(Layer clip)
     {
-        if (LiveClip(clip) is not { } live || _viewModel.ClipOf(live) is not { } model)
-            return;
-
-        if (Waveforms.DataOf(_viewModel.WaveformOf(live)) is not { } data || EstimateLufs(data, model.MediaOffset, model.MediaEnd) is not { } lufs)
-        {
-            _viewModel.StatusText = "Auto-level waits for the waveform.";
-            return;
-        }
-
-        var gain = Math.Round(Math.Clamp(AutoLevelLufs - lufs, -40, 24), 1);
-        RunGuarded("auto-level", () => _viewModel.SetClipGain(live, gain));
-        _viewModel.StatusText = string.Create(CultureInfo.InvariantCulture, $"Auto-level: {live.Name} at {gain:+0.0;-0.0;0} dB, about {AutoLevelLufs:0} LUFS.");
-    }
-
-    /// <summary>
-    /// Integrated loudness estimate (LUFS) of waveform peaks between file seconds: 400 ms blocks of the peak envelope as a sine's mean
-    /// square, the BS.1770 absolute (-70) and relative (-10 LU) gates, no K-weighting. Null when silent or out of range.
-    /// </summary>
-    internal static double? EstimateLufs(WaveformData data, double mediaFrom, double mediaTo)
-    {
-        var lows = data.LowsAt(0);
-        var highs = data.HighsAt(0);
-        var rate = data.PairsPerSecond;
-        var count = Math.Min(lows.Length, highs.Length);
-        if (rate <= 0 || count == 0 || !(mediaTo > mediaFrom))
-            return null;
-
-        var first = (int)Math.Clamp(Math.Floor(mediaFrom * rate), 0, count);
-        var end = (int)Math.Clamp(Math.Ceiling(mediaTo * rate), 0, count);
-        var perBlock = Math.Max((int)Math.Round(0.4 * rate), 1);
-        var blocks = new List<double>();
-        for (var at = first; at < end; at += perBlock)
-        {
-            var stop = Math.Min(at + perBlock, end);
-            var sum = 0.0;
-            for (var i = at; i < stop; i++)
-            {
-                var amplitude = (highs[i] - lows[i]) / 2.0;
-                sum += amplitude * amplitude / 2;
-            }
-
-            if (sum > 0)
-                blocks.Add(10 * Math.Log10(sum / (stop - at)));
-        }
-
-        var gated = blocks.Where(level => level > -70).ToList();
-        if (gated.Count == 0)
-            return null;
-
-        var relative = Energy(gated) - 10;
-        var kept = gated.Where(level => level > relative).ToList();
-        return kept.Count == 0 ? null : Energy(kept);
-
-        static double Energy(List<double> levels) => 10 * Math.Log10(levels.Average(level => Math.Pow(10, level / 10)));
+        if (LiveClip(clip) is { } live && _viewModel.CanAutoLevelSpeech(live))
+            _ = AutoLevelSpeechAsync(live);
     }
 
     // ----- Media swap in place (Alt+drop of one file on a clip) -----

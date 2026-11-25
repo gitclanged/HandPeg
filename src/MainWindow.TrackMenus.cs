@@ -347,11 +347,13 @@ public partial class MainWindow
                 AddDuckingItems(audio, layer, layer.AutoDuck, layer.IsVoice);
         }
 
-        // Beat detection: runs in the background and stores beats on the clip (one Undo step); drags snap to them and the beat grid draws
-        // them (both toggled in the Snap button's menu).
+        // Auto-Level Speech (as a gain-line double-click) and beat detection: both measure in the background, one Undo step. Beats are
+        // stored on the clip; drags snap to them and the beat grid draws them (both toggled in the Snap button's menu).
         if (!layer.IsVideoOnlyChild && !clip.IsVideoOnlyChild && _viewModel.ClipOf(clip) is { HasSound: true })
         {
             AddSeparator(audio);
+            AddTrackItem(audio, "Auto-Level Speech (-14 LUFS)", () => _ = AutoLevelSpeechAsync(clip), _viewModel.CanAutoLevelSpeech(clip),
+                "Measures this clip's speech, then sets its gain to -14 LUFS.");
             AddTrackItem(audio, "Detect & Snap to Audio Beats", () => _ = DetectBeatsAsync(clip), _viewModel.CanDetectBeats(clip),
                 "Finds the beats of this clip's sound (in the background) and keeps them with the clip: dragged clips' edges snap to them, and the beat grid shows them as ticks along the clip. One step of Undo.");
             if (_viewModel.HasBeats(clip))

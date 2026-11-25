@@ -238,6 +238,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     private readonly DrawingVisual _content = new();
     private readonly DrawingVisual _overlay = new();
     private readonly DrawingVisual _labels = new();
+    private readonly DrawingVisual _pulse = new();
     private readonly DrawingVisual _skim = new();
     private readonly DrawingVisual _playhead = new();
     private readonly DrawingVisual _headers = new();
@@ -265,6 +266,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         _headers.Transform = _headersRise;
         _timeArea.Children.Add(_scroller);
         _timeArea.Children.Add(_labels);
+        _timeArea.Children.Add(_pulse);
         _timeArea.Children.Add(_skim);
         _timeArea.Children.Add(_playhead);
         AddVisualChild(_timeArea);
@@ -641,6 +643,101 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
     private static bool HasStack(TimelineRow row, ChildStack stack) => row.Children.Exists(child => child.Stack == stack);
 
+    // ----- Reveal a clip (Find Layer on Timeline) -----
+
+    private const double PulseSeconds = 1.2;
+    private const int PulseCount = 3;
+    private static readonly Pen PulseOutline = UiBrushes.Frozen(new Pen(Brushes.White, 2.5));
+
+    // The pulsed clip (its block found again by ClipId after row rebuilds) and when its pulse began.
+    private Models.Layer? _pulseClip;
+    private long _pulseBegan;
+
+    /// <summary>
+    /// Find Layer on Timeline: unfolds every collapsed stack above the row showing <paramref name="clip"/>, keeps that row scrolled into
+    /// view while they open (as a click-opened stack) and pulses its block's outline three times. False when no row shows the clip.
+    /// </summary>
+    public bool RevealClip(Models.Layer clip)
+    {
+        if (RowShowing(_rows, clip) is not { } row)
+            return false;
+
+        var child = row;
+        while (child.Parent is { } parent)
+        {
+            if (!IsExpanded(parent, child.Stack))
+                SetExpanded(parent, child.Stack, true);
+            child = parent;
+        }
+
+        (_keepInView, _keepInViewUntil) = (row, Stopwatch.GetTimestamp() + Stopwatch.Frequency);
+        KeepLaneInView();
+        (_pulseClip, _pulseBegan) = (clip, Stopwatch.GetTimestamp());
+        _pulse.Opacity = 0;
+        PlacePulse();
+        StartTicking();
+        return true;
+    }
+
+    // The first row (depth-first, top to bottom) with a block showing the clip.
+    private static TimelineRow? RowShowing(List<TimelineRow> rows, Models.Layer clip)
+    {
+        foreach (var row in rows)
+        {
+            foreach (var block in row.Blocks)
+            {
+                if (Shows(block, clip))
+                    return row;
+            }
+
+            if (RowShowing(row.Children, clip) is { } shown)
+                return shown;
+        }
+
+        return null;
+    }
+
+    // A block shows the clip: the same Layer, or a view of the same Timeline clip (rows are rebuilt from fresh views).
+    private static bool Shows(TimelineBlock block, Models.Layer clip) =>
+        ReferenceEquals(block.Clip, clip) || (block.Clip is Models.Layer shown && clip.ClipId != Guid.Empty && shown.ClipId == clip.ClipId);
+
+    // Draws the pulse outline where the pulsed clip's block lies now (stacks opening, scrolled, rows rebuilt); ends a finished pulse.
+    private void PlacePulse()
+    {
+        if (_pulseClip is not { } clip)
+            return;
+        if (Stopwatch.GetTimestamp() - _pulseBegan > PulseSeconds * Stopwatch.Frequency)
+        {
+            EndPulse();
+            return;
+        }
+
+        using var drawing = _pulse.RenderOpen();
+        foreach (var lane in _lanes)
+        {
+            if (lane.Mini || lane.Height <= 0)
+                continue;
+
+            foreach (var block in lane.Row.Blocks)
+            {
+                if (!Shows(block, clip))
+                    continue;
+
+                var (top, height) = block.Height > 0 ? (lane.Top + block.Top, block.Height) : (lane.Top, lane.Height);
+                var rect = new Rect(_headerWidth + block.Left - ViewOffsetX, top - _verticalOffset, Math.Max(block.Width, 2), Math.Max(height, 2));
+                drawing.DrawRoundedRectangle(null, PulseOutline, rect, 3, 3);
+                return;
+            }
+        }
+    }
+
+    private void EndPulse()
+    {
+        _pulseClip = null;
+        _pulse.Opacity = 0;
+        _pulse.RenderOpen().Close();
+    }
+
     /// <summary>
     /// Animates (~120 ms) content after a fold the host just unfolded (<paramref name="opening"/>: the range at <paramref name="atSeconds"/>,
     /// <paramref name="lengthSeconds"/> long, wipes in and later content slides out) or refolded (later content slides in). Rows already
@@ -752,6 +849,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         }
 
         KeepLaneInView();
+        PlacePulse();
     }
 
     /// <summary>While click-opened stacks grow, keeps the clicked lane scrolled into view (fully, when it fits).</summary>
@@ -1054,10 +1152,21 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             InvalidateVisual();
         }
 
+        if (_pulseClip is not null)
+        {
+            var pulsed = (now - _pulseBegan) / (double)Stopwatch.Frequency / PulseSeconds;
+            if (pulsed >= 1)
+                EndPulse();
+            else
+                _pulse.Opacity = 0.5 - 0.5 * Math.Cos(pulsed * PulseCount * 2 * Math.PI);
+        }
+
         if (laidOut)
             Relayout();
         StepMomentum(now * 1000.0 / Stopwatch.Frequency);
-        if (!IsMoving())
+
+        // A Find Layer pulse keeps the clock running until it ends (it moves nothing, so IsMoving leaves it out).
+        if (!IsMoving() && _pulseClip is null)
             StopTicking();
     }
 
@@ -1153,6 +1262,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         var moving = IsMoving();
         StopTicking();
         _slide = null;
+        EndPulse();
         _expansionKeys.Clear();
         _expansionKeys.AddRange(_expansion.Keys);
         foreach (var key in _expansionKeys)
@@ -1198,6 +1308,7 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
             _overlayDirty = true;
         PlaceLine(_playhead, _playheadSeconds, ref _playheadHeight, playhead: true);
         PlaceLine(_skim, _skimSeconds, ref _skimHeight, playhead: false);
+        PlacePulse();
         InvalidateVisual();
     }
 
