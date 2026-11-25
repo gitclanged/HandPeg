@@ -113,8 +113,8 @@ public partial class MainWindow
     /// <summary>Memory valve poll interval in ms while live tabs exist.</summary>
     private const int ValveTickMs = 30_000;
 
-    /// <summary>Live inactive tabs by id (the active tab lives in the view model). UI thread only.</summary>
-    private readonly Dictionary<string, TabViewContext> _hydrated = new(StringComparer.Ordinal);
+    /// <summary>Live inactive tabs by id (the active tab lives in the view model): ProjectTabController.Behind. UI thread only.</summary>
+    private IReadOnlyDictionary<string, TabViewContext> _hydrated => _tabControl.Behind;
 
     // Queued, not-yet-written cache writes; flushed by the crash handler (WriteUnwrittenTabs). Accessed from any thread.
     private readonly List<TabWrite> _unwritten = [];
@@ -372,15 +372,14 @@ public partial class MainWindow
             HideTabStill();
             _viewModel.ParkDocument();
             _viewModel.NewProject();
-            _unresumed.Add(tab.Id);
+            _tabControl.MarkUnresumed(tab.Id);
             _viewModel.StatusText = $"\"{tab.Title}\" could not be brought back ({ex.Message}). Its tab keeps it: click it again to try once more.";
             return true;
         }
 
         // Active again: cancel a pending write and delete the file after any in-progress one. A fully written dirty file is kept as the active
         // crash-recovery copy instead (as ResumeTabAsync does; the tick rewrites it on history change and deletes it once clean).
-        _hydrated.Remove(tab.Id);
-        _unresumed.Remove(tab.Id);
+        _tabControl.TakeFront(tab);
         tab.WaitingTemplate = null;
         live.Write?.Cancel();
         ForgetUnwritten(live.Write);
@@ -398,7 +397,7 @@ public partial class MainWindow
         // Deactivated in 3D: mark it waiting for view restore, as a file resume does.
         if (tab.ExplodedOpen)
             _explodedWaitingTab = tab;
-        RestoreTabView(tab);
+        RestoreTabView(tab, _tabControl.Generation);
         _viewModel.BackgroundSelected = _selectedClip is Layer { IsBackground: true };
         // Re-target the Effects pane to a selected audio clip (EffectsPane.SelectSound; null reverts to the key layer), after the attach
         // has restored the tab's views and key layer.
@@ -609,7 +608,7 @@ public partial class MainWindow
     private void ForgetKeptTab(string id)
     {
         ForgetLayoutNotTaken(id);
-        if (!_hydrated.Remove(id, out var live))
+        if (!_tabControl.TryTakeBehind(id, out var live))
             return;
         live.Write?.Cancel();
         ForgetUnwritten(live.Write);
@@ -753,7 +752,7 @@ public partial class MainWindow
                 return;
             }
 
-            _hydrated.Remove(id);
+            _tabControl.TryTakeBehind(id, out _);
             _tabs.SetStill(tab, live.Still);
             KeptTabsChanged();
             AppLog.Write("Project tabs: a tab kept in memory was let go to its cache file (the computer's free memory is short).");

@@ -297,7 +297,7 @@ public partial class MainWindow
             CaptureWindowStateForTab(copy);
         }
 
-        _switchingTab = true;
+        var duplicating = _tabControl.Prepare("duplicate a project tab");
         try
         {
             var header = ProjectTabs.HeaderJson(copy);
@@ -329,7 +329,7 @@ public partial class MainWindow
         }
         finally
         {
-            _switchingTab = false;
+            _tabControl.Finish(duplicating);
         }
 
         ShowTabs();
