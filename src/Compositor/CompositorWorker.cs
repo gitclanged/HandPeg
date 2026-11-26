@@ -203,6 +203,9 @@ public static unsafe partial class CompositorWorker
                 var slot = shared.TakeLatest(out var isNew);
                 sceneAfterTrim |= giveBackWaiting && isNew;
                 ref var header = ref shared.SceneHeader(slot);
+
+                // Read before the draw clears redraw: a turn that draws a new or redrawn scene asks for no slices.
+                var sliceQuiet = !isNew && !redraw;
                 if ((isNew || redraw) && header.FrameSequenceNumber > 0 && header.CanvasWidth > 0 && header.CanvasHeight > 0)
                 {
                     redraw = false;
@@ -220,6 +223,11 @@ public static unsafe partial class CompositorWorker
 
                     presented.Set();
                 }
+
+                // The Slice-Preview burst (Pass 5.7.1): taken after the visible scene has registered its decode demands (TakeLatest,
+                // RenderScene). Its slices are asked for only on a quiet turn whose picture is exact (no visible frame still owed), so a
+                // newly arrived seek or play start always goes first.
+                SliceBurstTurn(ref control, decoders, sliceQuiet && decoders.LastFrameExact);
 
                 // Publish decoder counters every turn, drawn or not (pre-roll decodes between frames; readers must not wait for the next
                 // frame to see them).
@@ -302,7 +310,7 @@ public static unsafe partial class CompositorWorker
                 gpu.CheckAlive();
                 // A paused Live Encoded Preview frame still in the encoder: re-check in 2 ms and draw when it returns.
                 var pending = loopback?.Pending == true && ExportLoopbackPreview.Wants(header);
-                var woke = WaitHandle.WaitAny(waits, pending ? 2 : _held ? 16 : ahead || !decoders.Playing ? 100 : 4);
+                var woke = WaitHandle.WaitAny(waits, pending ? 2 : _held ? 16 : SliceBurstOutstanding ? SliceBurstPollMs : ahead || !decoders.Playing ? 100 : 4);
                 if (woke == 1)
                     return 0;
                 // Redraw only once the paused frame has returned and decoded, or was given up (not a full redraw with an encoder wait every
@@ -551,7 +559,11 @@ public static unsafe partial class CompositorWorker
         // Draw at (width, height) into the ring's top-left; recreate the ring only when the frame no longer fits or it is far too large
         // (dragging a dock splitter would otherwise recreate three shared textures and handles per pixel). Readback frames use an exact-size
         // ring.
-        var capacity = OutputCapacity(outputs?.Width ?? 0, outputs?.Height ?? 0, width, height, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
+        // A small BGRA readback (a project thumbnail, the Slice-Preview strip) that fits the current ring is drawn in place: the player's
+        // ring is not recreated twice per readback (ReadsBackInPlace; ReadBack copies its region).
+        var (ringWidth, ringHeight) = (outputs?.Width ?? 0, outputs?.Height ?? 0);
+        var capacity = ReadsBackInPlace(header.Flags, ringWidth, ringHeight, width, height) ? (Width: ringWidth, Height: ringHeight)
+            : OutputCapacity(ringWidth, ringHeight, width, height, (header.Flags & FrameSceneHeader.FlagReadback) != 0);
         if (outputs is null || (outputs.Width, outputs.Height) != capacity)
         {
             // Announce a new ring (generation and size) only after a frame is drawn in it; earlier readers would copy an empty texture
@@ -896,6 +908,12 @@ public static unsafe partial class CompositorWorker
                         renderer.ToNv12(output.Texture, _nv12Luma!, _nv12Chroma!);
                         gpu.Context.CopyResource(_readbackStaging, _nv12Luma!.Texture);
                         gpu.Context.CopyResource(_nv12ChromaStaging, _nv12Chroma!.Texture);
+                    }
+                    else if (output.Texture.Width != width || output.Texture.Height != height)
+                    {
+                        // A small BGRA readback drawn in place in a larger ring (ReadsBackInPlace): copy just its top-left frame.
+                        var box = new Box { Right = (uint)width, Bottom = (uint)height, Back = 1 };
+                        gpu.Context.CopySubresourceRegion(_readbackStaging, 0, 0, 0, output.Texture.Texture, 0, &box);
                     }
                     else
                     {

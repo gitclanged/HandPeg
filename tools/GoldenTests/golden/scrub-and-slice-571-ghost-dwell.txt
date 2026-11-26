@@ -1,0 +1,6 @@
+# Pointer rest by timestamp: a held play-scrub plays on 80 ms after the last move to a new target, once per rest.
+ok: GhostDwell is 80 ms (user decision, CrispAfter)
+ok: the rest is due from 80 ms after the last move, by timestamp
+ok: never before a first move, nor without a clock
+ok: a drag that stops at 300 ms rests from frame 23 (383 ms), not before
+ok: each frame of a held scrub plays on once per rest (after caption pre-roll); only a move to a new target restarts the rest and holds the transport again

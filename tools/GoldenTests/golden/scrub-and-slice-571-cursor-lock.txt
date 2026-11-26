@@ -1,0 +1,11 @@
+# Cursor-Locked Scrub Pointer: off by default, drawn inside the playhead visual, the OS cursor always given back.
+ok: the Cursor-Locked Scrub Pointer is off in a new install (user decision Q1)
+ok: the OS cursor is hidden only for a locked drag while the pointer is drawn (over the ruler or the tracks); elsewhere it shows
+ok: the ruler draws the pointer as a child of its playhead visual, its tip on the line's centre
+ok: moving the playhead carries the pointer by the same translation (0 px apart)
+ok: NaN hides it (kept for the next drag)
+ok: cancelling with no drag held ends nothing and leaves the cursor alone
+ok: the cursor is given back on release, capture loss (window deactivated, a dialog), Esc, hiding, unloading and a fault in the frame
+ok: a locked drag (read from Settings at the press) hides the cursor on the ruler itself and restores exactly what was there
+ok: the tracks draw the pointer only over their time area (not the headers, not above them)
+ok: over the tracks the pointer is a child of the tracks' playhead visual too, and every drag end hides it

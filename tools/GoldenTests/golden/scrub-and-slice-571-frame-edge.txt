@@ -1,0 +1,17 @@
+# Frame-edge scrub: raw moves stamped, the live cursor sampled per frame, one engine seek per frame, the Overview Scrubber frozen mid-drag.
+ok: 16 raw moves per 60 Hz frame (a 1000 Hz pointer) hand out one engine seek per frame, to the newest target
+ok: a second TakeSeek in the same frame hands out nothing
+ok: a still pointer (a move to the target last sought) owes no seek
+ok: a move away and back within one frame owes nothing (the engine is already there)
+ok: release: the last owed seek is taken, then PositionMs is committed once with the last position
+ok: a new drag starts with nothing handed out: its first move seeks, even to the last drag's target
+ok: a drag's first move, sought at once by the host (press latency), owes no second seek; the next move owes the frame's one
+ok: a frame sample seeks only to a new x, clamped to the ruler; the same x, no layout or no cursor seeks nothing
+ok: one cursor sample per rendered frame: a second render callback of the frame (same RenderingTime) skips it; a direct call samples
+ok: sampled before the seek in one callback, the seek consumed on frame N is frame N's cursor (drained first, it was frame N-1's)
+ok: a seek drag's raw WM_MOUSEMOVE only stamps _lastScrubMoveTicks: no seek, no event per move
+ok: once per rendered frame (CompositionTarget.Rendering) the live cursor (GetCursorPos) is mapped straight to ruler x and seeks; the release lands where the button came up
+ok: MainWindow seeks the engine once per rendered frame through GpuPreviewEngine.ScrubSeek (repeats skipped), the last owed seek before the release commit
+ok: one ordered frame callback: MainWindow samples the held ruler's live cursor before the frame's one engine seek; the ruler's own hook skips a frame already sampled (no capture drag held: nothing sampled)
+ok: no DispatcherTimer is stopped and restarted per move any more (ScrubState keeps stamps, not a timer)
+ok: a ruler drag takes the Overview Scrubber's binding off (thumb left in place, echoes ignored, thumb drags exempt) and puts it back as the gate opens
