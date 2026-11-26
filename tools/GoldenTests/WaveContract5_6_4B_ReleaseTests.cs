@@ -37,12 +37,12 @@ public static class WaveContract5_6_4B_ReleaseTests
     {
         var scrub = SourceProbe.MemberOfType("MainWindow", "private void ScrubPlayheadTo(");
         var seek = SourceProbe.MemberOfType("MainWindow", "private void ScrubSeek(");
-        expect(Has(scrub, "ScrubSeek(") && !Has(scrub, "PlayerSeek(") && !Has(scrub, "PrepareAround") && Has(seek, "engine.Seek(") && !Has(seek, "PrepareAround("),
+        expect(Has(scrub, "ScrubSeek(") && !Has(scrub, "PlayerSeek(") && !Has(scrub, "PrepareAround") && Has(seek, "engine.ScrubSeek(") && !Has(seek, "PrepareAround("),
             "a raw scrub move seeks the engine lock-free and never calls PrepareAround");
         var end = SourceProbe.MemberOfType("MainWindow", "private void EndScrub(");
         expect(SourceProbe.InOrder(end, "ReleaseScrubGate()", "engine.PrepareAround(", "EndScrubScaling()"), "release runs PrepareAround once, after opening the gate");
-        var dwell = SourceProbe.MemberOfType("MainWindow", "private DispatcherTimer NewGhostDwell(");
-        expect(SourceProbe.InOrder(dwell, "IsScrubHeld", "engine.PrepareAround(", "GhostResume()"), "a GhostDwell resume runs PrepareAround once before playing on");
+        var dwell = SourceProbe.MemberOfType("MainWindow", "private void GhostDwellFrame(");
+        expect(SourceProbe.InOrder(dwell, "engine.PrepareAround(", "GhostResume()"), "a GhostDwell resume runs PrepareAround once before playing on");
         var release = SourceProbe.MemberOfType("MainWindow", "private void ReleaseScrubGate(");
         expect(SourceProbe.InOrder(release, "ScrubGate.Release()", "MoveClipPlayheads()", "KeyLanes.MovePlayhead(", "KeyLanes.InvalidateVisual()", "_scrubState.RedrawOwed"),
             "the gate's release moves the clip and key-lane playheads and repaints the key diamonds once");

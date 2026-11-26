@@ -194,8 +194,8 @@ public static class WaveContract5_6_4ATests
         expect(SourceProbe.InOrder(resume, "_ghostPaused = false", "Play()"), "GhostResume drops the hold and plays from the scrubbed clock");
         foreach (var signature in new[] { "public void Play(", "public void Pause(" })
             expect(Has(SourceProbe.MemberOfType("GpuPreviewEngine", signature), "_ghostPaused = false"), $"{signature.Trim('(')} drops a ghost hold (Space during a play-scrub wins)");
-        var dwell = SourceProbe.MemberOfType("MainWindow", "private DispatcherTimer NewGhostDwell(");
-        expect(Has(dwell, "GpuPreviewEngine.GhostDwell") && SourceProbe.InOrder(dwell, "IsScrubHeld", "GhostResume()"), "a rest while still held plays on from the scrubbed moment");
+        var dwell = SourceProbe.MemberOfType("MainWindow", "private void GhostDwellFrame(");
+        expect(Has(dwell, "GpuPreviewEngine.GhostDwell") && SourceProbe.InOrder(dwell, "DwellDue(", "GhostResume()"), "a rest while still held plays on from the scrubbed moment");
         var end = SourceProbe.MemberOfType("MainWindow", "private void EndScrub(");
         expect(SourceProbe.InOrder(end, "IsGhostPaused", "ResumeAfterScrub", "DispatcherPriority.Input"), "release resumes the held play after the caller's exact release seek");
     }
