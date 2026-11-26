@@ -53,8 +53,20 @@ public partial class MainWindow
         get
         {
             var extent = TimelineExtent;
-            return _viewFit || _viewSpan <= 0 || _viewSpan >= extent ? extent : Math.Max(_viewSpan, Math.Min(MinViewSpan, extent));
+            return _viewFit || _viewSpan <= 0 || _viewSpan >= extent ? extent : Math.Max(_viewSpan, SpanFloor(extent));
         }
+    }
+
+    /// <summary>
+    /// The least view span: MinViewSpan, or while a Spring-Zoom is out a quarter of the view it left (its true 4x reaches past the
+    /// ordinary zoom limit, review F15).
+    /// </summary>
+    private double SpanFloor(double extent)
+    {
+        var floor = MinViewSpan;
+        if (_timelineInput.SpringHome is { } home)
+            floor = Math.Min(floor, (home.Fit || home.Span <= 0 ? extent : home.Span) / 4);
+        return Math.Min(floor, extent);
     }
 
     /// <summary>Log-scaled zoom 0 (fitted) to 1 (MinViewSpan), shown by the zoom sliders.</summary>
@@ -693,7 +705,7 @@ public partial class MainWindow
             return;
 
         _timelineInput.SpringHome ??= (_viewFit, _viewStart, _viewSpan);
-        var span = Math.Clamp(view.Span, Math.Min(MinViewSpan, extent), extent);
+        var span = Math.Clamp(view.Span, SpanFloor(extent), extent);
         _viewFit = span >= extent - 1e-6;
         (_viewStart, _viewSpan) = (_viewFit ? 0 : view.Start, span);
         ApplySpringView();

@@ -302,13 +302,14 @@ internal static class AudioProgramBuilder
 
     /// <summary>
     /// The gain law across the cut where <paramref name="before"/> meets <paramref name="after"/>: the one the Seam menu set on the later clip
-    /// (the crossfade's owner); left at equal power, a through-edit (one sound cut in two, its file time continuous) keeps its level with
+    /// (the crossfade's owner); left automatic (none chosen), a through-edit (one sound cut in two, its file time continuous) keeps its level with
     /// linear ramps, as two correlated halves need.
     /// </summary>
     internal static CrossfadeCurve SeamCurve(TimelineClip before, TimelineClip after)
     {
-        var curve = CrossfadeCurves.Known(after.State.CrossfadeInCurve);
-        return curve == CrossfadeCurve.EqualPower && IsThroughEdit(before, after) ? CrossfadeCurve.Linear : curve;
+        // Only the automatic default falls back to linear across a through-edit; a chosen Equal Power is kept (review F16).
+        var saved = after.State.CrossfadeInCurve;
+        return CrossfadeCurves.Chosen(saved) is null && IsThroughEdit(before, after) ? CrossfadeCurve.Linear : CrossfadeCurves.Known(saved);
     }
 
     /// <summary>One take cut in two: same file and streams at one speed, the later clip's file time continuing the earlier's at the cut.</summary>

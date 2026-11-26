@@ -26,6 +26,9 @@ public sealed partial class GpuPreviewEngine
     /// <summary>Least time, ms, between two strips drawn on the pump (each costs one small scene and the player's redraw).</summary>
     internal const int SliceStripEveryMs = 60;
 
+    /// <summary>Strips drawn for one burst that fail (readback overdue or no pixels) before the ribbon is told, and asks again (review F24).</summary>
+    internal const int SliceStripTries = 3;
+
     // Decoder affinity key for the strip's layers (one key: the slices of a burst are one file, read forward).
     private const long SliceClipKey = 0x5_11CE_5_7_1;
 
@@ -40,6 +43,10 @@ public sealed partial class GpuPreviewEngine
     private SliceAsk? _slicePosted;
     private bool _sliceDrawn;
     private long _sliceDrawnAt;
+
+    // Pump's own: failed strips of the posted burst; pump -> UI: the ticket of the newest ask whose strip failed SliceStripTries times.
+    private int _sliceTries;
+    private int _sliceFailed;
 
     // Pump's own: the strip scene published and not read back yet (its sequence, 0 for none), its ask, and when it was published.
     private long _sliceReadback;
@@ -74,6 +81,9 @@ public sealed partial class GpuPreviewEngine
 
     /// <summary>The newest strip read back since the last call (UI thread, the ribbon's frame hook), or null.</summary>
     public SlicePreviewStrip? TakeSlicePreview() => Interlocked.Exchange(ref _sliceStrip, null);
+
+    /// <summary>The ticket of the newest ask whose strip failed for good since the last call (UI thread), else 0: the ribbon asks again.</summary>
+    public int TakeSliceFailure() => Interlocked.Exchange(ref _sliceFailed, 0);
 
     /// <summary>
     /// A strip cell's size in pixels for a thumbnail short side and a width-over-height shape: even sides (the read-back scene's chroma),
@@ -145,7 +155,7 @@ public sealed partial class GpuPreviewEngine
             PostSlices(ask);
 
         // A new strip only with none in flight and no seek or player picture owed (the player's scene would replace it at once).
-        if (_sliceReadback == 0 && _slicePosted is { } posted
+        if (_sliceReadback == 0 && _slicePosted is { } posted && _sliceTries < SliceStripTries
             && SliceStripDue(true, _sliceDrawn, _client.SliceBurstDone(_sliceVersion), PlayerOwesPicture(), false,
                 Stopwatch.GetTimestamp(), _sliceDrawnAt, Stopwatch.Frequency))
         {
@@ -168,14 +178,14 @@ public sealed partial class GpuPreviewEngine
             times[i] = slots[i].MediaSeconds;
 
         _sliceVersion = _client.PostSliceBurst(ask.SourceId, ask.PathHash, times[..count], ask.CellHeight);
-        (_slicePosted, _sliceDrawn) = (_sliceVersion > 0 ? ask : null, false);
+        (_slicePosted, _sliceDrawn, _sliceTries) = (_sliceVersion > 0 ? ask : null, false, 0);
     }
 
     private void WithdrawSlices()
     {
         if (_slicePosted is not null || _sliceVersion != 0)
             _client.PostSliceBurst(-1, 0, [], 0);
-        (_sliceVersion, _slicePosted, _sliceDrawn) = (0, null, false);
+        (_sliceVersion, _slicePosted, _sliceDrawn, _sliceTries) = (0, null, false, 0);
     }
 
     /// <summary>
@@ -227,7 +237,7 @@ public sealed partial class GpuPreviewEngine
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             AppLog.Write("GPU engine: the Slice-Preview strip could not be drawn", ex);
-            EndSliceReadback(retry: false);
+            EndSliceReadback(retry: false, failed: true);
         }
     }
 
@@ -245,9 +255,11 @@ public sealed partial class GpuPreviewEngine
             _sliceReadbackAt, Stopwatch.Frequency))
         {
             case SliceReadback.Ready:
+            {
+                var delivered = false;
                 try
                 {
-                    TakeSliceStrip(sequence);
+                    delivered = TakeSliceStrip(sequence);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
@@ -255,43 +267,55 @@ public sealed partial class GpuPreviewEngine
                 }
                 finally
                 {
-                    EndSliceReadback(retry: false);
+                    EndSliceReadback(retry: false, failed: !delivered);
                 }
 
                 break;
+            }
+
             case SliceReadback.Replaced:
                 EndSliceReadback(retry: true);
                 break;
             case SliceReadback.Overdue:
-                EndSliceReadback(retry: false);
+                EndSliceReadback(retry: false, failed: true);
                 break;
         }
     }
 
-    // Copies the strip read back (the worker's newest readback, so the copy waits for nothing) and hands it to the UI.
-    private void TakeSliceStrip(long sequence)
+    // Copies the strip read back (the worker's newest readback, so the copy waits for nothing) and hands it to the UI; false when no
+    // pixels of the strip's size came back.
+    private bool TakeSliceStrip(long sequence)
     {
         var ask = _sliceReading!;
         var request = ask.Request!;
         var count = Math.Min(request.Slots.Count, CompositorProtocol.MaxSliceSlots);
         var (width, height) = (ask.CellWidth * count, ask.CellHeight);
         var pixels = new byte[(long)width * height * 4];
-        if (_client.TryReadback(sequence, pixels, out var gotWidth, out var gotHeight, 0) && gotWidth == width && gotHeight == height)
-            Volatile.Write(ref _sliceStrip, new SlicePreviewStrip(ask.Ticket, request, pixels, width, height, ask.CellWidth));
+        if (!_client.TryReadback(sequence, pixels, out var gotWidth, out var gotHeight, 0) || gotWidth != width || gotHeight != height)
+            return false;
+
+        Volatile.Write(ref _sliceStrip, new SlicePreviewStrip(ask.Ticket, request, pixels, width, height, ask.CellWidth));
+        return true;
     }
 
     /// <summary>
-    /// Ends the strip in flight (read back, replaced, overdue or failed): the burst it was drawn for counts as drawn unless it is tried again
-    /// (<paramref name="retry"/>, after <see cref="SliceStripEveryMs"/>), and the player's own scene is published again.
+    /// Ends the strip in flight (read back, replaced, overdue or failed): the burst it was drawn for counts as drawn only once its pixels
+    /// were delivered (review F24). It is tried again after <see cref="SliceStripEveryMs"/> when replaced (<paramref name="retry"/>) or
+    /// <paramref name="failed"/>, a failure counting towards <see cref="SliceStripTries"/> (then the ribbon is told). The player's own scene
+    /// is published again.
     /// </summary>
-    private void EndSliceReadback(bool retry)
+    private void EndSliceReadback(bool retry, bool failed = false)
     {
         var reading = _sliceReading;
         (_sliceReadback, _sliceReading, _sliceDrawnAt) = (0, null, Stopwatch.GetTimestamp());
 
         // A newer burst posted meanwhile is still owed its own strip.
         if (ReferenceEquals(reading, _slicePosted))
-            _sliceDrawn = !retry;
+        {
+            _sliceDrawn = !retry && !failed;
+            if (failed && ++_sliceTries >= SliceStripTries && reading is not null)
+                Volatile.Write(ref _sliceFailed, reading.Ticket);
+        }
 
         // The player's own picture again (the strip scene is the worker's newest, or was replaced by a scene the player may still owe).
         InvalidateView();

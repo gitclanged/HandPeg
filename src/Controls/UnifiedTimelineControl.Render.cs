@@ -1059,17 +1059,22 @@ public sealed partial class UnifiedTimelineControl
             DrawFadeHandle(drawing, rect, rect.Right - fadeOut);
     }
 
+    // A fade's easing and its drawn level (0 silent .. 1 full, as Ramp draws it) at u of its length: shared with the right-click hit test
+    // (FadeWedgeAt), so a click on the shaded part of an eased fade finds the fade (review F18).
+    private static Models.Keyframe FadeEasing(Models.TransitionStyle style) => new(0, 0, Models.TransitionStyles.Easing(style));
+
+    private static double FadeLevel(double u, Models.Keyframe easing) => Math.Clamp(Models.EasingCurves.Evaluate(u, easing), -0.1, 1.15);
+
     // One fade: shade polygon (top edge, then back along the curve) and the curve itself.
     private static void Ramp(StreamGeometryContext shadePath, StreamGeometryContext linePath, Rect rect, double left, double width, bool rising, Models.TransitionStyle style)
     {
-        var easing = new Models.Keyframe(0, 0, Models.TransitionStyles.Easing(style));
+        var easing = FadeEasing(style);
         var steps = Math.Clamp((int)(width / 3), 2, 32);
         Span<Point> points = stackalloc Point[33];
         for (var i = 0; i <= steps; i++)
         {
             var u = (double)i / steps;
-            var shown = Models.EasingCurves.Evaluate(rising ? u : 1 - u, easing);
-            points[i] = new Point(left + u * width, rect.Bottom - Math.Clamp(shown, -0.1, 1.15) * rect.Height);
+            points[i] = new Point(left + u * width, rect.Bottom - FadeLevel(rising ? u : 1 - u, easing) * rect.Height);
         }
 
         shadePath.BeginFigure(new Point(left, rect.Top), isFilled: true, isClosed: true);

@@ -401,9 +401,10 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>
     /// Gain law of the sound's side of a crossfade into this clip (<see cref="TransitionIn"/>, or a fade in under an overlap; Pass 5.7.1
-    /// Seam menu). Equal power by default; saved only when changed (LayerState.CrossfadeInCurve).
+    /// Seam menu). Null until chosen (automatic: equal power, linear across a through-edit); saved only when chosen, an explicit Equal Power
+    /// included (LayerState.CrossfadeInCurve, review F16).
     /// </summary>
-    [ObservableProperty] private CrossfadeCurve _crossfadeInCurve;
+    [ObservableProperty] private CrossfadeCurve? _crossfadeInCurve;
 
     /// <summary>Gain law of the sound's side of a crossfade out of this clip (its fade out over an overlap or into the next clip).</summary>
     [ObservableProperty] private CrossfadeCurve _crossfadeOutCurve;
@@ -1053,7 +1054,7 @@ public sealed partial class Layer : ObservableObject
         Speed = ReadSpeed(state?.Speed ?? 1);
         (FadeInSeconds, FadeOutSeconds, TransitionIn) = (Seconds(state?.FadeInSeconds ?? 0), Seconds(state?.FadeOutSeconds ?? 0), Seconds(state?.TransitionIn ?? 0));
         (FadeInStyle, FadeOutStyle) = (Style(state?.FadeInStyle ?? 0), Style(state?.FadeOutStyle ?? 0));
-        (CrossfadeInCurve, CrossfadeOutCurve) = (CrossfadeCurves.Known(state?.CrossfadeInCurve), CrossfadeCurves.Known(state?.CrossfadeOutCurve));
+        (CrossfadeInCurve, CrossfadeOutCurve) = (CrossfadeCurves.Chosen(state?.CrossfadeInCurve), CrossfadeCurves.Known(state?.CrossfadeOutCurve));
         ApplyKeys(state);
     }
 

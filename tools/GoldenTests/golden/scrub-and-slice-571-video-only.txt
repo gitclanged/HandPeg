@@ -1,6 +1,6 @@
 # Slice-Preview request: video clips only (Q3), slots inside the clip under the playhead, file times through speed.
 ok: over a video clip: seven slots centred on the playhead (offset 0), a frame apart, each with its file time
-ok: at the clip's edges only the slots inside the clip are asked for (one file, one run of offsets)
+ok: at the clip's edges every slot is asked for (one file, one centred run of offsets), those past an edge holding its edge frame
 ok: a 2x clip steps its file times twice the sequence spacing
 ok: on a keyframed speed ramp the playhead's slot and its neighbours read the file through the ramp (the player's mapping, Layer.MediaSecondsAt), not the constant speed
 ok: a slot past the file's end reads its last moment (file times held to the file's length)

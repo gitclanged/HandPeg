@@ -185,7 +185,7 @@ public static class TrackMenuHover571Tests
                && host.Started is var (cutFrom, cutTo) && Near((cutFrom + cutTo) / 2, 12),
             F($"a 0.5 s Linear crossfade across the cut shows on both views, looping {host.Started} centred on the cut; the document has a plain cut"));
         hover.Leave();
-        expect(Near(right.TransitionIn, 0) && right.CrossfadeInCurve == CrossfadeCurve.EqualPower && left.CrossfadeOutCurve == CrossfadeCurve.EqualPower && Untouched(),
+        expect(Near(right.TransitionIn, 0) && right.CrossfadeInCurve is null or CrossfadeCurve.EqualPower && left.CrossfadeOutCurve == CrossfadeCurve.EqualPower && Untouched(),
             "leaving: a plain cut, equal power on both views, nothing in Undo");
 
         // Choosing the item: the preview goes first, then the item's own step from the restored state.

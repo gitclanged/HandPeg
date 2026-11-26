@@ -152,12 +152,13 @@ public sealed partial class UnifiedTimelineControl
 
         foreach (var right in lane.Row.Blocks)
         {
-            if (right.Clip is null || NextTo(lane.Row, right, after: false) is not { Clip: not null } left)
+            // The pointer's reach first: the neighbour lookup (a row scan) runs for the block at the pointer only (review F20).
+            var reach = Math.Max(TimelineMetrics.EdgePixels, right.CrossfadeIn * scale / 2);
+            if (right.Clip is null || Math.Abs(laid.X - right.Left) > reach)
                 continue;
 
             var rect = BlockRect(lane, right, 0);
-            var reach = Math.Max(TimelineMetrics.EdgePixels, right.CrossfadeIn * scale / 2);
-            if (laid.Y >= rect.Top - 1 && laid.Y <= rect.Bottom + 1 && Math.Abs(laid.X - right.Left) <= reach)
+            if (laid.Y >= rect.Top - 1 && laid.Y <= rect.Bottom + 1 && NextTo(lane.Row, right, after: false) is { Clip: not null } left)
                 return SeamOf(lane.Row, left, right);
         }
 
@@ -251,9 +252,10 @@ public sealed partial class UnifiedTimelineControl
 
         var (fadeIn, fadeOut) = FadeSpan(rect, fades.In, fades.Out, scale);
         var depth = (laid.Y - rect.Top) / Math.Max(rect.Height, 1);
-        if (fadeIn > 1 && laid.X <= rect.Left + fadeIn && depth <= 1 - (laid.X - rect.Left) / fadeIn)
+        // Above the curve as drawn (the fade's easing, Ramp), not a straight diagonal (review F18).
+        if (fadeIn > 1 && laid.X <= rect.Left + fadeIn && depth <= 1 - FadeLevel((laid.X - rect.Left) / fadeIn, FadeEasing(fades.InStyle)))
             return true;
-        if (fadeOut > 1 && laid.X >= rect.Right - fadeOut && depth <= 1 - (rect.Right - laid.X) / fadeOut)
+        if (fadeOut > 1 && laid.X >= rect.Right - fadeOut && depth <= 1 - FadeLevel((rect.Right - laid.X) / fadeOut, FadeEasing(fades.OutStyle)))
             return false;
         return null;
     }

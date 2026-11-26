@@ -219,7 +219,6 @@ public static class KeybindManager
             ["transport.stepBack"] = ["Left"],
             [TrimEndToPlayhead] = ["W"],
             ["nav.forward"] = [],
-            ["nav.back"] = [],
             ["key.toggle"] = ["T", "Alt+K"],
             ["key.prev"] = ["["],
             ["key.next"] = ["]"],

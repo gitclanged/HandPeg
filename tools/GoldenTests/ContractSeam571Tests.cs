@@ -110,7 +110,7 @@ public static class ContractSeam571Tests
 
         var plain = new Layer().ToState();
         var plainJson = JsonSerializer.Serialize(plain);
-        expect(new Layer() is { CrossfadeInCurve: CrossfadeCurve.EqualPower, CrossfadeOutCurve: CrossfadeCurve.EqualPower }
+        expect(new Layer() is { CrossfadeInCurve: null, CrossfadeOutCurve: CrossfadeCurve.EqualPower } && CrossfadeCurves.Chosen(CrossfadeCurve.EqualPower) == CrossfadeCurve.EqualPower
                && plain is { CrossfadeInCurve: null, CrossfadeOutCurve: null } && !plainJson.Contains("Crossfade", StringComparison.Ordinal),
             "a new clip crossfades with equal power and saves neither curve (older projects read and write unchanged)");
 
@@ -125,7 +125,7 @@ public static class ContractSeam571Tests
             "a linear curve is saved, and read back by FromState and ApplyTiming (the timing transforms' path)");
 
         var odd = Layer.FromState(new LayerState { CrossfadeInCurve = (CrossfadeCurve)7, CrossfadeOutCurve = CrossfadeCurve.Linear }, 1920, 1080, 1920, 1080);
-        expect(odd is { CrossfadeInCurve: CrossfadeCurve.EqualPower, CrossfadeOutCurve: CrossfadeCurve.Linear } && CrossfadeCurves.Known(null) == CrossfadeCurve.EqualPower,
+        expect(odd is { CrossfadeInCurve: null, CrossfadeOutCurve: CrossfadeCurve.Linear } && CrossfadeCurves.Known(null) == CrossfadeCurve.EqualPower,
             "an unknown saved curve reads as equal power; each side is read on its own");
     }
 
@@ -176,6 +176,11 @@ public static class ContractSeam571Tests
                && !new SlicePreviewRequest("v.mp4", 0, [new SlicePreviewSlot(0, 1, double.NaN)], spacing).IsValid
                && !new SlicePreviewRequest("v.mp4", 0, Slots(5), spacing, 0).IsValid,
             "no slots, too many, no path, a negative stream, a NaN file time or no thumbnail size is not");
+        List<SlicePreviewSlot> Shifted(int count) => [.. Slots(count).Select(s => s with { Offset = s.Offset + 1 })];
+        expect(!new SlicePreviewRequest("v.mp4", 0, Slots(6), spacing).IsValid && !new SlicePreviewRequest("v.mp4", 0, Shifted(7), spacing).IsValid
+               && !new SlicePreviewRequest("v.mp4", 0, Slots(5), default).IsValid && !new SlicePreviewRequest("v.mp4", 0, [.. Slots(5).AsEnumerable().Reverse()], spacing).IsValid
+               && !new SlicePreviewRequest("v.mp4", 0, [.. Slots(5).Select((s, i) => i == 1 ? s with { SequenceSeconds = double.NaN } : s)], spacing).IsValid,
+            "six slots, seven without the playhead's frame in the middle, an unusable spacing, slots out of order or a NaN sequence time is not");
         expect(SlicePreviewRequest.MinSlots == 5 && SlicePreviewRequest.MaxSlots == 7 && SlicePreviewRequest.WakeAfterMs == 120
                && SlicePreviewRequest.DormantAbove == 300 && SlicePreviewRequest.WakeBelow == 250 && SlicePreviewRequest.MaxSlots <= CompositorProtocol.MaxSliceSlots,
             "the ribbon shows 5-7 slots (all fit one burst), dormant above 300 DIP/s, fading in below 250 DIP/s held 120 ms");

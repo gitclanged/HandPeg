@@ -71,9 +71,26 @@ public sealed record SlicePreviewRequest(string Path, int Stream, IReadOnlyList<
     public const int WakeAfterMs = 120;
 
     /// <summary>
-    /// A request the compositor can take: a path, a stream, between one and <see cref="MaxSlots"/> slots with finite file times at or
-    /// after 0, and a positive thumbnail size.
+    /// A request the compositor can take: a path, a stream, a usable spacing, <see cref="MinSlots"/> or <see cref="MaxSlots"/> slots in
+    /// offset order with the playhead's frame (offset 0) in the middle, finite sequence and file times at or after 0, and a positive
+    /// thumbnail size.
     /// </summary>
-    public bool IsValid => !string.IsNullOrEmpty(Path) && Stream >= 0 && ShortSide > 0 && Slots is { Count: > 0 and <= MaxSlots }
-        && Slots.All(s => double.IsFinite(s.MediaSeconds) && s.MediaSeconds >= 0);
+    public bool IsValid => !string.IsNullOrEmpty(Path) && Stream >= 0 && ShortSide > 0 && Spacing.IsUsable && Slots is { Count: MinSlots or MaxSlots }
+        && Centred(Slots);
+
+    // Slot i at offset i - count / 2 (offset 0 the middle one), with finite sequence and file times at or after 0.
+    private static bool Centred(IReadOnlyList<SlicePreviewSlot> slots)
+    {
+        for (var i = 0; i < slots.Count; i++)
+        {
+            var slot = slots[i];
+            if (slot.Offset != i - slots.Count / 2 || !(double.IsFinite(slot.SequenceSeconds) && slot.SequenceSeconds >= 0)
+                || !(double.IsFinite(slot.MediaSeconds) && slot.MediaSeconds >= 0))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 }

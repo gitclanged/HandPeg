@@ -436,8 +436,12 @@ public partial class MainViewModel
     /// </summary>
     public double RampSourceSpan(Layer clip)
     {
-        if (ClipOf(clip) is not { PlaysFile: true } model)
+        if (ClipOf(clip) is not { PlaysFile: true } picked)
             return 0;
+
+        // The family's owner (review F4): a stream lane's or Cutout's span is its own clip's.
+        var model = SpeedOwnerOf(picked);
+        clip = ViewOf(model) ?? clip;
 
         var span = SpeedRamp.MediaSeconds(clip.SpeedKeys, model.Speed, model.Duration);
         var selected = model.MediaEnd - model.MediaOffset;
@@ -454,22 +458,26 @@ public partial class MainViewModel
 
     /// <summary>The fit the card's commit would make (its live length and clamp note while shaping); no edit.</summary>
     public SpeedRampFit PreviewRampFit(Layer clip, IReadOnlyList<Keyframe> keys, double sourceSpan) =>
-        ClipOf(clip) is { PlaysFile: true } model
+        ClipOf(clip) is { PlaysFile: true } picked && SpeedOwnerOf(picked) is var model
             ? SpeedRamp.Fit(keys, model.Speed, model.Duration, sourceSpan, AppSettings.Current.SpeedRipplesTimeline ? double.PositiveInfinity : RampRoom(model))
             : default;
 
     /// <summary>Sets a clip's speed ramp (empty: constant speed) on it and its family and fits them, as one Undo step (its own checkpoint).</summary>
     public RampFitOutcome SetSpeedRamp(Layer clip, IReadOnlyList<Keyframe> keys, bool ripple)
     {
-        if (IsRestoringTimeline || ClipOf(clip) is not { PlaysFile: true } model)
+        if (IsRestoringTimeline || ClipOf(clip) is not { PlaysFile: true } picked)
             return default;
 
-        var span = RampSourceSpan(clip);
+        // Set from any member (a linked audio stream, a Cutout), the ramp is its owner's and fits the whole family (review F4).
+        var model = SpeedOwnerOf(picked);
+        var owner = ViewOf(model) ?? clip;
+        var span = RampSourceSpan(owner);
         Checkpoint(keys.Count == 0 ? $"clear the speed ramp of {clip.Name}" : $"ramp the speed of {clip.Name}");
+        owner.SetSpeedKeys(keys);
         clip.SetSpeedKeys(keys);
         foreach (var member in SpeedFamilyOf(model))
             ViewOf(member)?.SetSpeedKeys(keys);
-        return FitClipToRamp(clip, clip.SpeedKeys, span, ripple);
+        return FitClipToRamp(owner, owner.SpeedKeys, span, ripple);
     }
 
     /// <summary>Fits per <see cref="AppSettings.SpeedRipplesTimeline"/> (the Speed &amp; Time card).</summary>
@@ -485,8 +493,11 @@ public partial class MainViewModel
     /// </summary>
     public RampFitOutcome FitClipToRamp(Layer clip, IReadOnlyList<Keyframe> keys, double sourceSpan, bool ripple, bool live = false)
     {
-        if (IsRestoringTimeline || ClipOf(clip) is not { PlaysFile: true } model || Document.TrackOf(model) is null || !(model.Duration > 0.001))
+        if (IsRestoringTimeline || ClipOf(clip) is not { PlaysFile: true } picked || SpeedOwnerOf(picked) is not { } model || Document.TrackOf(model) is null
+            || !(model.Duration > 0.001))
+        {
             return default;
+        }
 
         var family = SpeedFamilyOf(model);
         var left = model.WholeDuration > 0 ? Math.Max(model.WholeDuration - model.MediaOffset, 0) : double.PositiveInfinity;
@@ -553,7 +564,8 @@ public partial class MainViewModel
             ViewOf(member)?.SetSpeedKeys(fit.Keys);
 
         var played = SpeedRamp.MediaSeconds(fit.Keys, speed, model.Duration);
-        var clamped = fit.Clamped && model.End < start + fit.Length - frame / 2;
+        // The card's live note and the release agree (review F11): clamped is the fit's own verdict, the seconds lost from the committed length.
+        var clamped = fit.Clamped;
         var lost = clamped ? Math.Max(span - played, 0) : 0;
         // A live (shaping) fit reports nothing: the card's note and length box show it; the release's fit reports.
         if (clamped && !live)
@@ -563,9 +575,41 @@ public partial class MainViewModel
         return new RampFitOutcome(true, clamped, model.Duration, lost);
     }
 
-    // Clips sharing a clip's source time (stream lanes, Cutouts), as SetClipSpeed takes them.
-    private List<TimelineClip> SpeedFamilyOf(TimelineClip model) =>
-        [.. Document.Tracks.SelectMany(t => t.Clips).Where(c => c.ParentClipId == model.Id && c.PlaysFile && string.Equals(c.SourcePath, model.SourcePath, StringComparison.OrdinalIgnoreCase))];
+    // Clips sharing a clip's source time (stream lanes, Cutouts, and theirs in turn: the whole tree, review F4), as SetClipSpeed takes them.
+    private List<TimelineClip> SpeedFamilyOf(TimelineClip model)
+    {
+        var same = Document.Tracks.SelectMany(t => t.Clips)
+            .Where(c => c.PlaysFile && c.ParentClipId is not null && string.Equals(c.SourcePath, model.SourcePath, StringComparison.OrdinalIgnoreCase)).ToList();
+        var (family, ids) = (new List<TimelineClip>(), new HashSet<Guid> { model.Id });
+        for (var grew = true; grew;)
+        {
+            grew = false;
+            foreach (var clip in same)
+            {
+                if (clip.ParentClipId is { } parent && ids.Contains(parent) && ids.Add(clip.Id))
+                {
+                    family.Add(clip);
+                    grew = true;
+                }
+            }
+        }
+
+        return family;
+    }
+
+    // The clip whose ramp a speed family shares (review F4): up the parent chain while the parent plays the same file (a stream lane's or a
+    // Cutout's own clip), so a ramp shaped from any member fits the whole family.
+    private TimelineClip SpeedOwnerOf(TimelineClip model)
+    {
+        var owner = model;
+        for (var hops = 0; hops < 32 && owner.ParentClipId is { } parent && Document.FindClip(parent) is { PlaysFile: true } up
+            && string.Equals(up.SourcePath, owner.SourcePath, StringComparison.OrdinalIgnoreCase); hops++)
+        {
+            owner = up;
+        }
+
+        return owner;
+    }
 
     private TimelineClip? NextOnTrack(TimelineClip clip) =>
         Document.TrackOf(clip) is { } track && track.IndexOf(clip) is var index and >= 0 && index + 1 < track.Clips.Count ? track.Clips[index + 1] : null;

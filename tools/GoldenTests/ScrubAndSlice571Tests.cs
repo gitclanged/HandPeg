@@ -282,8 +282,11 @@ public static class ScrubAndSlice571Tests
 
         var start = SlicePreviewPlanner.Plan(video, 10, spacing, 7, 72);
         var end = SlicePreviewPlanner.Plan(video, 20 - 1 / 60.0, spacing, 5, 72);
-        expect(start is not null && start.Slots.Select(s => s.Offset).SequenceEqual([0, 1, 2, 3]) && end is not null && end.Slots.Select(s => s.Offset).SequenceEqual([-2, -1, 0]),
-            "at the clip's edges only the slots inside the clip are asked for (one file, one run of offsets)");
+        expect(start is { IsValid: true } && start.Slots.Select(s => s.Offset).SequenceEqual([-3, -2, -1, 0, 1, 2, 3])
+               && start.Slots.Take(4).All(s => s.SequenceSeconds == 10 && s.MediaSeconds == start.Slots[3].MediaSeconds)
+               && end is { IsValid: true } && end.Slots.Select(s => s.Offset).SequenceEqual([-2, -1, 0, 1, 2]) && end.Slots[3].SequenceSeconds < 20
+               && end.Slots[4].SequenceSeconds == end.Slots[3].SequenceSeconds,
+            "at the clip's edges every slot is asked for (one file, one centred run of offsets), those past an edge holding its edge frame");
 
         var fast = SlicePreviewPlanner.Plan(Document((TimelineTrackKind.Video, [Clip(LayerKind.VideoFile, 10, 20, speed: 2)])), 15, spacing, 5, 72);
         expect(fast is not null && Math.Abs(fast.Slots[2].MediaSeconds - 12) < 1e-9 && Math.Abs(fast.Slots[3].MediaSeconds - fast.Slots[2].MediaSeconds - 2 / 30.0) < 1e-9,
@@ -402,8 +405,8 @@ public static class ScrubAndSlice571Tests
                && draw.Contains("_sliceReadback = _client.Publish();", StringComparison.Ordinal) && !draw.Contains("TryReadback(", StringComparison.Ordinal)
                && SourceProbe.InOrder(SourceProbe.Member(engine, "private void PollSliceStrip("), "Volatile.Read(ref control.ReadbackSequence)", "SliceReadbackOf(",
                    "case SliceReadback.Ready:", "TakeSliceStrip(sequence);", "case SliceReadback.Replaced:", "EndSliceReadback(retry: true);", "case SliceReadback.Overdue:",
-                   "EndSliceReadback(retry: false);")
-               && SourceProbe.Member(engine, "private void TakeSliceStrip(").Contains("out var gotHeight, 0)", StringComparison.Ordinal)
+                   "EndSliceReadback(retry: false, failed: true);")
+               && SourceProbe.Member(engine, "private bool TakeSliceStrip(").Contains("out var gotHeight, 0)", StringComparison.Ordinal)
                && SourceProbe.Member(engine, "private void EndSliceReadback(").Contains("InvalidateView();", StringComparison.Ordinal),
             "the strip is one read-back scene from cached frames (no exact-frame wait) published without waiting; its readback is copied with no wait once polled ready, and the player's scene is published again once it is read back, replaced or overdue");
 
@@ -419,7 +422,7 @@ public static class ScrubAndSlice571Tests
             "a newer whole burst replaces the old one (answered never), the exact version is answered once every slice is in the frame cache, and missing slices are asked for only when admitted");
 
         var frame = SourceProbe.Member(ScrubFile, "private void SlicePreviewFrame(");
-        expect(SourceProbe.InOrder(frame, "state.Velocity <= SlicePreviewRequest.DormantAbove", "SlicePreviewPlanner.VideoClipAt(", "state.SliceGate.Update(", "HideSlicePreview();",
+        expect(SourceProbe.InOrder(frame, "var raw = state.RawVelocity(", "!(raw <= SlicePreviewRequest.DormantAbove)", "SlicePreviewPlanner.VideoClipAt(", "state.SliceGate.Update(", "HideSlicePreview();",
                    "UnifiedTimeline.PlaceSlicePreview(seconds);", "engine.RequestSlicePreview(request, aspect)", "engine.TakeSlicePreview()"),
             "the ribbon looks no clip up during a whip (dormant, zero overhead), and once shown is placed by translation, asks for frames and takes strips from its frame hook");
     }

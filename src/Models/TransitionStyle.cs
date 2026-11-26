@@ -69,6 +69,9 @@ public static class CrossfadeCurves
     /// <summary>A saved curve, held to the known ones (an unknown value is equal power).</summary>
     public static CrossfadeCurve Known(CrossfadeCurve? saved) => saved is { } curve && Enum.IsDefined(curve) ? curve : CrossfadeCurve.EqualPower;
 
+    /// <summary>A curve the user chose, else null (automatic: equal power, linear across a through-edit; review F16).</summary>
+    public static CrossfadeCurve? Chosen(CrossfadeCurve? saved) => saved is { } curve && Enum.IsDefined(curve) ? curve : null;
+
     /// <summary>
     /// Gains of the outgoing and incoming sounds at <paramref name="progress"/> (0 at the crossfade's start, 1 at its end; clamped,
     /// NaN as 0). Exact at both ends: (1, 0) and (0, 1).

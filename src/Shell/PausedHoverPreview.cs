@@ -56,6 +56,9 @@ internal sealed class PausedHoverPreview : IDisposable
     // Auto-Level gains measured for hover previews, by what the measure hears (file, audio stream, media offset and span: a stream, trim or
     // speed change measures again), the newest LevelCacheSize kept, no clip view held (review F33).
     private readonly Dictionary<LevelKey, double?> _levels = [];
+
+    // Auto-Level measurements running, one per source and span (review F32): a hover meanwhile waits for it; MenuClosed cancels them.
+    private readonly Dictionary<LevelKey, (Task<double?> Task, CancellationTokenSource Cancel)> _scans = [];
     private readonly Queue<LevelKey> _levelOrder = new();
     private const int LevelCacheSize = 16;
 
@@ -104,7 +107,10 @@ internal sealed class PausedHoverPreview : IDisposable
     /// Pointer rests on Auto-Level: after the dwell, while paused, <paramref name="measure"/> (once per clip and span, in the background)
     /// gives the gain reaching -14 LUFS, and <paramref name="clip"/> plays at it once measured, unless the item was left meanwhile.
     /// </summary>
-    public void HoverAutoLevel(Layer clip, Func<Task<double?>> measure) => Hover(() => ShowAutoLevel(clip, measure));
+    public void HoverAutoLevel(Layer clip, Func<Task<double?>> measure) => HoverAutoLevel(clip, _ => measure());
+
+    /// <summary>As above, the measurement told to stop (its token) once no preview needs it: the menu closed (review F32).</summary>
+    public void HoverAutoLevel(Layer clip, Func<CancellationToken, Task<double?>> measure) => Hover(() => ShowAutoLevel(clip, measure));
 
     /// <summary>
     /// Pointer rests on Auto-Duck: after the dwell, while paused, <paramref name="clip"/> plays with Auto-Duck <paramref name="ducks"/> set on
@@ -124,6 +130,10 @@ internal sealed class PausedHoverPreview : IDisposable
     {
         Leave();
         Loop?.EndWarm();
+
+        // No preview needs a running Auto-Level measurement now (review F32).
+        foreach (var scan in _scans.Values)
+            scan.Cancel.Cancel();
     }
 
     /// <summary>Pointer left the item (or the menu closed, or the item was chosen): the preview, if any, is undone.</summary>
@@ -304,7 +314,7 @@ internal sealed class PausedHoverPreview : IDisposable
         PlayStretch(model.Start, model.End);
     }
 
-    private void ShowAutoLevel(Layer clip, Func<Task<double?>> measure)
+    private void ShowAutoLevel(Layer clip, Func<CancellationToken, Task<double?>> measure)
     {
         if (!_vm.Layers.Contains(clip) || _vm.ClipOf(clip) is not { } model)
             return;
@@ -318,20 +328,54 @@ internal sealed class PausedHoverPreview : IDisposable
         }
 
         var serial = _hoverSerial;
-        _ = MeasureThenShow();
 
-        async Task MeasureThenShow()
+        // One measurement per source and span at a time (review F32): a hover while it runs waits for it rather than scanning again.
+        if (!_scans.TryGetValue(key, out var scan))
+        {
+            var cancel = new CancellationTokenSource();
+            scan = (Started(measure, cancel.Token), cancel);
+            _scans[key] = scan;
+        }
+
+        _ = MeasureThenShow(scan);
+
+        static Task<double?> Started(Func<CancellationToken, Task<double?>> measure, CancellationToken token)
+        {
+            try
+            {
+                return measure(token);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                return Task.FromException<double?>(ex);
+            }
+        }
+
+        async Task MeasureThenShow((Task<double?> Task, CancellationTokenSource Cancel) running)
         {
             double? gain;
             try
             {
-                gain = await measure();
+                gain = await running.Task;
+            }
+            catch (OperationCanceledException) when (running.Cancel.IsCancellationRequested)
+            {
+                return;
             }
             catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or IOException or InvalidDataException or UnauthorizedAccessException
                                            or NotSupportedException or System.Runtime.InteropServices.COMException)
             {
                 AppLog.Write("Hover preview: Auto-Level", ex);
                 return;
+            }
+            finally
+            {
+                // Over: the next hover finds its level remembered, or measures again.
+                if (_scans.TryGetValue(key, out var now) && ReferenceEquals(now.Task, running.Task))
+                {
+                    _scans.Remove(key);
+                    now.Cancel.Dispose();
+                }
             }
 
             RememberLevel(key, gain);

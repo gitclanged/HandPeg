@@ -104,6 +104,7 @@ public partial class MainWindow
         EndSlicePreview();
         (_scrubState.LastTargetMs, _scrubState.LastMoveTicks, _scrubState.DwellResumed) = (double.NaN, 0, false);
         (_scrubState.Velocity, _scrubState.VelocityTicks, _scrubState.VelocityFromMs) = (0, 0, double.NaN);
+        (_scrubState.RawFromMs, _scrubState.RawTicks) = (double.NaN, 0);
 
         // Releasing never leaves playback at a scrub's reduced step (Stage 2); a held play resumes after the caller's release seek.
         if (_gpu is { } engine)
@@ -242,8 +243,17 @@ public partial class MainWindow
     /// </summary>
     private void GhostDwellFrame(long now)
     {
+        // The rest clock is the newest move: to a new target, or of the held ruler's raw pointer (a WM_MOUSEMOVE or a moved cursor sample),
+        // so a pointer moving off the ruler's line or against a clamped end never rests (review F27). Run after the frame's sample.
+        var moved = _scrubState.LastMoveTicks;
+        foreach (var ruler in _rulers)
+        {
+            if (ruler.IsSampling)
+                moved = Math.Max(moved, ruler.LastScrubMoveTicks);
+        }
+
         if (_scrubState.DwellResumed || _gpu is not { IsGhostPaused: true } engine
-            || !Shell.ScrubState.DwellDue(now, _scrubState.LastMoveTicks, Stopwatch.Frequency, GpuPreviewEngine.GhostDwell))
+            || !Shell.ScrubState.DwellDue(now, moved, Stopwatch.Frequency, GpuPreviewEngine.GhostDwell))
         {
             return;
         }
@@ -262,13 +272,24 @@ public partial class MainWindow
 
     // ----- Slice-Preview ribbon (Pass 5.7.1) -----
 
-    /// <summary>Least time, ms, between two asks for new ribbon frames while no strip has answered the last one.</summary>
-    private const double SliceAskEveryMs = 50;
+    /// <summary>
+    /// Least time, ms, between two asks for new ribbon frames while no strip has answered the last one: only the newest ask's strip is
+    /// shown, so asking faster than a strip's round trip would starve the ribbon.
+    /// </summary>
+    private const double SliceAskEveryMs = 150;
 
     /// <summary>
-    /// Each rendered frame of a held scrub: the playhead's speed feeds the ribbon's gate (dormant above 300 DIP/s with no clip lookup;
-    /// shown below 250 DIP/s held 120 ms over a video clip, user decision Q3); while shown it is placed at the playhead, asks the engine
-    /// for frames when the centre frame, spacing or slots change, and takes a strip that came back.
+    /// A failed strip is asked for again after SliceRetryMs times its retry count, an unanswered one (the worker gave its burst up) after
+    /// SliceAnswerWaitMs; at most SliceRetries times per ask, only while the scrub is held and the ribbon shown (review F24).
+    /// </summary>
+    private const double SliceRetryMs = 120, SliceAnswerWaitMs = 2500;
+
+    private const int SliceRetries = 3;
+
+    /// <summary>
+    /// Each rendered frame of a held scrub: the playhead's current speed puts the ribbon to sleep above 300 DIP/s with no clip lookup; it is
+    /// shown below 250 DIP/s (current and smoothed) held 120 ms over a video clip (user decision Q3); while shown it is placed at the
+    /// playhead, asks the engine for frames when the clip, centre frame, spacing or slots change, and takes the newest ask's strip.
     /// </summary>
     private void SlicePreviewFrame(long now)
     {
@@ -276,6 +297,7 @@ public partial class MainWindow
         var surface = UnifiedTimeline.Surface;
         var pixelsPerSecond = surface.PixelsPerSecond;
         var at = state.LastTargetMs;
+        var nowMs = now * 1000.0 / Stopwatch.Frequency;
         if (!double.IsNaN(state.VelocityFromMs) && state.VelocityTicks != 0)
         {
             state.Velocity = Shell.ScrubState.NextVelocity(state.Velocity, (at - state.VelocityFromMs) / 1000 * pixelsPerSecond,
@@ -283,11 +305,23 @@ public partial class MainWindow
         }
 
         (state.VelocityFromMs, state.VelocityTicks) = (at, now);
+
+        // A whip is cut off on the current (unsmoothed) speed before any clip lookup, and either speed at or above WakeBelow restarts the
+        // wake dwell: the smoothed speed alone lags a whip from rest (review F25).
+        var raw = state.RawVelocity(at, pixelsPerSecond, now, Stopwatch.Frequency);
+        if (!(raw <= SlicePreviewRequest.DormantAbove))
+        {
+            state.SliceGate.Sleep();
+            HideSlicePreview();
+            return;
+        }
+
+        var speed = Math.Max(raw, state.Velocity);
         var seconds = at / 1000;
         var document = _viewModel.Document;
-        var overVideo = state.Velocity <= SlicePreviewRequest.DormantAbove && double.IsFinite(seconds) && _gpu is { IsPlaying: false, IsExploded: false }
-            && SlicePreviewPlanner.VideoClipAt(document, seconds) is not null;
-        if (state.SliceGate.Update(state.Velocity, now * 1000.0 / Stopwatch.Frequency, overVideo) != SlicePreviewPhase.Shown || _gpu is not { } engine)
+        var clip = speed <= SlicePreviewRequest.DormantAbove && double.IsFinite(seconds) && _gpu is { IsPlaying: false, IsExploded: false }
+            ? SlicePreviewPlanner.VideoClipAt(document, seconds) : null;
+        if (state.SliceGate.Update(speed, nowMs, clip is not null) != SlicePreviewPhase.Shown || clip is null || _gpu is not { } engine)
         {
             HideSlicePreview();
             return;
@@ -304,34 +338,50 @@ public partial class MainWindow
         UnifiedTimeline.PlaceSlicePreview(seconds);
         ribbon.Show(true);
 
-        // New frames when what they show moved (the centre frame, spacing or slots), paced while no strip has answered the last ask.
-        if (SlicePreviewPlanner.Plan(document, seconds, spacing, slots, shortSide) is { } request)
+        // New frames when what they show moved (the clip and the timing its file times follow, centre frame, spacing, slots or size): the
+        // key is compared before any slot is planned, and the clip the gate found is planned from (review F26). Paced while unanswered.
+        var key = new Shell.SliceKey(clip.Id, clip.Start, clip.MediaOffset, clip.Speed, clip.State?.KeysSpeed?.Count ?? 0, clip.SourcePath ?? "",
+            Math.Max(clip.VideoStreamIndex, 0), (long)Math.Round(seconds * fps), spacing.Seconds, slots, shortSide);
+        var waited = nowMs - state.SliceAskedAt * 1000.0 / Stopwatch.Frequency;
+        if (key != state.SliceKey && (state.SliceAnswered || waited >= SliceAskEveryMs))
         {
-            var key = (request.Path, request.Stream, (long)Math.Round(seconds * fps), spacing.Seconds, request.Slots.Count);
-            var nowMs = now * 1000.0 / Stopwatch.Frequency;
-            if (key != state.SliceKey && (state.SliceAnswered || nowMs - state.SliceAskedAt * 1000.0 / Stopwatch.Frequency >= SliceAskEveryMs))
+            // Another clip, file or stream: its old frames go now, never shown under the new playhead (review F23).
+            if (key.Clip != state.SliceKey.Clip || key.Path != state.SliceKey.Path || key.Stream != state.SliceKey.Stream)
+                ribbon.SetStrip(null, 0, 0, 0, 0);
+
+            var request = SlicePreviewPlanner.Plan(clip, seconds, spacing, slots, shortSide);
+            (state.SliceKey, state.SliceAskedAt, state.SliceAnswered, state.SliceRequest, state.SliceRetries, state.SliceFailed) = (key, now, false, request, 0, false);
+            state.SliceTicket = engine.RequestSlicePreview(request, aspect);
+        }
+        else if (state.SliceTicket != 0 && !state.SliceAnswered && state.SliceRequest is { } asked && state.SliceRetries < SliceRetries)
+        {
+            // The ask's strip failed (the engine gave its readback up) or never came (the worker gave its burst up): asked again, bounded.
+            state.SliceFailed |= engine.TakeSliceFailure() == state.SliceTicket;
+            if (state.SliceFailed ? waited >= SliceRetryMs * (state.SliceRetries + 1) : waited >= SliceAnswerWaitMs)
             {
-                (state.SliceKey, state.SliceAskedAt, state.SliceAnswered) = (key, now, false);
-                state.SliceTicket = engine.RequestSlicePreview(request, aspect);
+                (state.SliceAskedAt, state.SliceFailed) = (now, false);
+                state.SliceRetries++;
+                state.SliceTicket = engine.RequestSlicePreview(asked, aspect);
             }
         }
 
-        if (engine.TakeSlicePreview() is { } strip && strip.Request.Path == state.SliceKey.Path && strip.Request.Slots.Count > 0)
+        // Only the newest ask's strip is shown: an older one is another position, stream or drag (review F23).
+        if (engine.TakeSlicePreview() is { } strip && state.SliceTicket != 0 && strip.Ticket == state.SliceTicket && strip.Request.Slots.Count > 0)
         {
-            state.SliceAnswered |= strip.Ticket == state.SliceTicket;
+            state.SliceAnswered = true;
             ribbon.SetStrip(strip.Pixels, strip.Width, strip.Height, strip.Request.Slots[0].Offset, strip.Request.Slots.Count);
         }
     }
 
-    /// <summary>Fades the ribbon out and lets the engine's burst go (once); the gate stays where it is.</summary>
+    /// <summary>Fades the ribbon out (Show(false) drops its frames) and lets the engine's burst go (once); the gate stays where it is.</summary>
     private void HideSlicePreview()
     {
         UnifiedTimeline.SlicePreview.Show(false);
         if (_scrubState.SliceTicket == 0)
             return;
 
-        _scrubState.SliceTicket = 0;
-        _scrubState.SliceKey = default;
+        (_scrubState.SliceTicket, _scrubState.SliceKey, _scrubState.SliceAskedAt) = (0, default, 0);
+        (_scrubState.SliceRequest, _scrubState.SliceRetries, _scrubState.SliceFailed) = (null, 0, false);
         _gpu?.RequestSlicePreview(null);
     }
 

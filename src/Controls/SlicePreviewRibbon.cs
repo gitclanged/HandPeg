@@ -128,13 +128,21 @@ public static class SlicePreviewPlanner
     }
 
     /// <summary>
-    /// The request for <paramref name="count"/> slots (odd, centred on <paramref name="seconds"/>) of the video clip under the playhead:
-    /// only the slots inside that clip (so they stay one file and one run of offsets), each with its file time. Null when no video clip
-    /// is there or the spacing is unusable.
+    /// The request for <paramref name="count"/> slots (odd, centred on <paramref name="seconds"/>) of the video clip under the playhead
+    /// (<see cref="Plan(TimelineClip, double, SlicePreviewFrameSpacing, int, int)"/>). Null when no video clip is there or the spacing is
+    /// unusable.
     /// </summary>
-    public static SlicePreviewRequest? Plan(TimelineDocument document, double seconds, SlicePreviewFrameSpacing spacing, int count, int shortSide)
+    public static SlicePreviewRequest? Plan(TimelineDocument document, double seconds, SlicePreviewFrameSpacing spacing, int count, int shortSide) =>
+        spacing.IsUsable && double.IsFinite(seconds) && VideoClipAt(document, seconds) is { } clip ? Plan(clip, seconds, spacing, count, shortSide) : null;
+
+    /// <summary>
+    /// The request for <paramref name="count"/> slots of <paramref name="clip"/> (the video clip <see cref="VideoClipAt"/> found under the
+    /// playhead) centred on <paramref name="seconds"/>: every slot, so one file and one centred run of offsets (a valid request), a slot
+    /// past the clip's edge holding its edge frame; each with its file time. Null when the spacing is unusable.
+    /// </summary>
+    public static SlicePreviewRequest? Plan(TimelineClip clip, double seconds, SlicePreviewFrameSpacing spacing, int count, int shortSide)
     {
-        if (!spacing.IsUsable || !double.IsFinite(seconds) || VideoClipAt(document, seconds) is not { } clip)
+        if (!spacing.IsUsable || !double.IsFinite(seconds) || string.IsNullOrWhiteSpace(clip.SourcePath) || !(clip.End > clip.Start))
             return null;
 
         var half = Math.Clamp(count, SlicePreviewRequest.MinSlots, SlicePreviewRequest.MaxSlots) / 2;
@@ -143,18 +151,19 @@ public static class SlicePreviewPlanner
         // layer holds them), else the constant speed; so every slot, the playhead's included, asks for the frame the player shows there.
         IReadOnlyList<Keyframe> ramp = clip.State?.KeysSpeed is { Count: > 0 } keys ? SpeedRamp.Normalized(keys) : [];
         var slots = new List<SlicePreviewSlot>(2 * half + 1);
+        var last = Math.Max(clip.Start, clip.End - 1e-6);
         for (var offset = -half; offset <= half; offset++)
         {
-            var at = seconds + offset * spacing.Seconds;
+            var at = Math.Clamp(seconds + offset * spacing.Seconds, clip.Start, last);
             var media = clip.MediaOffset + Math.Max(SpeedRamp.MediaSeconds(ramp, clip.Speed, at - clip.Start), 0);
             if (clip.SourceDuration > 0)
                 media = Math.Min(media, clip.SourceDuration);
-            if (at >= clip.Start - 1e-9 && at < clip.End && media >= 0 && double.IsFinite(media))
-                slots.Add(new SlicePreviewSlot(offset, at, media));
+            if (!(media >= 0) || !double.IsFinite(media) || !(at >= 0))
+                return null;
+            slots.Add(new SlicePreviewSlot(offset, at, media));
         }
 
-        return slots.Count == 0 ? null
-            : new SlicePreviewRequest(clip.SourcePath!, Math.Max(clip.VideoStreamIndex, 0), slots, spacing, Math.Clamp(shortSide, 16, 256));
+        return new SlicePreviewRequest(clip.SourcePath!, Math.Max(clip.VideoStreamIndex, 0), slots, spacing, Math.Clamp(shortSide, 16, 256));
     }
 
     /// <summary>
@@ -171,7 +180,7 @@ public static class SlicePreviewPlanner
 }
 
 /// <summary>
-/// The ribbon element (UnifiedTimelinePane, over the tracks' top; not hit-testable). The host lays out slots and spacing with
+/// The ribbon element (UnifiedTimelinePane, floating above the ruler; not hit-testable). The host lays out slots and spacing with
 /// <see cref="Present"/>, places it with <see cref="Place"/>, fills it with <see cref="SetStrip"/> and fades it with <see cref="Show"/>.
 /// </summary>
 public sealed class SlicePreviewRibbon : FrameworkElement

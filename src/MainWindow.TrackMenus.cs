@@ -1341,9 +1341,22 @@ public partial class MainWindow
             menu.Items.Add(lengths);
         AddSeparator(menu);
 
-        // The fade items without their title (styles, add or remove, crossfade with an overlap).
+        // The fade items without their title (styles, add or remove, crossfade with an overlap); add and remove preview their length live,
+        // as the lengths do (review F31).
+        var addLength = AppSettings.Current.DefaultTransitionSeconds;
         foreach (var item in items.Skip(1))
+        {
+            if (item is MenuItem { Header: string header } entry
+                && (header.StartsWith("Add Fade ", StringComparison.Ordinal) || header.StartsWith("Remove Fade ", StringComparison.Ordinal)))
+            {
+                var length = header.StartsWith("Add", StringComparison.Ordinal) ? addLength : 0;
+                entry.MouseEnter += (_, _) => HoverPreview.HoverFadeLength([clip], fadeIn, length);
+                entry.MouseLeave += (_, _) => HoverPreview.Leave();
+                entry.Unloaded += (_, _) => HoverPreview.Leave();
+            }
+
             menu.Items.Add(item);
+        }
 
         var fade = seconds > 0.005 ? seconds : Math.Min(AppSettings.Current.DefaultTransitionSeconds, model.Duration);
         return fadeIn ? (model.Start, model.Start + fade) : (model.End - fade, model.End);
@@ -1459,14 +1472,16 @@ public partial class MainWindow
     }
 
     /// <summary>Auto-Level's gain for a clip, measured in the background (null when silent or soundless); for its hover preview.</summary>
-    private Func<Task<double?>> SpeechGainOf(Layer clip) => async () =>
+    private Func<CancellationToken, Task<double?>> SpeechGainOf(Layer clip) => async cancel =>
     {
         if (_viewModel.ClipOf(clip) is not { HasSound: true, SourcePath: { Length: > 0 } path } model)
             return null;
 
         var (stream, from) = (model.AudioStreamIndex, clip.MediaOffset);
         var span = Shell.PausedHoverPreview.MeasuredMediaSpan(clip);
-        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        // At most 30 s, and stopped once no preview needs it (the menu closed, review F32).
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+        limit.CancelAfter(TimeSpan.FromSeconds(30));
         var measured = await Task.Run(() => Services.Audio.SpeechLevel.Measure(path, stream, from, span, limit.Token), limit.Token);
         return Services.Audio.SpeechLevel.GainDb(measured.Lufs, measured.Peak);
     };
@@ -1491,15 +1506,46 @@ public partial class MainWindow
         return filled;
     }
 
-    /// <summary>The GPU preview engine as the hover preview's loop host (whichever engine runs now; none: the playhead moves instead).</summary>
+    /// <summary>
+    /// The GPU preview engine as the hover preview's loop host (whichever engine runs now; none: the playhead moves instead). The engine
+    /// that took a warm or a loop is the one its end or stop reaches, even if the window's engine was replaced meanwhile (review F36).
+    /// </summary>
     private sealed class EngineLoopHost(MainWindow window) : Shell.ILoopPreviewHost
     {
-        public void Warm(double from, double to) => window._gpu?.WarmLoopPreview(from, to);
+        private GpuPreviewEngine? _warmed, _looping;
 
-        public void EndWarm() => window._gpu?.EndLoopWarm();
+        public void Warm(double from, double to)
+        {
+            if (window._gpu is not { } engine)
+                return;
 
-        public bool Start(double from, double to) => window._gpu is { } engine && !window._viewModel.IsPlaying && engine.StartLoopPreview(from, to);
+            if (_warmed is { } before && !ReferenceEquals(before, engine))
+                before.EndLoopWarm();
+            _warmed = engine;
+            engine.WarmLoopPreview(from, to);
+        }
 
-        public void Stop(double parkAt, bool keepPlaying) => window._gpu?.StopLoopPreview(parkAt, keepPlaying);
+        public void EndWarm()
+        {
+            var warmed = _warmed ?? window._gpu;
+            _warmed = null;
+            warmed?.EndLoopWarm();
+        }
+
+        public bool Start(double from, double to)
+        {
+            if (window._gpu is not { } engine || window._viewModel.IsPlaying || !engine.StartLoopPreview(from, to))
+                return false;
+
+            _looping = engine;
+            return true;
+        }
+
+        public void Stop(double parkAt, bool keepPlaying)
+        {
+            var looping = _looping ?? window._gpu;
+            _looping = null;
+            looping?.StopLoopPreview(parkAt, keepPlaying);
+        }
     }
 }

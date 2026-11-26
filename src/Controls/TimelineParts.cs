@@ -1075,6 +1075,9 @@ public sealed class TimelineRuler : TimelineBar
     private bool _scrubHooked, _cursorHidden;
     private double _sampledX = double.NaN, _movedX = double.NaN;
     private long _lastScrubMoveTicks;
+
+    // The cursor's last sampled screen point (a change stamps _lastScrubMoveTicks: the pointer-rest clock, review F27).
+    private Point _sampledScreen = new(double.NaN, double.NaN);
     private object? _cursorBefore;
 
     // RenderingTime of the frame last sampled: whichever render callback asks first samples it, the other skips.
@@ -1201,6 +1204,10 @@ public sealed class TimelineRuler : TimelineBar
             {
                 screen = new Point(cursor.X, cursor.Y);
                 local = PointFromScreen(screen);
+
+                // A moved cursor is a move for the pointer-rest clock even before (or without) its WM_MOUSEMOVE (review F27).
+                if (screen != _sampledScreen)
+                    (_sampledScreen, _lastScrubMoveTicks) = (screen, System.Diagnostics.Stopwatch.GetTimestamp());
             }
 
             SeekToSample(local.X);
@@ -1211,7 +1218,8 @@ public sealed class TimelineRuler : TimelineBar
             if (PointerLocked)
             {
                 // Asked every frame, so the tracks also hide their pointer once the cursor is back over the ruler.
-                var overRuler = local.Y >= 0 && local.Y <= ActualHeight;
+                // Over the ruler on both axes: past either end the cursor shows again (review F28).
+                var overRuler = local.X >= 0 && local.X <= ActualWidth && local.Y >= 0 && local.Y <= ActualHeight;
                 var elsewhere = ScrubPointerElsewhere?.Invoke(screen) == true;
                 ShowPointer(local.Y, overRuler, elsewhere && !overRuler);
             }
