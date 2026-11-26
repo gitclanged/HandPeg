@@ -127,6 +127,12 @@ public sealed class TimelineRow
 // TimelineMenuRequest, ClipMenuRegion and TimelineSeamTarget: TimelineMenuContracts.cs (Pass 5.7.1 wave-0 contract).
 
 /// <summary>
+/// A Spring-Zoom view for the host (UnifiedTimelineControl.SpringViewRequested): start and span in seconds, or <paramref name="Home"/>:
+/// the view the spring left, restored exactly (Start and Span repeat it).
+/// </summary>
+public readonly record struct SpringView(double Start, double Span, bool Home);
+
+/// <summary>
 /// The unified timeline: all sequence tracks on one immediate-mode surface (headers left, time area right). Rows, blocks, mini-stacks,
 /// dead-air seams and gap pills are drawn and hit-tested arithmetically, with no per-item elements. Frequently moving parts have their
 /// own visuals: playhead and skim line translate; pans/scrolls translate an over-drawn cache (margins on both sides); the dragged
@@ -257,8 +263,8 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         // Thumbnails are many and downscaled: use the cheapest bitmap scaling (smooth scaling costs most while scrolling).
         RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.LowQuality);
 
-        // Scroll shift, then the Spring-Zoom magnification about the pointer (identity unless a drag springs it; gestures, Parenting.cs).
-        _scroller.Transform = new TransformGroup { Children = { _shift, _springScale } };
+        // Scroll shift only: Spring-Zoom is a real view zoom (rows relaid at its scale), never a stretch (gestures, Parenting.cs).
+        _scroller.Transform = _shift;
         _scroller.Children.Add(_content);
         _scroller.Children.Add(_overlay);
         _labels.Transform = _labelsRise;
@@ -282,6 +288,14 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
         {
             Services.ThemeManager.Applied -= ThemeApplied;
             SettleMotion();
+
+            // Unloaded mid-spring: the view the spring left comes back at once (no timer runs on a control out of view).
+            if (IsSpringZoomed)
+            {
+                SpringTo(1);
+                FinishSpring();
+            }
+
             _autoScroll.Stop();
             DisarmMenu();
 
@@ -513,7 +527,10 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
     {
         _rows.Clear();
         _rows.AddRange(rows);
-        if (DraggedBlock is { } dragged && !Contains(_rows, dragged))
+
+        // Rows relaid at a new scale mid-drag (Spring-Zoom): the drag carries on over them (ReseatDrag, Family.cs).
+        var reseated = ReseatDrag();
+        if (!reseated && DraggedBlock is { } dragged && !Contains(_rows, dragged))
         {
             AbortDrag();
             Raise(() => DragRefused?.Invoke("What was being dragged changed meanwhile (an undo or another edit), so it was let go where it was."));
@@ -525,6 +542,9 @@ public sealed partial class UnifiedTimelineControl : FrameworkElement
 
         _hovered = null;
         Relayout();
+        if (reseated)
+            ResumeDrag();
+        FindSeamAgain();
     }
 
     /// <summary>

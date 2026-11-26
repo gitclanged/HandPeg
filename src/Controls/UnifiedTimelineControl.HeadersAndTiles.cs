@@ -460,6 +460,9 @@ public sealed partial class UnifiedTimelineControl
         // Ghost Trim Tails, ducking curve, quick-edit icons and Ghost Playhead (gestures, Parenting.cs).
         DrawGestures(drawing, scale, from, to);
 
+        // Selected cut seam, drag-over crossfade, trim readout and a clone's original (Pass 5.7.1, DragOut.cs).
+        DrawEditAids(drawing, scale, from, to, dpi);
+
         if (_dropMark is { } mark && scale > 0)
             DrawDropMark(drawing, mark, scale, from, to, dpi.PixelsPerDip);
 

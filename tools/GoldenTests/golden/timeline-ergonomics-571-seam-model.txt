@@ -1,0 +1,13 @@
+# A through-edit heals into one clip, a cut rolls a frame, Ctrl+T crossfades, the gain law is set on both sides; each one step of Undo.
+ok: a clip of 10-14 s cut at 12 s: two halves
+ok: the halves are a through-edit (one take, its file time running on across the cut)
+ok: so a crossfade across it keeps the level: linear while left at the default
+ok: period: the cut rolled one frame later (12.0333 s), still a through-edit
+ok: Undo puts the cut back at 12 s (an undo step restores a document of its own)
+ok: Delete heals it: one clip again, 10-14 s from 2 s into its file
+ok: Undo cuts it again (one step)
+ok: Ctrl+T: a 0.5 s crossfade across the cut, which is then no through-edit (nothing to heal)
+ok: a heal is refused there, nothing changed
+ok: the Seam menu's Linear: the later clip fades in and the earlier out by it (both looks)
+ok: Undo: equal power again (the default, saved as nothing)
+ok: the first half keeps the clip's id throughout

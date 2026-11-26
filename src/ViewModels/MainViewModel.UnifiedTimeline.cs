@@ -188,3 +188,161 @@ public partial class MainViewModel
         }
     }
 }
+
+// ----- Pass 5.7.1 timeline ergonomics: cut seams (through-edit heal, crossfade gain law), Top & Tail and Ctrl+drag clones -----
+// Each is one undo step via Edit. A through-edit is one take cut in two (AudioProgramBuilder.IsThroughEdit) whose halves look the same;
+// healing removes the later half and extends the earlier over it (its fade out and audio tail carried over, its children re-parented).
+public partial class MainViewModel
+{
+    /// <summary>
+    /// One take cut in two on one track: file, streams and speed the same, file time continuous across the cut, no crossfade, fade or J/L
+    /// at the cut, same gain, flags and parent, and the same look (keyframed halves never heal, as their keys differ). Delete heals it.
+    /// </summary>
+    public bool IsThroughEdit(Layer left, Layer right) => ClipOf(left) is { } a && ClipOf(right) is { } b && IsThroughEdit(a, b);
+
+    /// <summary>The model test behind <see cref="IsThroughEdit(Layer, Layer)"/>.</summary>
+    internal bool IsThroughEdit(TimelineClip a, TimelineClip b) =>
+        Document.TrackOf(a) is { } track && ReferenceEquals(track, Document.TrackOf(b)) && b.TransitionIn <= 0.01 && a.FadeOutSeconds <= 0.001
+        && b.FadeInSeconds <= 0.001 && a.AudioTailOutSeconds == 0 && b.AudioLeadInSeconds == 0 && a.GainDb == b.GainDb && a.IsHidden == b.IsHidden
+        && a.IsMuted == b.IsMuted && a.ParentClipId == b.ParentClipId && a.AudioLinked == b.AudioLinked && a.AudioSlipSeconds == b.AudioSlipSeconds
+        && Services.Audio.AudioProgramBuilder.IsThroughEdit(a, b) && LookKey(a.State) == LookKey(b.State);
+
+    // A look as JSON without the fields each half of a split owns.
+    private static string LookKey(LayerState state)
+    {
+        if (System.Text.Json.JsonSerializer.SerializeToNode(state, TimelineTransaction.CopyOptions) is not System.Text.Json.Nodes.JsonObject json)
+            return "";
+        foreach (var name in json.Select(p => p.Key).Where(HalfOwned).ToList())
+            json.Remove(name);
+        return json.ToJsonString();
+    }
+
+    // Look fields a split gives each half its own value of (timing, fades, name); everything else must match for a heal.
+    private static bool HalfOwned(string name) =>
+        name is "Name" or "StartTime" or "Duration" or "MediaOffset" or "FadeInSeconds" or "FadeOutSeconds" or "TransitionIn" or "FadeInStyle" or "FadeOutStyle";
+
+    /// <summary>
+    /// Heals a through-edit (Delete on its seam): the later half goes and the earlier runs on to its end, taking its fade out and audio
+    /// tail; the later half's children become the earlier's. False (with a status line) when the cut is no through-edit or the edit is refused.
+    /// </summary>
+    public bool HealThroughEdit(Layer left, Layer right)
+    {
+        FlushLooks();
+        if (ClipOf(left) is not { } a || ClipOf(right) is not { } b || !IsThroughEdit(a, b))
+        {
+            StatusText = "Only a through-edit heals: one take cut in two, both halves alike (no crossfade, fade or keyframes at the cut).";
+            return false;
+        }
+
+        var (end, fadeOut, fadeOutStyle, tail) = (b.End, b.FadeOutSeconds, b.FadeOutStyle, b.AudioTailOutSeconds);
+        var children = Document.ChildrenOf(b).Select(c => c.Clip).ToList();
+        if (!Edit($"heal the cut in {left.Name}", edit =>
+            {
+                edit.DeleteClip(b, withChildren: false);
+                edit.TrimClipEnd(a, end, ripple: false, rippleAllUnlockedTracks: false, freeUnquantized: true);
+                if (fadeOut > 0.001)
+                    edit.SetClipFades(a, a.FadeInSeconds, fadeOut, null, fadeOutStyle);
+                if (tail != 0)
+                    edit.TrimAudioSplit(a, a.AudioLeadInSeconds, tail, freeUnquantized: true);
+                foreach (var child in children)
+                    edit.SetClipParent(child, a.Id);
+            }))
+        {
+            return false;
+        }
+
+        Log($"Healed the cut in {left.Name}: one clip again, {TimeDisplay.Format(a.Start)} to {TimeDisplay.Format(a.End)}");
+        return true;
+    }
+
+    /// <summary>
+    /// Sets the gain law of the crossfade across the cut where <paramref name="left"/> meets <paramref name="right"/> (the Seam menu): the later
+    /// clip's sound fades in by it and the earlier's out (Layer.CrossfadeInCurve / CrossfadeOutCurve). One undo step.
+    /// </summary>
+    public bool SetCrossfadeCurve(Layer left, Layer right, CrossfadeCurve curve)
+    {
+        curve = CrossfadeCurves.Known(curve);
+        if (ClipOf(left) is null || ClipOf(right) is null)
+            return false;
+        if (right.CrossfadeInCurve == curve && left.CrossfadeOutCurve == curve)
+            return true;
+
+        // Look fields: set on the views and flushed into the clips' looks, one step (as Paste Attributes).
+        FlushLooks();
+        var label = $"{CrossfadeCurves.Label(curve)} crossfade into {right.Name}";
+        var before = CaptureSnapshot();
+        using (HoldLookSteps())
+        {
+            (right.CrossfadeInCurve, left.CrossfadeOutCurve) = (curve, curve);
+            _staleLooks.Add(right);
+            _staleLooks.Add(left);
+        }
+
+        // Into the clips now, so the mix (read from the document) follows at once.
+        FlushLooks();
+        Checkpoint(label, before);
+        StatusText = $"The crossfade into {right.Name}: {CrossfadeCurves.Label(curve)}.";
+        return true;
+    }
+
+    /// <summary>
+    /// Top &amp; Tail (Shift+Q / Shift+E, [ and ]): ripple-trims the clip's start (<paramref name="start"/>) or end to the playhead
+    /// <paramref name="seconds"/>, closing the gap so later clips follow (all unlocked tracks with Ripple All Tracks). The playhead must be
+    /// inside the clip, a minimum clip length from both edges. One undo step.
+    /// </summary>
+    public bool RippleTrimToPlayhead(Layer clip, bool start, double seconds)
+    {
+        if (ClipOf(clip) is not { } model)
+        {
+            StatusText = "Select a clip on the Timeline to top or tail it.";
+            return false;
+        }
+
+        if (!(seconds > model.Start + TimelineDocument.MinimumClipSeconds && seconds < model.End - TimelineDocument.MinimumClipSeconds))
+        {
+            StatusText = $"Put the playhead inside {clip.Name} to {(start ? "top" : "tail")} it there.";
+            return false;
+        }
+
+        var (wasStart, wasEnd) = (model.Start, model.End);
+        var moved = 0.0;
+        if (!Edit(start ? $"top {clip.Name}" : $"tail {clip.Name}", edit => moved = start
+                ? TopTo(edit, model, seconds)
+                : edit.TrimClipEnd(model, seconds, ripple: true, AppSettings.Current.RippleAllTracks)))
+        {
+            return false;
+        }
+
+        if (Math.Abs(moved) < 1e-6)
+        {
+            StatusText = $"{clip.Name} cannot be {(start ? "topped" : "tailed")} there: what follows cannot move.";
+            return false;
+        }
+
+        Log(start
+            ? $"Topped {clip.Name}: {TimeDisplay.Format(seconds - wasStart)} cut from its start, what follows moved up"
+            : $"Tailed {clip.Name}: {TimeDisplay.Format(wasEnd - seconds)} cut from its end, what follows moved up");
+        return true;
+    }
+
+    // A ripple start trim to the playhead: the clip keeps its start and loses its first (playhead - start) seconds; what follows moves up.
+    private static double TopTo(ITimelineTransaction edit, TimelineClip model, double seconds) =>
+        edit.TrimClipStart(model, seconds, ripple: true, AppSettings.Current.RippleAllTracks);
+
+    /// <summary>
+    /// Ctrl+drag clone: a copy of the clip (with its family: Cutouts, linked sound, Sub-Lanes) starting at <paramref name="seconds"/>, on its
+    /// track where free, else a new track just above (as Paste). The original stays. One undo step; the copy is selected.
+    /// </summary>
+    public bool CloneClipTo(Layer clip, double seconds)
+    {
+        FlushLooks();
+        var roots = CopyRoots([clip]);
+        if (roots.Count == 0)
+        {
+            StatusText = $"{clip.Name} cannot be cloned.";
+            return false;
+        }
+
+        return PlaceFamilies(Families(roots), Math.Max(seconds, 0), $"clone {clip.Name}");
+    }
+}
