@@ -59,6 +59,15 @@ public sealed partial class Layer
     }
 }
 
+/// <summary>A clip fitted to its speed ramp (Pass 5.7.1, <see cref="SpeedRamp.Fit"/>).</summary>
+/// <param name="Keys">The ramp re-timed to the fitted length (times x <paramref name="Stretch"/>, speeds kept); empty at a constant speed.</param>
+/// <param name="Length">Clip seconds that play the whole source span.</param>
+/// <param name="Duration">The clip's new length: <paramref name="Length"/>, or the room when shorter (<paramref name="Clamped"/>).</param>
+/// <param name="Speed">The base speed: the ramp's average over <paramref name="Length"/> (the constant speed without keys).</param>
+/// <param name="Stretch">The keys' re-timing factor (span played after over before).</param>
+/// <param name="Clamped">True when <paramref name="Length"/> ran past the room.</param>
+public readonly record struct SpeedRampFit(IReadOnlyList<Keyframe> Keys, double Length, double Duration, double Speed, double Stretch, bool Clamped);
+
 /// <summary>
 /// Pure time mapping of a keyframed speed ramp (Pass 5.6.5 contract, shared by picture, sound, captions and the timeline). Speed s(t) is
 /// <see cref="EasingCurves.ValueAt"/> over the keys (held outside them), held to <see cref="Layer.SlowestSpeed"/>..<see
@@ -116,6 +125,41 @@ public static class SpeedRamp
         }
 
         return (low + high) / 2;
+    }
+
+    /// <summary>
+    /// Fits a clip to its ramp (Pass 5.7.1 auto-duration): the clip keeps playing <paramref name="sourceSpan"/> file seconds, so its keys
+    /// (shaped over <paramref name="clipSeconds"/>) are re-timed by the span over what they play there (times only, speeds kept: the curve's
+    /// shape over the clip stays) and the length is the exact integral's inverse (<see cref="ClipSeconds"/>). The base speed becomes the
+    /// ramp's average (span / length), so the constant-speed bounds (MediaEnd, trims, a later speed change or Clear) agree with the ramp.
+    /// Without keys the length is span / constant speed. A length longer than <paramref name="room"/> is clamped to it (the tail trimmed).
+    /// </summary>
+    public static SpeedRampFit Fit(IReadOnlyList<Keyframe>? keys, double constantSpeed, double clipSeconds, double sourceSpan,
+        double room = double.PositiveInfinity)
+    {
+        var ramp = Normalized(keys);
+        var held = Held(constantSpeed);
+        if (!(clipSeconds > 0) || !double.IsFinite(clipSeconds) || !(sourceSpan > 0) || !double.IsFinite(sourceSpan))
+            return new SpeedRampFit(ramp, clipSeconds, clipSeconds, held, 1, false);
+
+        double length, stretch, speed;
+        if (ramp.Count == 0)
+        {
+            (length, speed) = (sourceSpan / held, held);
+            stretch = length / clipSeconds;
+        }
+        else
+        {
+            var played = MediaSeconds(ramp, held, clipSeconds);
+            stretch = played > 1e-9 ? sourceSpan / played : 1;
+            if (Math.Abs(stretch - 1) > 1e-12)
+                ramp = [.. ramp.Select(k => k with { Time = Math.Round(k.Time * stretch, 6) })];
+            length = ClipSeconds(ramp, held, sourceSpan);
+            speed = Held(sourceSpan / length);
+        }
+
+        var clamped = double.IsFinite(room) && length > room + 1e-9;
+        return new SpeedRampFit(ramp, length, clamped ? Math.Max(room, 0) : length, speed, stretch, clamped);
     }
 
     private static double Held(double speed) => double.IsFinite(speed) ? Math.Clamp(speed, Layer.SlowestSpeed, Layer.FastestSpeed) : 1;

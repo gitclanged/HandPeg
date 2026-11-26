@@ -467,7 +467,7 @@ public sealed partial class GpuScenePlan
                 if (e.Loops)
                     return true;
                 var media = e.MediaOffset + Into(e, _ramps, t);
-                return !(e.MediaDuration > 0.05 && media >= e.MediaDuration);
+                return !(e.MediaDuration > 0.05 && media >= e.MediaDuration) || HoldsLastFrame(e, t);
             case EntryKind.Fade:
                 return FadeLevel(e, t) > 0.0005;
             case EntryKind.Caption:
@@ -506,11 +506,26 @@ public sealed partial class GpuScenePlan
             case EntryKind.File or EntryKind.Twin:
                 var into = Into(e, _ramps, t);
                 media = e.Loops && e.MediaDuration > 0.05 ? Repeat(e.MediaOffset + into, e.MediaDuration) : e.MediaOffset + Math.Max(into, 0);
+
+                // A ramped clip's tail frame within the EOF grace (HoldsLastFrame) reads the file's last frame, never past it.
+                if (!e.Loops && e.MediaDuration > 0.05 && media >= e.MediaDuration && _ramps is not null && _ramps.ContainsKey(e))
+                    media = Math.Max(e.MediaDuration - RampEofHold, 0);
                 return source >= 0;
             default:
                 return false;
         }
     }
+
+    /// <summary>File seconds before its end that a ramped clip's held tail frame reads (the last decoded frame starts before it).</summary>
+    public const double RampEofHold = 1e-3;
+
+    /// <summary>
+    /// Pass 5.7.1 EOF guard: a speed-ramped clip whose ramp reaches the file's end within its last sequence frame (the integral's rounding,
+    /// a frame-aligned end) holds the file's last frame there instead of dropping out to black. Only that one frame: a ramp that genuinely
+    /// runs past the file (a project from before auto-duration) still ends where the file does. Allocation-free.
+    /// </summary>
+    private bool HoldsLastFrame(Entry e, double t) =>
+        _ramps is not null && _ramps.ContainsKey(e) && e.MediaOffset + Into(e, _ramps, t - FrameSeconds - 1e-6) < e.MediaDuration;
 
     // Looping video media time: the file replayed from frame 0, wrapped modulo its length.
     private static double Repeat(double moment, double length)

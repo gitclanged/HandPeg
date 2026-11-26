@@ -76,7 +76,7 @@ public partial class EffectsPane
         (_rippleCheck, _smoothCheck, _keepPitchCheck, _spectralCheck) = (null, null, null, null);
         _speedPillButtons.Clear();
         _typedBoxes.Clear();
-        (_ramp, _rampNote, _rampStepTaken) = (null, null, false);
+        (_ramp, _rampNote, _rampStepTaken, _rampLive) = (null, null, false, null);
         _opacityCardShown = _layer is { HasStyle: true, IsAdjustment: false } shown && OpacityShows(shown);
 
         if (_vm is null || _noClip || _layer is not { HasSpeed: true, IsBackground: false } layer)
@@ -538,8 +538,12 @@ public partial class EffectsPane
             // Timeline length = media span / speed (current or dragged).
             if (_durationBox is { } duration && !_typedBoxes.Contains(duration))
             {
-                var span = _vm?.ClipOf(target) is { } clip ? clip.MediaEnd - clip.MediaOffset : target.Duration * target.Speed;
-                duration.Text = span > 0 && speed > 0 ? TimeDisplay.Format(span / speed) : "";
+                var model = _vm?.ClipOf(target);
+                var span = model is { } clip ? clip.MediaEnd - clip.MediaOffset : target.Duration * target.Speed;
+                if (dragged is null && target.HasSpeedRamp && model is not null)
+                    duration.Text = TimeDisplay.Format(_rampLive is { Duration: > 0 } live ? live.Duration : model.Duration);
+                else
+                    duration.Text = span > 0 && speed > 0 ? TimeDisplay.Format(span / speed) : "";
             }
 
             if (_rippleCheck is { } ripple)
@@ -701,6 +705,13 @@ public partial class EffectsPane
     // A ramp gesture has taken its Undo step; whether the ramp dipped below 1x before it.
     private bool _rampStepTaken, _rampDippedBefore;
 
+    // Pass 5.7.1 auto-duration: the file seconds the clip played when the gesture began (kept by the fit on release), the live fit while
+    // shaping (the length box and note show it), and the last fit that stopped at the next clip (its clip and length: the note warns while
+    // the clip still has that length, so an Undo clears it).
+    private double _rampSpan;
+    private SpeedRampFit? _rampLive;
+    private (Guid Clip, double Duration)? _rampClamped;
+
     private StackPanel RampRow(Layer target, bool sound)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 2) };
@@ -739,6 +750,7 @@ public partial class EffectsPane
         if (!_rampStepTaken)
         {
             _rampDippedBefore = target.SpeedKeys.Any(k => k.Value < 1);
+            (_rampSpan, _rampClamped) = (vm.RampSourceSpan(target), null);
             vm.Checkpoint(keys.Count == 0 ? $"clear the speed ramp of {target.Name}" : $"ramp the speed of {target.Name}");
             _rampStepTaken = true;
         }
@@ -761,13 +773,26 @@ public partial class EffectsPane
 
         if (done)
         {
-            _rampStepTaken = false;
+            // Auto-duration (Pass 5.7.1): the clip and its family take the length that plays the same file span, in the gesture's step.
+            (_rampStepTaken, _rampLive) = (false, null);
+            var outcome = vm.FitClipToRamp(target, target.SpeedKeys, _rampSpan);
+            if (outcome.Clamped && vm.ClipOf(target) is { } fitted)
+                _rampClamped = (fitted.Id, fitted.Duration);
             ShowSpeed();
         }
         else
         {
+            _rampLive = vm.PreviewRampFit(target, target.SpeedKeys, _rampSpan);
             ShowRampNote(target);
+            ShowRampLength();
         }
+    }
+
+    // While shaping: the length box shows the length the release will give.
+    private void ShowRampLength()
+    {
+        if (_durationBox is { } box && _rampLive is { Duration: > 0 } live && !_typedBoxes.Contains(box))
+            box.Text = TimeDisplay.Format(live.Duration);
     }
 
     // Refreshes the editor and its note from the clip (ShowSpeed).
@@ -788,7 +813,10 @@ public partial class EffectsPane
             return;
 
         string? text = null;
-        if (target.HasSpeedRamp && _vm?.ClipOf(target) is { PlaysFile: true, WholeDuration: > 0 } clip
+        var model = _vm?.ClipOf(target);
+        if (_rampLive is { Clamped: true } || (_rampClamped is { } clamped && model is not null && clamped.Clip == model.Id && Math.Abs(model.Duration - clamped.Duration) < 1e-6))
+            text = "Clamped at next clip";
+        else if (target.HasSpeedRamp && model is { PlaysFile: true, WholeDuration: > 0 } clip
             && clip.MediaOffset + SpeedRamp.MediaSeconds(target.SpeedKeys, target.Speed, clip.Duration) > clip.WholeDuration + 1e-3)
             text = "Runs past the file's end";
         else if (target.SpeedKeys.Any(k => k.Value < 1))
