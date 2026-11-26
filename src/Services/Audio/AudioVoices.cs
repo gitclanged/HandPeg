@@ -417,8 +417,11 @@ internal sealed class VoiceProducer
         var sound = line.SoundAt(from, _rate);
         var media = voice.MediaAt(sound);
         var pitch = Math.Clamp(voice.Pitch, 0.25, 4);
-        var tempo = Math.Clamp(voice.Rate * line.Rate / pitch, 0.05, 64);
-        var stretched = Math.Abs(tempo - 1) > 1e-4;
+        var ramp = voice.Ramp;
+
+        // A speed ramp always stretches (its tempo varies even where it passes 1x): the stretcher starts at the ramp's tempo here.
+        var tempo = ramp is null ? Math.Clamp(voice.Rate * line.Rate / pitch, 0.05, 64) : RampTempoMap.TempoAt(voice, sound, line.Rate, pitch);
+        var stretched = ramp is not null || Math.Abs(tempo - 1) > 1e-4;
         var step = fs * pitch / _rate;
 
         // Device rate at 1x: the decoder's own samples, seeking to the nearest sample (a sub-sample offset is microseconds).
@@ -430,28 +433,33 @@ internal sealed class VoiceProducer
         }
 
         // Otherwise seek slightly earlier so the resampler kernel (and WSOLA's or the vocoder's first frames) have history. Spectral voices
-        // use the phase vocoder up to its fastest tempo (WSOLA beyond), whose frames are longer than WSOLA's at low sample rates.
-        var spectral = stretched && voice.Spectral && tempo <= AudioPhaseVocoder.FastestTempo;
+        // use the phase vocoder up to its fastest tempo (WSOLA beyond), whose frames are longer than WSOLA's at low sample rates; a ramp
+        // only when its fastest tempo anywhere stays within it.
+        var fastest = ramp is null ? tempo : ramp.MostRate * line.Rate / pitch;
+        var spectral = stretched && voice.Spectral && fastest <= AudioPhaseVocoder.FastestTempo;
         var reach = PolyphaseResampler.HalfTaps + 4 + (spectral ? Math.Max(fs * 0.06, AudioPhaseVocoder.WarmUp(fs)) : stretched ? fs * 0.06 : 0);
         var before = reach * (stretched ? tempo : 1) / fs;
         var at = Math.Round((media - before) * fs) / fs;
         decoder.Seek(at);
+
+        // The ramp's tempo map from this seek (its pre-roll at the start tempo); null keeps the constant tempo.
+        var map = ramp is null ? null : new RampTempoMap(voice, sound, line.Rate, pitch, at, fs);
         IStereoSource input = decoder;
         if (spectral)
         {
             _vocoder ??= new AudioPhaseVocoder();
-            _vocoder.Reset(decoder, tempo, fs);
+            _vocoder.Reset(decoder, tempo, fs, map);
             input = _vocoder;
         }
         else if (stretched)
         {
             _wsola ??= new WsolaStretcher();
-            _wsola.Reset(decoder, tempo, fs);
+            _wsola.Reset(decoder, tempo, fs, map);
             input = _wsola;
         }
 
         _resampler ??= new PolyphaseResampler();
-        _resampler.Reset(input, step, (media - at) * fs / (stretched ? tempo : 1));
+        _resampler.Reset(input, step, map?.Lead ?? (media - at) * fs / (stretched ? tempo : 1));
         _output = _resampler;
         return true;
     }

@@ -1,0 +1,12 @@
+# Couch Voice Auto-Switcher: per-mic levels in, a contiguous shot list out, cuts leading the new speaker, crosstalk Wide, silence never cuts.
+    0.00 -   9.75 s  Speaker mic 0
+    9.75 -  20.00 s  Speaker mic 1
+   20.00 -  30.00 s  Wide
+ok: the shots cover the analysed span end to end, in order, with no gap or overlap
+ok: each talker gets their own shot
+ok: the cut to the new speaker lands its lead before their first word
+ok: crosstalk past the overlap time goes Wide
+ok: no shot but a reaction (or the last) is shorter than the minimum shot
+ok: silence never cuts: the last speech's shot holds to the end
+ok: pure and deterministic; no mics, no shots
+ok: facecam mode makes no reaction cutaways

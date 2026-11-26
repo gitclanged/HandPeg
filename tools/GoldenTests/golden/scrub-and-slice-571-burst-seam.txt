@@ -1,0 +1,10 @@
+# Slice-Preview burst: posted by the pump, decoded by the worker behind visible work, answered, drawn as one strip in place.
+ok: the worker asks for missing slices only while nothing plays and every decode lane is idle (behind the visible frame), at most every 120 ms
+ok: a small BGRA readback (a quarter of the ring at most) is drawn in place in the player's ring (no ring recreated twice per strip); NV12/P010 and larger ones keep the exact ring
+ok: the pump draws a strip once per answered burst, never with a seek pending or in the 3D view, at most every 60 ms
+ok: the pump never waits for a strip's readback: polled on later turns, taken once it is the newest readback, let go for a later readback, a later scene or a seek arriving mid-readback (the player's picture first), given up 60 ms after publishing
+ok: the pump withdraws any burst (and drops a strip in flight) while playing or in 3D, polls a strip in flight first, posts the newest ask (resolved on the UI thread) through the W0 seam, and draws only an answered one with none in flight and no seek or picture owed
+ok: the strip is one read-back scene from cached frames (no exact-frame wait) published without waiting; its readback is copied with no wait once polled ready, and the player's scene is published again once it is read back, replaced or overdue
+ok: the worker takes the burst each turn after the turn's scene is drawn (visible demands first), asks for slices only on a quiet turn with an exact picture, polls every 8 ms while one is outstanding, and copies an in-place readback's region
+ok: a newer whole burst replaces the old one (answered never), the exact version is answered once every slice is in the frame cache, and missing slices are asked for only when admitted
+ok: the ribbon looks no clip up during a whip (dormant, zero overhead), and once shown is placed by translation, asks for frames and takes strips from its frame hook

@@ -71,6 +71,10 @@ public static class Program
             run.Suite("RunnerTests", () => RunnerTests.All(GoldenFilter.Active ? GoldenFilter.Unfiltered(() => GraphCases.All().ToList()) : graphs));
         run.Suite("TimelineDocumentTests", TimelineDocumentTests.All);
         run.Suite("ModelSeamTests", ModelSeamTests.All);
+        run.Suite("ContractSeamTests", ContractSeamTests.All);
+        run.Suite("Pass565Tests", Pass565Tests.All);
+        run.Suite("ContractSeam571Tests", ContractSeam571Tests.All);
+        run.Suite("TrackMenuHover571Tests", TrackMenuHover571Tests.All);
         run.Suite("ShellBudgetTests", ShellBudgetTests.All);
         run.Suite("ShellArchitectureTests", ShellArchitectureTests.All);
         run.Suite("TimelineGraphCases", TimelineGraphCases.All);
@@ -87,6 +91,7 @@ public static class Program
         run.One("creator-hotbar", HotbarTests.Run);
         run.One("portable-bootstrap", PortableBootstrapTests.Run);
         run.Suite("TimelineErgonomicsTests", TimelineErgonomicsTests.All);
+        run.Suite("TimelineErgonomics571Tests", TimelineErgonomics571Tests.All);
         run.Suite("TimelineInputTests", TimelineInputTests.All);
         run.Suite("StudioCaptureTests", StudioCaptureTests.All);
         run.Suite("TimelineLaneTests", TimelineLaneTests.All);
@@ -166,6 +171,9 @@ public static class Program
         run.Suite("TierBadgeTests", TierBadgeTests.All);
         run.Suite("ColorMatchTests", ColorMatchTests.All);
         run.Suite("SpeedTimeTests", SpeedTimeTests.All);
+        run.Suite("SpeedRampDuration571Tests", SpeedRampDuration571Tests.All);
+        // After EnsureApplication: its cursor-lock case builds a TimelineRuler on the Application.
+        run.Suite("ScrubAndSlice571Tests", ScrubAndSlice571Tests.All);
         run.Suite("CutPacingTests", CutPacingTests.All);
         run.Suite("OverlayDpiTests", OverlayDpiTests.All);
         // The UI-scale tour and the cases after it drive real windows on the Application (their commands and undo steps
@@ -197,6 +205,8 @@ public static class Program
         run.Suite("SpeedTimeTests.Live", SpeedTimeTests.Live);
         run.Suite("CutPacingTests.Live", CutPacingTests.Live);
         run.Suite("EngineCorrectnessTests.Live", EngineCorrectnessTests.Live);
+
+        run.Suite("Pass565Tests.Live", Pass565Tests.Live);
 
         // Last: no thread rule was broken by any suite but the case that breaks one on purpose.
         run.Suite("ThreadLifetimeTests.Final", ThreadLifetimeTests.Final);

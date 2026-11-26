@@ -22,25 +22,20 @@ namespace HandPegApp;
 // session are offered at idle after Frame 1, and a tab layout is applied only on switch/close/undo-close (never at start-up).
 public partial class MainWindow
 {
-    private readonly ProjectTabs _tabs = new(ProjectTabs.DefaultRoot);
+    // Tab session state (order and active tab, live contexts behind it, failed resumes, activation generation, the operation in flight):
+    // Shell.ProjectTabController. Every change goes through it; _tabs, _hydrated, _unresumed and _switchingTab are its views for the partials.
+    private readonly Shell.ProjectTabController<TabViewContext> _tabControl = new(new ProjectTabs(ProjectTabs.DefaultRoot));
+
+    private ProjectTabs _tabs => _tabControl.Tabs;
 
     // Set by Ctrl+T or + while the strip is hidden: shows the blank tab ([ New Project × ] [ + ]) until a close leaves one tab, which
     // clears it so a lone blank tab collapses the strip again.
     private bool _tabsRevealed;
 
-    // Non-null while a switch, new tab or close runs; later tab operations and app shutdown await it. Meanwhile the Timeline ignores the
-    // pointer and project-changing keys/drops are refused (RefusedWhileDragging, Window_PreviewDrop): such an edit would land in neither tab.
-    private bool _switchingTab
-    {
-        get => _switching;
-        set
-        {
-            _switching = value;
-            UnifiedTimeline.IsHitTestVisible = !value;
-        }
-    }
-
-    private bool _switching;
+    // True while a switch, new tab or close runs (ProjectTabController.Prepare .. Finish); later tab operations and app shutdown await it.
+    // Meanwhile the Timeline ignores the pointer (SwitchingChanged) and project-changing keys/drops are refused (RefusedWhileDragging,
+    // Window_PreviewDrop): such an edit would land in neither tab.
+    private bool _switchingTab => _tabControl.IsSwitching;
 
     // RecoverProjectTabs moving a dead session's tabs into this session's folder; shutdown awaits it so no moved file is orphaned when
     // the session folder is released.
@@ -48,7 +43,7 @@ public partial class MainWindow
 
     // Tabs whose resume failed (missing media drive, unreadable cache): files are kept and activation (or a click while active) retries.
     // New work never lands in such a tab; it opens a new one.
-    private readonly HashSet<string> _unresumed = new(StringComparer.Ordinal);
+    private IReadOnlySet<string> _unresumed => _tabControl.Unresumed;
 
     // Debounced refresh of the active tab's dirty dot and name (the fingerprint hashes the whole state, so never per frame).
     private readonly DispatcherTimer _tabDirty = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
@@ -62,6 +57,7 @@ public partial class MainWindow
     /// <summary>Creates the strip's single in-memory tab and wires its handlers (pre-Frame 1 from InitializeTitleBar; no disk I/O).</summary>
     private void InitializeProjectTabs()
     {
+        _tabControl.SwitchingChanged += switching => UnifiedTimeline.IsHitTestVisible = !switching;
         ShowTabs();
         ProjectTabStrip.TabChosen += item =>
         {
@@ -252,8 +248,7 @@ public partial class MainWindow
         if (!_unresumed.Contains(stuck.Id) || _viewModel.HoldsNothingForTab)
             return false;
 
-        _unresumed.Remove(stuck.Id);
-        _tabs.TakeWorkOff(ActiveTabTitle());
+        _tabControl.TakeWorkOff(stuck, ActiveTabTitle());
         AppLog.Write("Project tabs: new work in front of a tab that could not be brought back went into a tab of its own.");
         ShowTabs();
         WriteTabManifest();
@@ -384,13 +379,19 @@ public partial class MainWindow
         if (!MayChangeTabs("switching project tabs"))
             return;
 
-        _switchingTab = true;
+        var switching = _tabControl.Prepare("switch project tabs");
         TabWrite? write = null;
+        ProjectTabHeader? behind = null;
+        object? parked = null;
+        var settled = false;
         try
         {
             // Deactivate synchronously (kept live in memory) and reactivate a live tab synchronously: no await between the two.
-            var behind = PutActiveBehind(out write);
-            _tabs.Activate(tab);
+            // The outgoing header first: a fault inside PutActiveBehind still settles back to it (its detach is tracked by the controller).
+            behind = _tabs.Active;
+            behind = PutActiveBehind(out write);
+            parked = _viewModel.Document;
+            _tabControl.Commit(switching, tab);
             ShowTabs();
 
             // Apply the tab's layout first so its still is placed where its player will be.
@@ -409,16 +410,20 @@ public partial class MainWindow
                 await ResumeTabAsync(tab, behind);
             }
 
+            // The front is settled: the incoming project attached, or its failure handled (TakeBack / failed resume).
+            settled = true;
             RefreshActiveTab(fingerprint: !hot);
             WriteTabManifest();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             NoteTabFault("switch project tabs", ex);
+            if (!settled && behind is not null)
+                SettleFailedSwitch(tab, behind, parked);
         }
         finally
         {
-            _switchingTab = false;
+            _tabControl.Finish(switching);
 
             // Write the outgoing tab's cache file after the switch, on the thread pool, from its frozen copy.
             QueueTabWrite(write);
@@ -429,10 +434,45 @@ public partial class MainWindow
         LetGoForMemory();
     }
 
+    /// <summary>
+    /// A switch faulted while or after the outgoing tab was put behind but before the front settled. After the commit, while the incoming
+    /// project has not replaced the detached one (<paramref name="parked"/> still in the view model), the outgoing tab is taken back
+    /// (<see cref="TakeBack"/>). Before it, the outgoing tab is still in front and is re-attached in place when the controller holds its
+    /// detached context (the detach is tracked there, whatever faulted after it). A rollback that faults before the header in front owns a
+    /// document leaves that header a failed resume, so the active header never claims a Sequence it does not hold. Runs before the edit
+    /// guard is released (ProjectTabController.Finish).
+    /// </summary>
+    private void SettleFailedSwitch(ProjectTabHeader tab, ProjectTabHeader behind, object? parked)
+    {
+        var committed = ReferenceEquals(tab, _tabs.Active);
+        if (committed ? !ReferenceEquals(_viewModel.Document, parked) : !ReferenceEquals(behind, _tabs.Active))
+            return;
+        var detached = _viewModel.Document;
+        try
+        {
+            if (committed)
+                TakeBack(tab, behind);
+            else if (_hydrated.TryGetValue(behind.Id, out var live) && !AttachHydrated(behind, live))
+                _tabControl.MarkUnresumed(behind.Id);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AppLog.Write("Project tabs: the tab put behind could not be taken back", ex);
+
+            // Faulted before the header now in front owned a document (the detached one is still shown): a failed resume, retried later.
+            if (ReferenceEquals(_viewModel.Document, detached))
+                _tabControl.MarkUnresumed(_tabs.Active.Id);
+        }
+
+        if (ReferenceEquals(tab, _tabs.Active))
+            _tabControl.MarkUnresumed(tab.Id);
+        ShowTabs();
+    }
+
     /// <summary>Retries resuming the active failed-resume tab from its file or memory (nothing to deactivate: the shown project is empty).</summary>
     private async Task RetryResumeAsync(ProjectTabHeader tab)
     {
-        _switchingTab = true;
+        var retry = _tabControl.Prepare("bring the project tab back");
         try
         {
             StopPlayingForTabs();
@@ -455,7 +495,7 @@ public partial class MainWindow
         }
         finally
         {
-            _switchingTab = false;
+            _tabControl.Finish(retry);
         }
     }
 
@@ -511,8 +551,7 @@ public partial class MainWindow
 
         TakeStillOnScreen();
         var live = DetachActive(tab, out write);
-        _hydrated[tab.Id] = live;
-        _unresumed.Remove(tab.Id);
+        _tabControl.PutBehind(tab, live);
         _tabs.SetStill(tab, null);
         OnTimelinePointer(null);
 
@@ -717,8 +756,12 @@ public partial class MainWindow
         (tab.Title, tab.Empty, tab.Dirty) = (ActiveTabTitle(), false, TabDirtyNow(tab));
         TakeProjectPath(tab, _viewModel.CurrentProjectPath);
         (tab.NewProjectName, tab.NewProjectFolder, tab.WaitingTemplate) = (_viewModel.NewProjectName, _viewModel.NewProjectFolder, _viewModel.TemplateWaitingForTab);
-        (tab.PlayheadMs, tab.ViewStart, tab.ViewSpan, tab.ViewFit, tab.VerticalOffset) =
-            (_viewModel.PositionMs, _viewStart, _viewSpan, _viewFit, UnifiedTimeline.Surface.VerticalOffset);
+        // A view restore still queued (cold resume) keeps the saved view: the window's is not this tab's yet.
+        if (!tab.ViewPending)
+        {
+            (tab.PlayheadMs, tab.ViewStart, tab.ViewSpan, tab.ViewFit, tab.VerticalOffset) =
+                (_viewModel.PositionMs, _viewStart, _viewSpan, _viewFit, UnifiedTimeline.Surface.VerticalOffset);
+        }
         TakeFrameForTab(tab);
 
         // Written from the view model, the cache file is the exact current project (a lagged crash-recovery copy marks itself as such).
@@ -812,7 +855,7 @@ public partial class MainWindow
         // The view model owns the tab again: delete its cache files (rewritten on next deactivation) and hand over its pending Game Preset.
         // Queued after its own disk work and before any later request, so the delete can never follow the next deactivation's write. A dirty
         // tab keeps its file as the active crash-recovery copy (the 20 s tick rewrites it on history change and deletes it once clean).
-        _unresumed.Remove(id);
+        _tabControl.TakeFront(tab);
         tab.WaitingTemplate = null;
         if (unreadable)
             (tab.ProjectPath, tab.Dirty) = ("", true);
@@ -840,7 +883,9 @@ public partial class MainWindow
         // state and camera instead of recording it as flat.
         if (tab.ExplodedOpen)
             _explodedWaitingTab = tab;
-        _ = Dispatcher.BeginInvoke(() => RestoreTabView(tab), DispatcherPriority.Background);
+        var activation = _tabControl.Generation;
+        tab.ViewPending = true;
+        _ = Dispatcher.BeginInvoke(() => RestoreTabView(tab, activation), DispatcherPriority.Background);
         return true;
     }
 
@@ -854,7 +899,7 @@ public partial class MainWindow
             return false;
         }
 
-        _unresumed.Add(tab.Id);
+        _tabControl.MarkUnresumed(tab.Id);
         _viewModel.StatusText = why;
         return false;
     }
@@ -866,28 +911,30 @@ public partial class MainWindow
     /// </summary>
     private void TakeBack(ProjectTabHeader tab, ProjectTabHeader? behind)
     {
-        if (behind is null || ReferenceEquals(behind, tab) || !_tabs.Tabs.Contains(behind))
-        {
-            _unresumed.Add(tab.Id);
+        // Abort: back to the tab put behind (false: none to return to, so tab stays active as a failed resume).
+        if (!_tabControl.Abort(tab, behind))
             return;
-        }
-
-        _tabs.Activate(behind);
         ShowTabs();
 
         // Restore its layout, then (from memory) its project, still, view and 3D state.
-        ApplyTabLayout(behind);
-        if (_hydrated.TryGetValue(behind.Id, out var live) && !AttachHydrated(behind, live))
+        ApplyTabLayout(behind!);
+        if (_hydrated.TryGetValue(behind!.Id, out var live) && !AttachHydrated(behind, live))
         {
-            _tabs.Activate(tab);
+            _tabControl.Reinstate(tab);
             ShowTabs();
-            _unresumed.Add(tab.Id);
         }
     }
 
-    /// <summary>Restores a resumed tab's playhead, zoom, scroll and 3D state once the player and time bars have bound the new Sequence.</summary>
-    private void RestoreTabView(ProjectTabHeader tab)
+    /// <summary>
+    /// Restores a resumed tab's playhead, zoom, scroll and 3D state once the player and time bars have bound the new Sequence. Queued at
+    /// <paramref name="activation"/> (ProjectTabController.Generation): a later activation (even of this same tab: A, B, A) restores its own
+    /// view, so this stale one only does the camera and wait bookkeeping below when its tab is no longer in front.
+    /// </summary>
+    private void RestoreTabView(ProjectTabHeader tab, long activation)
     {
+        if (ReferenceEquals(tab, _tabs.Active) && !_tabControl.IsCurrent(activation))
+            return;
+
         // Last 3D camera for a manual toggle: the header's (the default start pose for a tab never in 3D).
         if (ReferenceEquals(tab, _tabs.Active))
             _explodedLastPose = new(tab.ExplodedYaw, tab.ExplodedPitch, tab.ExplodedZoom, tab.ExplodedSpacing);
@@ -896,6 +943,7 @@ public partial class MainWindow
         if (!ReferenceEquals(tab, _tabs.Active))
             return;
 
+        tab.ViewPending = false;
         if (!_viewModel.HasSource)
         {
             // Active but empty: stay flat and clear the wait.
@@ -934,11 +982,12 @@ public partial class MainWindow
     private bool _restoringTabView;
 
     /// <summary>
-    /// Stops playback, shuttle, and any 3D drag or lift before a tab is deactivated or closed. The 3D view stays up so the still captures it;
+    /// Stops playback, shuttle, a Color Match pick, and any 3D drag or lift before a tab is deactivated or closed. The 3D view stays up so the still captures it;
     /// PutActiveBehind then leaves it (LeaveExplodedAtOnce).
     /// </summary>
     private void StopPlayingForTabs()
     {
+        EndColorMatchPicks();
         StopShuttle();
         StopTimelineMomentum();
         if (_gpu is { IsPlaying: true })
@@ -982,13 +1031,13 @@ public partial class MainWindow
         if (!MayChangeTabs("opening a new project tab"))
             return false;
 
-        _switchingTab = true;
+        var opening = _tabControl.Prepare("open a new project tab");
         TabWrite? write = null;
         try
         {
             var behind = PutActiveBehind(out write);
             var made = _tabs.Add("New Project");
-            _tabs.Activate(made);
+            _tabControl.Commit(opening, made);
             HideTabStill();
             if (!_viewModel.NewProject())
             {
@@ -1007,7 +1056,7 @@ public partial class MainWindow
         }
         finally
         {
-            _switchingTab = false;
+            _tabControl.Finish(opening);
             QueueTabWrite(write);
             LetGoForMemory();
         }
@@ -1017,7 +1066,7 @@ public partial class MainWindow
     private void BackOutOf(ProjectTabHeader made, ProjectTabHeader behind)
     {
         TakeBack(made, behind);
-        _unresumed.Remove(made.Id);
+        _tabControl.ClearUnresumed(made.Id);
         if (!ReferenceEquals(made, _tabs.Active))
             _tabs.Close(made);
         ShowTabs();
@@ -1076,7 +1125,7 @@ public partial class MainWindow
             if (!MayChangeTabs("opening a project in a new tab"))
                 return;
 
-            _switchingTab = true;
+            var openInNew = _tabControl.Prepare("open a project in a new tab");
             TabWrite? write = null;
             try
             {
@@ -1084,7 +1133,7 @@ public partial class MainWindow
                 QueueTabWrite(write);
                 write = null;
                 var made = _tabs.Add(Path.GetFileNameWithoutExtension(path));
-                _tabs.Activate(made);
+                _tabControl.Commit(openInNew, made);
                 HideTabStill();
                 ShowTabs();
 
@@ -1103,7 +1152,7 @@ public partial class MainWindow
             }
             finally
             {
-                _switchingTab = false;
+                _tabControl.Finish(openInNew);
                 QueueTabWrite(write);
             }
 
@@ -1170,7 +1219,7 @@ public partial class MainWindow
         {
             if (!active)
             {
-                _unresumed.Remove(tab.Id);
+                _tabControl.ClearUnresumed(tab.Id);
                 ForgetKeptTab(tab.Id);
                 _tabs.Close(tab);
                 ForgetRevealIfOne();
@@ -1189,7 +1238,7 @@ public partial class MainWindow
                     return;
                 _explodedWaitingTab = null;
                 LeaveExplodedAtOnce();
-                _unresumed.Remove(tab.Id);
+                _tabControl.ClearUnresumed(tab.Id);
                 ForgetKeptTab(tab.Id);
                 DeleteTabFiles(tab.Id);
                 ForgetLiveStill();
@@ -1203,7 +1252,7 @@ public partial class MainWindow
             if (_tabs.NeighbourOf(tab) is not { } next)
                 return;
 
-            _switchingTab = true;
+            var closing = _tabControl.Prepare("close a project tab");
             try
             {
                 // Discard the closed project (saved or discarded above; no cache write), leave 3D, and apply the next tab's layout before its still shows.
@@ -1217,8 +1266,8 @@ public partial class MainWindow
 
                 // Drop its still; an in-flight capture is discarded on arrival.
                 ForgetLiveStill();
-                _tabs.Activate(next);
-                _unresumed.Remove(tab.Id);
+                _tabControl.Commit(closing, next);
+                _tabControl.ClearUnresumed(tab.Id);
                 ForgetKeptTab(tab.Id);
                 _tabs.Close(tab);
                 ForgetRevealIfOne();
@@ -1233,7 +1282,7 @@ public partial class MainWindow
             }
             finally
             {
-                _switchingTab = false;
+                _tabControl.Finish(closing);
             }
 
             CompactWhenQuiet("a project tab closed");

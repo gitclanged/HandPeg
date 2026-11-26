@@ -95,6 +95,9 @@ public partial class MainWindow
 
         // Side windows' Live Video Previews mirror this engine at its reported aspect.
         engine.MirrorAspectChanged += aspect => Dispatcher.BeginInvoke(() => TakeMirrorAspect(engine, aspect));
+
+        // The grade wipe follows the letterboxed picture when a scene plan changes its canvas (event-driven, no polling).
+        engine.CanvasChanged += QueueGradeWipe;
         ReattachMirrors();
         EngineNotice.Visibility = Visibility.Collapsed;
         if (warp is not null)

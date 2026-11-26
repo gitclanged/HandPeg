@@ -74,7 +74,7 @@ public static class KeybindManager
 
     /// <summary>
     /// All actions in keybind-list order (earlier wins hand-edited conflicts). Left-hand cluster: 1-7 dial categories, Tab X-Ray, Q/E frame
-    /// step, W/S zoom, A/D pan, R ripple delete, T keyframe, Caps snap, F split, G link, Z/X edit points, C marker, V in point, B dead air;
+    /// step (Shift+Q/E and [ ] Top &amp; Tail), W/S zoom, A/D pan, R ripple delete, T keyframe, Caps snap, F split, G link, Z/X edit points, C marker, V in point, B dead air;
     /// Space play, Mouse 5 dial, Mouse 4 undo. The cluster key is listed first (shown in menus/tooltips), legacy keys after.
     /// </summary>
     public static IReadOnlyList<KeyAction> Actions { get; } =
@@ -110,6 +110,10 @@ public static class KeybindManager
         new("edit.rippleDelete", "Ripple Delete", Editing, "\uE74D", ["R", "Shift+Delete"], KeyActionFlags.ChangesProject),
         new("edit.trimStart", "Trim Start to Playhead", Editing, "\uE76B", [], KeyActionFlags.ChangesProject),
         new("edit.trimEnd", "Trim End to Playhead", Editing, "\uE76C", [], KeyActionFlags.ChangesProject),
+        // Top & Tail (Pass 5.7.1): ripple-trim the clip's start / end to the playhead, closing the gap. Shift+Q / Shift+E and [ / ]
+        // leave Q/E frame steps and the held WASD keys alone (Shift accelerates only held keys).
+        new(TrimStartToPlayhead, "Ripple Trim Start (Top)", Editing, "\uE76B", ["Shift+Q", "["], KeyActionFlags.ChangesProject),
+        new(TrimEndToPlayhead, "Ripple Trim End (Tail)", Editing, "\uE76C", ["Shift+E", "]"], KeyActionFlags.ChangesProject),
         new("clip.toggleLink", "Link / Unlink A/V", Editing, "\uE71B", ["G", "U"], KeyActionFlags.ChangesProject),
         new("edit.deadAir", "Remove Dead Air...", Editing, "\uE74F", ["B"], KeyActionFlags.ChangesProject),
         new("edit.bypassEffects", "Bypass Sequence Effects", Editing, "\uE711", [], KeyActionFlags.ChangesProject),
@@ -166,6 +170,9 @@ public static class KeybindManager
         new("help.tour", "Quick-Start Tour", Tools, "\uE897", [], KeyActionFlags.ChangesProject),
     ];
 
+    /// <summary>Top &amp; Tail action ids (Pass 5.7.1): ripple trim of the selected clip's start / end to the playhead.</summary>
+    public const string TrimStartToPlayhead = "clip.trimStartToPlayhead", TrimEndToPlayhead = "clip.trimEndToPlayhead";
+
     private static readonly Dictionary<string, KeyAction> ById = Actions.ToDictionary(a => a.Id);
 
     /// <summary>The action with this id, or null for one HandPeg does not have (any more).</summary>
@@ -192,18 +199,26 @@ public static class KeybindManager
         },
         [RazorPreset] = new()
         {
-            // Razor on C, trims on Q/W; marker on M, frame back on Left, zoom on =/- (A/D still pan).
+            // Razor on C, Top & Tail ripple trims on Q/W (the plain trims stay in menus and the dial); marker on M, frame back on Left,
+            // zoom on =/- (A/D still pan).
             ["edit.split"] = ["C"],
             ["marker.add"] = ["M"],
-            ["edit.trimStart"] = ["Q"],
+            [TrimStartToPlayhead] = ["Q"],
             ["transport.stepBack"] = ["Left"],
-            ["edit.trimEnd"] = ["W"],
+            [TrimEndToPlayhead] = ["W"],
+            ["edit.trimStart"] = [],
+            ["edit.trimEnd"] = [],
             ["nav.forward"] = [],
             ["nav.back"] = [],
             ["edit.rippleDelete"] = ["Shift+Delete", "Backspace"],
         },
         [ColorPreset] = new()
         {
+            // Top & Tail on Q/W as in the Razor preset (frame back on Left, zoom on =/-); [ and ] step keyframes here.
+            [TrimStartToPlayhead] = ["Q"],
+            ["transport.stepBack"] = ["Left"],
+            [TrimEndToPlayhead] = ["W"],
+            ["nav.forward"] = [],
             ["key.toggle"] = ["T", "Alt+K"],
             ["key.prev"] = ["["],
             ["key.next"] = ["]"],

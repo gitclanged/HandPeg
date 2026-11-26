@@ -299,19 +299,19 @@ public partial class MainWindow
     /// Strip-side swap (golden-testable on a standalone ProjectTabs): activates <paramref name="front"/> and removes the blank start-up tab.
     /// Returns the blank tab's index for <see cref="PutStartTabBack"/>.
     /// </summary>
-    internal static int SwapStartTabFor(ProjectTabs tabs, ProjectTabHeader blank, ProjectTabHeader front)
+    internal static int SwapStartTabFor(ProjectTabs tabs, ProjectTabHeader blank, ProjectTabHeader front, Action<ProjectTabHeader>? activate = null)
     {
         var at = tabs.IndexOf(blank);
-        tabs.Activate(front);
+        (activate ?? tabs.Activate)(front);
         tabs.Close(blank);
         return at;
     }
 
     /// <summary>Reverts <see cref="SwapStartTabFor"/>: inserts and activates a blank tab at the start-up tab's index.</summary>
-    internal static ProjectTabHeader PutStartTabBack(ProjectTabs tabs, int at)
+    internal static ProjectTabHeader PutStartTabBack(ProjectTabs tabs, int at, Action<ProjectTabHeader>? activate = null)
     {
         var blank = tabs.Insert(at, "New Project");
-        tabs.Activate(blank);
+        (activate ?? tabs.Activate)(blank);
         return blank;
     }
 
@@ -326,15 +326,16 @@ public partial class MainWindow
         var blank = _tabs.Active;
         var at = -1;
         var resumed = false;
-        _switchingTab = true;
+        var restoring = _tabControl.Prepare("bring the restored tab forward");
         try
         {
             // Background the blank tab as a switch would (it keeps nothing), then remove it from the strip.
             PutActiveBehind(out var write);
             QueueTabWrite(write);
-            _unresumed.Remove(blank.Id);
+            _tabControl.ClearUnresumed(blank.Id);
             ForgetKeptTab(blank.Id);
-            at = SwapStartTabFor(_tabs, blank, front);
+            // The controller's commit is the sole activation (tab and generation in one owner), before the blank tab goes.
+            at = SwapStartTabFor(_tabs, blank, front, tab => _tabControl.Commit(restoring, tab));
             shown();
 
             resumed = await ResumeTabAsync(front, null);
@@ -353,12 +354,12 @@ public partial class MainWindow
             // Failed: restore a blank active tab at the start-up position (the restored tab keeps its files).
             if (!resumed && at >= 0 && _tabs.Tabs.Contains(front))
             {
-                PutStartTabBack(_tabs, at);
+                PutStartTabBack(_tabs, at, tab => _tabControl.Commit(restoring, tab));
                 ShowTabs();
                 AppLog.Write("Project tabs: the tab in front when HandPeg last closed could not be brought back; the blank start-up tab stays in front.");
             }
 
-            _switchingTab = false;
+            _tabControl.Finish(restoring);
         }
 
         return resumed;

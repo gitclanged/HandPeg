@@ -1,0 +1,7 @@
+# A move over its neighbour on the same track shows the crossfade it makes (a frame to 2 s, half of either), and the document abuts and crossfades on release.
+ok: B moved 1.5 s left over A's last 0.5 s: a live 0.50 s crossfade with A
+ok: on 0.5 s more: it resizes to 1.00 s
+ok: 2.1 s over A (past 2 s and half of A): none (the document refuses so deep an overlap)
+ok: over another track: none
+ok: let go 0.5 s over the clip before: it abuts at 14.00 s with a 0.50 s crossfade
+ok: two different sounds: their crossfade is equal power (the default)

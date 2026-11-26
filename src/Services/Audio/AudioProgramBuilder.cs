@@ -239,26 +239,91 @@ internal static class AudioProgramBuilder
             ChannelPair = pair,
         };
 
+        // A keyframed speed ramp (Layer.SpeedKeys) times the sound through the contract's mapping (SpeedRamp) on the voice's own clock (a slip
+        // only shifts it): media from the clip's start is its integral, the voice's Rate its mean. A ramp keeps pitch (the engine stretches
+        // by a varying tempo; Keep Pitch off has no tape glide on a ramp).
+        var ramp = layer.HasSpeed && layer.HasSpeedRamp ? new AudioSpeedRamp(layer.SpeedKeys, layer.Speed, net) : null;
+        var mediaSpan = !timed ? double.PositiveInfinity : ramp is not null ? layer.MediaSecondsAt(layer.Duration) : layer.Duration * speed;
+        var rate = ramp is not null && timed && mediaSpan > 0 ? mediaSpan / layer.Duration * net : speed * net;
+
+        // A hand-drawn ducking curve (Layer.DuckOverrideKeys) only shapes a ducked sound, from the clip's sequence start like its keys.
+        var drawn = sound.Ducked && layer.HasDuckOverrides ? new DuckOverrideCurve(layer.DuckOverrideKeys, sound.Clip?.Start ?? layer.StartTime) : null;
+
         var fadeIn = Math.Clamp(layer.FadeInSeconds, 0, 60);
         var fadeOut = Math.Clamp(layer.FadeOutSeconds, 0, 60);
+
+        // A fade that is one side of a same-track crossfade follows the seam's gain law (Pass 5.7.1): equal power (quarter sine and
+        // cosine, AudioFade EaseOut) or linear; any other fade stays linear (afade).
+        var (inCurve, outCurve) = CrossfadeSides(sound);
         return new AudioVoice
         {
             Source = source,
             SequenceStart = startsAt,
             SequenceEnd = timed ? startsAt + layer.Duration : double.PositiveInfinity,
             MediaStart = layer.MediaOffset,
-            MediaEnd = timed ? layer.MediaOffset + layer.Duration * speed : double.PositiveInfinity,
-            Rate = speed * net,
-            Pitch = layer.KeepPitch ? pitch : pitch * speed,
+            MediaEnd = timed ? layer.MediaOffset + mediaSpan : double.PositiveInfinity,
+            Rate = rate,
+            Ramp = ramp,
+            DuckOverride = drawn,
+            Pitch = layer.KeepPitch || ramp is not null ? pitch : pitch * speed,
             Spectral = layer.SpectralAudio,
             Gain = gain,
-            FadeIn = new AudioFade(fadeIn > 0.01 ? fadeIn : 0),
-            FadeOut = new AudioFade(fadeOut > 0.01 && timed ? Math.Min(fadeOut, layer.Duration) : 0),
+            FadeIn = new AudioFade(fadeIn > 0.01 ? fadeIn : 0, EasingOf(inCurve)),
+            FadeOut = new AudioFade(fadeOut > 0.01 && timed ? Math.Min(fadeOut, layer.Duration) : 0, EasingOf(outCurve)),
             FadeOutEnd = timed ? startsAt + layer.Duration : double.PositiveInfinity,
             Strip = strip,
             Label = $"clip {System.IO.Path.GetFileName(path)}",
         };
     }
+
+    // ----- Crossfade gain laws (Pass 5.7.1) -----
+
+    /// <summary>
+    /// The gain law of each fade of a sound that is a side of a same-track crossfade (the later clip's TransitionIn across a cut): the fade
+    /// in when its clip crossfades from the clip before, the fade out when the next clip crossfades from it; null for a fade that is no
+    /// crossfade (or a sound that is no sequence clip).
+    /// </summary>
+    internal static (CrossfadeCurve? In, CrossfadeCurve? Out) CrossfadeSides(HeardSound sound)
+    {
+        if (sound.Clip is not { } clip || sound.Track is not { } track)
+            return (null, null);
+
+        var index = track.IndexOf(clip);
+        if (index < 0)
+            return (null, null);
+
+        CrossfadeCurve? into = null, outOf = null;
+        if (clip.TransitionIn > 0.01 && index > 0 && Meet(track.Clips[index - 1], clip))
+            into = SeamCurve(track.Clips[index - 1], clip);
+        if (index + 1 < track.Clips.Count && track.Clips[index + 1] is { TransitionIn: > 0.01 } next && Meet(clip, next))
+            outOf = SeamCurve(clip, next);
+        return (into, outOf);
+    }
+
+    /// <summary>
+    /// The gain law across the cut where <paramref name="before"/> meets <paramref name="after"/>: the one the Seam menu set on the later clip
+    /// (the crossfade's owner); left automatic (none chosen), a through-edit (one sound cut in two, its file time continuous) keeps its level with
+    /// linear ramps, as two correlated halves need.
+    /// </summary>
+    internal static CrossfadeCurve SeamCurve(TimelineClip before, TimelineClip after)
+    {
+        // Only the automatic default falls back to linear across a through-edit; a chosen Equal Power is kept (review F16).
+        var saved = after.State.CrossfadeInCurve;
+        return CrossfadeCurves.Chosen(saved) is null && IsThroughEdit(before, after) ? CrossfadeCurve.Linear : CrossfadeCurves.Known(saved);
+    }
+
+    /// <summary>One take cut in two: same file and streams at one speed, the later clip's file time continuing the earlier's at the cut.</summary>
+    internal static bool IsThroughEdit(TimelineClip before, TimelineClip after) =>
+        before.PlaysFile && after.PlaysFile && Meet(before, after) && before.ContentKind == after.ContentKind
+        && string.Equals(before.SourcePath, after.SourcePath, StringComparison.OrdinalIgnoreCase) && before.AudioStreamIndex == after.AudioStreamIndex
+        && before.VideoStreamIndex == after.VideoStreamIndex && Math.Abs(before.Speed - after.Speed) < 1e-9
+        && Math.Abs(after.MediaOffset - before.MediaEnd) <= 1e-3 * Math.Max(1, before.Speed);
+
+    // Two clips meeting at a cut (abutting within a microsecond).
+    private static bool Meet(TimelineClip before, TimelineClip after) => Math.Abs(after.Start - before.End) < 1e-6;
+
+    /// <summary>The fade shape for a crossfade side: equal power is the quarter sine (EaseOut: sin(u * PI / 2)), else linear.</summary>
+    internal static EasingType EasingOf(CrossfadeCurve? curve) => curve == CrossfadeCurve.EqualPower ? EasingType.EaseOut : EasingType.Linear;
 
     private static void AddVoiceover(SequenceExportState state, int bus, List<AudioVoice> voices, List<AudioStrip> strips)
     {

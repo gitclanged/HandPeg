@@ -1,0 +1,7 @@
+# Shell seams: --dpi-matrix runs first, the 4th caption button opens a side window, the Color Match host tops the player, EasyCut digits and Z reach their seams.
+ok: --dpi-matrix is dispatched from Main before the normal start (no updater, migration or single-instance claim)
+ok: the 4th caption button sits left of Minimize, styled as a caption button and hit-testable in the title bar
+ok: it opens a side window through the Layout Selector row's own action (one home for it)
+ok: the Color Match host is the player overlay's last (topmost) layer
+ok: EasyCut angles are digits 1-9 on the top row or the keypad
+ok: the EasyCut and spring-zoom seams are offered every key ahead of the bound shortcuts

@@ -38,13 +38,13 @@ public sealed partial class MaskDrawWindow : Window
     // Horizontal pan per Shift+wheel or horizontal-wheel notch (screen px); right-press movement threshold before it becomes a pan.
     private const double WheelPan = 96, RightDragFrom = 4;
 
-    private const int WmMouseWheel = 0x020A, WmMouseHWheel = 0x020E, MkShift = 0x0004, MkControl = 0x0008;
 
     // Window after a touchpad scroll during which wheel messages count as the same gesture: precision touchpads occasionally emit
     // a full 120 notch, which must not zoom mid-pan.
-    internal const long TouchpadStreamMs = 250;
+    internal const long TouchpadStreamMs = TouchpadWheel.CarryMs;
 
-    // TickCount64 of the last touchpad wheel message (initially far in the past).
+    // TickCount64 of the last touchpad wheel message, on either axis (initially far in the past): the gesture memory of the shared
+    // TouchpadWheel rule, kept here as the golden cutout-studio-wheel resets it.
     private long _touchpadWheelAt = long.MinValue / 2;
 
     private static readonly string[] PieceNames = ["Hero Portrait & HP", "Abilities & Weapon", "Killfeed", "Minimap", "Objective"];
@@ -741,56 +741,45 @@ public sealed partial class MaskDrawWindow : Window
     private void Viewport_MouseUp(object sender, MouseButtonEventArgs e) => e.Handled = Release(e.ChangedButton);
 
     /// <summary>
-    /// WndProc hook for wheel messages before WPF (otherwise touchpad two-finger scroll zoomed). WM_MOUSEHWHEEL (no WPF event) pans
-    /// and returns TRUE, else Windows re-sends it as legacy tilt clicks. WM_MOUSEWHEEL is classified while current
-    /// (<see cref="TouchpadNow"/>) with its key state (precision pinch = Ctrl+wheel) and handled via <see cref="Wheel"/>, marked handled
-    /// so WPF raises no duplicate MouseWheel.
+    /// WndProc hook for wheel messages before WPF (otherwise touchpad two-finger scroll zoomed), decoded and classified by the shared
+    /// <see cref="TouchpadWheel"/> (key state from the message: precision pinch = Ctrl+wheel; a gesture carries across both axes).
+    /// WM_MOUSEHWHEEL (no WPF event) pans; WM_MOUSEWHEEL goes to <see cref="Wheel"/>. Both are marked handled (no duplicate MouseWheel)
+    /// and answered with <see cref="TouchpadWheel.HandledResult"/> (TRUE for horizontal, else Windows re-sends legacy tilt clicks).
     /// </summary>
     private IntPtr WheelMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg is not (WmMouseWheel or WmMouseHWheel) || !_viewport.IsMouseOver)
+        if (msg is not (TouchpadWheel.WmMouseWheel or TouchpadWheel.WmMouseHWheel) || !_viewport.IsMouseOver
+            || TouchpadWheel.Decode(msg, wParam.ToInt64(), lParam.ToInt64(), Keyboard.Modifiers & ModifierKeys.Alt, touchpad: false) is not { } input)
             return IntPtr.Zero;
 
-        var word = wParam.ToInt64();
-        var delta = (short)((word >> 16) & 0xFFFF);
+        input = input with { Touchpad = TouchpadNow(input.Delta) };
         handled = true;
-        if (msg == WmMouseHWheel)
-        {
-            SidewaysWheel(delta);
-            return new IntPtr(1);
-        }
-
-        var keys = Keyboard.Modifiers & ModifierKeys.Alt;
-        if ((word & MkShift) != 0)
-            keys |= ModifierKeys.Shift;
-        if ((word & MkControl) != 0)
-            keys |= ModifierKeys.Control;
-
-        // Message screen point converted to view DIPs (the zoom anchor).
-        var (x, y) = ((short)(lParam.ToInt64() & 0xFFFF), (short)((lParam.ToInt64() >> 16) & 0xFFFF));
-        Wheel(delta, _viewport.PointFromScreen(new Point(x, y)), keys, TouchpadNow(delta));
-        return IntPtr.Zero;
+        if (input.Horizontal)
+            SidewaysWheel(input.Delta);
+        else
+            Wheel(input.Delta, _viewport.PointFromScreen(input.ScreenPixels), input.Keys, input.Touchpad);
+        return TouchpadWheel.HandledResult(input.Horizontal);
     }
 
     /// <summary>
-    /// Classifies the current wheel message as touchpad (<see cref="IsTouchpadWheel"/> with message source and recent history),
-    /// recording touchpad hits so the rest of the gesture matches.
+    /// Classifies the current wheel message as touchpad (<see cref="IsTouchpadWheel"/>, the shared rule, with its message source and the
+    /// gesture before it), recording touchpad hits so the rest of the gesture matches.
     /// </summary>
     private bool TouchpadNow(int delta)
     {
         var now = Environment.TickCount64;
-        var touchpad = IsTouchpadWheel(delta, MainWindow.FromTouchpad(), now - _touchpadWheelAt <= TouchpadStreamMs);
+        var touchpad = IsTouchpadWheel(delta, TouchpadWheel.FromMessageSource(), now - _touchpadWheelAt <= TouchpadStreamMs);
         if (touchpad)
             _touchpadWheelAt = now;
         return touchpad;
     }
 
     /// <summary>
-    /// Pure touchpad detection (golden cutout-studio-wheel): GetCurrentInputMessageSource reports IMDT_TOUCHPAD, or the delta is not a
-    /// multiple of 120 (precision touchpads send finger distance), or a touchpad wheel arrived just before (same gesture).
+    /// Pure touchpad detection (golden cutout-studio-wheel), the shared <see cref="TouchpadWheel.IsTouchpad"/> rule: IMDT_TOUCHPAD, a
+    /// delta that is not a multiple of 120 (precision touchpads send finger distance), or a touchpad wheel just before (same gesture).
     /// </summary>
     internal static bool IsTouchpadWheel(int delta, bool sourceIsTouchpad, bool touchpadJustBefore) =>
-        sourceIsTouchpad || touchpadJustBefore || delta % 120 != 0;
+        TouchpadWheel.IsTouchpad(delta, sourceIsTouchpad, touchpadJustBefore);
 
     /// <summary>Vertical wheel action in the view.</summary>
     internal enum WheelAction { Zoom, PanSideways, PanUpDown }

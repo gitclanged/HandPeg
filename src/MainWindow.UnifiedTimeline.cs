@@ -145,6 +145,9 @@ public partial class MainWindow
         surface.CloseGapRequested += Timeline_CloseGapRequested;
         surface.RazorRequested += Timeline_RazorRequested;
 
+        // Alt+wheel track height, gap double-click, Ghost Playhead (timeline gestures host, MainWindow.TimelineView.cs).
+        InitializeTimelineGestures(surface);
+
         // Global track height from the surface: Alt+Shift+wheel, lower-edge drag or double-click.
         surface.TrackHeightStepped += notches => _viewModel.LayerTrackHeight = Math.Clamp(_viewModel.LayerTrackHeight + notches * TrackHeightStepsPerNotch, 1, 50);
         surface.TrackHeightDragStarted += () => _trackHeightAtDrag = _viewModel.LayerTrackHeight;
@@ -238,14 +241,15 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Applies a view change: pans translate; zooms rescale and rebuild rows (never mid-drag; drags keep their start scale).
+    /// Applies a view change: pans translate; zooms rescale and rebuild rows (never mid-drag, where drags keep their start scale, except
+    /// for a Spring-Zoom view: the surface re-seats the drag on rows relaid at its scale).
     /// </summary>
     private void ShowTimelineView()
     {
         var surface = UnifiedTimeline.Surface;
         var scale = surface.PixelsPerSecond;
         ShowViewOnSurface();
-        if (surface.PixelsPerSecond != scale && !surface.IsDragging)
+        if (surface.PixelsPerSecond != scale && (!surface.IsDragging || _timelineInput.SpringRelay))
             RebuildTimelineRows();
     }
 
@@ -257,7 +261,7 @@ public partial class MainWindow
     private void RebuildTimelineRows()
     {
         var surface = UnifiedTimeline.Surface;
-        if (_rebuildingRows || surface.IsDragging)
+        if (_rebuildingRows || (surface.IsDragging && !_timelineInput.SpringRelay))
             return;
 
         _rebuildingRows = true;
@@ -770,12 +774,25 @@ public partial class MainWindow
         ScheduleClipRedraw();
     }
 
-    // Context menu for a row, clip, fade handle or header (filled by FillTrackMenu).
+    // Context menu for a row, clip, fade handle or header: the region-aware menus first (Pass 5.7.1: Fade & Ease, Seam, Gain and the slim
+    // core menu, MainWindow.TrackMenus.cs), else FillTrackMenu (a fade region keeps its fade flag, so the fade's menu still shows).
     private void Timeline_MenuRequested(TimelineMenuRequest request)
     {
+        var filled = false;
+        FillRegionMenu(request, ref filled);
+        if (filled)
+            return;
+
         (object Clip, bool In)? fade = request.FadeIn is { } fadeIn && request.Block?.Clip is { } clip ? (clip, fadeIn) : null;
         FillTrackMenu(request.Menu, request.Row?.Data, request.Block?.Clip, fade, request.OnHeader);
     }
+
+    /// <summary>
+    /// Pass 5.7.1 lane seam (implemented by MainWindow.TrackMenus.cs): fills <see cref="TimelineMenuRequest.Menu"/> for its
+    /// <see cref="TimelineMenuRequest.Region"/> (and <see cref="TimelineMenuRequest.Seam"/>) and sets <paramref name="filled"/>; until
+    /// implemented the call compiles away and FillTrackMenu fills it.
+    /// </summary>
+    partial void FillRegionMenu(TimelineMenuRequest request, ref bool filled);
 
     // Unhandled Menu key press (bound shortcuts run first): open the menu on key-up, matching Windows.
     private bool _menuKeyDown;

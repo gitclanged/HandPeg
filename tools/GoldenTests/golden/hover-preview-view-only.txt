@@ -1,0 +1,4 @@
+# Paused hover previews show on the clip's view only; after a nested preview the next clip edit reaches the document.
+ok: a nested view-only preview shows the fade on the view and writes nothing to the document
+ok: leaving reloads the view from its clip
+ok: after a nested preview the next clip edit through a view reaches the document (the sync depth is back to 0)

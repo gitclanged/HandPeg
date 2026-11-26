@@ -41,7 +41,7 @@ public sealed partial class UnifiedTimelineControl
         public required TimelineRow Row { get; init; }
         public required TimelineBlock Block { get; init; }
         public required BlockEdit Kind { get; init; }
-        public double PointerX { get; init; }
+        public double PointerX { get; set; }
         public double Left { get; init; }
         public double Width { get; init; }
         public bool Ripple { get; init; }
@@ -92,6 +92,9 @@ public sealed partial class UnifiedTimelineControl
 
         /// <summary>Tether target: on release the block becomes its child (parent row, block, and pill name); null for none.</summary>
         public (TimelineRow Row, TimelineBlock Block, string Name)? Attach { get; set; }
+
+        /// <summary>Ctrl+drag on the body (Pass 5.7.1): the release duplicates the clip there (one Undo step) and the original stays.</summary>
+        public bool Clone { get; init; }
     }
 
     // Dead-air seam edge drag: seam, edge (true = later clip's start / fold tail; false = earlier clip's end / fold head), outward
@@ -209,7 +212,8 @@ public sealed partial class UnifiedTimelineControl
         ? ReferenceEquals(block, drag.Block) || ReferenceEquals(block, drag.Neighbor) || (_coupledSet.Count > 0 && _coupledSet.Contains(block))
         : ReferenceEquals(block, _fadeDrag?.Block) || ReferenceEquals(block, _gainDrag?.Block) || ReferenceEquals(block, _splitDrag?.Block);
 
-    // Control point to layout space (x in block layout pixels, y from the top of all rows).
+    // Control point to layout space (x in block layout pixels, y from the top of all rows). Spring-Zoom is a real view (rows relaid at
+    // its scale), so no unmagnifying is needed: pointer travel maps 1/4 because the scale is 4x.
     private Point Laid(Point point) => new(point.X - _headerWidth + ViewOffsetX, point.Y + _verticalOffset);
 
     /// <summary>
@@ -278,6 +282,9 @@ public sealed partial class UnifiedTimelineControl
         FinishSlide();
 
         var point = e.GetPosition(this);
+        _dragPointer = point;
+        if (SelectedSeam is not null)
+            SelectSeam(null);
         var laid = Laid(point);
         var index = LaneAt(laid.Y);
         if (point.X < _headerWidth)
@@ -317,6 +324,10 @@ public sealed partial class UnifiedTimelineControl
 
         var lane = _lanes[index];
         var row = lane.Row;
+
+        // Quick-edit icons, ducking nodes and double-clicks (gain auto-level, gap ripple close, parent fold) come first (gestures, Parenting.cs).
+        if (TakePress(index, laid, e))
+            return;
 
         // Crossfade box: its button removes it and its edges resize it; any other press falls through to the clips beneath.
         if (CrossfadeAt(lane, laid) is { Part: not CrossfadePart.Inside } crossfade)
@@ -794,6 +805,9 @@ public sealed partial class UnifiedTimelineControl
             Row = row, Block = block, Kind = kind, PointerX = point.X, PointerY = point.Y, Left = left, Width = block.Width,
             Ripple = ripple && kind is BlockEdit.TrimEnd or BlockEdit.TrimStart,
             Alt = modifiers.HasFlag(ModifierKeys.Alt) && kind is BlockEdit.Move or BlockEdit.Slip,
+
+            // Ctrl on the body clones on release (a Ctrl click without travel still toggles the selection, BlockClicked).
+            Clone = kind == BlockEdit.Move && modifiers.HasFlag(ModifierKeys.Control) && !modifiers.HasFlag(ModifierKeys.Alt) && CloneRequested is not null,
         };
     }
 
@@ -832,6 +846,7 @@ public sealed partial class UnifiedTimelineControl
     private void BeginDrag()
     {
         _clickOnly = null;
+        _dragScale = PixelsPerSecond;
         if (_drag is { } drag)
             CollectFamily(drag);
 
@@ -851,6 +866,8 @@ public sealed partial class UnifiedTimelineControl
 
     private void EndDrag()
     {
+        _dragPointer = null;
+        SpringRelease();
         LeaveOutside();
         StopSettleTimer();
         _snapTimes = [];
@@ -897,6 +914,12 @@ public sealed partial class UnifiedTimelineControl
     // was refused or failed.
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)
     {
+        if (EndDuckDrag())
+        {
+            e.Handled = true;
+            return;
+        }
+
         if (_heightDrag is { } heightDrag)
         {
             _heightDrag = null;
@@ -1061,6 +1084,15 @@ public sealed partial class UnifiedTimelineControl
 
             var changed = Math.Abs(block.Left - drag.Left) > 0.5 || Math.Abs(block.Width - drag.Width) > 0.5;
 
+            // Ctrl+drag clone: the original goes back and the host duplicates the clip where it was dropped (one Undo step).
+            if (drag.Clone && changed && drag.NewTrack is null && drag.Attach is null)
+            {
+                var scale = PixelsPerSecond;
+                var (from, at, onto) = (drag.Row, scale > 0 ? block.Left / scale : 0, drag.Target?.Data);
+                PutBack(drag);
+                return Raise(() => CloneRequested?.Invoke(from, block, onto, at));
+            }
+
             // Group: all members moved/trimmed as one step (all-or-nothing; reverted on refusal).
             if (drag.Group is { Count: > 0 } group)
             {
@@ -1109,8 +1141,12 @@ public sealed partial class UnifiedTimelineControl
             // Press + release in place: raise a click (host selection logic).
             if (!changed && drag.Travel < RazorTravel && Math.Abs(drag.Slip) <= 0.5 && drag.NewTrack is null && drag.Attach is null)
             {
+                // On a cut (roll grip, or a trim grip where a neighbour meets the edge) the click selects the seam itself.
                 var row = drag.Row;
-                Raise(() => BlockClicked?.Invoke(row, block));
+                if (SeamClickOf(drag) is { } seam)
+                    SelectSeam(seam);
+                else
+                    Raise(() => BlockClicked?.Invoke(row, block));
             }
         }
         finally
@@ -1197,6 +1233,10 @@ public sealed partial class UnifiedTimelineControl
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
+
+        // Capture lost mid ducking drag: put the curve back as it was.
+        if (_duckDrag is not null && !IsMouseCaptured)
+            EndDuckDrag(keep: false);
 
         // Capture lost mid middle-drag: not a flick, no coast (a normal release clears capture after handling).
         if (_panFrom is not null)
@@ -1285,17 +1325,26 @@ public sealed partial class UnifiedTimelineControl
         TimelineRow? row = index >= 0 ? _lanes[index].Row : null;
         TimelineBlock? block = null;
         bool? fadeIn = null;
+        var (region, seam) = (ClipMenuRegion.Body, (TimelineSeamTarget?)null);
         if (!onHeader && row is not null && BlockAt(index, laid) is { } pressed)
         {
-            if (_lanes[index].Detailed)
-                fadeIn = FadeHandleAt(_lanes[index], pressed, laid);
             var on = row;
             Raise(() => BlockPressed?.Invoke(on, pressed, e));
             (index, block) = Refind(index, row, pressed);
             row = index >= 0 ? _lanes[index].Row : row;
+
+            // The region hit (fade handle or wedge, cut seam, gain line or waveform, body) picks the menu (Pass 5.7.1); a fade region keeps
+            // the fade flag, so a host filling menus the old way still shows the fade's.
+            if (block is not null && index >= 0)
+            {
+                (region, seam) = RegionAt(index, block, laid);
+                fadeIn = region switch { ClipMenuRegion.FadeIn => true, ClipMenuRegion.FadeOut => false, _ => null };
+            }
         }
 
+        SelectSeam(seam);
         ArmMenu(row, block, onHeader, fadeIn, point);
+        (_menuRegion, _menuSeam, _menuSeconds) = (region, seam, onHeader ? double.NaN : TimeAt(point.X));
         e.Handled = true;
     }
 
@@ -1312,7 +1361,8 @@ public sealed partial class UnifiedTimelineControl
             return;
 
         var menu = new ContextMenu { PlacementTarget = this, Placement = PlacementMode.MousePoint };
-        if (Raise(() => MenuRequested?.Invoke(new TimelineMenuRequest(press.Row, press.Block, press.OnHeader, press.FadeIn, menu))) && menu.Items.Count > 0)
+        var request = MenuRequestOf(press.Row, press.Block, press.OnHeader, press.FadeIn, menu);
+        if (Raise(() => MenuRequested?.Invoke(request)) && menu.Items.Count > 0)
             menu.IsOpen = true;
     }
 
@@ -1322,7 +1372,24 @@ public sealed partial class UnifiedTimelineControl
     /// </summary>
     public bool OpenSelectedMenu()
     {
-        if (!IsVisible || IsDragging || IsSelected is not { } isSelected)
+        if (!IsVisible || IsDragging)
+            return false;
+
+        // A selected cut seam: its Seam menu at the cut.
+        if (SelectedSeam is { } seam && LaneOf(seam.Row) is >= 0 and var seamLane && _lanes[seamLane].Detailed)
+        {
+            var seamX = Math.Clamp(seam.Right.Left - ViewOffsetX + _headerWidth, _headerWidth, Math.Max(ActualWidth - 4, _headerWidth));
+            var seamY = Math.Clamp(_lanes[seamLane].Top - _verticalOffset + 4, 0, Math.Max(ActualHeight - 4, 0));
+            var seamMenu = new ContextMenu { PlacementTarget = this, Placement = PlacementMode.Relative, HorizontalOffset = seamX, VerticalOffset = seamY };
+            var request = new TimelineMenuRequest(seam.Row, seam.Right, false, null, seamMenu) { Region = ClipMenuRegion.Seam, Seam = seam, Seconds = seam.Seconds };
+            if (Raise(() => MenuRequested?.Invoke(request)) && seamMenu.Items.Count > 0)
+            {
+                seamMenu.IsOpen = true;
+                return true;
+            }
+        }
+
+        if (IsSelected is not { } isSelected)
             return false;
 
         foreach (var lane in _lanes)

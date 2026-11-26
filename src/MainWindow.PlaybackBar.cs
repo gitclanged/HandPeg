@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using HandPegApp.Models;
+using HandPegApp.Models.Timeline;
 
 namespace HandPegApp;
 
@@ -13,12 +14,18 @@ public partial class MainWindow
 {
     // Bar wiring, button dispatch, edit-point and loop navigation, frame export, safe margins and transport fitting.
 
-    /// <summary>Groups the bar options by heading (Views menu Playback Bar column) and keeps player mute and safe margins in sync.</summary>
+    /// <summary>
+    /// Groups the bar options by heading (Views menu Playback Bar column), makes tinted glyphs adaptive, and keeps player mute and safe
+    /// margins in sync.
+    /// </summary>
     private void InitializePlaybackBar()
     {
         var options = CollectionViewSource.GetDefaultView(_viewModel.PlaybackControls.Options);
         if (options.GroupDescriptions.Count == 0)
             options.GroupDescriptions.Add(new PropertyGroupDescription(nameof(PlaybackControlOption.Group)));
+
+        // Tinted transport glyphs keep 3:1 contrast against their faces (ButtonChrome.AdaptiveIcon), hover and press included.
+        ButtonChrome.AdaptIconsUnder(TransportRow);
 
         _viewModel.PropertyChanged += (_, e) =>
         {
@@ -157,6 +164,51 @@ public partial class MainWindow
         GpuSaveFrame(gpu, path);
     }
 
+    // ----- EasyCut: live multi-angle switcher (Pass 5.6.5) -----
+    // Armed in the Views menu (Player section). Angles are the top-level Video tracks, angle N = Video N. Pressing 1-9 (top row or
+    // keypad, playing or paused) cuts every angle at the playhead and shows only angle N from there to the next existing cut on any
+    // angle (the end of the clips on a first pass): the other angles' clips there are hidden (TimelineClip.IsHidden), so a later pass
+    // re-cuts a stretch without touching the rest. One undo step per press; key repeats are swallowed; locked tracks are left alone.
+
+    /// <summary>Arms or disarms EasyCut (digits 1-9 then belong to it, ahead of their shortcuts).</summary>
+    private void ArmEasyCut(bool armed)
+    {
+        _viewerTools.EasyCutArmed = armed;
+        var count = EasyCut.Angles(_viewModel.Document).Count;
+        _viewModel.StatusText = !armed ? "EasyCut off."
+            : count < 2 ? "EasyCut on: needs two or more video tracks (angles)."
+            : $"EasyCut on: 1-{Math.Min(count, 9)} cut to that video track at the playhead.";
+    }
+
+    partial void TakeEasyCutKey(int angle, bool repeat, ref bool handled)
+    {
+        if (!_viewerTools.EasyCutArmed || !_viewModel.HasSource)
+            return;
+
+        handled = true;
+        if (!repeat)
+            RunGuarded("EasyCut", () => EasyCutTo(angle));
+    }
+
+    /// <summary>Cuts to angle <paramref name="angle"/> (1-based) at the playhead, as one undo step.</summary>
+    private void EasyCutTo(int angle)
+    {
+        var angles = EasyCut.Angles(_viewModel.Document);
+        if (angle < 1 || angle > angles.Count)
+        {
+            _viewModel.StatusText = $"EasyCut: there is no Video {angle} track.";
+            return;
+        }
+
+        var at = _viewModel.PositionMs / 1000;
+        var chosen = angles[angle - 1];
+        if (_viewModel.Edit($"EasyCut to {chosen.DisplayName}", edit => EasyCut.Switch(edit, angles, chosen, at)))
+        {
+            _viewModel.StatusText = $"EasyCut: {chosen.DisplayName} from {TimeDisplay.Format(at)}.";
+            ScheduleClipRedraw();
+        }
+    }
+
     // ----- Safe margins -----
 
     private void SafeMarginsCanvas_SizeChanged(object sender, SizeChangedEventArgs e) => PlaceSafeMargins();
@@ -219,5 +271,53 @@ public sealed class PlaybackRow : Grid
         if (!double.IsInfinity(constraint.Width))
             Fitting?.Invoke(constraint.Width);
         return base.MeasureOverride(constraint);
+    }
+}
+
+/// <summary>
+/// EasyCut plan (pure over the document; MainWindow.EasyCutTo runs it in one transaction): angle tracks, the stretch a switch covers,
+/// and the switch itself.
+/// </summary>
+internal static class EasyCut
+{
+    /// <summary>No cut within this many seconds of a clip edge (an edge there is used as it is).</summary>
+    public const double Edge = 0.02;
+
+    /// <summary>The angles: top-level Video tracks in their number order (angle 1 = Video 1).</summary>
+    public static List<TimelineTrackModel> Angles(TimelineDocument document) =>
+        [.. document.Tracks.Where(t => t is { Kind: TimelineTrackKind.Video, ParentTrackId: null }).OrderBy(t => t.TrackNumber)];
+
+    // Splits each unlocked top-level angle clip spanning `at` (by more than Edge on both sides) there.
+    private static void SplitSpanning(ITimelineTransaction edit, List<TimelineTrackModel> open, double at)
+    {
+        foreach (var clip in open.SelectMany(t => t.Clips).Where(c => c.ParentClipId is null && c.Start < at - Edge && c.End > at + Edge).ToList())
+            edit.SplitClipAt(clip, at);
+    }
+
+    /// <summary>The first clip edge on any angle later than <paramref name="at"/> (plus <see cref="Edge"/>); +Infinity when none.</summary>
+    public static double Until(IEnumerable<TimelineTrackModel> angles, double at) =>
+        angles.SelectMany(t => t.Clips).SelectMany(c => new[] { c.Start, c.End }).Where(edge => edge > at + Edge).DefaultIfEmpty(double.PositiveInfinity).Min();
+
+    /// <summary>
+    /// Splits every unlocked angle's clip spanning <paramref name="at"/> or the next cut (<see cref="Until"/>) there, then shows
+    /// <paramref name="chosen"/>'s clips and hides the other angles' clips in [at, Until): nothing past the next cut changes.
+    /// </summary>
+    public static void Switch(ITimelineTransaction edit, IReadOnlyList<TimelineTrackModel> angles, TimelineTrackModel chosen, double at)
+    {
+        var until = Until(angles, at);
+        var open = angles.Where(t => !t.IsLocked).ToList();
+        SplitSpanning(edit, open, at);
+        if (double.IsFinite(until))
+            SplitSpanning(edit, open, until);
+
+        foreach (var track in open)
+        {
+            foreach (var clip in track.Clips.Where(c => c.ParentClipId is null && c.Start >= at - Edge && c.Start < until - Edge).ToList())
+            {
+                var hidden = !ReferenceEquals(track, chosen);
+                if (clip.IsHidden != hidden)
+                    edit.SetClipFlags(clip, hidden: hidden);
+            }
+        }
     }
 }

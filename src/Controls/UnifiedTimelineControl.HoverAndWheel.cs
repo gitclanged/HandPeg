@@ -223,6 +223,10 @@ public sealed partial class UnifiedTimelineControl
     {
         base.OnMouseMove(e);
         var point = e.GetPosition(this);
+
+        // Spring-Zoom rest and Ghost Playhead while dragging, the ducking drag, hover strips (gestures, Parenting.cs).
+        if (TakeMove(point))
+            return;
         if (_panFrom is not null)
         {
             MiddlePanMove(point.X, MomentumScroller.Now());
@@ -362,7 +366,7 @@ public sealed partial class UnifiedTimelineControl
                 var shift = drag.Keys.HasFlag(ModifierKeys.Shift) && drag.Group is not { Count: > 0 };
                 drag.TimeLocked &= shift;
                 PlaceMoved(drag, moved);
-                if (drag.Group is { Count: > 0 })
+                if (drag.Group is { Count: > 0 } || drag.Clone)
                 {
                     (drag.Target, drag.NewTrack, drag.Attach) = (null, null, null);
                 }
@@ -1109,8 +1113,8 @@ public sealed partial class UnifiedTimelineControl
     {
         // Always handled here, including with the left button held and during drags.
         e.Handled = true;
-        var x = e.GetPosition(this).X;
-        WheelAt(e.Delta, Keyboard.Modifiers, MomentumScroller.Now(), Math.Max(x - _headerWidth, 0), overTime: x >= _headerWidth);
+        var at = e.GetPosition(this);
+        WheelAt(e.Delta, Keyboard.Modifiers, MomentumScroller.Now(), Math.Max(at.X - _headerWidth, 0), overTime: at.X >= _headerWidth, at.Y + _verticalOffset);
     }
 
     // WheelGlide for plain-wheel pan over clips and Ctrl+wheel zoom (created on first use).
@@ -1124,13 +1128,18 @@ public sealed partial class UnifiedTimelineControl
     /// <summary>
     /// Test seam (called by <see cref="OnMouseWheel"/>): wheel <paramref name="delta"/> (120/notch, up positive) at <paramref name="nowMs"/>.
     /// Over clips (<paramref name="overTime"/>) plain wheel glides a pan of 1/10 view per notch (down = later); over headers or with Alt it
-    /// scrolls rows with momentum; Alt+Shift steps track height; Ctrl glides a zoom about <paramref name="zoomAt"/> (pixels from the time
-    /// area's left) with the pointer time pinned; Shift pans with momentum (fast streams coast, an opposing tick stops). During drags each
-    /// notch applies exactly and immediately, without coasting.
+    /// scrolls rows with momentum; Alt over a track that sizes alone (layout <paramref name="laidY"/>) steps its height; Alt+Shift steps
+    /// every track's height; Ctrl glides a zoom about <paramref name="zoomAt"/> (pixels from the time area's left) with the pointer time
+    /// pinned; Shift pans with momentum (fast streams coast, an opposing tick stops). During drags each notch applies exactly and
+    /// immediately, without coasting.
     /// </summary>
-    internal void WheelAt(int delta, ModifierKeys modifiers, double nowMs, double zoomAt = 0, bool overTime = false)
+    internal void WheelAt(int delta, ModifierKeys modifiers, double nowMs, double zoomAt = 0, bool overTime = false, double laidY = double.NaN)
     {
-        // Alt+Shift+wheel: all tracks taller (up) or shorter (Alt alone scrolls rows).
+        // Alt+wheel over a sizable track: that track taller (up) or shorter (elsewhere Alt alone scrolls rows).
+        if (modifiers.HasFlag(ModifierKeys.Alt) && StepRowHeight(delta, modifiers, laidY))
+            return;
+
+        // Alt+Shift+wheel: all tracks taller (up) or shorter.
         if (modifiers.HasFlag(ModifierKeys.Alt) && modifiers.HasFlag(ModifierKeys.Shift))
         {
             StopMomentum();

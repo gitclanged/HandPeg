@@ -105,6 +105,41 @@ public enum KeyProperty
 }
 
 /// <summary>
+/// A region of the source frame as 0-1 fractions [<paramref name="UMin"/>, <paramref name="VMin"/>, <paramref name="UMax"/>,
+/// <paramref name="VMax"/>] (the space of mask outlines and Cutout source rects; Pass 5.6.5 contract for Cutout tight bounds).
+/// </summary>
+public readonly record struct SourceBounds(double UMin, double VMin, double UMax, double VMax)
+{
+    public double Width => UMax - UMin;
+
+    public double Height => VMax - VMin;
+
+    /// <summary>True when it encloses some area (finite, non-zero width and height).</summary>
+    public bool HasArea => double.IsFinite(Width) && double.IsFinite(Height) && Width > 1e-6 && Height > 1e-6;
+
+    /// <summary>Bounds from saved values: four finite numbers, held to 0..1 and ordered; null for anything else or no area.</summary>
+    public static SourceBounds? From(IReadOnlyList<double>? values)
+    {
+        if (values is not [var u0, var v0, var u1, var v1] || !double.IsFinite(u0 + v0 + u1 + v1))
+            return null;
+
+        (u0, v0, u1, v1) = (Math.Clamp(u0, 0, 1), Math.Clamp(v0, 0, 1), Math.Clamp(u1, 0, 1), Math.Clamp(v1, 0, 1));
+        var bounds = new SourceBounds(Math.Min(u0, u1), Math.Min(v0, v1), Math.Max(u0, u1), Math.Max(v0, v1));
+        return bounds.HasArea ? bounds : null;
+    }
+
+    /// <summary>As saved: [UMin, VMin, UMax, VMax].</summary>
+    public double[] ToArray() => [UMin, VMin, UMax, VMax];
+
+    /// <summary>The overlap with <paramref name="other"/>; null when they do not overlap.</summary>
+    public SourceBounds? Intersect(SourceBounds other)
+    {
+        var both = new SourceBounds(Math.Max(UMin, other.UMin), Math.Max(VMin, other.VMin), Math.Min(UMax, other.UMax), Math.Min(VMax, other.VMax));
+        return both.HasArea ? both : null;
+    }
+}
+
+/// <summary>
 /// Clip look and placement on the output frame (video, image, text, adjustment), all positioned and styled the same way.
 /// Geometry is stored as 0-1 fractions (source rect of the source frame; position/size of the output frame), so layouts are
 /// resolution-independent.
@@ -269,6 +304,7 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>
     /// Sets speed over the same source range, rescaling timeline length and all timeline-relative times so keyframes stay on their frames.
+    /// A speed ramp scales with it (its speeds too), and a ramped clip's length is solved so it still ends on the same source frame.
     /// </summary>
     public void SetSpeed(double value)
     {
@@ -281,6 +317,9 @@ public sealed partial class Layer : ObservableObject
             return;
 
         var length = Duration;
+
+        // A ramped clip's source range, measured before re-timing (its speeds may be held to SlowestSpeed..FastestSpeed below).
+        var sourceSpan = HasSpeedRamp ? MediaSecondsAt(length) : 0;
         foreach (var property in Enum.GetValues<KeyProperty>())
         {
             var list = _keys[(int)property];
@@ -290,9 +329,15 @@ public sealed partial class Layer : ObservableObject
                 NotifyKeys(property);
         }
 
+        // Clip-relative too (LayerState.MotionChannels): the speed ramp keeps its shape at the new speed (times x stretch, speeds / stretch);
+        // the manual ducking curve (dB) is only re-timed.
+        if (HasSpeedRamp)
+            SetSpeedKeys(_speedKeys.Select(k => k with { Time = Math.Round(k.Time * stretch, 3), Value = k.Value / stretch }).ToList());
+        if (HasDuckOverrides)
+            SetDuckOverrideKeys(_duckOverrideKeys.Select(k => k with { Time = Math.Round(k.Time * stretch, 3) }).ToList());
         Speed = value;
         if (length > 0.001)
-            Duration = Math.Max(Math.Round(length * stretch, 3), 0.05);
+            Duration = Math.Max(Math.Round(HasSpeedRamp ? SpeedRamp.ClipSeconds(_speedKeys, Speed, sourceSpan) : length * stretch, 3), 0.05);
     }
 
     /// <summary>Kept in the list but left out of the picture, and (for a video layer) out of the sound.</summary>
@@ -353,6 +398,16 @@ public sealed partial class Layer : ObservableObject
     /// crossfade); 0 = cut. Expanded by TimelineLowering (LayOverAcrossCut).
     /// </summary>
     [ObservableProperty] private double _transitionIn;
+
+    /// <summary>
+    /// Gain law of the sound's side of a crossfade into this clip (<see cref="TransitionIn"/>, or a fade in under an overlap; Pass 5.7.1
+    /// Seam menu). Null until chosen (automatic: equal power, linear across a through-edit); saved only when chosen, an explicit Equal Power
+    /// included (LayerState.CrossfadeInCurve, review F16).
+    /// </summary>
+    [ObservableProperty] private CrossfadeCurve? _crossfadeInCurve;
+
+    /// <summary>Gain law of the sound's side of a crossfade out of this clip (its fade out over an overlap or into the next clip).</summary>
+    [ObservableProperty] private CrossfadeCurve _crossfadeOutCurve;
 
     // ----- Audio tab row binding -----
     // Audio clips share the AudioTrack row template. These members mirror AudioTrack's binding names: some map to clip settings,
@@ -539,6 +594,45 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>A saved anchor, held to the reach above; the middle for one that is not a number.</summary>
     public static double Anchor(double value) => double.IsFinite(value) ? Math.Clamp(value, SmallestAnchor, LargestAnchor) : 0.5;
+
+    // ----- Cutout tight bounds and auto-centred anchor (Pass 5.6.5 contract) -----
+    // TightBounds: the visible pixels of a Cutout (drawn outline vertices, or non-zero mask alpha) in source-frame fractions, the space
+    // of MaskShapes and the source rect; null = unknown or the whole source rect. Set by whoever changes the mask, so the selection box
+    // and gizmo hug the HUD element. AutoCenterAnchor: the anchor follows TightAnchor (rotation and tilt spin the element in place); a
+    // manual anchor move clears it. Both are look values (LayerState TightBounds and AutoCenterAnchor).
+
+    /// <summary>The Cutout's visible-pixel bounds in source-frame fractions; null when unknown or the whole source rect.</summary>
+    [ObservableProperty] private SourceBounds? _tightBounds;
+
+    /// <summary>The anchor is kept at the centre of <see cref="TightBounds"/> (<see cref="TightAnchor"/>) instead of where it was put.</summary>
+    [ObservableProperty] private bool _autoCenterAnchor;
+
+    /// <summary>
+    /// The part of the source frame the layer's box shows: its source rect (the whole frame when unset) less its crop (<see cref="HeldCrop"/>).
+    /// </summary>
+    public SourceBounds ShownSource()
+    {
+        var (x, y, width, height) = SourceWidth > 0 && SourceHeight > 0 ? (SourceX, SourceY, SourceWidth, SourceHeight) : (0.0, 0.0, 1.0, 1.0);
+        var (left, top, right, bottom) = HeldCrop(CropLeft, CropTop, CropRight, CropBottom);
+        return new SourceBounds(x + width * left, y + height * top, x + width * (1 - right), y + height * (1 - bottom));
+    }
+
+    /// <summary>
+    /// <see cref="TightBounds"/> as fractions of the layer's box (0-1 from its left and top edges: what it shows of them); null when unknown
+    /// or not on what the box shows.
+    /// </summary>
+    public SourceBounds? TightBoxBounds()
+    {
+        var shown = ShownSource();
+        if (TightBounds is not { } tight || !shown.HasArea || tight.Intersect(shown) is not { } seen)
+            return null;
+        return new SourceBounds((seen.UMin - shown.UMin) / shown.Width, (seen.VMin - shown.VMin) / shown.Height,
+            (seen.UMax - shown.UMin) / shown.Width, (seen.VMax - shown.VMin) / shown.Height);
+    }
+
+    /// <summary>The anchor at the centre of the visible pixels (<see cref="TightBoxBounds"/>), as AnchorX/AnchorY fractions; null without bounds.</summary>
+    public (double X, double Y)? TightAnchor() =>
+        TightBoxBounds() is { } box ? (Anchor((box.UMin + box.UMax) / 2), Anchor((box.VMin + box.VMax) / 2)) : null;
 
     // The layer's height for each unit of its width, both as fractions of the frame; learnt whenever it is laid out.
     private double _heightPerWidth;
@@ -899,6 +993,7 @@ public sealed partial class Layer : ObservableObject
             NotifyKeys(property);
         }
 
+        RetimeClipKeys(k => k with { Time = Math.Round(k.Time + seconds, 3) });
         foreach (var effect in Effects)
         {
             foreach (var (key, keys) in effect.Keys.ToList())
@@ -920,6 +1015,15 @@ public sealed partial class Layer : ObservableObject
     {
         foreach (var property in Enum.GetValues<KeyProperty>())
             SetKeys(property, null);
+    }
+
+    /// <summary>Re-times the clip-relative keys kept beside the motion lanes (speed ramp, manual ducking curve) with one mapping.</summary>
+    private void RetimeClipKeys(Func<Keyframe, Keyframe> retime)
+    {
+        if (_speedKeys.Count > 0)
+            SetSpeedKeys(_speedKeys.Select(retime).ToList());
+        if (_duckOverrideKeys.Count > 0)
+            SetDuckOverrideKeys(_duckOverrideKeys.Select(retime).ToList());
     }
 
     /// <summary>The name a change of keyframes is announced under: it is not a property of its own.</summary>
@@ -950,6 +1054,7 @@ public sealed partial class Layer : ObservableObject
         Speed = ReadSpeed(state?.Speed ?? 1);
         (FadeInSeconds, FadeOutSeconds, TransitionIn) = (Seconds(state?.FadeInSeconds ?? 0), Seconds(state?.FadeOutSeconds ?? 0), Seconds(state?.TransitionIn ?? 0));
         (FadeInStyle, FadeOutStyle) = (Style(state?.FadeInStyle ?? 0), Style(state?.FadeOutStyle ?? 0));
+        (CrossfadeInCurve, CrossfadeOutCurve) = (CrossfadeCurves.Chosen(state?.CrossfadeInCurve), CrossfadeCurves.Known(state?.CrossfadeOutCurve));
         ApplyKeys(state);
     }
 
@@ -965,6 +1070,8 @@ public sealed partial class Layer : ObservableObject
         SetKeys(KeyProperty.Opacity, state?.KeysOpacity);
         SetKeys(KeyProperty.TiltX, state?.KeysTiltX);
         SetKeys(KeyProperty.TiltY, state?.KeysTiltY);
+        SetSpeedKeys(state?.KeysSpeed);
+        SetDuckOverrideKeys(state?.DuckOverrideKeys);
     }
 
     // ----- Ducking -----
@@ -974,6 +1081,47 @@ public sealed partial class Layer : ObservableObject
 
     /// <summary>The layer's sound is a voice: what the ducked sounds make room for.</summary>
     [ObservableProperty] private bool _isVoice;
+
+    // Manual ducking curve (Pass 5.6.5 contract): keys drawn on the ducked waveform's gain-reduction envelope, value = reduction in dB
+    // (DuckOverrideFloorDb..0; 0 = not ducked) at clip-relative seconds, eased between keys. From the first key to the last they replace
+    // the automatic envelope; outside them the voice side chain ducks as before. Double-clicking a node removes it. A look value
+    // (LayerState.DuckOverrideKeys, one of LayerState.MotionChannels); changes raise DuckOverrideKeys (callers checkpoint first).
+
+    /// <summary>Deepest manual duck, in dB (the Duck Amount range).</summary>
+    public const double DuckOverrideFloorDb = -40;
+
+    private readonly List<Keyframe> _duckOverrideKeys = [];
+
+    /// <summary>Manual gain-reduction keys (dB, ascending by time); empty while the automatic envelope rules the whole clip.</summary>
+    public IReadOnlyList<Keyframe> DuckOverrideKeys => _duckOverrideKeys;
+
+    /// <summary>True while part of the ducking curve is drawn by hand.</summary>
+    public bool HasDuckOverrides => _duckOverrideKeys.Count > 0;
+
+    /// <summary>
+    /// The manual reduction (dB) at a clip-relative moment, or null where the automatic envelope rules (no keys, or before the first or
+    /// after the last).
+    /// </summary>
+    public double? DuckOverrideAt(double clipSeconds) =>
+        _duckOverrideKeys is { Count: > 0 } keys && clipSeconds >= keys[0].Time && clipSeconds <= keys[^1].Time
+            ? Math.Clamp(EasingCurves.ValueAt(keys, clipSeconds), DuckOverrideFloorDb, 0)
+            : null;
+
+    /// <summary>Replaces the manual keys (null or empty: none): finite only, held to DuckOverrideFloorDb..0, ascending; raises when they differ.</summary>
+    public void SetDuckOverrideKeys(IEnumerable<Keyframe>? keys)
+    {
+        List<Keyframe> held = keys is null
+            ? []
+            : [.. keys.Where(k => double.IsFinite(k.Time) && double.IsFinite(k.Value))
+                .Select(k => k with { Value = Math.Clamp(k.Value, DuckOverrideFloorDb, 0) }).OrderBy(k => k.Time)];
+        if (held.SequenceEqual(_duckOverrideKeys))
+            return;
+
+        _duckOverrideKeys.Clear();
+        _duckOverrideKeys.AddRange(held);
+        OnPropertyChanged(nameof(DuckOverrideKeys));
+        OnPropertyChanged(nameof(HasDuckOverrides));
+    }
 
     // Chroma key: one color of the layer (a green or blue screen) made transparent.
     [ObservableProperty] private bool _chromaKey;

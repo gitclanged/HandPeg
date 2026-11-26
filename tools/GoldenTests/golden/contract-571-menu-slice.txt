@@ -1,0 +1,11 @@
+# One menu request for timeline and menus (region, seam, pointer time); the Slice-Preview request, spacing readout and gating rules.
+ok: ClipMenuRegion: Body (the default), FadeIn, FadeOut, Seam, Gain
+ok: a request made the old way routes as before: a fade handle names its fade, else the body; no seam, no pointer time
+ok: the timeline refines a request to a seam with its time; a seam is the same seam by its two clips, whatever the blocks were rebuilt as
+ok: frame spacing: whole frames at the frame rate (at least one), read out as +-1f, +-3f
+ok: seconds spacing: read out as +-0.5s, +-1s (at most two decimals)
+ok: no frame rate, NaN or nothing makes an unusable spacing with no readout
+ok: a request of five or seven slots of one video file is valid, the middle slot the playhead's (offset 0)
+ok: no slots, too many, no path, a negative stream, a NaN file time or no thumbnail size is not
+ok: six slots, seven without the playhead's frame in the middle, an unusable spacing, slots out of order or a NaN sequence time is not
+ok: the ribbon shows 5-7 slots (all fit one burst), dormant above 300 DIP/s, fading in below 250 DIP/s held 120 ms

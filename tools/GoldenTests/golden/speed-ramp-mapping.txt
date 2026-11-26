@@ -1,0 +1,9 @@
+# A speed ramp maps sequence time to file time: the integral of its eased speed, exact for linear and hold, inverted to the clip moment.
+ok: without keys the file runs at the constant speed (held to 16x)
+ok: a linear 1x to 3x ramp over 2 s plays 4 s of file, then 3x held after it and 1x held before it
+ok: a hold key keeps its speed until the next key
+ok: eased segments integrate to what their own speed curve adds up to (to a microsecond)
+ok: file time only ever moves forward, and the inverse finds the clip moment of any file time to a microsecond
+ok: speeds outside 0.1x..16x are held to them
+ok: a clip without a ramp maps through its constant speed
+ok: a clip with a ramp maps through it

@@ -189,6 +189,9 @@ public partial class MainWindow
 
     private void CloseWindow_Click(object sender, RoutedEventArgs e) => SystemCommands.CloseWindow(this);
 
+    /// <summary>4th caption button (+ Side Window): the Layout Selector footer row's action, so both open the same side window.</summary>
+    private void SideWindowButton_Click(object sender, RoutedEventArgs e) => SideWindowRow_Click(sender, e);
+
     /// <summary>
     /// Maximized custom-frame windows overhang the screen by the resize border, so content is inset (MaximizedFrameInset); beside an
     /// auto-hide taskbar the window is placed short of it (KeepClearOfHiddenTaskbarNow). Updates the Maximize/Restore glyph and corners.

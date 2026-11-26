@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using HandPegApp.Models;
 
 namespace HandPegApp;
 
@@ -590,6 +591,7 @@ public sealed partial class UnifiedTimelineControl
         _drag = StartDrag(row, block, laid, modifiers);
         _drag.Keys = modifiers;
         _lastPointer = laid;
+        _dragPointer = point;
         Settle.Begin(point, nowMs);
         BeginDrag();
     }
@@ -614,6 +616,7 @@ public sealed partial class UnifiedTimelineControl
             return false;
         drag.Keys = modifiers;
         _lastPointer = Laid(point);
+        _dragPointer = point;
         FollowPointer(drag, point, _lastPointer, nowMs);
         return true;
     }
@@ -644,4 +647,753 @@ public sealed partial class UnifiedTimelineControl
 
     /// <summary>Test seam: key of the row the header drag would nest under; null for none.</summary>
     internal object? NestTargetKey => _rowDrag?.Nest?.Key;
+}
+
+// ----- Apple-Plus timeline gestures (Pass 5.6.5 L3) -----
+// Touchpad: 1:1 two-axis scroll (vertical rows, horizontal pan), pinch zoom, Alt heights (TouchpadWheel, fed by the window hook). Alt+wheel
+// sizes the track under the pointer, Alt+Shift+wheel every track. Double-clicks: a gap ripple-closes it, a parent clip folds/unfolds its
+// Sub-Lanes, a gain line auto-levels to -14 LUFS. Spring-Zoom: a 300 ms rest (or Z) during a clip, trim, fade or ducking drag magnifies the
+// time area 4x about the pointer (pointer travel maps 1/4, so edits land finer) and springs back on release; trims show 25% Ghost Trim Tails
+// of the unused media, and a Ghost Playhead skims the live composite at the dragged edge, snapping back on release. Hovered effects,
+// crossfades and "fx N" clips get inline quick-edit icons; ducked sound shows a draggable amber ducking curve (double-click a node: reset).
+public sealed partial class UnifiedTimelineControl
+{
+    // ----- Events -----
+
+    /// <summary>Alt+wheel over a track that sizes alone: the row and the steps (positive = taller).</summary>
+    public event Action<TimelineRow, int>? RowHeightStepped;
+
+    /// <summary>Double-click in a gap of a row: ripple-close the gap containing these Sequence seconds.</summary>
+    public event Action<TimelineRow, double>? GapDoubleClicked;
+
+    /// <summary>
+    /// Ghost Playhead during a drag: the Sequence seconds of the dragged edge (live composite skim), or NaN when the drag ends (snap back).
+    /// </summary>
+    public event Action<double>? GhostPlayheadMoved;
+
+    // ----- Touchpad -----
+
+    /// <summary>DIPs per wheel unit for 1:1 touchpad travel (a 120-unit notch = <see cref="WheelStep"/> DIPs, as a mouse notch scrolls rows).</summary>
+    internal const double TouchpadDipsPerUnit = WheelStep / 120.0;
+
+    // Fractional Alt height steps carried between touchpad deltas.
+    private double _heightCarry;
+
+    /// <summary>
+    /// A wheel message the window hook classified (TouchpadWheel): touchpad gestures over the rows, at <paramref name="at"/> (control DIPs).
+    /// </summary>
+    internal void TakeTouchpadWheel(WheelInput input, Point at) =>
+        TouchpadWheelAt(input, MomentumScroller.Now(), Math.Max(at.X - _headerWidth, 0), at.Y + _verticalOffset);
+
+    /// <summary>
+    /// Test seam: one touchpad wheel delta. Ctrl (a pinch) zooms about <paramref name="zoomAt"/> immediately (no glide: the fingers are the
+    /// animation); Alt steps heights like the wheel (fractions carried); otherwise vertical scrolls rows and horizontal (or Shift) pans, both
+    /// 1:1 with the fingers and without our own coast (the touchpad supplies its inertia).
+    /// </summary>
+    internal void TouchpadWheelAt(WheelInput input, double nowMs, double zoomAt, double laidY)
+    {
+        StopMomentum();
+        _wheelGlide?.Stop();
+        var keys = input.Keys;
+        if (keys.HasFlag(ModifierKeys.Control))
+        {
+            var factor = Math.Pow(1.25, input.Notches);
+            Raise(() => ZoomRequested?.Invoke(factor, zoomAt));
+        }
+        else if (keys.HasFlag(ModifierKeys.Alt))
+        {
+            _heightCarry += input.Delta;
+            var steps = (int)(_heightCarry / TouchpadWheel.Notch);
+            if (steps == 0)
+                return;
+            _heightCarry -= steps * TouchpadWheel.Notch;
+            WheelAt(steps * TouchpadWheel.Notch, keys, nowMs, zoomAt, overTime: true, laidY);
+            return;
+        }
+        else if (input.Horizontal || keys.HasFlag(ModifierKeys.Shift))
+        {
+            // Right swipe (positive horizontal) = later; Shift turns the vertical axis into time like Shift+wheel (up = earlier).
+            var pixels = (input.Horizontal ? input.Delta : -input.Delta) * TouchpadDipsPerUnit;
+            if (pixels != 0)
+                RaisePan(pixels);
+        }
+        else
+        {
+            VerticalOffset = _verticalOffset - input.Delta * TouchpadDipsPerUnit;
+        }
+
+        FollowHeldDrag();
+    }
+
+    /// <summary>The row Alt+wheel sizes at layout <paramref name="laidY"/>: a full-size video/audio track that sizes alone; null for none.</summary>
+    private TimelineRow? SizedRowAt(double laidY)
+    {
+        if (!double.IsFinite(laidY) || LaneAt(laidY) is not (>= 0 and var index))
+            return null;
+        var lane = _lanes[index];
+        return !lane.Mini && lane.Row.SizedAlone && lane.Row.Kind is TimelineRowKind.Video or TimelineRowKind.Audio ? lane.Row : null;
+    }
+
+    /// <summary>Alt (no Shift or Ctrl) wheel over a sizable track: true once its height step is raised.</summary>
+    private bool StepRowHeight(int delta, ModifierKeys modifiers, double laidY)
+    {
+        if (modifiers.HasFlag(ModifierKeys.Shift) || modifiers.HasFlag(ModifierKeys.Control) || RowHeightStepped is null || SizedRowAt(laidY) is not { } row)
+            return false;
+
+        StopMomentum();
+        var notches = (int)Math.Round(delta / 120.0);
+        var steps = notches != 0 ? notches : Math.Sign(delta);
+        Raise(() => RowHeightStepped?.Invoke(row, steps));
+        return true;
+    }
+
+    // ----- Press, move and release hooks (called first by OnMouseLeftButtonDown, OnMouseMove and OnMouseLeftButtonUp) -----
+
+    /// <summary>
+    /// Press in the time area on lane <paramref name="index"/>: quick-edit icons, ducking nodes, then double-clicks (gain line auto-level, gap
+    /// ripple close, parent fold). True when consumed.
+    /// </summary>
+    private bool TakePress(int index, Point laid, MouseButtonEventArgs e)
+    {
+        var lane = _lanes[index];
+        if (!lane.Detailed || IsDragging)
+            return false;
+
+        if (QuickEditAt(laid) is { } quick)
+        {
+            Raise(() => quick.Block.QuickEdit?.Invoke(quick.Target, quick.Verb));
+            SetQuick(null);
+            return true;
+        }
+
+        var block = BlockAt(index, laid);
+        if (block is { Duck: { } duck, DuckEdit: not null } && PressDuck(lane, block, duck.Keys, duck.AutoDb, laid, e.ClickCount))
+            return true;
+
+        if (e.ClickCount != 2)
+            return false;
+
+        if (block is { AutoLevel: { } level } && OnGainLine(lane, block, laid))
+        {
+            Raise(level);
+            return true;
+        }
+
+        var scale = PixelsPerSecond;
+        if (block is null && scale > 0 && GapUnder(lane, laid) >= 0)
+        {
+            var (row, seconds) = (lane.Row, laid.X / scale);
+            Raise(() => GapDoubleClicked?.Invoke(row, seconds));
+            return true;
+        }
+
+        if (block is not null && lane.Row.Children.Count > 0)
+        {
+            SetExpanded(lane.Row, !IsExpanded(lane.Row));
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Pointer move (any button): spring dwell and ghost while dragging, the ducking drag, hover strips. True when consumed.</summary>
+    private bool TakeMove(Point point)
+    {
+        if (IsDragging)
+            _dragPointer = point;
+        NoteSpringMotion(point);
+        if (_duckDrag is { } duck)
+        {
+            FollowDuck(duck, Laid(point));
+            return true;
+        }
+
+        NoteQuickHover(point);
+        return false;
+    }
+
+    // ----- Spring-Zoom -----
+    // True view zoom (Pass 5.7.1): a 300 ms rest (or Z) during a springable drag asks the host for the view ViewSpan / 4 anchored at the
+    // pointer's time (SpringViewRequested); the host rebuilds rows at that scale even mid-drag and the drag is re-seated on them
+    // (ReseatDrag, Family.cs), so ruler, playhead, waveforms, filmstrips, handles and labels stay crisp and 1:1. Release or Z springs back
+    // to the exact view the spring left.
+
+    /// <summary>Magnification of a spring-zoomed drag, the pointer rest that springs it (ms), the rest radius (DIPs) and the spring (ms).</summary>
+    internal const double SpringFactor = 4, SpringDwellMs = 300, SpringStillDips = 3, SpringMs = 180;
+
+    /// <summary>
+    /// Spring-Zoom view: the host shows it at once (rows rebuilt at its scale, even mid-drag). <see cref="SpringView.Home"/> restores the
+    /// view the spring left exactly (fitted stays fitted).
+    /// </summary>
+    public event Action<SpringView>? SpringViewRequested;
+
+    // Current, start and target magnification and the start tick; the view the spring left (seconds) and its anchor (time, and fraction
+    // of the time area, held under the pointer).
+    private double _springZoom = 1, _springFrom = 1, _springTarget = 1;
+    private (double Start, double Span)? _springHome;
+    private double _springAnchorSeconds, _springAnchorFraction;
+    private long _springAt;
+    private DispatcherTimer? _springTick, _springDwell;
+
+    // Where the pointer last came to rest (control DIPs), and whether a rest is being timed.
+    private Point _springRest;
+    private bool _springArmed;
+
+    /// <summary>True while the view is spring-zoomed (or springing either way).</summary>
+    internal bool IsSpringZoomed => _springTarget > 1 || _springZoom > 1.0001 || _springHome is not null;
+
+    /// <summary>The current magnification (1 = none).</summary>
+    internal double SpringZoom => _springZoom;
+
+    /// <summary>True during a drag that spring-zooms (Z then toggles it).</summary>
+    internal bool CanSpringZoom => Springable;
+
+    /// <summary>Test seam: the view the spring left (start, span in seconds); null when not spring-zoomed.</summary>
+    internal (double Start, double Span)? SpringHome => _springHome;
+
+    // A drag that spring-zooms: clip move, trims and roll, fade, crossfade, gain and ducking.
+    private bool Springable => _drag is { Kind: not BlockEdit.Slip } || _fadeDrag is not null || _crossfadeDrag is not null || _gainDrag is not null || _duckDrag is not null;
+
+    // Restarts the rest timer whenever the pointer leaves the rest radius; feeds the Ghost Playhead.
+    private void NoteSpringMotion(Point point)
+    {
+        if (!Springable)
+            return;
+
+        if (!_springArmed || (point - _springRest).Length > SpringStillDips)
+        {
+            (_springRest, _springArmed) = (point, true);
+            _springDwell ??= NewTimer(SpringDwellMs, SpringDwell_Tick);
+            _springDwell.Stop();
+            if (_springTarget <= 1)
+                _springDwell.Start();
+        }
+
+        UpdateGhost(Laid(point));
+    }
+
+    private void SpringDwell_Tick(object? sender, EventArgs e)
+    {
+        _springDwell?.Stop();
+        if (Springable && _springTarget <= 1 && (_drag is not { } drag || drag.Travel >= 3))
+            SpringIn(_springRest.X);
+    }
+
+    /// <summary>Z during a spring-zooming drag: toggles the magnification (about the pointer when springing in). False when no such drag.</summary>
+    internal bool SpringZoomKey() => SpringZoomAt(Mouse.GetPosition(this).X);
+
+    /// <summary>Test seam (and Z): toggles the spring about control x <paramref name="x"/>. False when no springable drag.</summary>
+    internal bool SpringZoomAt(double x)
+    {
+        if (!Springable)
+            return false;
+
+        if (_springTarget > 1)
+            SpringTo(1);
+        else
+            SpringIn(x);
+        return true;
+    }
+
+    // Anchors the spring at control x (its time held at its fraction of the time area) and springs to SpringFactor. Springing in again
+    // mid-way re-anchors in the current view, so the picture never jumps.
+    private void SpringIn(double x)
+    {
+        var width = TimeAreaWidth;
+        if (width <= 0 || PixelsPerSecond <= 0)
+            return;
+
+        var at = Math.Clamp(x, _headerWidth, _headerWidth + width);
+        var home = _springHome ??= (_viewStart, _viewSpan);
+        var fraction = (at - _headerWidth) / width;
+
+        // Start = anchor - fraction * span must equal the current view's start at the current zoom.
+        var span = home.Span / Math.Max(_springZoom, 1);
+        (_springAnchorSeconds, _springAnchorFraction) = (_viewStart + fraction * span, fraction);
+        SpringTo(SpringFactor);
+    }
+
+    /// <summary>Drag over (EndDrag): springs back to the view the spring left and snaps the Ghost Playhead home.</summary>
+    private void SpringRelease()
+    {
+        _springDwell?.Stop();
+        _springArmed = false;
+        if (IsSpringZoomed)
+            SpringTo(1);
+
+        if (_ghostLive)
+        {
+            (_ghostLive, _ghostSeconds) = (false, double.NaN);
+            Raise(() => GhostPlayheadMoved?.Invoke(double.NaN));
+        }
+    }
+
+    private void SpringTo(double target)
+    {
+        (_springFrom, _springTarget, _springAt) = (_springZoom, target, Environment.TickCount64);
+        _springTick ??= NewTimer(15, (_, _) => SpringStep());
+        _springTick.Start();
+        SpringStep();
+    }
+
+    /// <summary>Test seam (and unload): ends a spring now at its target, its last view asked of the host.</summary>
+    internal void FinishSpring()
+    {
+        if (_springTick is not { IsEnabled: true } && _springHome is null)
+            return;
+
+        _springAt = Environment.TickCount64 - (long)SpringMs - 1;
+        SpringStep();
+    }
+
+    // Ease-out cubic toward the target, each step a real view: span = home span / zoom, the anchor's time at its fraction.
+    private void SpringStep()
+    {
+        var t = Math.Clamp((Environment.TickCount64 - _springAt) / SpringMs, 0, 1);
+        _springZoom = _springFrom + (_springTarget - _springFrom) * (1 - Math.Pow(1 - t, 3));
+        if (t >= 1)
+        {
+            _springZoom = _springTarget;
+            _springTick?.Stop();
+        }
+
+        if (_springHome is not { } home)
+            return;
+
+        if (_springTarget <= 1 && _springZoom <= 1.0001)
+        {
+            (_springZoom, _springHome) = (1, null);
+            _springTick?.Stop();
+            Raise(() => SpringViewRequested?.Invoke(new SpringView(home.Start, home.Span, Home: true)));
+            return;
+        }
+
+        var span = home.Span / Math.Max(_springZoom, 1);
+        var start = _springAnchorSeconds - _springAnchorFraction * span;
+        Raise(() => SpringViewRequested?.Invoke(new SpringView(start, span, Home: false)));
+    }
+
+    /// <summary>
+    /// The view a spring at <paramref name="zoom"/> shows from a home view: span / zoom, the time under <paramref name="anchorX"/> (DIPs from
+    /// the time area's left) held there. Pure (goldens).
+    /// </summary>
+    internal static (double Start, double Span) SpringViewOf(double homeStart, double homeSpan, double anchorX, double timeAreaWidth, double zoom)
+    {
+        var fraction = timeAreaWidth > 0 ? Math.Clamp(anchorX / timeAreaWidth, 0, 1) : 0.5;
+        var anchor = homeStart + fraction * homeSpan;
+        var span = homeSpan / Math.Max(zoom, 1);
+        return (anchor - fraction * span, span);
+    }
+
+    private DispatcherTimer NewTimer(double ms, EventHandler tick)
+    {
+        var timer = new DispatcherTimer(DispatcherPriority.Render, Dispatcher) { Interval = TimeSpan.FromMilliseconds(ms) };
+        timer.Tick += tick;
+        return timer;
+    }
+
+    // ----- Ghost Playhead -----
+
+    private double _ghostSeconds = double.NaN;
+    private bool _ghostLive;
+
+    /// <summary>Sequence seconds a drag previews at layout <paramref name="laid"/>: the moved start, the trimmed edge, the fade's edge; NaN for none.</summary>
+    private double GhostSecondsAt(Point laid)
+    {
+        var scale = PixelsPerSecond;
+        if (scale <= 0)
+            return double.NaN;
+
+        if (_drag is { } drag)
+        {
+            var dx = laid.X - drag.PointerX;
+            return drag.Kind switch
+            {
+                BlockEdit.Move or BlockEdit.TrimStart => (drag.Left + dx) / scale,
+                BlockEdit.TrimEnd or BlockEdit.Roll => (drag.Left + drag.Width + dx) / scale - 0.001,
+                _ => double.NaN,
+            };
+        }
+
+        return _fadeDrag is not null || _crossfadeDrag is not null ? laid.X / scale : double.NaN;
+    }
+
+    private void UpdateGhost(Point laid)
+    {
+        var seconds = GhostSecondsAt(laid);
+        if (double.IsNaN(seconds) || (_drag is { } drag && drag.Travel < 3))
+            return;
+
+        seconds = Math.Max(seconds, 0);
+        if (_ghostLive && Math.Abs(seconds - _ghostSeconds) < 1e-4)
+            return;
+
+        (_ghostSeconds, _ghostLive) = (seconds, true);
+        _overlayDirty = true;
+        InvalidateVisual();
+        Raise(() => GhostPlayheadMoved?.Invoke(seconds));
+    }
+
+    // ----- Ducking curve -----
+
+    // Ducking node drag: row, block, the keys being shaped (clip seconds, dB), the dragged index, the keys before, and whether it changed.
+    private sealed class DuckDrag
+    {
+        public required TimelineRow Row { get; init; }
+        public required TimelineBlock Block { get; init; }
+        public required List<Keyframe> Keys { get; init; }
+        public required IReadOnlyList<Keyframe> Before { get; init; }
+        public int Index { get; set; }
+        public bool Changed { get; set; }
+    }
+
+    private DuckDrag? _duckDrag;
+
+    // Hovered ducked block whose curve shows.
+    private (TimelineRow Row, TimelineBlock Block)? _duckShown;
+
+    private const double DuckNodeReach = 6, DuckLineReach = 4;
+
+    /// <summary>Curve y of a reduction (0 dB at the top, Layer.DuckOverrideFloorDb at the bottom) in <paramref name="rect"/>.</summary>
+    internal static double DuckY(Rect rect, double db) =>
+        rect.Top + 3 + Math.Clamp(db / Layer.DuckOverrideFloorDb, 0, 1) * Math.Max(rect.Height - 6, 1);
+
+    /// <summary>Reduction (dB, rounded to 0.1) at curve y in <paramref name="rect"/>.</summary>
+    internal static double DuckDbAt(Rect rect, double y) =>
+        Math.Round(Math.Clamp((y - rect.Top - 3) / Math.Max(rect.Height - 6, 1), 0, 1) * Layer.DuckOverrideFloorDb, 1);
+
+    /// <summary>The ducking curve's reduction (dB) at clip seconds: the eased keys from first to last, the automatic depth elsewhere.</summary>
+    internal static double DuckAt(IReadOnlyList<Keyframe> keys, double autoDb, double clipSeconds) =>
+        keys.Count > 0 && clipSeconds >= keys[0].Time && clipSeconds <= keys[^1].Time
+            ? Math.Clamp(EasingCurves.ValueAt(keys, clipSeconds), Layer.DuckOverrideFloorDb, 0)
+            : autoDb;
+
+    // Press on a ducked block: a node (double-click removes it; otherwise drags it) or the curve (adds a node there and drags it).
+    private bool PressDuck(in Lane lane, TimelineBlock block, IReadOnlyList<Keyframe> keys, double autoDb, Point laid, int clicks)
+    {
+        var scale = PixelsPerSecond;
+        if (scale <= 0 || _duckShown is not { } shown || !ReferenceEquals(shown.Block, block))
+            return false;
+
+        var rect = BlockRect(lane, block, 0);
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var node = new Point(rect.Left + keys[i].Time * scale, DuckY(rect, keys[i].Value));
+            if ((node - laid).Length > DuckNodeReach)
+                continue;
+
+            if (clicks >= 2)
+            {
+                var without = keys.Where((_, k) => k != i).ToList();
+                Raise(() => block.DuckEdit?.Invoke(without, true));
+                return true;
+            }
+
+            return StartDuckDrag(lane.Row, block, keys, [.. keys], i);
+        }
+
+        var seconds = (laid.X - rect.Left) / scale;
+        if (seconds < 0 || laid.X > rect.Right || Math.Abs(DuckY(rect, DuckAt(keys, autoDb, seconds)) - laid.Y) > DuckLineReach)
+            return false;
+
+        // A new node keeps the shape (its value is the curve's there); ties keep the first.
+        var added = new Keyframe(Math.Round(seconds, 3), DuckAt(keys, autoDb, seconds));
+        var shaped = keys.ToList();
+        var at = shaped.FindIndex(k => k.Time > added.Time);
+        at = at < 0 ? shaped.Count : at;
+        shaped.Insert(at, added);
+        if (!StartDuckDrag(lane.Row, block, keys, shaped, at))
+            return false;
+
+        _duckDrag!.Changed = true;
+        Raise(() => block.DuckEdit?.Invoke(shaped.ToList(), false));
+        return true;
+    }
+
+    private bool StartDuckDrag(TimelineRow row, TimelineBlock block, IReadOnlyList<Keyframe> before, List<Keyframe> keys, int index)
+    {
+        if (!CaptureMouse())
+            return false;
+
+        _duckDrag = new DuckDrag { Row = row, Block = block, Keys = keys, Before = before, Index = index };
+        BeginDrag();
+        return true;
+    }
+
+    // Moves the dragged node: time between its neighbours (and within the clip), reduction from the pointer height; live edit.
+    private void FollowDuck(DuckDrag drag, Point laid)
+    {
+        var scale = PixelsPerSecond;
+        if (scale <= 0 || LaneOf(drag.Row) is not (>= 0 and var index))
+            return;
+
+        var rect = BlockRect(_lanes[index], drag.Block, 0);
+        var keys = drag.Keys;
+        var (low, high) = (drag.Index > 0 ? keys[drag.Index - 1].Time + 0.01 : 0, drag.Index < keys.Count - 1 ? keys[drag.Index + 1].Time - 0.01 : rect.Width / scale);
+        var time = Math.Round(Math.Clamp((laid.X - rect.Left) / scale, Math.Min(low, high), Math.Max(low, high)), 3);
+        var moved = keys[drag.Index] with { Time = time, Value = DuckDbAt(rect, laid.Y) };
+        if (moved == keys[drag.Index])
+            return;
+
+        keys[drag.Index] = moved;
+        drag.Changed = true;
+        _overlayDirty = true;
+        InvalidateVisual();
+        Raise(() => drag.Block.DuckEdit?.Invoke(keys.ToList(), false));
+    }
+
+    /// <summary>Release (or capture lost) of a ducking drag: commits the shaped keys. False when none was under way.</summary>
+    private bool EndDuckDrag(bool keep = true)
+    {
+        if (_duckDrag is not { } drag)
+            return false;
+
+        _duckDrag = null;
+        if (IsMouseCaptured)
+            ReleaseMouseCapture();
+        if (drag.Changed)
+        {
+            var keys = keep ? drag.Keys.ToList() : drag.Before.ToList();
+            Raise(() => drag.Block.DuckEdit?.Invoke(keys, true));
+        }
+
+        EndDrag();
+        return true;
+    }
+
+    // ----- Quick-edit icons -----
+
+    private (TimelineRow Row, TimelineBlock Block, QuickEditTarget Target)? _quickShown;
+
+    private static readonly QuickEditVerb[] AllVerbs = [QuickEditVerb.Edit, QuickEditVerb.Keyframes, QuickEditVerb.Toggle, QuickEditVerb.Remove];
+    private static readonly QuickEditVerb[] TransitionVerbs = [QuickEditVerb.Edit, QuickEditVerb.Remove];
+
+    private const double QuickIcon = 16, QuickGap = 2, QuickPad = 2;
+
+    private static QuickEditVerb[] VerbsOf(QuickEditTarget target) => target == QuickEditTarget.Transition ? TransitionVerbs : AllVerbs;
+
+    /// <summary>
+    /// The icon strip of a target (drawing x = 0 at layout <paramref name="originX"/>): centred under a crossfade box, mid-right on an effect
+    /// block, bottom-right on a clip with effects; empty when the block is too small.
+    /// </summary>
+    private Rect QuickStrip(in Lane lane, TimelineBlock block, QuickEditTarget target, double originX)
+    {
+        var count = VerbsOf(target).Length;
+        var (width, height) = (count * QuickIcon + (count - 1) * QuickGap + 2 * QuickPad, QuickIcon + 2 * QuickPad);
+        if (target == QuickEditTarget.Transition)
+        {
+            var box = CrossfadeBox(lane, block, PixelsPerSecond, originX);
+            // Overlaps the box by a pixel, so the pointer never crosses a gap (which would hide the strip) on its way down or up.
+            var y = box.Bottom - 1 + height <= lane.Bottom ? box.Bottom - 1 : Math.Max(lane.Top, box.Top - height + 1);
+            return new Rect(box.Left + box.Width / 2 - width / 2, y, width, height);
+        }
+
+        var rect = BlockRect(lane, block, originX);
+        if (rect.Width < width + 8 || rect.Height < height)
+            return Rect.Empty;
+        var top = target == QuickEditTarget.Effect ? rect.Top + (rect.Height - height) / 2 : rect.Bottom - height - 2;
+        return new Rect(rect.Right - width - 4, top, width, height);
+    }
+
+    /// <summary>Icon under layout point <paramref name="laid"/> of the shown strip; null for none.</summary>
+    private (TimelineBlock Block, QuickEditTarget Target, QuickEditVerb Verb)? QuickEditAt(Point laid)
+    {
+        if (_quickShown is not { } shown || LaneOf(shown.Row) is not (>= 0 and var index))
+            return null;
+
+        var strip = QuickStrip(_lanes[index], shown.Block, shown.Target, 0);
+        if (strip.IsEmpty || !strip.Contains(laid))
+            return null;
+
+        var verbs = VerbsOf(shown.Target);
+        var slot = (int)Math.Clamp((laid.X - strip.Left - QuickPad) / (QuickIcon + QuickGap), 0, verbs.Length - 1);
+        return (shown.Block, shown.Target, verbs[slot]);
+    }
+
+    // Hover: the strip of the crossfade or quick-editable block under the pointer (kept while on the strip), and the ducked block's curve.
+    private void NoteQuickHover(Point point)
+    {
+        (TimelineRow, TimelineBlock, QuickEditTarget)? quick = null;
+        (TimelineRow, TimelineBlock)? duck = null;
+        if (!IsDragging && point.X >= _headerWidth && Laid(point) is var laid && LaneAt(laid.Y) is >= 0 and var index && _lanes[index].Detailed)
+        {
+            var lane = _lanes[index];
+            if (_quickShown is { } shown && ReferenceEquals(shown.Row, lane.Row) && QuickStrip(lane, shown.Block, shown.Target, 0).Contains(laid))
+                quick = shown;
+            else if (CrossfadeAt(lane, laid) is { } fade && fade.Block is { CrossfadeEdit: not null, QuickEdit: not null })
+                quick = (lane.Row, fade.Block, QuickEditTarget.Transition);
+            else if (BlockAt(index, laid) is { QuickEdit: not null, QuickEditOf: not QuickEditTarget.None } block)
+                quick = (lane.Row, block, block.QuickEditOf);
+
+            if (BlockAt(index, laid) is { Duck: not null, DuckEdit: not null } ducked)
+                duck = (lane.Row, ducked);
+        }
+
+        if (!Equals(quick, _quickShown) || !Equals(duck, _duckShown))
+        {
+            (_quickShown, _duckShown) = (quick, duck);
+            _overlayDirty = true;
+            InvalidateVisual();
+        }
+    }
+
+    private void SetQuick((TimelineRow, TimelineBlock, QuickEditTarget)? quick)
+    {
+        _quickShown = quick;
+        _overlayDirty = true;
+        InvalidateVisual();
+    }
+
+    // ----- Overlay drawing (RenderOverlay) -----
+
+    private static readonly Brush DuckAmber = Tint(255, 0xFF, 0xB0, 0x20);
+    private static readonly Pen DuckLine = Ice(new Pen(DuckAmber, 1.6));
+    private static readonly Pen DuckAutoLine = Ice(new Pen(Tint(170, 0xFF, 0xB0, 0x20), 1.2) { DashStyle = DashStyles.Dash });
+    private static readonly Pen DuckNodeEdge = Ice(new Pen(Tint(255, 0x1E, 0x1E, 0x22), 1.2));
+    private static readonly Brush QuickFill = Tint(235, 0x1E, 0x1E, 0x22);
+    private static readonly Pen QuickEdge = Ice(new Pen(Tint(255, 0x2A, 0x2A, 0x30), 1));
+    private static readonly Pen QuickGlyph = Ice(new Pen(Tint(255, 0xE6, 0xE6, 0xEA), 1.4) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round });
+    private static readonly Pen QuickGlyphOff = Ice(new Pen(Tint(150, 0xE6, 0xE6, 0xEA), 1.4) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round });
+    private static readonly Pen GhostPlayheadLine = Ice(new Pen(Tint(220, 0xFF, 0xFF, 0xFF), 1.2) { DashStyle = DashStyles.Dot });
+    private static readonly Geometry KeyGlyph = Ice(Geometry.Parse("M 0,-4.5 L 4.5,0 L 0,4.5 L -4.5,0 Z"));
+    private static readonly Geometry PowerGlyph = Ice(Geometry.Parse("M -3,-2.8 A 4.3,4.3 0 1 0 3,-2.8 M 0,-5 L 0,-0.5"));
+
+    /// <summary>Ghost Trim Tails, the ducking curve, the quick-edit strip and the Ghost Playhead (drawing x = 0 at _originX).</summary>
+    private void DrawGestures(DrawingContext drawing, double scale, double from, double to)
+    {
+        if (scale <= 0)
+            return;
+
+        DrawGhostTails(drawing, scale, from, to);
+        if (_duckDrag is { } duck && LaneOf(duck.Row) is >= 0 and var duckLane)
+            DrawDuck(drawing, _lanes[duckLane], duck.Block, duck.Keys, duck.Block.Duck?.AutoDb ?? 0, scale, _originX, -3, ActualWidth + 3);
+        else if (_duckShown is { } shown && LaneOf(shown.Row) is >= 0 and var shownLane && shown.Block.Duck is { } ducking)
+            DrawDuck(drawing, _lanes[shownLane], shown.Block, ducking.Keys, ducking.AutoDb, scale, _originX, -3, ActualWidth + 3);
+
+        if (!IsDragging && _quickShown is { } quick && LaneOf(quick.Row) is >= 0 and var quickLane)
+            DrawQuickStrip(drawing, _lanes[quickLane], quick.Block, quick.Target);
+
+        if (IsDragging && _ghostLive && _lanes.Count > 0)
+        {
+            var x = _ghostSeconds * scale - _originX;
+            drawing.DrawLine(GhostPlayheadLine, new Point(x, 0), new Point(x, _lanes[^1].Bottom));
+        }
+    }
+
+    // 25% tails of the unused media beyond the trimmed edge (a roll's too), clipped to the drawn range.
+    private void DrawGhostTails(DrawingContext drawing, double scale, double from, double to)
+    {
+        if (_drag is not { Kind: BlockEdit.TrimStart or BlockEdit.TrimEnd or BlockEdit.Roll } drag || LaneOf(drag.Row) is not (>= 0 and var index))
+            return;
+
+        var rect = BlockRect(_lanes[index], drag.Block, _originX);
+        var (left, right) = drag.Kind == BlockEdit.TrimStart
+            ? (rect.Left - drag.Block.HeadRoom * scale, rect.Left)
+            : (rect.Right, rect.Right + drag.Block.TailRoom * scale);
+        (left, right) = (Math.Max(left, from - _originX - 4), Math.Min(right, to - _originX + 4));
+        if (right - left < 1)
+            return;
+
+        drawing.PushOpacity(0.25);
+        drawing.DrawRoundedRectangle(drag.Block.Fill, null, new Rect(left, rect.Top, right - left, rect.Height), 3, 3);
+        drawing.Pop();
+    }
+
+    private static void DrawDuck(DrawingContext drawing, in Lane lane, TimelineBlock block, IReadOnlyList<Keyframe> keys, double autoDb, double scale, double originX,
+        double visibleLeft = double.NegativeInfinity, double visibleRight = double.PositiveInfinity)
+    {
+        var rect = BlockRect(lane, block, originX);
+        var auto = DuckY(rect, autoDb);
+        if (keys.Count == 0)
+        {
+            drawing.DrawLine(DuckAutoLine, new Point(rect.Left, auto), new Point(rect.Right, auto));
+            return;
+        }
+
+        var (first, last) = (rect.Left + keys[0].Time * scale, rect.Left + keys[^1].Time * scale);
+        if (first > rect.Left)
+            drawing.DrawLine(DuckAutoLine, new Point(rect.Left, auto), new Point(Math.Min(first, rect.Right), auto));
+        if (last < rect.Right)
+            drawing.DrawLine(DuckAutoLine, new Point(Math.Max(last, rect.Left), auto), new Point(rect.Right, auto));
+        // Sampled across the visible part of the key span only (a long clip at high zoom stays a few hundred segments).
+        var (shown, stop) = (rect, Math.Min(last, visibleRight));
+
+        var curve = new StreamGeometry();
+        using (var context = curve.Open())
+        {
+            var started = false;
+            for (var x = Math.Max(Math.Max(first, rect.Left), visibleLeft); ; x = Math.Min(x + 3, stop))
+            {
+                var point = new Point(x, DuckY(shown, DuckAt(keys, autoDb, (x - rect.Left) / scale)));
+                if (started)
+                    context.LineTo(point, true, false);
+                else
+                    context.BeginFigure(point, false, false);
+                started = true;
+                if (x >= stop)
+                    break;
+            }
+        }
+
+        curve.Freeze();
+        drawing.DrawGeometry(null, DuckLine, curve);
+        foreach (var key in keys)
+            drawing.DrawEllipse(DuckAmber, DuckNodeEdge, new Point(rect.Left + key.Time * scale, DuckY(shown, key.Value)), 3.5, 3.5);
+    }
+
+    private void DrawQuickStrip(DrawingContext drawing, in Lane lane, TimelineBlock block, QuickEditTarget target)
+    {
+        var strip = QuickStrip(lane, block, target, _originX);
+        if (strip.IsEmpty)
+            return;
+
+        drawing.DrawRoundedRectangle(QuickFill, QuickEdge, strip, 4, 4);
+        var verbs = VerbsOf(target);
+        for (var i = 0; i < verbs.Length; i++)
+        {
+            var centre = new Point(strip.Left + QuickPad + i * (QuickIcon + QuickGap) + QuickIcon / 2, strip.Top + strip.Height / 2);
+            DrawVerb(drawing, verbs[i], centre, verbs[i] != QuickEditVerb.Toggle || block.IsOn != false);
+        }
+    }
+
+    // Vector glyphs: pencil, diamond, power, cross.
+    private static void DrawVerb(DrawingContext drawing, QuickEditVerb verb, Point c, bool on)
+    {
+        var pen = on ? QuickGlyph : QuickGlyphOff;
+        switch (verb)
+        {
+            case QuickEditVerb.Edit:
+                drawing.DrawLine(pen, new Point(c.X - 4, c.Y + 4), new Point(c.X + 3, c.Y - 3));
+                drawing.DrawLine(pen, new Point(c.X + 1.5, c.Y - 4.5), new Point(c.X + 4.5, c.Y - 1.5));
+                drawing.DrawLine(pen, new Point(c.X - 4.5, c.Y + 4.5), new Point(c.X - 2.5, c.Y + 4.5));
+                break;
+            case QuickEditVerb.Keyframes:
+                drawing.PushTransform(new TranslateTransform(c.X, c.Y));
+                drawing.DrawGeometry(null, pen, KeyGlyph);
+                drawing.Pop();
+                break;
+            case QuickEditVerb.Toggle:
+                drawing.PushTransform(new TranslateTransform(c.X, c.Y + 0.5));
+                drawing.DrawGeometry(null, pen, PowerGlyph);
+                drawing.Pop();
+                break;
+            default:
+                drawing.DrawLine(pen, new Point(c.X - 3.5, c.Y - 3.5), new Point(c.X + 3.5, c.Y + 3.5));
+                drawing.DrawLine(pen, new Point(c.X - 3.5, c.Y + 3.5), new Point(c.X + 3.5, c.Y - 3.5));
+                break;
+        }
+    }
+
+    private static SolidColorBrush Tint(byte a, byte r, byte g, byte b)
+    {
+        var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
+        brush.Freeze();
+        return brush;
+    }
+
+    private static T Ice<T>(T freezable) where T : Freezable
+    {
+        freezable.Freeze();
+        return freezable;
+    }
 }

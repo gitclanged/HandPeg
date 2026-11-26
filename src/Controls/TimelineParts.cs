@@ -105,7 +105,62 @@ public abstract class TimelineBar : FrameworkElement
 
         if (shown)
             _playhead.Offset = new Vector(_playheadX, 0);
+        if (_pointer is not null)
+            PlacePointer();
     }
+
+    // ----- Cursor-Locked Scrub Pointer (Pass 5.7.1) -----
+    // While the OS cursor is hidden for a playhead drag, the pointer is drawn as a child of the playhead visual: it moves with the line by
+    // the same translation, so the two never part (0 px) however fast the display refreshes. Built on first use; NaN hides it.
+
+    private DrawingVisual? _pointer;
+    private double _pointerY = double.NaN;
+
+    /// <summary>The scrub pointer's tip, DIP from the bar's top (clamped to the bar); NaN hides it.</summary>
+    public double PointerY
+    {
+        get => _pointerY;
+        set
+        {
+            if (value.Equals(_pointerY))
+                return;
+
+            _pointerY = value;
+            PlacePointer();
+        }
+    }
+
+    private void PlacePointer()
+    {
+        if (double.IsNaN(_pointerY) || double.IsNaN(_playheadX))
+        {
+            if (_pointer is not null)
+                _pointer.Opacity = 0;
+            return;
+        }
+
+        if (_pointer is null)
+        {
+            _pointer = new DrawingVisual();
+            using (var drawing = _pointer.RenderOpen())
+                DrawScrubPointer(drawing);
+            _playhead.Children.Add(_pointer);
+        }
+
+        // The bar's playhead is drawn from 0 to 1.5 DIP: the pointer's tip sits on its centre line.
+        _pointer.Opacity = 1;
+        _pointer.Offset = new Vector(0.75, Math.Clamp(_pointerY, 0, Math.Max(ActualHeight, 4)));
+    }
+
+    /// <summary>
+    /// The scrub pointer (ruler and track surface): an arrow whose tip is the hidden cursor's hot spot, on the playhead's centre line,
+    /// white with a dark rim so it reads on any track colour.
+    /// </summary>
+    internal static void DrawScrubPointer(DrawingContext drawing) => drawing.DrawGeometry(Brushes.White, ScrubPointerRim, ScrubPointerShape);
+
+    private static readonly Pen ScrubPointerRim = Frozen(new Pen(new SolidColorBrush(Color.FromArgb(230, 16, 16, 18)), 1) { LineJoin = PenLineJoin.Miter });
+
+    private static readonly Geometry ScrubPointerShape = Frozen(Geometry.Parse("M 0,0 L 5.5,7 L 2,7 L 2,14 L -2,14 L -2,7 L -5.5,7 Z"));
 
     // Cached edge pens, reused while brush and width are unchanged (theme brushes are frozen, so reference equality suffices).
     private Pen? _edgePen, _lowerEdgePen;
@@ -276,6 +331,12 @@ public readonly record struct BlockFamily(object Key, object? Parent, bool Rides
 /// <summary>Per-block switch identifier.</summary>
 public enum BlockSwitch { OnOff, Lock }
 
+/// <summary>What a block's inline quick-edit icons act on: none, its effect (effect lane), its effects ("fx N" badge), its crossfade.</summary>
+public enum QuickEditTarget { None, Effect, Effects, Transition }
+
+/// <summary>Inline quick-edit verbs, in drawn order.</summary>
+public enum QuickEditVerb { Edit, Keyframes, Toggle, Remove }
+
 /// <summary>One block of a Timeline row: a clip, cut segment, audio track part or subtitle.</summary>
 public sealed class TimelineBlock
 {
@@ -445,6 +506,33 @@ public sealed class TimelineBlock
     /// <summary>Seam edge commit: edge (true = start) and outward travel in seconds (negative = inward).</summary>
     public Action<bool, double>? SeamTrim { get; init; }
 
+    /// <summary>
+    /// Unused media beyond its edges in timeline seconds (before the start, after the end): drawn as 25%-opacity Ghost Trim Tails while
+    /// an edge is trimmed; 0 for none or unbounded (stills).
+    /// </summary>
+    public double HeadRoom { get; init; }
+
+    /// <summary>See <see cref="HeadRoom"/>: media left after the end, in timeline seconds.</summary>
+    public double TailRoom { get; init; }
+
+    /// <summary>
+    /// Ducked sound: the hand-drawn ducking keys (dB at clip-relative seconds, Layer.DuckOverrideKeys) and the automatic depth (dB) drawn
+    /// dashed where no keys rule. The amber curve shows on hover; null when the clip is not ducked.
+    /// </summary>
+    public (IReadOnlyList<Models.Keyframe> Keys, double AutoDb)? Duck { get; init; }
+
+    /// <summary>Ducking curve edit: the new keys (empty = reset to automatic) and whether the gesture ended (false = live).</summary>
+    public Action<IReadOnlyList<Models.Keyframe>, bool>? DuckEdit { get; init; }
+
+    /// <summary>Double-click on the gain line: auto-level the clip to -14 LUFS. Null when not offered.</summary>
+    public Action? AutoLevel { get; init; }
+
+    /// <summary>What the inline quick-edit icons act on when this block is hovered (effect lane block, or a clip's "fx N" badge).</summary>
+    public QuickEditTarget QuickEditOf { get; init; }
+
+    /// <summary>Inline quick-edit icon pressed: the target (Effect, Effects badge, or Transition = its crossfade) and the verb.</summary>
+    public Action<QuickEditTarget, QuickEditVerb>? QuickEdit { get; init; }
+
     /// <summary>Drawn as a collapsed mini-stack lane; set by the unified timeline during layout, not by the host.</summary>
     public bool IsMini { get; internal set; }
 
@@ -544,11 +632,18 @@ public sealed class TimelineRuler : TimelineBar
 
     public TimelineRuler()
     {
-        Unloaded += (_, _) => StopMomentum();
+        // Hidden or unloaded mid-drag (tab switch, pane closed): the drag ends where it is and the cursor comes back.
+        Unloaded += (_, _) =>
+        {
+            StopMomentum();
+            CancelSeek();
+        };
         IsVisibleChanged += (_, e) =>
         {
-            if (!(bool)e.NewValue)
-                StopMomentum();
+            if ((bool)e.NewValue)
+                return;
+            StopMomentum();
+            CancelSeek();
         };
     }
     private IReadOnlyList<double> _markers = [], _highlights = [];
@@ -736,11 +831,15 @@ public sealed class TimelineRuler : TimelineBar
         if (!CaptureMouse())
             return;
 
-        // Snap exactly to a marker under the pointer. The skim line steps aside for the drag (NotesPointer).
+        // Snap exactly to a marker under the pointer. The skim line steps aside for the drag (NotesPointer). The press seeks at once;
+        // the drag's moves are then sampled once per rendered frame (BeginScrubSampling).
         _seeking = true;
         NotePointer(double.NaN);
-        var x = e.GetPosition(this).X;
-        SeekRequested?.Invoke(MarkerNear(x) is >= 0 and var marker ? _markers[marker] : TimeAt(x));
+        var point = e.GetPosition(this);
+        _sampledX = Math.Clamp(point.X, 0, ActualWidth);
+        (_movedX, _lastScrubMoveTicks) = (point.X, System.Diagnostics.Stopwatch.GetTimestamp());
+        SeekRequested?.Invoke(MarkerNear(point.X) is >= 0 and var marker ? _markers[marker] : TimeAt(_sampledX));
+        BeginScrubSampling(point.Y);
         e.Handled = true;
     }
 
@@ -760,7 +859,10 @@ public sealed class TimelineRuler : TimelineBar
         if (!_seeking)
             return;
 
+        // The release lands exactly where the button came up (the frame sampler may not have seen that position yet).
+        SeekToSample(e.GetPosition(this).X);
         _seeking = false;
+        EndScrubSampling();
         ReleaseMouseCapture();
         SeekEnded?.Invoke();
         if (IsMouseOver)
@@ -912,7 +1014,8 @@ public sealed class TimelineRuler : TimelineBar
         }
         else if (_seeking)
         {
-            SeekRequested?.Invoke(TimeAt(Math.Clamp(at, 0, ActualWidth)));
+            // A seek drag's raw move (up to 1000 Hz) is only stamped: the frame sampler seeks once per rendered frame from the live cursor.
+            (_movedX, _lastScrubMoveTicks) = (at, System.Diagnostics.Stopwatch.GetTimestamp());
         }
     }
 
@@ -920,9 +1023,10 @@ public sealed class TimelineRuler : TimelineBar
     {
         base.OnLostMouseCapture(e);
 
-        // Capture lost mid middle-drag: not a flick, no coast.
+        // Capture lost mid middle-drag: not a flick, no coast. Lost mid seek drag (window deactivated, Esc, a dialog): the cursor returns.
         if (_panFrom is not null)
             StopMomentum();
+        EndScrubSampling();
         var wasSeeking = _seeking;
         (_seeking, _panFrom) = (false, null);
         if (wasSeeking)
@@ -958,6 +1062,212 @@ public sealed class TimelineRuler : TimelineBar
     }
 
     private WheelGlide? _wheelGlide;
+
+    // ----- Frame-sampled seek drag and Cursor-Locked Scrub Pointer (Pass 5.7.1) -----
+    // A seek drag's raw WM_MOUSEMOVEs (up to 1000 Hz) are only stamped (_lastScrubMoveTicks). Once per rendered frame
+    // (CompositionTarget.Rendering) the live cursor (GetCursorPos) is mapped straight to ruler x and seeks, so the playhead follows the
+    // freshest position at the display's rate and nothing downstream runs at the pointer's rate. The host samples first in its own frame
+    // callback (SampleScrubFrame, before it takes the frame's one engine seek), so frame N's seek is frame N's cursor; this ruler's own hook
+    // then skips that frame (one sample per RenderingTime) and samples only when no host does. With Settings > Cursor-locked scrub
+    // pointer on (off by default, user decision Q1) the OS cursor is hidden for the drag and the playhead visual draws the pointer; it
+    // always comes back on release, capture loss (window deactivated, a dialog), Esc, hiding, unloading or a fault.
+
+    private bool _scrubHooked, _cursorHidden;
+    private double _sampledX = double.NaN, _movedX = double.NaN;
+    private long _lastScrubMoveTicks;
+
+    // The cursor's last sampled screen point (a change stamps _lastScrubMoveTicks: the pointer-rest clock, review F27).
+    private Point _sampledScreen = new(double.NaN, double.NaN);
+    private object? _cursorBefore;
+
+    // RenderingTime of the frame last sampled: whichever render callback asks first samples it, the other skips.
+    private TimeSpan _sampledFrame = TimeSpan.MinValue;
+
+    /// <summary>
+    /// Raised once per rendered frame of a seek drag with the live cursor's screen point (real pixels): the track surface draws the
+    /// scrub pointer when the cursor is over it (<see cref="ScrubPointerElsewhere"/>).
+    /// </summary>
+    public event Action<Point>? ScrubSampled;
+
+    /// <summary>
+    /// Asked once per frame while the scrub pointer is locked: true when another element (the track surface) draws the pointer for this
+    /// screen point. Outside the ruler and that element the OS cursor shows again, so the pointer is never lost.
+    /// </summary>
+    public Func<Point, bool>? ScrubPointerElsewhere { get; set; }
+
+    /// <summary>True while this drag's scrub pointer is locked (the setting was on at its press).</summary>
+    public bool PointerLocked { get; private set; }
+
+    /// <summary>Stopwatch ticks of the seek drag's last raw pointer move (0 before the first); stamped, never acted on per move.</summary>
+    internal long LastScrubMoveTicks => _lastScrubMoveTicks;
+
+    /// <summary>True while the frame sampler is hooked (a seek drag is held).</summary>
+    internal bool IsSampling => _scrubHooked;
+
+    /// <summary>
+    /// The x a sample seeks to, clamped to the ruler, or NaN when it seeks nothing: the same x as the last sample (a still pointer wakes
+    /// nothing downstream) or no layout yet. Pure; goldens.
+    /// </summary>
+    internal static double SampleTarget(double x, double lastX, double width) =>
+        !(width > 0) || !double.IsFinite(x) ? double.NaN : Math.Clamp(x, 0, width) is var clamped && clamped.Equals(lastX) ? double.NaN : clamped;
+
+    /// <summary>
+    /// Whether the OS cursor is hidden for this frame of a locked drag: only while the pointer is drawn, over the ruler
+    /// (<paramref name="overRuler"/>) or by another element (<paramref name="drawnElsewhere"/>). Pure; goldens.
+    /// </summary>
+    internal static bool HidesCursor(bool locked, bool overRuler, bool drawnElsewhere) => locked && (overRuler || drawnElsewhere);
+
+    /// <summary>
+    /// True when a render callback samples this frame: not yet sampled (<paramref name="renderingTime"/> differs from the last sampled
+    /// frame's), or no frame time (a direct call). WPF raises Rendering to every handler, sometimes twice, with the same time. Pure; goldens.
+    /// </summary>
+    internal static bool SamplesFrame(TimeSpan? renderingTime, TimeSpan lastSampled) => renderingTime is not { } time || time != lastSampled;
+
+    /// <summary>
+    /// Samples this frame's live cursor now, from the host's frame callback before it takes the frame's one engine seek, so the seek sent
+    /// on frame N is frame N's pointer (this ruler's own hook then skips the frame). Nothing unless a seek drag is held.
+    /// </summary>
+    internal void SampleScrubFrame(EventArgs e)
+    {
+        if (_scrubHooked)
+            OnScrubFrame(this, e);
+    }
+
+    private void BeginScrubSampling(double pointerY)
+    {
+        PointerLocked = HandPegApp.Services.AppSettings.Current.CursorLockedScrubPointer;
+        if (PointerLocked)
+            ShowPointer(pointerY, overRuler: pointerY >= 0 && pointerY <= ActualHeight, drawnElsewhere: false);
+        if (_scrubHooked)
+            return;
+
+        _scrubHooked = true;
+        _sampledFrame = TimeSpan.MinValue;
+        CompositionTarget.Rendering += OnScrubFrame;
+    }
+
+    /// <summary>Unhooks the sampler and gives the cursor back (idempotent: every end path calls it).</summary>
+    private void EndScrubSampling()
+    {
+        if (_scrubHooked)
+        {
+            _scrubHooked = false;
+            CompositionTarget.Rendering -= OnScrubFrame;
+        }
+
+        PointerLocked = false;
+        ShowPointer(double.NaN, overRuler: false, drawnElsewhere: false);
+    }
+
+    /// <summary>Ends a held seek drag where it is (Esc, hiding, unloading, a fault): capture loss raises <see cref="SeekEnded"/>.</summary>
+    internal void CancelSeek()
+    {
+        if (!_seeking)
+        {
+            EndScrubSampling();
+            return;
+        }
+
+        if (IsMouseCaptured)
+        {
+            ReleaseMouseCapture();
+            return;
+        }
+
+        _seeking = false;
+        EndScrubSampling();
+        SeekEnded?.Invoke();
+    }
+
+    private void OnScrubFrame(object? sender, EventArgs e)
+    {
+        // One sample per rendered frame: the host's callback (SampleScrubFrame) usually took this one already.
+        var renderingTime = (e as RenderingEventArgs)?.RenderingTime;
+        if (!SamplesFrame(renderingTime, _sampledFrame))
+            return;
+        if (renderingTime is { } time)
+            _sampledFrame = time;
+
+        try
+        {
+            // Capture gone without notice, or Esc (the ruler takes no focus, so the key is read here): the drag ends where it is.
+            if (!_seeking || !IsMouseCaptured || Keyboard.IsKeyDown(Key.Escape))
+            {
+                CancelSeek();
+                return;
+            }
+
+            // The live cursor; the last raw move's x when the cursor cannot be read (a secure desktop) or the ruler has no window.
+            var screen = new Point(double.NaN, double.NaN);
+            var local = new Point(_movedX, double.NaN);
+            if (PresentationSource.FromVisual(this) is not null && Native.User32.GetCursorPos(out var cursor))
+            {
+                screen = new Point(cursor.X, cursor.Y);
+                local = PointFromScreen(screen);
+
+                // A moved cursor is a move for the pointer-rest clock even before (or without) its WM_MOUSEMOVE (review F27).
+                if (screen != _sampledScreen)
+                    (_sampledScreen, _lastScrubMoveTicks) = (screen, System.Diagnostics.Stopwatch.GetTimestamp());
+            }
+
+            SeekToSample(local.X);
+            if (double.IsNaN(screen.X))
+                return;
+
+            ScrubSampled?.Invoke(screen);
+            if (PointerLocked)
+            {
+                // Asked every frame, so the tracks also hide their pointer once the cursor is back over the ruler.
+                // Over the ruler on both axes: past either end the cursor shows again (review F28).
+                var overRuler = local.X >= 0 && local.X <= ActualWidth && local.Y >= 0 && local.Y <= ActualHeight;
+                var elsewhere = ScrubPointerElsewhere?.Invoke(screen) == true;
+                ShowPointer(local.Y, overRuler, elsewhere && !overRuler);
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // Never leave the cursor hidden or the drag stuck behind a fault.
+            HandPegApp.Services.AppLog.Write("Timeline ruler: a scrub frame failed", ex);
+            CancelSeek();
+        }
+    }
+
+    // One seek per changed x (SeekRequested; the host coalesces the engine seek to once per frame as well).
+    private void SeekToSample(double x)
+    {
+        var target = SampleTarget(x, _sampledX, ActualWidth);
+        if (double.IsNaN(target))
+            return;
+
+        _sampledX = target;
+        SeekRequested?.Invoke(TimeAt(target));
+    }
+
+    // Draws the ruler's pointer (over the ruler only) and hides or restores the OS cursor to match.
+    private void ShowPointer(double y, bool overRuler, bool drawnElsewhere)
+    {
+        PointerY = PointerLocked && overRuler ? y : double.NaN;
+        var hide = HidesCursor(PointerLocked, overRuler, drawnElsewhere);
+        if (hide == _cursorHidden)
+            return;
+
+        _cursorHidden = hide;
+        if (hide)
+        {
+            _cursorBefore = ReadLocalValue(CursorProperty);
+            Cursor = Cursors.None;
+        }
+        else
+        {
+            if (_cursorBefore is Cursor before)
+                Cursor = before;
+            else
+                ClearValue(CursorProperty);
+            _cursorBefore = null;
+        }
+
+        Mouse.UpdateCursor();
+    }
 
     private static Brush FrozenBrush(Color color)
     {

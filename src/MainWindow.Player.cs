@@ -298,7 +298,8 @@ public partial class MainWindow
     /// </summary>
     private void TimelineSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
-        if (_updatingFromPlayer)
+        // Binding echoes while a ruler drag takes the slider's binding off or puts it back (FreezeOverviewSlider) are not playhead moves.
+        if (_updatingFromPlayer || _scrubState.OverviewSwapping)
             return;
 
         // Ignore non-playhead moves: coercion to a shorter Maximum (RefreshSequence handles the sequence side) and sub-millisecond
@@ -386,6 +387,40 @@ public partial class MainWindow
         TimelineSlider.UpdateLayout();
         thumb.RaiseEvent(new MouseButtonEventArgs(e.MouseDevice, e.Timestamp, MouseButton.Left) { RoutedEvent = MouseLeftButtonDownEvent, Source = thumb });
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// Freezes the Overview Scrubber for a ruler (or full-screen) scrub, or unfreezes it at the scrub's end (Pass 5.7.1): its Value binding
+    /// to PositionMs is taken off with the thumb left where it was, so the 60 Hz scrub commits never re-arrange the slider's track, thumb
+    /// and automation value mid-drag; putting the binding back on release moves the thumb once to the final playhead. Idempotent.
+    /// </summary>
+    private void FreezeOverviewSlider(bool frozen)
+    {
+        var state = _scrubState;
+        if (frozen == (state.OverviewBinding is not null))
+            return;
+
+        state.OverviewSwapping = true;
+        try
+        {
+            if (!frozen)
+            {
+                var binding = state.OverviewBinding!;
+                state.OverviewBinding = null;
+                TimelineSlider.SetBinding(RangeBase.ValueProperty, binding);
+            }
+            else if (System.Windows.Data.BindingOperations.GetBindingBase(TimelineSlider, RangeBase.ValueProperty) is { } binding)
+            {
+                var value = TimelineSlider.Value;
+                state.OverviewBinding = binding;
+                System.Windows.Data.BindingOperations.ClearBinding(TimelineSlider, RangeBase.ValueProperty);
+                TimelineSlider.Value = value;
+            }
+        }
+        finally
+        {
+            state.OverviewSwapping = false;
+        }
     }
 
     private void TimelineSlider_DragStarted(object sender, DragStartedEventArgs e) => _isScrubbing = true;

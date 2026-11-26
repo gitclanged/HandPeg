@@ -176,6 +176,24 @@ public sealed class CompositorClient : IDisposable
         _wake.Set();
     }
 
+    // ----- Slice-Preview burst (Pass 5.7.1) -----
+
+    /// <summary>
+    /// Posts the Slice-Preview ribbon's burst (<see cref="SliceBurstSlot"/>): up to <see cref="CompositorProtocol.MaxSliceSlots"/> file
+    /// times of source <paramref name="sourceId"/> decoded into the frame cache ahead of background work; no times (or a negative source)
+    /// withdraws it. Wakes the worker without rendering. Returns the burst's version for <see cref="SliceBurstDone"/>, 0 when withdrawn.
+    /// One posting thread (GpuPreviewEngine's).
+    /// </summary>
+    public int PostSliceBurst(int sourceId, long pathHash, ReadOnlySpan<double> mediaSeconds, int shortSide = 0)
+    {
+        var version = SliceBurstSlot.Post(ref _shared.Control, sourceId, pathHash, mediaSeconds, shortSide);
+        _wake.Set();
+        return version;
+    }
+
+    /// <summary>True once the worker has every slice of burst <paramref name="version"/> in its frame cache (never for 0).</summary>
+    public bool SliceBurstDone(int version) => SliceBurstSlot.IsDone(ref _shared.Control, version);
+
     /// <summary>
     /// Frame cache cap: 0 automatic (grow to hardware ceiling), -1 disabled, else bytes (AppSettings.GpuFrameCacheMb). Applied next worker turn.
     /// </summary>

@@ -1,0 +1,6 @@
+# One touchpad wheel rule (TouchpadWheel) behind the player, the timeline rows and the Cutout Studio.
+ok: the timeline rows classify with their own TouchpadWheel
+ok: the Cutout Studio uses the same rule and carry-over
+ok: the player raises its wheel through the same decoder
+ok: a touchpad gesture carries whole notches for 250 ms, then a wheel is a mouse's again
+ok: a downward notch decodes to -120

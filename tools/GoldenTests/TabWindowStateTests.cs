@@ -264,8 +264,8 @@ public static class TabWindowStateTests
 
         var view = SourceProbe.Member(tabs, "private void RestoreTabView(");
         expect(SourceProbe.InOrder(view, "RestoreExplodedForTab(tab);", "OpenInPlayer((long)at, paused: true);"), "RestoreTabView restores the 3D view before the player opens");
-        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task<bool> ResumeTabAsync("), "DeleteTabFiles(id);", "if (tab.ExplodedOpen)", "_explodedWaitingTab = tab;", "Dispatcher.BeginInvoke(() => RestoreTabView(tab), DispatcherPriority.Background);")
-               && SourceProbe.InOrder(SourceProbe.Member(tabs, "private bool AttachHydrated("), "DeleteTabFiles(tab.Id);", "if (tab.ExplodedOpen)", "_explodedWaitingTab = tab;", "RestoreTabView(tab);")
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task<bool> ResumeTabAsync("), "DeleteTabFiles(id);", "if (tab.ExplodedOpen)", "_explodedWaitingTab = tab;", "Dispatcher.BeginInvoke(() => RestoreTabView(tab, activation), DispatcherPriority.Background);")
+               && SourceProbe.InOrder(SourceProbe.Member(tabs, "private bool AttachHydrated("), "DeleteTabFiles(tab.Id);", "if (tab.ExplodedOpen)", "_explodedWaitingTab = tab;", "RestoreTabView(tab, _tabControl.Generation);")
                && SourceProbe.InOrder(view, "if (!ReferenceEquals(tab, _tabs.Active))", "return;", "if (ReferenceEquals(_explodedWaitingTab, tab))", "_explodedWaitingTab = null;", "HideTabStill();", "return;", "RestoreExplodedForTab(tab);"),
             "a tab brought back in the 3D view waits for its view to be restored (5.4D review): put behind again before then, it keeps its header's 3D view; in front with nothing to show, it is flat");
         var restore = SourceProbe.Member(tabs, "private void RestoreExplodedForTab(");
@@ -384,12 +384,12 @@ public static class TabWindowStateTests
     private static void Wiring(Action<bool, string> expect)
     {
         var tabs = (SourceProbe.Src("MainWindow.ProjectTabs.cs") + SourceProbe.Src("MainWindow.TabCache.cs") + SourceProbe.Src("MainWindow.TabMenu.cs"));
-        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task SwitchToTabAsync("), "_tabs.Activate(tab);", "ShowTabs();", "ApplyTabLayout(tab);", "await ResumeTabAsync(tab, behind);"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task SwitchToTabAsync("), "_tabControl.Commit(switching, tab);", "ShowTabs();", "ApplyTabLayout(tab);", "await ResumeTabAsync(tab, behind);"),
             "a switch lays the tab's layout out right after it is in front, before its still shows (ResumeTabAsync)");
-        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private void TakeBack("), "_tabs.Activate(behind);", "ApplyTabLayout(behind);", "AttachHydrated(behind, live)")
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private void TakeBack("), "_tabControl.Abort(tab, behind)", "ApplyTabLayout(behind!);", "AttachHydrated(behind, live)")
                && SourceProbe.InOrder(SourceProbe.Member(tabs, "private void RestoreTabView("), "RestoreExplodedForTab(tab);", "OpenInPlayer("),
             "a switch taken back lays the tab put behind's own layout out again, then brings it back from memory (its 3D view with it, 5.4D-TabPerf)");
-        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task CloseProjectTabAsync("), "EndLayoutPreview();", "_tabs.Activate(next);", "ApplyTabLayout(next);", "await ResumeTabAsync(next, null);"),
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private async Task CloseProjectTabAsync("), "EndLayoutPreview();", "_tabControl.Commit(closing, next);", "ApplyTabLayout(next);", "await ResumeTabAsync(next, null);"),
             "closing the tab in front lays the next tab's layout out (a layout the selector previews put back first)");
         expect(SourceProbe.InOrder(SourceProbe.Member(tabs, "private void ApplyTabLayout("), "EndLayoutPreview();", "var perTab = AppSettings.Current.PerTabWindowLayouts;", "if (perTab && MediaViewOf(tab.MediaView) is { } view && view != MediaBrowser.ViewMode)",
                    "MediaBrowser.ViewMode = view;", "LoadTabLayout(_dock, tab, perTab)", "_viewModel.SavePaneLayout(SaveDockInto);"),

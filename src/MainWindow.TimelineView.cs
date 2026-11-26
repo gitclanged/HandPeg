@@ -1,10 +1,15 @@
+using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Threading;
 using HandPegApp.Models;
+using HandPegApp.Models.Effects;
+using HandPegApp.Services;
 
 namespace HandPegApp;
 
@@ -48,8 +53,20 @@ public partial class MainWindow
         get
         {
             var extent = TimelineExtent;
-            return _viewFit || _viewSpan <= 0 || _viewSpan >= extent ? extent : Math.Max(_viewSpan, Math.Min(MinViewSpan, extent));
+            return _viewFit || _viewSpan <= 0 || _viewSpan >= extent ? extent : Math.Max(_viewSpan, SpanFloor(extent));
         }
+    }
+
+    /// <summary>
+    /// The least view span: MinViewSpan, or while a Spring-Zoom is out a quarter of the view it left (its true 4x reaches past the
+    /// ordinary zoom limit, review F15).
+    /// </summary>
+    private double SpanFloor(double extent)
+    {
+        var floor = MinViewSpan;
+        if (_timelineInput.SpringHome is { } home)
+            floor = Math.Min(floor, (home.Fit || home.Span <= 0 ? extent : home.Span) / 4);
+        return Math.Min(floor, extent);
     }
 
     /// <summary>Log-scaled zoom 0 (fitted) to 1 (MinViewSpan), shown by the zoom sliders.</summary>
@@ -300,8 +317,43 @@ public partial class MainWindow
         SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(TimelineSidewaysWheel);
     }
 
+    // Timeline row input state (Pass 5.6.5), in one object (golden shell-budget).
+    private readonly TimelineInputState _timelineInput = new();
+
+    private sealed class TimelineInputState
+    {
+        // Wheel gesture memory over the timeline rows (TouchpadWheel: a touchpad gesture keeps its kind across both axes).
+        public readonly TouchpadWheel Wheel = new();
+
+        // Alt+wheel row height: the row being stepped (its live height is _rowHeightDrag) and the rest timer that commits it.
+        public TimelineRow? RowStepped;
+        public DispatcherTimer? RowStepCommit;
+
+        // Ghost Playhead: the playhead (ms) to snap back to; null while no ghost is shown.
+        public double? GhostHomeMs;
+
+        // Clip whose ducking gesture has taken its Undo step (until release).
+        public Layer? DuckShaping;
+
+        // Spring-Zoom (Pass 5.7.1): the view the spring left (fitted, start, span), restored on release; and true while a spring view is
+        // applied, so rows are rebuilt at its scale even mid-drag (the surface re-seats the drag on them).
+        public (bool Fit, double Start, double Span)? SpringHome;
+        public bool SpringRelay;
+    }
+
     private IntPtr TimelineSidewaysWheel(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (msg is not (TouchpadWheel.WmMouseWheel or TouchpadWheel.WmMouseHWheel))
+            return IntPtr.Zero;
+
+        // Touchpad over the rows, either axis: 1:1 two-axis scroll, pinch zoom, Alt heights. A mouse wheel goes on to WPF (OnMouseWheel).
+        if (UnifiedTimeline.Surface is { IsVisible: true, IsMouseOver: true } rows && _timelineInput.Wheel.Read(msg, wParam, lParam) is { Touchpad: true } touch)
+        {
+            rows.TakeTouchpadWheel(touch, rows.PointFromScreen(touch.ScreenPixels));
+            handled = true;
+            return TouchpadWheel.HandledResult(touch.Horizontal);
+        }
+
         if (msg != WmMouseHWheel)
             return IntPtr.Zero;
 
@@ -606,5 +658,488 @@ public partial class MainWindow
     {
         DrawTimelineMarkers();
         UpdateTimelineChrome();
+    }
+}
+
+// ----- Timeline gestures host (Pass 5.6.5 L3; the surface side is the gestures section of UnifiedTimelineControl.Parenting.cs) -----
+// Alt+wheel sizes one track (live rows, one Undo step once the wheel rests); a gap double-click ripple-closes it (CloseGapAt); the Ghost
+// Playhead skims the live composite at a dragged edge while paused and snaps back on release; Z toggles Spring-Zoom mid-drag; inline
+// quick-edit icons act on a clip's effects, one effect or a crossfade; the amber ducking curve writes Layer.DuckOverrideKeys; a gain-line
+// double-click runs Auto-Level Speech (-14 LUFS, measured in the background); Alt+drop of one file on a clip swaps its media in place.
+public partial class MainWindow
+{
+    /// <summary>Wires the surface's gesture events (InitializeUnifiedTimeline).</summary>
+    private void InitializeTimelineGestures(UnifiedTimelineControl surface)
+    {
+        surface.RowHeightStepped += Timeline_RowHeightStepped;
+        surface.GapDoubleClicked += (row, seconds) =>
+        {
+            if (row.Data is Layer track)
+                RunGuarded("closing a gap", () => _viewModel.CloseGapAt(track, seconds));
+        };
+        surface.GhostPlayheadMoved += Timeline_GhostPlayhead;
+        surface.SpringViewRequested += Timeline_SpringViewRequested;
+        InitializeTimelineSeams(surface);
+    }
+
+    // ----- Spring-Zoom view (Pass 5.7.1) -----
+
+    /// <summary>
+    /// A Spring-Zoom step: shows the asked view at once (no status line), rows rebuilt at its scale even mid-drag; Home puts back the view
+    /// the spring left (a fitted view stays fitted, so a sequence grown by the drop is shown whole).
+    /// </summary>
+    private void Timeline_SpringViewRequested(SpringView view)
+    {
+        if (view.Home)
+        {
+            if (_timelineInput.SpringHome is not { } home)
+                return;
+            _timelineInput.SpringHome = null;
+            (_viewFit, _viewStart, _viewSpan) = home;
+            ApplySpringView();
+            return;
+        }
+
+        var extent = TimelineExtent;
+        if (extent <= 0 || !(view.Span > 0) || !double.IsFinite(view.Start))
+            return;
+
+        _timelineInput.SpringHome ??= (_viewFit, _viewStart, _viewSpan);
+        var span = Math.Clamp(view.Span, SpanFloor(extent), extent);
+        _viewFit = span >= extent - 1e-6;
+        (_viewStart, _viewSpan) = (_viewFit ? 0 : view.Start, span);
+        ApplySpringView();
+    }
+
+    // Applies a spring view: chrome, rows (relaid at the new scale even mid-drag) and the Keyframes pane.
+    private void ApplySpringView()
+    {
+        _timelineInput.SpringRelay = true;
+        try
+        {
+            ApplyTimelineView(announce: false);
+        }
+        finally
+        {
+            _timelineInput.SpringRelay = false;
+        }
+    }
+
+    /// <summary>Z (TakeSeamKey): toggles Spring-Zoom during a drag that spring-zooms; repeats are swallowed so Z never also steps edits.</summary>
+    partial void TakeSpringZoomKey(bool repeat, ref bool handled)
+    {
+        var surface = UnifiedTimeline.Surface;
+        if (!surface.CanSpringZoom)
+            return;
+
+        handled = true;
+        if (!repeat)
+            surface.SpringZoomKey();
+    }
+
+    // ----- Alt+wheel track height -----
+
+    private void Timeline_RowHeightStepped(TimelineRow row, int steps)
+    {
+        if (HeightTrackOf(row) is null)
+            return;
+        if (_timelineInput.RowStepped is { } other && !Equals(other.Key, row.Key))
+            CommitRowStep();
+
+        // The global Track Height's pixels per notch, within the row kind's range.
+        var (lowest, tallest) = row.Kind == TimelineRowKind.Audio ? (LowestSoundRow, TallestSoundRow) : (LowestPictureRow, TallestPictureRow);
+        var perNotch = TrackHeightStepsPerNotch * (TallestPictureRow - LowestPictureRow) / 49;
+        var current = _rowHeightDrag is { } live && Equals(live.Key, row.Key) ? live.Height : row.Height;
+        _rowHeightDrag = (row.Key, Math.Clamp(current + steps * perNotch, lowest, tallest));
+        _timelineInput.RowStepped = row;
+        ScheduleClipRedraw();
+        _timelineInput.RowStepCommit ??= NewRowStepTimer();
+        _timelineInput.RowStepCommit.Stop();
+        _timelineInput.RowStepCommit.Start();
+    }
+
+    private DispatcherTimer NewRowStepTimer()
+    {
+        var timer = new DispatcherTimer(DispatcherPriority.Input, Dispatcher) { Interval = TimeSpan.FromMilliseconds(450) };
+        timer.Tick += (_, _) => CommitRowStep();
+        return timer;
+    }
+
+    // The wheel rested (or another row was stepped): the stepped height becomes the track's own, one Undo step.
+    private void CommitRowStep()
+    {
+        _timelineInput.RowStepCommit?.Stop();
+        if (_timelineInput.RowStepped is not { } row)
+            return;
+
+        _timelineInput.RowStepped = null;
+        if (_rowHeightDrag is not { } live || !Equals(live.Key, row.Key))
+            return;
+
+        var height = RowHeightOf(live.Key, null, row.Kind);
+        _rowHeightDrag = null;
+        if (HeightTrackOf(row) is { } track)
+            RunGuarded("a track's height", () => _viewModel.SetTrackHeight(track, height));
+        ScheduleClipRedraw();
+    }
+
+    // ----- Ghost Playhead -----
+
+    private void Timeline_GhostPlayhead(double seconds)
+    {
+        if (double.IsNaN(seconds))
+        {
+            if (_timelineInput.GhostHomeMs is { } home)
+            {
+                _timelineInput.GhostHomeMs = null;
+                _viewModel.PositionMs = Math.Clamp(home, 0, _viewModel.DurationMs);
+            }
+
+            return;
+        }
+
+        // Paused only: during playback the transport keeps its place.
+        if (_viewModel.IsPlaying || !_viewModel.HasSource)
+            return;
+
+        _timelineInput.GhostHomeMs ??= _viewModel.PositionMs;
+        _viewModel.PositionMs = Math.Clamp(seconds * 1000, 0, _viewModel.DurationMs);
+    }
+
+    // ----- Quick-edit icons -----
+
+    /// <summary>A clip block's icons: its effects ("fx N") or its crossfade (Edit, Remove).</summary>
+    private void ClipQuickEdit(Layer clip, QuickEditTarget target, QuickEditVerb verb)
+    {
+        if (LiveClip(clip) is not { } live)
+            return;
+
+        RunGuarded("a quick edit", () =>
+        {
+            switch (target, verb)
+            {
+                case (QuickEditTarget.Transition, QuickEditVerb.Remove):
+                    _viewModel.SetCrossfade(live, 0);
+                    break;
+                case (_, QuickEditVerb.Edit):
+                    ShowClipIn(live, keyframes: false);
+                    break;
+                case (_, QuickEditVerb.Keyframes):
+                    ShowClipIn(live, keyframes: true);
+                    break;
+                case (QuickEditTarget.Effects, QuickEditVerb.Toggle):
+                    var cards = BadgeCards(live);
+                    var on = !cards.Exists(card => card.Enabled);
+                    foreach (var card in cards)
+                        _viewModel.SetEffectOn(live, card, on);
+                    break;
+                case (QuickEditTarget.Effects, QuickEditVerb.Remove):
+                    foreach (var card in BadgeCards(live))
+                        _viewModel.RemoveEffect(live, card);
+                    break;
+            }
+        });
+        ScheduleClipRedraw();
+    }
+
+    /// <summary>An effect lane block's icons: open it, its keys, On/Off, remove.</summary>
+    private void EffectQuickEdit(Layer clip, EffectInstance effect, QuickEditVerb verb)
+    {
+        if (LiveClip(clip) is not { } live)
+            return;
+
+        RunGuarded("a quick edit of an effect", () =>
+        {
+            switch (verb)
+            {
+                case QuickEditVerb.Edit:
+                    ShowClipIn(live, keyframes: false);
+                    break;
+                case QuickEditVerb.Keyframes:
+                    ShowClipIn(live, keyframes: true);
+                    break;
+                case QuickEditVerb.Toggle:
+                    _viewModel.SetEffectOn(live, effect, !effect.Enabled);
+                    break;
+                default:
+                    _viewModel.RemoveEffect(live, effect);
+                    break;
+            }
+        });
+        ScheduleClipRedraw();
+    }
+
+    // Selects the clip and shows the Effects (or Keyframes) pane for it.
+    private void ShowClipIn(Layer clip, bool keyframes)
+    {
+        SelectClip(clip);
+        if (keyframes)
+            _viewModel.ShowKeyframesPane = true;
+        else
+            _viewModel.ShowEffectsPane = true;
+    }
+
+    // The cards counted by its "fx N" badge.
+    private List<EffectInstance> BadgeCards(Layer clip)
+    {
+        var cutout = CountsAsCutout(_viewModel, clip);
+        var builtIns = AppSettings.Current.ShowBuiltInMaskEffectLanes;
+        return clip.IsAudio || clip.IsCaptions ? [] : clip.Effects.Where(effect => ShowsCard(effect, cutout, builtIns)).ToList();
+    }
+
+    // ----- Ducking curve -----
+
+    /// <summary>Automatic duck depth drawn under the hand-drawn keys (the track's Duck Amount, -15 dB unless set).</summary>
+    private static double DuckDepthOf(Models.Timeline.TimelineTrackModel? track) =>
+        Math.Clamp(track?.DuckAmountDb is { } db && double.IsFinite(db) ? -Math.Abs(db) : -15, Layer.DuckOverrideFloorDb, 0);
+
+    // Live keys while dragging; the gesture's first change takes the Undo step, release ends it.
+    private void DuckEdited(Layer clip, IReadOnlyList<Keyframe> keys, bool done)
+    {
+        if (LiveClip(clip) is not { } live)
+            return;
+
+        if (!ReferenceEquals(_timelineInput.DuckShaping, live))
+        {
+            _viewModel.Checkpoint(keys.Count < live.DuckOverrideKeys.Count ? $"remove a ducking point of {live.Name}" : $"shape the ducking of {live.Name}");
+            _timelineInput.DuckShaping = live;
+        }
+
+        using (_viewModel.OwnLookScope())
+            live.SetDuckOverrideKeys(keys);
+        if (done)
+        {
+            _timelineInput.DuckShaping = null;
+            ScheduleClipRedraw();
+        }
+    }
+
+    // ----- Auto-level -----
+
+    // Gain-line double-click: Auto-Level Speech, as the clip menu's item (the clip's sound measured in the background, its gain set for
+    // -14 LUFS in one Undo step); nothing while that clip is still being measured.
+    private void AutoLevelClip(Layer clip)
+    {
+        if (LiveClip(clip) is { } live && _viewModel.CanAutoLevelSpeech(live))
+            _ = AutoLevelSpeechAsync(live);
+    }
+
+    // ----- Media swap in place (Alt+drop of one file on a clip) -----
+
+    /// <summary>The clip view on <paramref name="track"/> under <paramref name="seconds"/>; null for none.</summary>
+    private Layer? ClipViewAt(Layer track, double seconds) =>
+        _viewModel.GetTrackClips(track).FirstOrDefault(clip => !clip.IsLoading && _viewModel.ClipOf(clip) is { } model && model.Start <= seconds && model.End > seconds);
+
+    /// <summary>Probes the file, then swaps it into the clip (and its Cutouts) keeping place, length, look and effects; kinds must match.</summary>
+    private async Task SwapDroppedMediaAsync(Layer clip, string file)
+    {
+        // The drop's own project: a tab switch during the probe (a duplicate tab shares clip ids) or a reload drops the swap.
+        var (document, generation) = (_viewModel.Document, _viewModel.ProjectGeneration);
+        var info = await MediaProbe.ProbeAsync(file, CancellationToken.None);
+        if (!ReferenceEquals(_viewModel.Document, document) || _viewModel.ProjectGeneration != generation)
+            return;
+
+        var name = Path.GetFileName(file);
+        if (info is null || !(info.DurationSeconds > 0))
+        {
+            _viewModel.StatusText = $"{name} could not be read, so nothing was swapped.";
+            return;
+        }
+
+        if (clip.IsAudio ? info.Audio.Count == 0 : info.Video is null)
+        {
+            _viewModel.StatusText = clip.IsAudio ? $"{name} has no sound to swap in." : $"{name} has no picture to swap in.";
+            return;
+        }
+
+        if (LiveClip(clip) is { } live)
+            RunGuarded("a media swap", () => _viewModel.SwapClipMedia(live, file, info.DurationSeconds, 0, info.Video is null ? 0 : 1, info.Audio.Count));
+    }
+}
+
+// ----- Cut seams, Ctrl+drag clones and Top & Tail (Pass 5.7.1 L1; the surface side is the seams section of UnifiedTimelineControl.DragOut.cs) -----
+// A selected cut seam takes Ctrl+T (a crossfade of the default transition length), Delete (heals a through-edit, else removes the crossfade)
+// and comma / period (rolls the cut a frame), ahead of bound shortcuts; Esc lets it go. The Seam menu (MainWindow.TrackMenus.cs) calls the
+// same methods. Ctrl+drag on a clip clones it where it is dropped; Top & Tail ripple-trims the selected clip's start or end to the playhead.
+public partial class MainWindow
+{
+    /// <summary>Wires the surface's seam, clone and region-menu queries (InitializeTimelineGestures).</summary>
+    private void InitializeTimelineSeams(UnifiedTimelineControl surface)
+    {
+        surface.ThroughEdit = (left, right) => LayerOfBlock(left) is { } a && LayerOfBlock(right) is { } b && _viewModel.IsThroughEdit(a, b);
+        surface.CloneRequested += (_, block, _, seconds) => RunGuarded("cloning a clip", () => CloneBlock(block, seconds));
+        surface.SeamSelected += seam =>
+        {
+            if (seam is not null)
+                _viewModel.StatusText = SeamStatus(seam);
+        };
+    }
+
+    /// <summary>The clip a block shows (a clip's own sound lane counts as its clip); null for captions, effects and the like.</summary>
+    private static Layer? LayerOfBlock(TimelineBlock block) => block.Clip switch
+    {
+        Layer layer => layer,
+        LayerSound sound => sound.Layer,
+        _ => null,
+    };
+
+    /// <summary>Status line for a selected seam: what its keys do there.</summary>
+    internal static string SeamStatus(TimelineSeamTarget seam) => seam switch
+    {
+        { IsThroughEdit: true } => "Cut selected: a through-edit. Delete heals it; Ctrl+T crossfades; comma and period move it a frame.",
+        { CrossfadeSeconds: > 0.01 } => string.Create(CultureInfo.InvariantCulture,
+            $"Cut selected, crossfading over {seam.CrossfadeSeconds:0.00} s. Delete removes the crossfade; comma and period move the cut a frame."),
+        _ => "Cut selected. Ctrl+T crossfades it; comma and period move it a frame.",
+    };
+
+    /// <summary>
+    /// Keys for a selected cut seam (TakeSeamKey, ahead of bound shortcuts such as Ctrl+T New Tab and Delete): Ctrl+T crossfade, Delete or
+    /// Backspace heal, comma / period nudge a frame (repeats step on), Esc deselect. Never while typing. True when consumed.
+    /// </summary>
+    private bool TakeCutSeamKey(KeyEventArgs e, Key key)
+    {
+        var surface = UnifiedTimeline.Surface;
+        if (surface.SelectedSeam is not { } seam || surface.IsDragging || !surface.IsVisible
+            || Keyboard.FocusedElement is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem)
+        {
+            return false;
+        }
+
+        // A key the focused control owns stays its own (Delete in Keyframes rows or the rules grid; review F12).
+        var (act, repeats) = SeamKeyAction(key, Keyboard.Modifiers);
+        if (act is null || KeyBelongsToFocus(KeybindManager.ChordOf(e), Keyboard.FocusedElement))
+            return false;
+
+        e.Handled = true;
+        if (!e.IsRepeat || repeats)
+            RunGuarded("an edit at a cut", () => RunSeamAction(act.Value, seam));
+        return true;
+    }
+
+    /// <summary>What a key does to a selected seam (and whether it repeats while held); null for a key it leaves alone (pure; goldens).</summary>
+    internal static (SeamAction? Action, bool Repeats) SeamKeyAction(Key key, ModifierKeys modifiers) => (key, modifiers) switch
+    {
+        (Key.T, ModifierKeys.Control) => (SeamAction.Crossfade, false),
+        (Key.Delete or Key.Back, ModifierKeys.None) => (SeamAction.Heal, false),
+        (Key.OemComma, ModifierKeys.None) => (SeamAction.NudgeEarlier, true),
+        (Key.OemPeriod, ModifierKeys.None) => (SeamAction.NudgeLater, true),
+        (Key.Escape, ModifierKeys.None) => (SeamAction.Deselect, false),
+        _ => (null, false),
+    };
+
+    /// <summary>The selected-seam actions.</summary>
+    internal enum SeamAction { Crossfade, Heal, NudgeEarlier, NudgeLater, Deselect }
+
+    private void RunSeamAction(SeamAction action, TimelineSeamTarget seam)
+    {
+        switch (action)
+        {
+            case SeamAction.Crossfade:
+                CrossfadeSeam(seam, null);
+                break;
+            case SeamAction.Heal:
+                HealSeam(seam);
+                break;
+            case SeamAction.NudgeEarlier:
+                NudgeSeam(seam, -1);
+                break;
+            case SeamAction.NudgeLater:
+                NudgeSeam(seam, 1);
+                break;
+            default:
+                UnifiedTimeline.Surface.SelectSeam(null);
+                break;
+        }
+    }
+
+    /// <summary>Ctrl+T on a seam (and the Seam menu): a crossfade of <paramref name="seconds"/> (default: Settings' transition length) across the cut.</summary>
+    internal void CrossfadeSeam(TimelineSeamTarget seam, double? seconds)
+    {
+        if (LayerOfBlock(seam.Right) is not { } view || LiveClip(view) is not { } right)
+            return;
+
+        var length = seconds ?? Math.Max(AppSettings.Current.DefaultTransitionSeconds, 0.04);
+        CrashReporter.Note("timeline", string.Create(CultureInfo.InvariantCulture, $"seam: crossfade {length:0.00} s"));
+        _viewModel.SetCrossfade(right, length);
+        ScheduleClipRedraw();
+    }
+
+    /// <summary>Delete on a seam: heals a through-edit into one clip; else removes the crossfade across it; else says why nothing changed.</summary>
+    internal void HealSeam(TimelineSeamTarget seam)
+    {
+        if (LayerOfBlock(seam.Left) is not { } leftView || LayerOfBlock(seam.Right) is not { } rightView
+            || LiveClip(leftView) is not { } left || LiveClip(rightView) is not { } right)
+        {
+            return;
+        }
+
+        if (_viewModel.IsThroughEdit(left, right))
+        {
+            CrashReporter.Note("timeline", "seam: heal a through-edit");
+            if (_viewModel.HealThroughEdit(left, right))
+                UnifiedTimeline.Surface.SelectSeam(null);
+        }
+        else if (seam.CrossfadeSeconds > 0.01)
+        {
+            _viewModel.SetCrossfade(right, 0);
+        }
+        else
+        {
+            _viewModel.StatusText = "That cut joins two different takes: only a through-edit (one take cut in two) heals.";
+        }
+
+        ScheduleClipRedraw();
+    }
+
+    /// <summary>Comma / period on a seam: rolls the cut one Sequence frame earlier (negative) or later; one Undo step per press.</summary>
+    internal void NudgeSeam(TimelineSeamTarget seam, int frames)
+    {
+        if (LayerOfBlock(seam.Left) is not { } leftView || LayerOfBlock(seam.Right) is not { } rightView
+            || LiveClip(leftView) is not { } left || LiveClip(rightView) is not { } right)
+        {
+            return;
+        }
+
+        var fps = _viewModel.SequenceFps > 0 ? _viewModel.SequenceFps : 30;
+        _viewModel.RollCut(left, right, right.StartTime + frames / fps);
+        ScheduleClipRedraw();
+    }
+
+    /// <summary>The Seam menu's curve choice: equal power or linear for the crossfade across the cut (one Undo step).</summary>
+    internal void SetSeamCurve(TimelineSeamTarget seam, CrossfadeCurve curve)
+    {
+        if (LayerOfBlock(seam.Left) is { } leftView && LayerOfBlock(seam.Right) is { } rightView && LiveClip(leftView) is { } left && LiveClip(rightView) is { } right)
+            _viewModel.SetCrossfadeCurve(left, right, curve);
+    }
+
+    /// <summary>Ctrl+drag release: a clone of the block's clip (with its family) starting at <paramref name="seconds"/>, selected.</summary>
+    private void CloneBlock(TimelineBlock block, double seconds)
+    {
+        if (LayerOfBlock(block) is not { } view || LiveClip(view) is not { } clip)
+            return;
+
+        CrashReporter.Note("timeline", string.Create(CultureInfo.InvariantCulture, $"clone (Ctrl+drag) to {seconds:0.000} s"));
+        _viewModel.CloneClipTo(clip, seconds);
+        ScheduleClipRedraw();
+    }
+
+    /// <summary>Top &amp; Tail: ripple-trims the selected clip's start (top) or end (tail) to the playhead, closing the gap.</summary>
+    private void TopOrTailSelectedClip(bool start)
+    {
+        var selected = _selectedClip switch
+        {
+            Layer layer => layer,
+            LayerSound sound => sound.Layer,
+            _ => null,
+        };
+        if (selected is null || LiveClip(selected) is not { } clip)
+        {
+            _viewModel.StatusText = "Select a clip on the Timeline, then top or tail it at the playhead.";
+            return;
+        }
+
+        CrashReporter.Note("timeline", start ? "top: ripple trim start to playhead" : "tail: ripple trim end to playhead");
+        _viewModel.RippleTrimToPlayhead(clip, start, _viewModel.PositionMs / 1000);
+        ScheduleClipRedraw();
     }
 }

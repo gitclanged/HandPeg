@@ -85,6 +85,8 @@ public sealed partial class Layer
         FadeInStyle = FadeInStyle,
         FadeOutStyle = FadeOutStyle,
         TransitionIn = TransitionIn,
+        CrossfadeInCurve = CrossfadeCurves.Chosen(CrossfadeInCurve),
+        CrossfadeOutCurve = CurveOrNull(CrossfadeOutCurve),
         Rotation = Rotation,
         TiltX = TiltX,
         TiltY = TiltY,
@@ -105,6 +107,10 @@ public sealed partial class Layer
         KeysOpacity = KeysOrNull(_keys[(int)KeyProperty.Opacity]),
         KeysTiltX = KeysOrNull(_keys[(int)KeyProperty.TiltX]),
         KeysTiltY = KeysOrNull(_keys[(int)KeyProperty.TiltY]),
+        KeysSpeed = KeysOrNull(_speedKeys),
+        DuckOverrideKeys = KeysOrNull(_duckOverrideKeys),
+        TightBounds = TightBounds?.ToArray(),
+        AutoCenterAnchor = AutoCenterAnchor ? true : null,
     };
 
     /// <summary>How far a mask can be grown or shrunk, in pixels.</summary>
@@ -122,6 +128,9 @@ public sealed partial class Layer
     /// <summary>Validated transition style (unknown values map to dissolve).</summary>
     private static TransitionStyle Style(TransitionStyle saved) => Enum.IsDefined(saved) ? saved : TransitionStyle.Dissolve;
 
+    /// <summary>A crossfade curve as saved: null (omitted) for the default equal power, so older projects read and write unchanged.</summary>
+    private static CrossfadeCurve? CurveOrNull(CrossfadeCurve curve) => curve == CrossfadeCurve.EqualPower ? null : curve;
+
     /// <summary>A saved crop, held to what leaves something of the layer: at most 95% from one edge.</summary>
     private static double Crop(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 0.95) : 0;
 
@@ -137,10 +146,11 @@ public sealed partial class Layer
         (CustomMask, MaskPath) = (state.CustomMask, state.MaskPath ?? "");
         (MaskFrame, MaskGrow, MaskInvert, MaskShapes) = (state.MaskFrame, Math.Clamp(state.MaskGrow, -MaskGrowLimit, MaskGrowLimit), state.MaskInvert, state.MaskShapes ?? "");
         (MaskOffsetX, MaskOffsetY) = (MaskOffset(state.MaskOffsetX), MaskOffset(state.MaskOffsetY));
+        TightBounds = SourceBounds.From(state.TightBounds);
         (CropLeft, CropRight, CropTop, CropBottom) = (Crop(state.CropLeft), Crop(state.CropRight), Crop(state.CropTop), Crop(state.CropBottom));
         Rotation = Math.Clamp(state.Rotation, -360, 360);
         (TiltX, TiltY) = (Tilt(state.TiltX), Tilt(state.TiltY));
-        (AnchorX, AnchorY) = (Anchor(state.AnchorX), Anchor(state.AnchorY));
+        (AnchorX, AnchorY, AutoCenterAnchor) = (Anchor(state.AnchorX), Anchor(state.AnchorY), state.AutoCenterAnchor == true);
         TakeSpeedOptions(state);
         LoadEffects(state);
     }
@@ -163,7 +173,7 @@ public sealed partial class Layer
         });
         Rotation = Math.Clamp(state.Rotation, -360, 360);
         (TiltX, TiltY) = (Tilt(state.TiltX), Tilt(state.TiltY));
-        (AnchorX, AnchorY) = (Anchor(state.AnchorX), Anchor(state.AnchorY));
+        (AnchorX, AnchorY, AutoCenterAnchor) = (Anchor(state.AnchorX), Anchor(state.AnchorY), state.AutoCenterAnchor == true);
         (CropLeft, CropRight, CropTop, CropBottom) = (Crop(state.CropLeft), Crop(state.CropRight), Crop(state.CropTop), Crop(state.CropBottom));
         BlurFill = state.BlurFill;
     }
@@ -211,6 +221,7 @@ public sealed partial class Layer
             MaskShapes = state.MaskShapes ?? "",
             MaskOffsetX = MaskOffset(state.MaskOffsetX),
             MaskOffsetY = MaskOffset(state.MaskOffsetY),
+            TightBounds = SourceBounds.From(state.TightBounds),
             CropLeft = Crop(state.CropLeft),
             CropRight = Crop(state.CropRight),
             CropTop = Crop(state.CropTop),
@@ -238,11 +249,14 @@ public sealed partial class Layer
             FadeInStyle = Style(state.FadeInStyle),
             FadeOutStyle = Style(state.FadeOutStyle),
             TransitionIn = Seconds(state.TransitionIn),
+            CrossfadeInCurve = CrossfadeCurves.Chosen(state.CrossfadeInCurve),
+            CrossfadeOutCurve = CrossfadeCurves.Known(state.CrossfadeOutCurve),
             Rotation = Math.Clamp(state.Rotation, -360, 360),
             TiltX = Tilt(state.TiltX),
             TiltY = Tilt(state.TiltY),
             AnchorX = Anchor(state.AnchorX),
             AnchorY = Anchor(state.AnchorY),
+            AutoCenterAnchor = state.AutoCenterAnchor == true,
             AutoDuck = state.AutoDuck,
             IsVoice = state.IsVoice,
             IsSoundMuted = state.IsSoundMuted,
@@ -385,6 +399,10 @@ public sealed class LayerState
 
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public double MaskOffsetY { get; set; }
+
+    /// <summary>A Cutout's visible-pixel bounds [UMin, VMin, UMax, VMax] in source-frame fractions (Layer.TightBounds); null (omitted) = unknown.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public double[]? TightBounds { get; set; }
     public double CropLeft { get; set; }
     public double CropRight { get; set; }
     public double CropTop { get; set; }
@@ -429,6 +447,15 @@ public sealed class LayerState
     public TransitionStyle FadeInStyle { get; set; }
     public TransitionStyle FadeOutStyle { get; set; }
     public double TransitionIn { get; set; }
+
+    /// <summary>Gain law of the crossfade into the clip (Layer.CrossfadeInCurve); null (omitted) = equal power.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CrossfadeCurve? CrossfadeInCurve { get; set; }
+
+    /// <summary>Gain law of the crossfade out of the clip (Layer.CrossfadeOutCurve); null (omitted) = equal power.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CrossfadeCurve? CrossfadeOutCurve { get; set; }
+
     public double Rotation { get; set; }
 
     /// <summary>3D pitch and yaw in degrees (Layer.TiltX); 0 (omitted) for flat layers.</summary>
@@ -438,6 +465,11 @@ public sealed class LayerState
     /// <summary>The anchor point (see Layer.AnchorX); what was saved before it was there has the middle.</summary>
     public double AnchorX { get; set; } = 0.5;
     public double AnchorY { get; set; } = 0.5;
+
+    /// <summary>The anchor follows the centre of <see cref="TightBounds"/> (Layer.AutoCenterAnchor); null (omitted) = where it was put.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public bool? AutoCenterAnchor { get; set; }
+
     public bool FlipHorizontal { get; set; }
     public bool FlipVertical { get; set; }
     public double FilterContrast { get; set; } = 1;
@@ -489,6 +521,14 @@ public sealed class LayerState
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public List<Keyframe>? KeysTiltY { get; set; }
 
+    /// <summary>The speed ramp (Layer.SpeedKeys: speed in x at clip-relative seconds); null (omitted) = the constant Speed.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? KeysSpeed { get; set; }
+
+    /// <summary>The hand-drawn ducking curve (Layer.DuckOverrideKeys: reduction in dB at clip-relative seconds); null (omitted) = none.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public List<Keyframe>? DuckOverrideKeys { get; set; }
+
     /// <summary>
     /// All keyframed motion channels of a look. Timing transforms (split, join, trim shift, speed change; TimelineTransaction.Looks)
     /// iterate this list; golden motion-channels fails if any <see cref="List{Keyframe}"/> property is missing.
@@ -502,6 +542,8 @@ public sealed class LayerState
         new(nameof(KeysOpacity), s => s.KeysOpacity, (s, k) => s.KeysOpacity = k),
         new(nameof(KeysTiltX), s => s.KeysTiltX, (s, k) => s.KeysTiltX = k),
         new(nameof(KeysTiltY), s => s.KeysTiltY, (s, k) => s.KeysTiltY = k),
+        new(nameof(KeysSpeed), s => s.KeysSpeed, (s, k) => s.KeysSpeed = k),
+        new(nameof(DuckOverrideKeys), s => s.DuckOverrideKeys, (s, k) => s.DuckOverrideKeys = k),
     ];
 
     /// <summary>One keyframed channel of a look: its property name, and how to read and write its keys.</summary>

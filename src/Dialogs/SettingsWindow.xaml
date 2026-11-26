@@ -491,6 +491,9 @@
                               ToolTip="On by default. With snapping on, edges also catch on the beats found in clips' sound." />
                     <CheckBox Content="Follow the playhead during playback" IsChecked="{Binding TimelineFollowsPlayhead}" AutomationProperties.Name="Follow Playhead During Playback"
                               ToolTip="On by default. While playing, the Timeline turns the page as the playhead reaches its edge, so what is playing stays in sight. Off: the view stays where you put it." />
+                    <CheckBox x:Name="CursorLockedScrubBox" Content="Cursor-locked scrub pointer" IsChecked="{Binding CursorLockedScrubPointer}"
+                              AutomationProperties.Name="Cursor-Locked Scrub Pointer"
+                              ToolTip="Off by default. Hides the cursor while dragging the playhead." />
                     <CheckBox Content="Enable momentum scrolling on Timeline &amp; filmstrips" IsChecked="{Binding EnableMomentumScrolling}" AutomationProperties.Name="Enable Momentum Scrolling"
                               ToolTip="On by default. A quick flick or a fast turn of the wheel coasts on and slows to a stop (the Timeline, the Subtitle Studio's strip, the Media Browser's lists and filmstrip). A slow drag, or a pause of 40 ms before letting go, never coasts, and any press stops it. Also in the Timeline Settings menu." />
                     <CheckBox Content="Show Undo / Redo buttons on the Timeline" IsChecked="{Binding ShowTimelineUndoRedo}" AutomationProperties.Name="Show Undo Redo Buttons"

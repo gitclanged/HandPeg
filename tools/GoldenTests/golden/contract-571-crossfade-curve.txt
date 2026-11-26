@@ -1,0 +1,8 @@
+# Crossfade curves: equal power by default, one gain formula, saved on the Layer only when linear, read back held to the known curves.
+ok: CrossfadeCurve is EqualPower (the default, 0) then Linear, labelled Equal Power and Linear
+ok: equal power: out^2 + in^2 = 1 all through, both at -3 dB in the middle
+ok: linear: out + in = 1 all through, in = progress
+ok: both curves are exact at the ends, clamp outside them and read NaN as the start
+ok: a new clip crossfades with equal power and saves neither curve (older projects read and write unchanged)
+ok: a linear curve is saved, and read back by FromState and ApplyTiming (the timing transforms' path)
+ok: an unknown saved curve reads as equal power; each side is read on its own

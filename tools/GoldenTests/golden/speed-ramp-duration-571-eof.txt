@@ -1,0 +1,7 @@
+# The scene plan at a ramped clip's tail (5.7.1): the last file frame held over its last frame, never a black past-EOF frame.
+   1x ramp, file end at 3.98 s: frame 4.0 s reads 5.979
+ok: a ramped clip's last frame, a hair past the file's end, holds the file's last frame instead of going black
+ok: a constant-speed clip is unchanged (its end is bounded by the file already)
+ok: a ramp that genuinely runs past the file (a project from before auto-duration) still ends where the file does, after one frame
+   fitted 1x->3x over a 4 s file: 0-2, last frame reads 3.901 s, 0 black
+ok: a fitted ramp to the file's end draws every frame, the last near the file's end, none black

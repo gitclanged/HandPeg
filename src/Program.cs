@@ -13,7 +13,8 @@ public static partial class Program
     /// hook launches complete here and exit before WPF loads. Ordinary starts do not wait for it (<see cref="VelopackStarted"/>).
     ///
     /// Worker modes come even earlier: --crash-sentinel (Services.CrashSentinel), the compositor worker and the hardware benchmark run and
-    /// exit without loading the updater, settings or WPF. Everything else lives in <see cref="Start"/> so JIT of Main touches none of it.
+    /// exit without loading the updater, settings or WPF; --dpi-matrix (Shell.DpiMatrixRunner) loads WPF but none of the rest. Everything
+    /// else lives in <see cref="Start"/> so JIT of Main touches none of it.
     /// </summary>
     [STAThread]
     public static void Main(string[] args)
@@ -39,6 +40,14 @@ public static partial class Program
         if (args.Length > 0 && args[0] == Compositor.HardwareBenchmark.Argument)
         {
             Environment.ExitCode = Compositor.HardwareBenchmark.Run(args);
+            return;
+        }
+
+        // Multi-DPI and aspect-ratio geometry matrix (test mode, Pass 5.6.5): builds its own WPF windows on this STA thread and exits with
+        // its verdict; no updater, data migration, single-instance claim or crash sentinel.
+        if (args.Length > 0 && args[0] == Shell.DpiMatrixRunner.Argument)
+        {
+            Environment.ExitCode = Shell.DpiMatrixRunner.Run(args);
             return;
         }
 

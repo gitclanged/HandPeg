@@ -83,6 +83,9 @@ internal sealed class MixerRuntime
     public required int[] Order { get; init; }
 
     public required bool Ducks { get; init; }
+
+    /// <summary>Per strip: a ducked strip with a hand-drawn ducking curve on any of its voices (AudioVoice.DuckOverride), ducked per voice.</summary>
+    public required bool[] Drawn { get; init; }
     public required long Version { get; init; }
 }
 
@@ -94,7 +97,7 @@ public sealed class AudioMixer : IDisposable
 
     private readonly int _rate;
     private readonly int _maxFrames;
-    private readonly float[] _strip, _voice, _key;
+    private readonly float[] _strip, _voice, _key, _unit, _gains;
     private readonly AudioDecoderPool _pool;
     private readonly AudioFeeders? _feeders;
     private readonly object _programGate = new();
@@ -114,6 +117,7 @@ public sealed class AudioMixer : IDisposable
     {
         (_rate, _maxFrames) = (sampleRate, Math.Max(maxFrames, 64));
         (_strip, _voice, _key) = (new float[_maxFrames * 2], new float[_maxFrames * 2], new float[_maxFrames * 2]);
+        (_unit, _gains) = (new float[_maxFrames * 2], new float[_maxFrames]);
         _pool = new AudioDecoderPool(sampleRate);
         if (threaded)
         {
@@ -204,6 +208,9 @@ public sealed class AudioMixer : IDisposable
                 .OrderBy(i => program.StripArray[i].IsVoice ? 0 : program.StripArray[i].Ducked ? 1 : 2)
                 .ToArray();
             var ducks = program.StripArray.Any(s => s.IsVoice) && program.StripArray.Any(s => s.Ducked);
+            var drawn = new bool[strips.Length];
+            for (var i = 0; i < strips.Length; i++)
+                drawn[i] = program.StripArray[i].Ducked && stripVoices[i].Exists(v => program.VoiceArray[v].DuckOverride is not null);
 
             Volatile.Write(ref _published, new MixerRuntime
             {
@@ -213,6 +220,7 @@ public sealed class AudioMixer : IDisposable
                 StripVoices = stripVoices.Select(l => l.ToArray()).ToArray(),
                 Order = order,
                 Ducks = ducks,
+                Drawn = drawn,
                 Version = version,
             });
         }
@@ -236,11 +244,18 @@ public sealed class AudioMixer : IDisposable
 
     /// <summary>
     /// Key of a voice's decoded frames: file, stream, channel pair (and FFmpeg's video start), rate, pitch, stretch mode and its
-    /// sequence-to-media line. Trims keep the line, so a trimmed clip keeps its decoded audio.
+    /// sequence-to-media line. Trims keep the line, so a trimmed clip keeps its decoded audio. A speed ramp's line is its mapping from its
+    /// start: the ramp, where it starts on the sequence and in the file.
     /// </summary>
     private static string VoiceKey(AudioVoice voice)
     {
         var s = voice.Source;
+        if (voice.Ramp is { } ramp)
+        {
+            return string.Create(CultureInfo.InvariantCulture,
+                $"{s.Path}|{s.Stream}|{s.ChannelPair}|{s.VideoStart:R}|{ramp.Identity()}|{voice.Pitch:R}|{(voice.Spectral ? "pv" : "ws")}|{Math.Round(voice.SequenceStart * 1e6):0}|{Math.Round(voice.MediaStart * 1e6):0}");
+        }
+
         var intercept = voice.SequenceStart - voice.MediaStart / voice.Rate;
         return string.Create(CultureInfo.InvariantCulture,
             $"{s.Path}|{s.Stream}|{s.ChannelPair}|{s.VideoStart:R}|{voice.Rate:R}|{voice.Pitch:R}|{(voice.Spectral ? "pv" : "ws")}|{Math.Round(intercept * 1e6):0}");
@@ -367,10 +382,17 @@ public sealed class AudioMixer : IDisposable
             var spec = program.StripArray[index];
             var state = runtime.Strips[index];
 
+            // A ducked strip with a hand-drawn ducking curve is ducked per voice (DuckVoice): the side chain is complete (voice strips mix
+            // first), so a track strip's automatic gains are known before its voices are summed.
+            var drawn = runtime.Drawn[index];
+            var perVoice = drawn && spec.Kind == AudioStripKind.Track;
+            if (perVoice)
+                AutoDuckGains(runtime, state, key, frames);
+
             // Strips with effect latency (Noise Reduction, Studio Voice, limiter lookahead) read their voices that far ahead so their
             // output is this block's audio: a clip's sound enters that long before the clip (pre-roll) and its own strip runs on as long
             // after its last input (tail), so nothing is cut at either edge and sound lands on its picture to the sample.
-            var heard = Voices(runtime, index, frame + state.Latency, frames, strip, envelope: !spec.EnvelopeAfterEffects);
+            var heard = Voices(runtime, index, frame + state.Latency, frames, strip, envelope: !spec.EnvelopeAfterEffects, perVoice);
             if (!heard && spec.Kind != AudioStripKind.Track && !(state.Latency > 0 && OwnVoiceHeard(runtime, index, from, to)))
                 continue;
 
@@ -378,7 +400,7 @@ public sealed class AudioMixer : IDisposable
             {
                 if (spec.IsVoice)
                     AudioMath.Add(key, strip);
-                if (runtime.Ducks && spec.Ducked)
+                if (runtime.Ducks && spec.Ducked && !perVoice)
                     state.Duck?.Process(strip, key, frames);
                 Process(state.Effects, strip, frames, from, to);
             }
@@ -389,7 +411,9 @@ public sealed class AudioMixer : IDisposable
                     Envelope(program.VoiceArray[only], strip, frame, frames);
                 if (spec.IsVoice)
                     AudioMath.Add(key, strip);
-                if (runtime.Ducks && spec.Ducked)
+                if (drawn && runtime.StripVoices[index] is [var one])
+                    DuckVoice(program.VoiceArray[one], strip, frame, AutoDuckGains(runtime, state, key, frames), frames);
+                else if (runtime.Ducks && spec.Ducked)
                     state.Duck?.Process(strip, key, frames);
             }
 
@@ -434,9 +458,53 @@ public sealed class AudioMixer : IDisposable
         runtime.StripVoices[strip] is [var only] && runtime.Program.VoiceArray[only] is var voice
         && voice.SequenceStart < to && Math.Min(voice.End, runtime.Program.SequenceSeconds) > from;
 
-    // Sums a strip's voices from frame (read-ahead included) into its buffer, applying fades and gains for track strips. Returns true
-    // when any voice was audible.
-    private bool Voices(MixerRuntime runtime, int strip, long frame, int frames, Span<float> buffer, bool envelope)
+    // The strip's automatic ducking gain per frame of this block (into _gains): its Ducker run on unit samples, so its envelope advances
+    // exactly as Process would (the factor depends on the side chain alone); 1 throughout when no voice is in the program.
+    private ReadOnlySpan<float> AutoDuckGains(MixerRuntime runtime, StripState state, ReadOnlySpan<float> key, int frames)
+    {
+        var gains = _gains.AsSpan(0, frames);
+        if (!runtime.Ducks || state.Duck is not { } ducker)
+        {
+            gains.Fill(1f);
+            return gains;
+        }
+
+        var unit = _unit.AsSpan(0, frames * 2);
+        unit.Fill(1f);
+        ducker.Process(unit, key, frames);
+        for (var i = 0; i < gains.Length; i++)
+            gains[i] = unit[2 * i];
+        return gains;
+    }
+
+    /// <summary>
+    /// Ducks a voice's frames from <paramref name="frame"/> by <paramref name="automatic"/> (one gain per frame), or by its hand-drawn curve
+    /// where that rules (<see cref="DuckOverrideCurve.GainAt"/>, gliding back over its edges).
+    /// </summary>
+    private void DuckVoice(AudioVoice voice, Span<float> stereo, long frame, ReadOnlySpan<float> automatic, int frames)
+    {
+        if (voice.DuckOverride is not { } curve || !curve.Overlaps(_line.SoundAt(frame, _rate), _line.SoundAt(frame + frames, _rate)))
+        {
+            for (var i = 0; i < frames; i++)
+            {
+                stereo[2 * i] *= automatic[i];
+                stereo[2 * i + 1] *= automatic[i];
+            }
+
+            return;
+        }
+
+        for (var i = 0; i < frames; i++)
+        {
+            var g = curve.GainAt(_line.SoundAt(frame + i, _rate), automatic[i]);
+            stereo[2 * i] *= g;
+            stereo[2 * i + 1] *= g;
+        }
+    }
+
+    // Sums a strip's voices from frame (read-ahead included) into its buffer, applying fades and gains for track strips (and, with
+    // perVoice, each voice's ducking from _gains: AutoDuckGains). Returns true when any voice was audible.
+    private bool Voices(MixerRuntime runtime, int strip, long frame, int frames, Span<float> buffer, bool envelope, bool perVoice = false)
     {
         buffer.Clear();
         var heard = false;
@@ -458,6 +526,8 @@ public sealed class AudioMixer : IDisposable
             runtime.Voices[index].Take(frame + a, part, b - a);
             if (envelope)
                 Envelope(voice, part, frame + a, b - a);
+            if (perVoice)
+                DuckVoice(voice, part, frame + a, _gains.AsSpan(a, b - a), b - a);
             AudioMath.Add(buffer[(a * 2)..(b * 2)], part);
             heard = true;
         }
@@ -511,9 +581,14 @@ public sealed class AudioMixer : IDisposable
         return (float)g;
     }
 
-    // Fade level at a fraction of its length (EasingCurves; Linear matches afade).
-    private static double Curve(double u, EasingType easing) =>
-        easing == EasingType.Linear ? u : EasingCurves.Evaluate(u, new Keyframe(0, 0, easing));
+    // Fade level at a fraction of its length (EasingCurves; Linear matches afade). EaseOut is a crossfade side's equal-power law
+    // (AudioProgramBuilder.EasingOf): sin(u * PI / 2) in, and so cos out (u runs back from the end), whose squares sum to one.
+    internal static double Curve(double u, EasingType easing) => easing switch
+    {
+        EasingType.Linear => u,
+        EasingType.EaseOut => Math.Sin(Math.Clamp(u, 0, 1) * Math.PI / 2),
+        _ => EasingCurves.Evaluate(u, new Keyframe(0, 0, easing)),
+    };
 
     // Sequence fades over the mix (one second each), and silence outside the sequence.
     private void SequenceFades(AudioProgram program, Span<float> output, long frame, int frames, double from, double to)

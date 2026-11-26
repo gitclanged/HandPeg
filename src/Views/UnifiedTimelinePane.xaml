@@ -559,6 +559,12 @@
                                      ToolTip="Click or drag to move the playhead. The wheel zooms the tracks about the pointer; Shift + wheel, or a drag with the middle button, moves along. The shaded part after the end is room to drop or drag clips into." />
 
                 <local:UnifiedTimelineControl x:Name="Surface" Grid.Row="1" AutomationProperties.Name="Timeline Tracks" />
+                <!-- Slice-Preview ribbon: a micro-filmstrip at the playhead while it is scrubbed slowly over a video clip, floating above the
+                     ruler (its bottom on the ruler's top edge) in a zero-height, unclipped, never hit-testable overlay, so no track is covered;
+                     invisible until shown, and the strip moves by translation, so it never shifts the layout (review F22). -->
+                <Canvas Grid.Row="0" Height="0" VerticalAlignment="Top" Panel.ZIndex="3" IsHitTestVisible="False">
+                    <local:SlicePreviewRibbon x:Name="SliceRibbon" Canvas.Left="0" Canvas.Bottom="0" Height="60" Width="{Binding ActualWidth, ElementName=Surface}" />
+                </Canvas>
                 <!-- Hit-testable inside the window-chrome resize band too, since the pane is flush with the window edge. -->
                 <ScrollBar x:Name="RowScroll" Grid.Row="1" Grid.Column="1" Orientation="Vertical" Scroll="RowScroll_Scroll" Visibility="Hidden"
                            WindowChrome.IsHitTestVisibleInChrome="True" AutomationProperties.Name="Timeline Rows Scroll" />

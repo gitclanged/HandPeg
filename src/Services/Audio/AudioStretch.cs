@@ -18,6 +18,59 @@ internal interface IStereoSource
 }
 
 /// <summary>
+/// A varying tempo for <see cref="WsolaStretcher"/> and <see cref="AudioPhaseVocoder"/> (a keyframed speed ramp): the input samples behind
+/// each output sample since the stretcher's reset, the integral of the tempo, strictly increasing. A constant tempo t is j x t.
+/// </summary>
+internal interface ITempoMap
+{
+    /// <summary>Input position (samples at the input rate since the reset) of output sample <paramref name="output"/>.</summary>
+    double InputAt(double output);
+}
+
+/// <summary>
+/// The tempo map of a ramped voice (AudioVoice.Ramp) positioned at sequence time <c>sound</c> with its input read from file time
+/// <c>seekAt</c>: output sample s (at the input rate, before the pitch resampler's step) is heard at sequence time
+/// sound + (s - s0) x lineRate / (inputRate x pitch), where s0 is the pre-roll ahead of it, and reads the input where
+/// <see cref="AudioVoice.MediaAt"/> puts that time. The pre-roll before s0 runs at the start tempo. Immutable; allocation-free lookups.
+/// </summary>
+internal sealed class RampTempoMap : ITempoMap
+{
+    private readonly AudioVoice _voice;
+    private readonly double _sound, _seekAt, _secondsPerOutput, _media, _lead;
+    private readonly int _rate;
+
+    /// <param name="voice">A voice with a <see cref="AudioVoice.Ramp"/>.</param>
+    /// <param name="sound">Sequence time of the stretcher's first heard output sample.</param>
+    /// <param name="lineRate">Transport rate (1 = normal play).</param>
+    /// <param name="pitch">The voice's pitch factor (the resampler's step carries it).</param>
+    /// <param name="seekAt">File time the stretcher's input starts at (pre-roll included).</param>
+    /// <param name="inputRate">Decoder sample rate.</param>
+    public RampTempoMap(AudioVoice voice, double sound, double lineRate, double pitch, double seekAt, int inputRate)
+    {
+        (_voice, _sound, _seekAt, _rate) = (voice, sound, seekAt, Math.Max(inputRate, 1));
+        var line = double.IsFinite(lineRate) && lineRate > 0 ? lineRate : 1;
+        var held = Math.Clamp(double.IsFinite(pitch) ? pitch : 1, 0.25, 4);
+        _secondsPerOutput = line / (_rate * held);
+        StartTempo = TempoAt(voice, sound, line, held);
+        _media = voice.MediaAt(sound);
+        _lead = Math.Max((_media - seekAt) * _rate / StartTempo, 0);
+    }
+
+    /// <summary>Tempo (input samples per output sample) of a ramped voice at a sequence time, held to the stretchers' 0.05..64.</summary>
+    public static double TempoAt(AudioVoice voice, double sound, double lineRate, double pitch) =>
+        Math.Clamp((voice.Ramp?.RateAt(sound - voice.SequenceStart) ?? voice.Rate) * lineRate / pitch, 0.05, 64);
+
+    /// <summary>The tempo where the stretcher starts (the pre-roll's, and the resampler's start offset: lead x tempo).</summary>
+    public double StartTempo { get; }
+
+    /// <summary>Output samples of pre-roll before the first heard one (s0).</summary>
+    public double Lead => _lead;
+
+    public double InputAt(double output) =>
+        output <= _lead ? output * StartTempo : (_voice.MediaAt(_sound + (output - _lead) * _secondsPerOutput) - _seekAt) * _rate;
+}
+
+/// <summary>
 /// Arbitrary-ratio resampler reading <see cref="Step"/> input samples per output sample from a fractional start. A step of exactly 1 with
 /// an integer start copies, so device-rate files pass through bit-exact.
 /// </summary>
@@ -259,12 +312,23 @@ internal sealed class WsolaStretcher : IStereoSource
     private long _frame;
     private long _previous = -1;
     private bool _ended;
+    private ITempoMap? _map;
 
     public double Tempo { get; private set; } = 1;
 
+    /// <summary>Restarts at a varying tempo (a speed ramp: frame centres follow <paramref name="map"/>); null keeps <paramref name="tempo"/>.</summary>
+    public void Reset(IStereoSource source, double tempo, int sampleRate, ITempoMap? map)
+    {
+        Reset(source, tempo, sampleRate);
+        _map = map;
+    }
+
+    // Input position of an output position: the map's (a ramp), else the constant tempo line.
+    private double InputAt(double output) => _map is { } map ? map.InputAt(output) : output * Tempo;
+
     public void Reset(IStereoSource source, double tempo, int sampleRate)
     {
-        (_source, Tempo) = (source, Math.Clamp(tempo, 0.05, 64));
+        (_source, Tempo, _map) = (source, Math.Clamp(tempo, 0.05, 64), null);
         var window = Math.Max((int)(sampleRate * 0.040) & ~1, 64);
         if (window != _window)
         {
@@ -318,8 +382,8 @@ internal sealed class WsolaStretcher : IStereoSource
 
     private bool NextFrame()
     {
-        // Frame k's centre (output k * hop + hop) lies on the input tempo line.
-        var nominal = (long)Math.Round((_frame * _hop + _hop) * Tempo - _hop);
+        // Frame k's centre (output k * hop + hop) lies on the input tempo line (a ramp's map: its integral).
+        var nominal = (long)Math.Round(InputAt(_frame * _hop + _hop) - _hop);
         var lowest = _previous < 0 ? Math.Max(nominal, 0) : Math.Max(nominal - _search, 0);
         // At slow tempos the first frames' centres fall before the input's start, so the
         // window can end below zero; it is then the one candidate at the start.

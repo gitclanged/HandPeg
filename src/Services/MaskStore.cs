@@ -194,6 +194,125 @@ public static class MaskStore
         }
     }
 
+    // ----- Visible-pixel bounds (Pass 5.6.5) -----
+
+    /// <summary>Mask coverage (0-255) at or above this counts as a visible pixel for tight bounds.</summary>
+    public const byte VisibleLevel = 8;
+
+    /// <summary>
+    /// A masked layer's visible-pixel bounds in source-frame fractions (Layer.TightBounds): its drawn outlines' vertices, or its mask
+    /// picture's visible pixels (a frame mask over the whole source frame, a picture mask over the layer's source rect), moved by the mask
+    /// offset and widened by a positive mask grow. Null without a mask, for an inverted mask (it shows everything outside), or when the
+    /// mask cannot be read. A picture mask is read from disk (a mask edit, never a frame).
+    /// </summary>
+    public static SourceBounds? TightBoundsOf(Layer layer)
+    {
+        if (!layer.CustomMask || layer.MaskInvert || SourceOf(layer) is not { Length: > 0 } source)
+            return null;
+
+        SourceBounds? drawn;
+        if (IsDrawn(source))
+        {
+            drawn = BoundsOfOutlines(layer.MaskShapes);
+        }
+        else
+        {
+            var (x, y, width, height) = layer.UsesFrameMask || !(layer.SourceWidth > 0 && layer.SourceHeight > 0)
+                ? (0.0, 0.0, 1.0, 1.0) : (layer.SourceX, layer.SourceY, layer.SourceWidth, layer.SourceHeight);
+            drawn = VisibleBounds(source) is { } seen
+                ? new SourceBounds(x + seen.UMin * width, y + seen.VMin * height, x + seen.UMax * width, y + seen.VMax * height)
+                : null;
+        }
+
+        if (drawn is not { } bounds)
+            return null;
+
+        // The offset is a percentage of what the box shows; a grow is about so many source pixels (1080p when the size is unknown).
+        var shown = layer.ShownSource();
+        var (dx, dy) = (layer.MaskOffsetX / 100 * shown.Width, layer.MaskOffsetY / 100 * shown.Height);
+        var (growX, growY) = layer.MaskGrow > 0
+            ? (layer.MaskGrow / (double)(layer.ImageWidth > 0 ? layer.ImageWidth : 1920), layer.MaskGrow / (double)(layer.ImageHeight > 0 ? layer.ImageHeight : 1080))
+            : (0.0, 0.0);
+        return SourceBounds.From([bounds.UMin + dx - growX, bounds.VMin + dy - growY, bounds.UMax + dx + growX, bounds.VMax + dy + growY]);
+    }
+
+    /// <summary>Pure: the bounds of every vertex of a mask's outlines (source-frame fractions); null without an outline or area.</summary>
+    public static SourceBounds? BoundsOfOutlines(string? shapes)
+    {
+        var outlines = ParseShapes(shapes);
+        if (outlines.Count == 0)
+            return null;
+
+        var (left, top, right, bottom) = (double.MaxValue, double.MaxValue, double.MinValue, double.MinValue);
+        foreach (var outline in outlines)
+        {
+            foreach (var point in outline)
+                (left, top, right, bottom) = (Math.Min(left, point.X), Math.Min(top, point.Y), Math.Max(right, point.X), Math.Max(bottom, point.Y));
+        }
+
+        return SourceBounds.From([left, top, right, bottom]);
+    }
+
+    /// <summary>
+    /// Pure: the bounds (fractions of the picture) of a coverage map's pixels at or above <see cref="VisibleLevel"/>; null when none.
+    /// </summary>
+    public static SourceBounds? VisibleBounds(byte[] pixels, int width, int height)
+    {
+        if (width <= 0 || height <= 0 || pixels.Length < width * height)
+            return null;
+
+        var (left, top, right, bottom) = (width, height, -1, -1);
+        for (var y = 0; y < height; y++)
+        {
+            var row = y * width;
+            for (var x = 0; x < width; x++)
+            {
+                if (pixels[row + x] < VisibleLevel)
+                    continue;
+                (left, right) = (Math.Min(left, x), Math.Max(right, x));
+                (top, bottom) = (Math.Min(top, y), Math.Max(bottom, y));
+            }
+        }
+
+        return right < 0 ? null : SourceBounds.From([(double)left / width, (double)top / height, (right + 1.0) / width, (bottom + 1.0) / height]);
+    }
+
+    // Visible bounds of mask pictures by path and write time: offset and grow slider drags never re-read the file.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, long Written), SourceBounds?> SeenBounds = new(StringTupleComparer.Instance);
+
+    // A mask picture's visible bounds, read at up to 480 pixels across (once per version of the file).
+    private static SourceBounds? VisibleBounds(string path)
+    {
+        long written;
+        try
+        {
+            written = File.GetLastWriteTimeUtc(path).Ticks;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
+
+        if (SeenBounds.TryGetValue((path, written), out var known))
+            return known;
+        if (SeenBounds.Count > 256)
+            SeenBounds.Clear();
+        var bounds = ReadGrey(path, 480) is var (pixels, width, height) ? VisibleBounds(pixels, width, height) : null;
+        SeenBounds[(path, written)] = bounds;
+        return bounds;
+    }
+
+    // Paths compare case-insensitively (Windows), write times exactly.
+    private sealed class StringTupleComparer : IEqualityComparer<(string Path, long Written)>
+    {
+        public static readonly StringTupleComparer Instance = new();
+
+        public bool Equals((string Path, long Written) a, (string Path, long Written) b) =>
+            a.Written == b.Written && string.Equals(a.Path, b.Path, StringComparison.OrdinalIgnoreCase);
+
+        public int GetHashCode((string Path, long Written) key) => HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(key.Path), key.Written);
+    }
+
     // ----- The separate pieces of a mask -----
 
     /// <summary>

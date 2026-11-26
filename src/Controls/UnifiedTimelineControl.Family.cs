@@ -160,7 +160,7 @@ public sealed partial class UnifiedTimelineControl
     private List<(TimelineRow Row, TimelineBlock Block)> GroupOf(BlockDrag drag, Dictionary<object, List<(TimelineRow Row, TimelineBlock Block)>> byParent)
     {
         var found = new List<(TimelineRow Row, TimelineBlock Block)>();
-        if (drag.Kind is not (BlockEdit.Move or BlockEdit.TrimEnd or BlockEdit.TrimStart) || drag.Ripple || drag.Seam is not null || drag.Alt
+        if (drag.Kind is not (BlockEdit.Move or BlockEdit.TrimEnd or BlockEdit.TrimStart) || drag.Ripple || drag.Seam is not null || drag.Alt || drag.Clone
             || IsSelected is not { } isSelected || drag.Block.Clip is not { } pressed)
         {
             return found;
@@ -367,4 +367,179 @@ public sealed partial class UnifiedTimelineControl
 
         drag.FamilyFits = fits;
     }
+
+    // ----- Re-seating a drag on relaid rows (Spring-Zoom, Pass 5.7.1) -----
+
+    // PixelsPerSecond the live drag's pixel state is in (BeginDrag; every re-seat moves it on), and the drag's last control-space pointer.
+    private double _dragScale;
+    private Point? _dragPointer;
+
+    // A re-seated block drag's travel so far (laid DIPs at the new scale), rebased on the relaid pointer by ResumeDrag; null when none waits.
+    private double? _reseatMoved;
+
+    /// <summary>
+    /// Rows were relaid at a new scale mid-drag (a Spring-Zoom view): carries the drag onto the rebuilt blocks (same family key, else the
+    /// same Clip) with its pixel state scaled by new/old scale, so the drag goes on at the same times and commits through the rebuilt
+    /// blocks' callbacks (built at the new scale). False when nothing re-seats (no drag, same scale, a J/L or header drag, or a block gone:
+    /// the caller then lets go as before).
+    /// </summary>
+    private bool ReseatDrag()
+    {
+        var scale = PixelsPerSecond;
+        if (scale <= 0 || _dragScale <= 0 || Math.Abs(scale / _dragScale - 1) < 1e-9 || _splitDrag is not null || _rowDrag is not null
+            || (_drag is null && _fadeDrag is null && _crossfadeDrag is null && _gainDrag is null && _duckDrag is null))
+        {
+            return false;
+        }
+
+        var k = scale / _dragScale;
+        _reseatMoved = null;
+        if (_drag is { } drag)
+        {
+            if (Again(drag.Block, drag.Row) is not { } own)
+                return false;
+
+            TimelineBlock? neighbor = null;
+            if (drag.Neighbor is { } next)
+            {
+                if (Again(next, drag.Row) is not { } found)
+                    return false;
+                neighbor = found.Block;
+            }
+
+            var seated = new BlockDrag
+            {
+                Row = own.Row, Block = own.Block, Kind = drag.Kind, PointerX = drag.PointerX * k, PointerY = drag.PointerY, Left = own.Block.Left,
+                Width = own.Block.Width, Ripple = drag.Ripple, Neighbor = neighbor, NeighborLeft = neighbor?.Left ?? 0, NeighborWidth = neighbor?.Width ?? 0,
+                Alt = drag.Alt, Clone = drag.Clone,
+                Seam = drag.Seam is { } grip
+                    ? new SeamGrip { Mark = grip.Mark, AtStart = grip.AtStart, Reveal = grip.Reveal, Fold = grip.Fold, Cut = grip.Cut * k, Rows = grip.Rows, Seconds = grip.Seconds }
+                    : null,
+            };
+            (seated.Slip, seated.Travel, seated.Keys, seated.TimeLocked, seated.Fits, seated.NewTrackFits) =
+                (drag.Slip * k, drag.Travel, drag.Keys, drag.TimeLocked, drag.Fits, drag.NewTrackFits);
+            seated.Target = drag.Target is { } target ? RowAgain(target) : null;
+            seated.NewTrack = drag.NewTrack is { } seam && RowAgain(seam.Beside) is { } beside ? (beside, seam.Above, seam.Y) : null;
+            seated.Attach = drag.Attach is { } attach && Again(attach.Block, attach.Row) is { } parent ? (parent.Row, parent.Block, attach.Name) : null;
+            _drag = seated;
+
+            // The live edit kept (review F14): the travel so far keeps its seconds across the scale change, and ResumeDrag rebases PointerX
+            // on the relaid pointer, so a view with another time under the pointer (Z out to the home view) never replays it at that time.
+            _reseatMoved = (_lastPointer.X - drag.PointerX) * k;
+        }
+        else if (_fadeDrag is { } fade)
+        {
+            if (Again(fade.Block, fade.Row) is not { } own)
+                return false;
+            (own.Block.Fades, own.Block.Gain) = (fade.Block.Fades, fade.Block.Gain ?? own.Block.Gain);
+            _fadeDrag = (own.Row, own.Block, fade.In, fade.Start);
+        }
+        else if (_crossfadeDrag is { } crossfade)
+        {
+            if (Again(crossfade.Block, crossfade.Row) is not { } own)
+                return false;
+            own.Block.CrossfadeIn = crossfade.Block.CrossfadeIn;
+            _crossfadeDrag = (own.Row, own.Block, crossfade.Start);
+        }
+        else if (_gainDrag is { } gain)
+        {
+            if (Again(gain.Block, gain.Row) is not { } own)
+                return false;
+            own.Block.Gain = gain.Block.Gain;
+            _gainDrag = (own.Row, own.Block, new Point(gain.From.X * k, gain.From.Y), gain.Start);
+        }
+        else if (_duckDrag is { } duck)
+        {
+            if (Again(duck.Block, duck.Row) is not { } own)
+                return false;
+            _duckDrag = new DuckDrag { Row = own.Row, Block = own.Block, Keys = duck.Keys, Before = duck.Before, Index = duck.Index, Changed = duck.Changed };
+        }
+
+        _dragScale = scale;
+        _lastPointer = new Point(_lastPointer.X * k, _lastPointer.Y);
+        return true;
+    }
+
+    /// <summary>After a re-seat (lanes laid): collects the block drag's family afresh and replays the pointer, so everything is drawn live.</summary>
+    private void ResumeDrag()
+    {
+        var pointer = _dragPointer ?? Mouse.GetPosition(this);
+        var laid = Laid(pointer);
+        var moved = _reseatMoved;
+        _reseatMoved = null;
+        if (_drag is { } drag)
+        {
+            if (moved is { } travel)
+                drag.PointerX = laid.X - travel;
+            CollectFamily(drag);
+            if (!_dragParked)
+            {
+                _lastPointer = laid;
+                Follow(drag, laid, pointerMoved: false, Now());
+            }
+        }
+        else if (_fadeDrag is { } fade)
+        {
+            FollowFade(fade, laid);
+        }
+        else if (_crossfadeDrag is { } crossfade)
+        {
+            FollowCrossfade(crossfade, laid);
+        }
+
+        _contentDirty = _labelsDirty = _overlayDirty = true;
+        InvalidateVisual();
+    }
+
+    /// <summary>The rebuilt block for <paramref name="block"/> (same family key, else same Clip), preferring its old row's key; null when gone.</summary>
+    private (TimelineRow Row, TimelineBlock Block)? Again(TimelineBlock block, TimelineRow row)
+    {
+        if (block.Clip is null && block.Family is null)
+            return null;
+
+        (TimelineRow Row, TimelineBlock Block)? elsewhere = null;
+        foreach (var candidate in AllRows(_rows))
+        {
+            foreach (var other in candidate.Blocks)
+            {
+                if (!SameThing(other, block))
+                    continue;
+                if (Equals(candidate.Key, row.Key))
+                    return (candidate, other);
+                elsewhere ??= (candidate, other);
+            }
+        }
+
+        return elsewhere;
+    }
+
+    /// <summary>The rebuilt row with <paramref name="row"/>'s key; null when gone.</summary>
+    private TimelineRow? RowAgain(TimelineRow row)
+    {
+        foreach (var candidate in AllRows(_rows))
+        {
+            if (Equals(candidate.Key, row.Key))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    // Every row, depth first (children after their parent).
+    private static IEnumerable<TimelineRow> AllRows(List<TimelineRow> rows)
+    {
+        var stack = new Stack<TimelineRow>();
+        for (var i = rows.Count - 1; i >= 0; i--)
+            stack.Push(rows[i]);
+        while (stack.Count > 0)
+        {
+            var row = stack.Pop();
+            yield return row;
+            for (var i = row.Children.Count - 1; i >= 0; i--)
+                stack.Push(row.Children[i]);
+        }
+    }
+
+    /// <summary>Test seam: the scale (px/s) the live drag's pixel state is in; 0 with no drag.</summary>
+    internal double DragScale => IsDragging ? _dragScale : 0;
 }

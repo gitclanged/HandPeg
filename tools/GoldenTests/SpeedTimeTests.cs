@@ -56,7 +56,7 @@ public static class SpeedTimeTests
     private static int UndoSteps(MainViewModel vm) => ((System.Collections.ICollection)typeof(MainViewModel).GetField("_undo", Hidden)!.GetValue(vm)!).Count;
 
     // As if the last step were long ago (a test's edits come within the half second and second and a half that merge a user's into one step).
-    private static void Fresh(MainViewModel vm)
+    internal static void Fresh(MainViewModel vm)
     {
         vm.ForgetUndoRuns();
 
@@ -741,7 +741,7 @@ public static class SpeedTimeTests
             var attach = SourceProbe.Member(File.ReadAllText(Path.Combine(SourceProbe.Root, "src", "MainWindow.TabCache.cs")).ReplaceLineEndings("\n"),
                 "private bool AttachHydrated(ProjectTabHeader tab, TabViewContext live)");
             expect(CountOf(attach, "EffectsView.SelectSound(") == 1
-                   && SourceProbe.InOrder(attach, "if (!_viewModel.AttachTab(project))", "return false;", "_viewModel.NewProject();", "return true;", "RestoreTabView(tab);",
+                   && SourceProbe.InOrder(attach, "if (!_viewModel.AttachTab(project))", "return false;", "_viewModel.NewProject();", "return true;", "RestoreTabView(tab, _tabControl.Generation);",
                               "EffectsView.SelectSound(_selectedClip as Layer);", "UpdateTimelineInspector();"),
                 "a tab brought back tells the Effects pane its sound clip once, after a successful AttachTab (nothing on the failed attach's paths)");
             names = Names(pane.SpeedPanel);

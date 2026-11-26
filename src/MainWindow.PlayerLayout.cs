@@ -48,6 +48,7 @@ public partial class MainWindow
                 case nameof(MainViewModel.KeyLayer):
                     _playerOutlineHidden = false;
                     UpdatePlayerSelection();
+                    UpdateLayerXRay();
 
                     // A new selection may change the Canvas's box set.
                     if (_viewModel.IsArrangeActive && !SameArrangeClips())
@@ -63,16 +64,23 @@ public partial class MainWindow
                         _redrawAfterDrag = true;
                     else
                         RedrawForClipsShown();
+                    if (!ScrubDefersLayout && !_viewModel.IsPlaying)
+                        UpdateLayerXRay();
                     break;
                 case nameof(MainViewModel.EditLayersOnPlayer)
                     or nameof(MainViewModel.IsPlaying) or nameof(MainViewModel.AutoCaptions) or nameof(MainViewModel.HasSource)
                     or nameof(MainViewModel.FrameWidth) or nameof(MainViewModel.FrameHeight)
                     or nameof(MainViewModel.IsInteractiveCropActive) or nameof(MainViewModel.DrawTargetLayer):
                     RedrawPlayerLayout();
+                    UpdateLayerXRay();
                     break;
             }
         };
         _viewModel.Layers.CollectionChanged += (_, _) => RedrawPlayerLayout();
+        _viewModel.LayerVisibilityChanged += UpdateLayerXRay;
+
+        // Cutout tight bounds and the automatic anchor follow every mask edit (MainViewModel.Cutouts.cs; subscriptions only).
+        _viewModel.WatchTightBounds();
 
         // Any Thumb drag (box, gizmo or slider, any window) freezes box rebuilds and the Crop target until it completes, then both
         // catch up. Seek bar and scroll bar thumbs are exempt (DragHold.Exempt).
@@ -221,6 +229,11 @@ public partial class MainWindow
 
         foreach (var clip in PlayerClips())
             AddPlayerBox(clip);
+
+        // Topmost: snap guides of a drag (only motion-path dots would be hit-testable; the player shows none).
+        _viewerTools.Guides = new LayoutGuidesView { Width = PlayerLayoutCanvas.ActualWidth, Height = PlayerLayoutCanvas.ActualHeight };
+        System.Windows.Automation.AutomationProperties.SetName(_viewerTools.Guides, "Player snap guides");
+        PlayerLayoutCanvas.Children.Add(_viewerTools.Guides);
         UpdatePlayerSelection();
     }
 
@@ -231,7 +244,7 @@ public partial class MainWindow
             Layer = clip,
             Style = (Style)FindResource("PlayerLayerThumb"),
             Cursor = Cursors.SizeAll,
-            ToolTip = $"{clip.Name}: click to select it; drag to move it (Alt: no snapping). Double-click to center it. Selected, a click with no drag picks the clip under it.",
+            ToolTip = clip.IsText ? $"{clip.Name}: drag to move (Alt: no snap); double-click edits text" : $"{clip.Name}: drag to move (Alt: no snap); double-click centers",
             Takes = (self, at) => LayerBox.TakesPoint(self, HeldPlayerBox, at, IsDrawnNow),
         };
         System.Windows.Automation.AutomationProperties.SetName(box, $"{clip.Name} on the video");
@@ -250,14 +263,20 @@ public partial class MainWindow
         };
         // One undo step per drag, taken on first movement; a select-only press records none (DragStep).
         var moveStep = new DragStep(_viewModel, $"move {clip.Name}");
-        box.DragStarted += (_, _) => moveStep.Pressed();
+        box.DragStarted += (_, _) =>
+        {
+            moveStep.Pressed();
+            _viewerTools.SnapGate.Reset();
+        };
         box.DragDelta += (_, e) =>
         {
             moveStep.Changing();
-            MoveTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale, _playerFrame, null);
+            MoveTrackLayer(clip, e.HorizontalChange / _playerScale, e.VerticalChange / _playerScale, _playerFrame, _viewerTools.Guides);
         };
         box.DragCompleted += (_, e) =>
         {
+            _viewerTools.Guides?.ShowGuides([]);
+
             // Drag-free click on the already-selected layer where others overlap: cycle to the next layer down.
             if (wasHeld && !e.Canceled && Math.Abs(e.HorizontalChange) + Math.Abs(e.VerticalChange) < 2)
                 ClickThrough([.. _playerBoxes.Select(b => b.Box)], box, PlayerLayoutCanvas, next => SelectClip(next.Layer));
@@ -268,9 +287,17 @@ public partial class MainWindow
                 return;
 
             box.CancelDrag();
+            e.Handled = true;
+
+            // A text clip edits its words in place; any other clip centres.
+            if (clip.IsText)
+            {
+                BeginTextEdit(box, clip);
+                return;
+            }
+
             _viewModel.Checkpoint($"center {clip.Name}");
             CenterTrackLayer(clip);
-            e.Handled = true;
         };
 
         void Place()
@@ -325,7 +352,7 @@ public partial class MainWindow
     private System.Windows.Threading.DispatcherTimer? _clickThrough;
 
     // Click-through delay, so a double-click's second press (center) stays with the original box.
-    private static readonly TimeSpan ClickThroughWait = TimeSpan.FromMilliseconds(300);
+    private static TimeSpan ClickThroughWait => TimeSpan.FromMilliseconds(300);
 
     /// <summary>After a drag-free click on the selected box, selects the next box down at that point unless a double-click follows.</summary>
     /// <param name="boxes">The surface's boxes, bottom first.</param>
@@ -403,8 +430,9 @@ public partial class MainWindow
     /// </summary>
     private void OutlinePlayerBox(LayerBox box, Layer clip, bool on)
     {
+        // A Cutout with visible-pixel bounds is outlined by its gizmo on them, not by its whole box.
         var corners = TiltedCorners(clip, _playerFrame, _playerScale);
-        box.BorderThickness = new Thickness(on && corners is null ? 1.5 : 0);
+        box.BorderThickness = new Thickness(on && corners is null && (clip.IsCaptions || TightRectOf(clip) is null) ? 1.5 : 0);
         _playerTiltOutlines.TryGetValue(box, out var outline);
         if (PlaceTiltOutline(PlayerLayoutCanvas, box, outline, corners, on, null, box.BorderBrush ?? Brushes.White, 1.5, null) is { } placed)
             _playerTiltOutlines[box] = placed;
@@ -438,6 +466,9 @@ public partial class MainWindow
         foreach (var outline in _playerTiltOutlines.Values)
             PlayerLayoutCanvas.Children.Remove(outline);
         _playerTiltOutlines.Clear();
+        if (_viewerTools.Guides is not null)
+            PlayerLayoutCanvas.Children.Remove(_viewerTools.Guides);
+        _viewerTools.Guides = null;
         PlayerLayoutCanvas.Background = null;
     }
 }

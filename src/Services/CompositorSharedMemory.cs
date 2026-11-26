@@ -55,6 +55,12 @@ public static class CompositorProtocol
     /// <summary>How many seek hints the client can leave in the control block (<see cref="ControlBlock.Hints"/>).</summary>
     public const int MaxHints = 16;
 
+    /// <summary>
+    /// File times one Slice-Preview burst can carry (<see cref="ControlBlock.SliceBurstMedia"/>; Pass 5.7.1, append-only in free control
+    /// space, so <see cref="Version"/> is unchanged: a worker without it never answers and the ribbon keeps its placeholders).
+    /// </summary>
+    public const int MaxSliceSlots = 8;
+
     public const int ControlOffset = 0;
     public const int ControlBytes = 4096;
     public const int SceneOffset = ControlOffset + ControlBytes;
@@ -281,7 +287,36 @@ public struct ControlBlock
     /// <summary>What limits <see cref="CacheBudgetBytes"/> now (FrameCache.CapAuto, CapOff, CapDxgi, CapCommit, CapRam; FrameCache.CapName).</summary>
     [FieldOffset(320)] public int CacheBudgetCap;
 
-    // 324..511: free.
+    // ----- 324..415: Slice-Preview burst (Pass 5.7.1; SliceBurstSlot writes it, the worker answers SliceBurstDone) -----
+
+    /// <summary>
+    /// Client-written seqlock: odd while a burst (or its withdrawal) is being written, the next even number once it is whole; the worker
+    /// takes only a burst read between two equal even versions (<see cref="SliceBurstSlot.TryRead"/>).
+    /// </summary>
+    [FieldOffset(324)] public int SliceBurstVersion;
+
+    /// <summary>Client-written: valid entries of <see cref="SliceBurstMedia"/>, 0 to <see cref="CompositorProtocol.MaxSliceSlots"/> (0: withdrawn).</summary>
+    [FieldOffset(328)] public int SliceBurstCount;
+
+    /// <summary>Client-written: the source-table entry the slices are decoded from.</summary>
+    [FieldOffset(332)] public int SliceBurstSourceId;
+
+    /// <summary>Client-written: that entry's <see cref="SourceEntry.PathHash"/>; a burst for a since-changed entry is dropped, as hints are.</summary>
+    [FieldOffset(336)] public long SliceBurstPathHash;
+
+    /// <summary>
+    /// Worker-written: the even <see cref="SliceBurstVersion"/> of the burst whose slices are all in the frame cache (0: none yet). A
+    /// superseded burst is dropped unanswered, so only this exact version reads done (<see cref="SliceBurstSlot.IsDone"/>).
+    /// </summary>
+    [FieldOffset(344)] public int SliceBurstDone;
+
+    /// <summary>Client-written: the thumbnails' short side in pixels (0: the worker's own size).</summary>
+    [FieldOffset(348)] public int SliceBurstShortSide;
+
+    /// <summary>Client-written: the slices' file seconds, left to right (<see cref="SliceBurstCount"/> valid).</summary>
+    [FieldOffset(352)] public SliceBurstTimes SliceBurstMedia;
+
+    // 416..511: free.
 
     // 512..1023: per-shader-slot GPU time of the last frame (ms), when the scene requests timing.
     [FieldOffset(512)] public SlotTimings SlotGpuMs;
@@ -538,6 +573,109 @@ public struct GpuSeekHint
 public struct SeekHints
 {
     private GpuSeekHint _first;
+}
+
+/// <summary>A Slice-Preview burst's file times (64 bytes at <see cref="ControlBlock.SliceBurstMedia"/>).</summary>
+[InlineArray(CompositorProtocol.MaxSliceSlots)]
+public struct SliceBurstTimes
+{
+    private double _first;
+}
+
+/// <summary>A whole Slice-Preview burst as <see cref="SliceBurstSlot.TryRead"/> saw it: a copy, so the control block may move on.</summary>
+public struct SliceBurst
+{
+    /// <summary>The even <see cref="ControlBlock.SliceBurstVersion"/> it was read under (what the worker answers once it is decoded).</summary>
+    public int Version;
+
+    /// <summary>Valid entries of <see cref="Media"/> (0: no burst, or withdrawn).</summary>
+    public int Count;
+
+    public int SourceId;
+    public long PathHash;
+    public int ShortSide;
+    public SliceBurstTimes Media;
+}
+
+/// <summary>
+/// The Slice-Preview burst in the control block (Pass 5.7.1): the client posts one file's neighbour times around the playhead, the
+/// worker decodes them into its frame cache ahead of background work (never ahead of the visible frame) and answers with
+/// <see cref="ControlBlock.SliceBurstDone"/>. One writer per side: the client posts, the worker answers. A seqlock guards the payload
+/// (<see cref="Post"/> makes the version odd before writing and the next even number after; <see cref="TryRead"/> takes only a payload
+/// read between two equal even versions), and the worker drops a burst a newer one supersedes, unanswered.
+/// </summary>
+public static class SliceBurstSlot
+{
+    /// <summary>
+    /// Writes a burst (at most <see cref="CompositorProtocol.MaxSliceSlots"/> times; non-finite or negative ones are dropped, the rest
+    /// kept in order), or with no times withdraws it, under an odd version, then publishes the next even one. Returns the burst's
+    /// (even) version, 0 when withdrawn.
+    /// </summary>
+    public static int Post(ref ControlBlock control, int sourceId, long pathHash, ReadOnlySpan<double> mediaSeconds, int shortSide)
+    {
+        // Odd before any payload field moves (Interlocked: a full fence, so no payload store is seen before it); an interrupted post
+        // left it odd, so step on to the next odd number.
+        var writing = Interlocked.Increment(ref control.SliceBurstVersion);
+        if ((writing & 1) == 0)
+            writing = Interlocked.Increment(ref control.SliceBurstVersion);
+
+        var count = 0;
+        foreach (var seconds in mediaSeconds)
+        {
+            if (count == CompositorProtocol.MaxSliceSlots)
+                break;
+            if (double.IsFinite(seconds) && seconds >= 0)
+                control.SliceBurstMedia[count++] = seconds;
+        }
+
+        if (sourceId < 0)
+            count = 0;
+        control.SliceBurstSourceId = count > 0 ? sourceId : -1;
+        control.SliceBurstPathHash = count > 0 ? pathHash : 0;
+        control.SliceBurstShortSide = Math.Max(shortSide, 0);
+        control.SliceBurstCount = count;
+
+        // Release: every payload store is visible before the even version that publishes it.
+        var version = writing + 1;
+        Volatile.Write(ref control.SliceBurstVersion, version);
+        return count > 0 ? version : 0;
+    }
+
+    /// <summary>
+    /// The newest whole burst (the worker's side of the seqlock). False while a post is being written (odd version) or when one landed
+    /// during the read (the version moved): read again next turn. Version 0 (never posted) reads as no burst.
+    /// </summary>
+    public static bool TryRead(ref ControlBlock control, out SliceBurst burst)
+    {
+        burst = default;
+        var version = Volatile.Read(ref control.SliceBurstVersion);
+        if ((version & 1) != 0)
+            return false;
+
+        burst.Count = Math.Clamp(control.SliceBurstCount, 0, CompositorProtocol.MaxSliceSlots);
+        burst.SourceId = control.SliceBurstSourceId;
+        burst.PathHash = control.SliceBurstPathHash;
+        burst.ShortSide = control.SliceBurstShortSide;
+        burst.Media = control.SliceBurstMedia;
+
+        // Every payload load completes before the version is read again.
+        Interlocked.MemoryBarrier();
+        if (Volatile.Read(ref control.SliceBurstVersion) != version)
+        {
+            burst = default;
+            return false;
+        }
+
+        burst.Version = version;
+        return true;
+    }
+
+    /// <summary>
+    /// The worker has decoded every slice of burst <paramref name="version"/>: that exact (even) version, so a burst superseded before it
+    /// was decoded never reads done, even once the newer one is. Never for 0 or an odd version.
+    /// </summary>
+    public static bool IsDone(ref ControlBlock control, int version) =>
+        version > 0 && (version & 1) == 0 && Volatile.Read(ref control.SliceBurstDone) == version;
 }
 
 /// <summary>One float per shader slot number, 0 to 127.</summary>

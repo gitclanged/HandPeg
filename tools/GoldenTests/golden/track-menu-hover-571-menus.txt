@@ -1,0 +1,14 @@
+# Fade & Ease, Seam (Equal Power vs Linear), Audio & Gain and the slim core clip menu, built on a view model's clips.
+ok: Fade & Ease on a fade out: titled "No Fade Out", a Length submenu of 4 lengths
+ok: every style (16) with its ease beside it (Dissolve: Linear)
+ok: and Add Fade Out at the default length
+ok: the Seam menu on a through-edit: "Cut: Through-Edit", Add Crossfade [Ctrl+T] and four lengths
+ok: Audio Curve offers Equal Power (ticked, the default) and Linear
+ok: Roll a frame either way or to the playhead, and Heal Through-Edit [Delete], enabled on a through-edit
+ok: Linear chosen (as its item does) sets the gain law on both sides of the cut, one step of Undo
+ok: the Audio & Gain menu on a video clip with sound: "Gain: 0 dB", gain steps, Auto-Level -14 LUFS and its A/V link (ducking is on its sound lane)
+ok: the core clip menu: 11 items (Split at Playhead, Ripple Delete, Delete, Copy, Cut, Edit, Transform & Look, Effects & Transitions, Audio & Voice, Speed & Time, Tools & Track)
+ok: Split, Ripple Delete and Delete first; the rest in Edit and Tools & Track (the Track submenu inside)
+ok: Duplicate and Paste Attributes... live in Edit
+ok: a header right-click is left to the track menu (nothing filled)
+ok: building the menus took no Undo step (only the chosen Linear did)

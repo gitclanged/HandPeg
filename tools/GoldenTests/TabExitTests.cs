@@ -40,6 +40,10 @@ namespace HandPegGoldenTests;
 /// </summary>
 public static class TabExitTests
 {
+    /// <summary>MainWindow's ProjectTabController field type (its context type is private), found by its generic definition, not a name.</summary>
+    internal static Type TabControlType => typeof(MainWindow).GetFields(BindingFlags.NonPublic | BindingFlags.Instance)
+        .Single(f => f.FieldType.IsGenericType && f.FieldType.GetGenericTypeDefinition() == typeof(HandPegApp.Shell.ProjectTabController<>)).FieldType;
+
     private const string First = "D:/media/first.mkv", Second = "D:/media/second.mkv";
 
     /// <summary>The cases that need no WPF Application (run before UiScaleTests makes one).</summary>
@@ -426,8 +430,8 @@ public static class TabExitTests
                    "await BringRestoredTabForwardAsync(forward, Show)", "Show();", "WriteTabManifest();", "RestoredLine(broughtForward ? forward!.Title : null, adopted.Count)"),
             "Law 1: at idle after the first frame (the blank Timeline, the strip collapsed), and only once the tabs are taken in; the strip shown once, tabs.json written, the status line set");
         var bring = SourceProbe.Member(exit, "private async Task<bool> BringRestoredTabForwardAsync(");
-        expect(SourceProbe.InOrder(bring, "_switchingTab = true;", "PutActiveBehind(out var write);", "SwapStartTabFor(_tabs, blank, front);", "shown();", "await ResumeTabAsync(front, null);",
-                   "RefreshActiveTab();", "finally", "PutStartTabBack(_tabs, at);", "AppLog.Write(", "_switchingTab = false;"),
+        expect(SourceProbe.InOrder(bring, "_tabControl.Prepare(", "PutActiveBehind(out var write);", "SwapStartTabFor(_tabs, blank, front, tab => _tabControl.Commit(restoring, tab));", "shown();", "await ResumeTabAsync(front, null);",
+                   "RefreshActiveTab();", "finally", "PutStartTabBack(_tabs, at, tab => _tabControl.Commit(restoring, tab));", "AppLog.Write(", "_tabControl.Finish(restoring);"),
             "through a switch's own steps: the blank tab put behind and gone, the tab shown in front (the slide comes out from it), then resumed from its cache file; a failure puts a blank tab back in front and is logged");
         expect(bring.Length > 0 && recover.Length > 0 && !bring.Contains("ApplyTabLayout", StringComparison.Ordinal) && !bring.Contains("_dock.Load", StringComparison.Ordinal)
                && !recover.Contains("ApplyTabLayout", StringComparison.Ordinal),
@@ -443,7 +447,7 @@ public static class TabExitTests
         // (final review, AD-1) A tab with unsaved changes brought back keeps its files as the tab in front's crash-recovery copy: the 20 s tick
         // leaves them while its history has not moved, writes them anew once it moves, and lets them go once the tab is clean.
         DirtyResumeKeepsItsFile(expect);
-        expect(SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private async Task<bool> ResumeTabAsync("), "_unresumed.Remove(id);", "if (tab.Dirty)",
+        expect(SourceProbe.InOrder(SourceProbe.Member(tabsSource, "private async Task<bool> ResumeTabAsync("), "_tabControl.TakeFront(tab);", "if (tab.Dirty)",
                    "_frontRecovery = new FrontLook(id, _viewModel.HistoryPosition, Written: true);", "else", "DeleteTabFiles(id);", "if (tab.ExplodedOpen)")
                && SourceProbe.InOrder(SourceProbe.Member(SourceProbe.Src("MainWindow.TabCache.cs"), "private bool AttachHydrated("), "ForgetUnwritten(live.Write);", "if (live.Write?.Dirty == true)",
                    "_frontRecovery = new FrontLook(tab.Id, _viewModel.HistoryPosition, Written: true);", "else", "DeleteTabFiles(tab.Id);"),
@@ -511,9 +515,8 @@ public static class TabExitTests
         // The window's thread's dispatcher (a window made the usual way has it from its constructor), its tabs, a view model, a strip, the
         // paused still's timer taken as made (showing the strip starts none), the strip's keys set, and a close asking.
         typeof(DispatcherObject).GetField("_dispatcher", Hidden)!.SetValue(window, Dispatcher.CurrentDispatcher);
-        Set("_tabs", tabs);
+        Set("_tabControl", Activator.CreateInstance(TabControlType, tabs));
         Set("_viewModel", vm);
-        Set("_unresumed", new HashSet<string>(StringComparer.Ordinal));
         Set("ProjectTabStrip", new ProjectTabStrip { Visibility = Visibility.Visible });
         Set("_stillSettle", new DispatcherTimer());
         Set("_tabGesturesSet", true);
@@ -550,9 +553,8 @@ public static class TabExitTests
         tabs.WriteTab(front.Id, vm.CaptureStateForTab("Front"), vm.SavedFingerprintForTab, ProjectTabs.HeaderJson(front));
         var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
         void Set(string name, object? value) => typeof(MainWindow).GetField(name, Hidden)!.SetValue(window, value);
-        Set("_tabs", tabs);
+        Set("_tabControl", Activator.CreateInstance(TabControlType, tabs));
         Set("_viewModel", vm);
-        Set("_unresumed", new HashSet<string>(StringComparer.Ordinal));
         Set("_frontRecovery", Activator.CreateInstance(typeof(MainWindow).GetNestedType("FrontLook", BindingFlags.NonPublic)!, front.Id, vm.HistoryPosition, true));
         void Tick() => typeof(MainWindow).GetMethod("KeepFrontRecovery", Hidden)!.Invoke(window, null);
         Tick();
@@ -736,9 +738,8 @@ public static class TabExitTests
         var vm = Holding(1);
         var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
         void Set(string name, object? value) => typeof(MainWindow).GetField(name, Hidden)!.SetValue(window, value);
-        Set("_tabs", tabs);
+        Set("_tabControl", Activator.CreateInstance(TabControlType, tabs));
         Set("_viewModel", vm);
-        Set("_unresumed", new HashSet<string>(StringComparer.Ordinal));
         var front = tabs.Active;
         (front.Title, front.Empty) = ("Front", false);
         var onSaved = typeof(MainWindow).GetMethod("ViewModel_ProjectSaved", Hidden)!;
@@ -828,9 +829,8 @@ public static class TabExitTests
         var vm = new MainViewModel();
         var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
         void Set(string name, object? value) => typeof(MainWindow).GetField(name, Hidden)!.SetValue(window, value);
-        Set("_tabs", tabs);
+        Set("_tabControl", Activator.CreateInstance(TabControlType, tabs));
         Set("_viewModel", vm);
-        Set("_unresumed", new HashSet<string>(StringComparer.Ordinal));
         Set("ProjectTabStrip", new ProjectTabStrip { Visibility = Visibility.Visible });
         Set("_stillSettle", new DispatcherTimer());
         var front = tabs.Active;

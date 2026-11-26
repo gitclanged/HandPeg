@@ -54,9 +54,32 @@ public partial class UnifiedTimelinePane : UserControl
         Surface.VerticalOffsetChanged += UpdateRowScroll;
         Surface.SizeChanged += (_, _) => UpdateRowScroll();
 
+        // Cursor-Locked Scrub Pointer (Pass 5.7.1): while a locked ruler drag has the cursor over the tracks, they draw the pointer on
+        // their playhead; the ruler hides the OS cursor only while one of the two draws it, and every drag end hides it here.
+        Ruler.ScrubPointerElsewhere = screen => Surface.ShowScrubPointerAt(screen);
+        Ruler.ScrubSampled += _ =>
+        {
+            if (!Ruler.PointerLocked)
+                Surface.ShowScrubPointerAt(null);
+        };
+        Ruler.SeekEnded += () => Surface.ShowScrubPointerAt(null);
+
         // Overflowed tools stay reachable from "more": Add Track as a kinds menu, Quick FX as a slots menu.
         Toolbar.MenuEntryFor = element => ReferenceEquals(element, AddLayerHost) ? ("Add Track", new Action(OpenKindsMenu))
             : ReferenceEquals(element, QuickFxHost) ? ("Quick FX", new Action(OpenHotbarMenu)) : null;
+    }
+
+    /// <summary>The Slice-Preview ribbon over the tracks (MainWindow.Scrub.cs gates, places and fills it).</summary>
+    public SlicePreviewRibbon SlicePreview => SliceRibbon;
+
+    /// <summary>
+    /// Places the Slice-Preview ribbon centred on the playhead at <paramref name="seconds"/>, kept within the tracks' time area: a
+    /// translation of its strip, no layout.
+    /// </summary>
+    public void PlaceSlicePreview(double seconds)
+    {
+        var centre = Surface.HeaderWidth + seconds * Surface.PixelsPerSecond - Surface.ViewOffsetX;
+        SliceRibbon.Place(SlicePreviewPlanner.LeftFor(centre, SliceRibbon.RibbonWidth, Surface.HeaderWidth, Surface.ActualWidth));
     }
 
     /// <summary>Inspector overflow priority on the tool row: above every tool (Add Track is 100).</summary>

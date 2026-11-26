@@ -1,0 +1,10 @@
+# Ripple Timeline off (5.7.1, Q2): a growing ramp stops at the next clip and warns; a shrinking one leaves a gap; nothing else moves.
+ok: the card's live fit while shaping already shows the clamp (Ripple Timeline off)
+   slow, ripple off, next clip at 5 s: 0-5, 5-9, 5-7, 0-5, 0-5, 0.172 s of the file lost
+ok: a slow ramp with Ripple Timeline off stops at the next clip (5 s), which stays; its family stops with it; other tracks stay
+ok: and warns in the status bar: "second.mkv stops at the next clip (Ripple Timeline is off): it plays 00:00:00:05 less of its file."
+ok: its keys keep the whole ramp's timing (the tail past 5 s trimmed, as a trim would)
+ok: one undo step
+ok: Undo puts it back
+ok: abutting the next clip it keeps its length and warns
+ok: a fast ramp with Ripple Timeline off leaves a gap; its family shrinks with it

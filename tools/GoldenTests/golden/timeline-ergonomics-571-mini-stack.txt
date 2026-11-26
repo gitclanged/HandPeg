@@ -1,0 +1,7 @@
+# A mini-stack lane shows its thumbnails and label once its visible height reaches 22 DIPs, while it opens or closes, never solid bars until fully open.
+ok: collapsed: the Cutout's lane is a 11.2 DIP bar, too short for pictures
+ok: a quarter open (22.4 DIPs, still a mini-stack lane): its pictures already show
+ok: drawn: the lane shows its thumbnail (red 255, blue 0) where the old rule drew a solid bar
+ok: a fifth open (20.2 DIPs): under 22, the plain bar again
+ok: fully open: a full lane with its pictures
+ok: a tall track's collapsed bar (24 DIPs) is tall enough for pictures too
