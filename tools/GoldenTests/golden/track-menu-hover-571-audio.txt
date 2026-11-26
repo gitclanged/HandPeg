@@ -1,0 +1,7 @@
+# Auto-Level -14 LUFS and Auto-Duck preview live on the clip's sound and put its gain and ducking back on leave.
+ok: Auto-Level -14 LUFS: measured once, the clip heard at -7.5 dB on its view, looping (11, 13) from the playhead
+ok: leaving: its gain back to 0 dB, nothing in Undo, nothing dirty
+ok: hovering again uses the measured gain (no second measurement)
+ok: a measurement finishing after its item was left shows nothing
+ok: Auto-Duck: the sound heard ducked under the voice while hovered
+ok: leaving: ducking off again, nothing in Undo, nothing dirty

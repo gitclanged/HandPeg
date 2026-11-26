@@ -1,0 +1,15 @@
+# Hover previews loop round their target on the engine and leave nothing behind: no Undo step, nothing dirty, clip and playhead back.
+ok: nothing shows before the dwell (sweeping across a menu previews nothing)
+ok: after the dwell the view shows a 1 s Wipe Left fade in; the clip in the document has none
+ok: the engine loops (11.75, 13.25) round the fade; the playhead stays parked at 3 s
+ok: no Undo step, no gesture step, nothing dirty
+ok: leaving: the view as the document holds it, the loop stopped and the engine parked back at 3 s, still nothing in Undo
+ok: a fade length (1 s out) shows on the view and loops
+ok: closing the menu puts it back and drops the pre-warm
+ok: a 0.5 s Linear crossfade across the cut shows on both views, looping (11.5, 12.5) centred on the cut; the document has a plain cut
+ok: leaving: a plain cut, equal power on both views, nothing in Undo
+ok: a chosen style is one step of Undo of its own, taken after the preview was put back
+ok: a +6 dB gain shows on the view's sound only
+ok: play pressed: the gain back, the loop ended without pausing the user's play, from the parked 3 s
+ok: while playing nothing previews
+ok: with no loop host the playhead is moved into the fade (12.5 s) and back to 3 s

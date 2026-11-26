@@ -1,35 +1,47 @@
-using System.ComponentModel;
-using System.Globalization;
 using System.IO;
-using System.Runtime.InteropServices;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Interop;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using System.ComponentModel;
 using HandPegApp.Models;
 using HandPegApp.Services;
 using HandPegApp.ViewModels;
-using Microsoft.Win32;
 
 namespace HandPegApp.Shell;
 
 /// <summary>
-/// Live paused hover previews (Pass 5.6.5) for the Effects pane's Add Effect list, the Quick FX slots and the Fade In / Fade Out menus:
-/// resting on an item for <see cref="DwellMs"/> while paused shows it on its clips (an effect card added, or the fade's style set, with
-/// a default-length fade where there was none), seeking into the clip (or the fade) when the playhead is not on it; leaving the item,
-/// closing the menu, choosing the item, or playback starting puts everything back as it was, playhead included unless it was moved
-/// meanwhile. Nothing of a preview is an undo step: effect cards are look changes inside an owned look scope (no look auto-step), fade
-/// styles show on the clips' views only (leaving reloads them from the document), so a chosen item's own step starts from the restored
-/// state. Effects that switch a clip feature on (key, shadow, edges, blend mode, mask) are not previewed. UI thread only.
+/// The engine side of a looping hover preview (Pass 5.7.1): MainWindow's GPU preview engine, or a recorder in the goldens. UI thread.
+/// </summary>
+internal interface ILoopPreviewHost
+{
+    /// <summary>Pre-decodes a window at idle priority while a menu is open (the menu opened over its target).</summary>
+    void Warm(double from, double to);
+
+    /// <summary>Drops the pre-warm request (the menu closed).</summary>
+    void EndWarm();
+
+    /// <summary>Loops a window of the Sequence on the engine, picture and sound; the view model stays paused. False when it cannot.</summary>
+    bool Start(double from, double to);
+
+    /// <summary>Ends the loop and parks the engine at <paramref name="parkAt"/> (s); <paramref name="keepPlaying"/> when the user pressed play meanwhile.</summary>
+    void Stop(double parkAt, bool keepPlaying);
+}
+
+/// <summary>
+/// Live paused hover previews (Pass 5.6.5) for the Effects pane's Add Effect list, the Quick FX slots and the timeline's menus: resting on
+/// an item for <see cref="DwellMs"/> while paused shows it on its clips (an effect card added; a fade's style or length; a cut's
+/// crossfade and its gain law; a clip's gain, Auto-Level's gain, or ducking switched), seeking into the clip (or the fade) when the
+/// playhead is not on it. With a <see cref="Loop"/> host (Pass 5.7.1) the fade, cut or stretch instead loops on the GPU engine round
+/// its target (<see cref="GpuPreviewEngine.LoopWindowOf"/>) while the playhead stays parked. Leaving the item, closing the menu, choosing
+/// the item, or playback starting puts everything back as it was, playhead included unless it was moved meanwhile. Nothing of a preview
+/// is an undo step or makes the project dirty: effect cards are look changes inside an owned look scope (no look auto-step), clip values
+/// show on the clips' views only (leaving reloads them from the document), so a chosen item's own step starts from the restored state.
+/// Effects that switch a clip feature on (key, shadow, edges, blend mode, mask) are not previewed. UI thread only.
 /// </summary>
 internal sealed class PausedHoverPreview : IDisposable
 {
     /// <summary>Rest (ms) on an item before its preview shows: sweeping across a menu previews nothing on the way.</summary>
     public const int DwellMs = 120;
+
+    /// <summary>A stretch of a clip a gain or ducking preview loops (s), from the playhead when it is on the clip.</summary>
+    public const double SoundLoopSeconds = 2.0;
 
     private readonly MainViewModel _vm;
     private readonly System.Windows.Threading.DispatcherTimer _dwell;
@@ -40,6 +52,12 @@ internal sealed class PausedHoverPreview : IDisposable
 
     // Playhead moved by the preview: where it was, and where the preview put it (ms).
     private (double From, double To)? _seek;
+
+    // Auto-Level gains measured for hover previews, by clip view and the file span measured (a trim measures again).
+    private readonly Dictionary<(Layer View, double From, double Span), double?> _levels = [];
+
+    // Bumped by every hover and leave: an Auto-Level measurement that finishes after its item was left shows nothing.
+    private int _hoverSerial;
 
     public PausedHoverPreview(MainViewModel vm)
     {
@@ -52,18 +70,60 @@ internal sealed class PausedHoverPreview : IDisposable
     /// <summary>True while a preview is shown on the picture.</summary>
     public bool IsShowing => _restore.Count > 0;
 
+    /// <summary>The engine a fade, cut or stretch loops on while previewed (Pass 5.7.1); null: the playhead is moved into it instead.</summary>
+    public ILoopPreviewHost? Loop { get; set; }
+
+    /// <summary>The window looping now, null when none (goldens and the status line).</summary>
+    public (double From, double To)? Looping { get; private set; }
+
     /// <summary>Pointer rests on an effect item: after the dwell, while paused, the effect is shown on <paramref name="layers"/>.</summary>
     public void HoverEffect(IReadOnlyList<Layer> layers, Models.Effects.EffectDefinition definition) =>
         Hover(Previewable(definition) ? () => ShowEffect(layers, definition) : null);
 
     /// <summary>Pointer rests on a transition style: after the dwell, while paused, the fade in (or out) of <paramref name="layers"/> takes it.</summary>
-    public void HoverFade(IReadOnlyList<Layer> layers, bool fadeIn, TransitionStyle style) => Hover(() => ShowFade(layers, fadeIn, style));
+    public void HoverFade(IReadOnlyList<Layer> layers, bool fadeIn, TransitionStyle style) => Hover(() => ShowFade(layers, fadeIn, style, null));
+
+    /// <summary>Pointer rests on a fade length: after the dwell, while paused, the fade in (or out) of <paramref name="layers"/> takes it (0: none).</summary>
+    public void HoverFadeLength(IReadOnlyList<Layer> layers, bool fadeIn, double seconds) => Hover(() => ShowFade(layers, fadeIn, null, Math.Max(seconds, 0)));
+
+    /// <summary>
+    /// Pointer rests on a Seam menu item: after the dwell, while paused, the cut where <paramref name="left"/> meets <paramref name="right"/>
+    /// crossfades over <paramref name="seconds"/> (null keeps its length; 0 a plain cut) by <paramref name="curve"/> (null keeps its curve).
+    /// </summary>
+    public void HoverSeam(Layer left, Layer right, double? seconds, CrossfadeCurve? curve) => Hover(() => ShowSeam(left, right, seconds, curve));
+
+    /// <summary>Pointer rests on a gain: after the dwell, while paused, <paramref name="clip"/> plays at <paramref name="gainDb"/>.</summary>
+    public void HoverGain(Layer clip, double gainDb) => Hover(() => ShowGain(clip, gainDb));
+
+    /// <summary>
+    /// Pointer rests on Auto-Level: after the dwell, while paused, <paramref name="measure"/> (once per clip and span, in the background)
+    /// gives the gain reaching -14 LUFS, and <paramref name="clip"/> plays at it once measured, unless the item was left meanwhile.
+    /// </summary>
+    public void HoverAutoLevel(Layer clip, Func<Task<double?>> measure) => Hover(() => ShowAutoLevel(clip, measure));
+
+    /// <summary>Pointer rests on Auto-Duck: after the dwell, while paused, <paramref name="sound"/> plays with Auto-Duck <paramref name="ducks"/>.</summary>
+    public void HoverDucking(Layer sound, bool ducks) => Hover(() => ShowDucking(sound, ducks));
+
+    /// <summary>A menu opened over a target: its window is pre-warmed on the engine (nothing without a <see cref="Loop"/> host).</summary>
+    public void Warm(double from, double to)
+    {
+        if (Loop is { } host && GpuPreviewEngine.LoopWindowOf(from, to, _vm.SequenceSeconds, _vm.SequenceFps) is var (start, stop))
+            host.Warm(start, stop);
+    }
+
+    /// <summary>The menu closed: the preview, if any, is undone and the pre-warm dropped.</summary>
+    public void MenuClosed()
+    {
+        Leave();
+        Loop?.EndWarm();
+    }
 
     /// <summary>Pointer left the item (or the menu closed, or the item was chosen): the preview, if any, is undone.</summary>
     public void Leave()
     {
         _dwell.Stop();
         _pending = null;
+        _hoverSerial++;
         Restore();
     }
 
@@ -81,6 +141,13 @@ internal sealed class PausedHoverPreview : IDisposable
     public static bool Previewable(Models.Effects.EffectDefinition definition) =>
         definition is { Pinned: false, Feature: null } && definition.Type != Models.Effects.EffectRegistry.BlendMode
         && definition.Type != Models.Effects.EffectRegistry.Mask;
+
+    /// <summary>Test seam: shows the pending preview now, as its dwell would (goldens drive no dispatcher timer).</summary>
+    internal void ShowPendingNow()
+    {
+        if (_pending is not null)
+            Dwell_Tick(null, EventArgs.Empty);
+    }
 
     private void Hover(Action? show)
     {
@@ -139,16 +206,21 @@ internal sealed class PausedHoverPreview : IDisposable
             SeekInto(clip.Start, clip.End, clip.Start + clip.Duration * 0.25);
     }
 
-    private void ShowFade(IReadOnlyList<Layer> layers, bool fadeIn, TransitionStyle style)
+    // A fade's style (null keeps it) or length (null keeps it, or the default length where there is none) on the views of `layers`.
+    private void ShowFade(IReadOnlyList<Layer> layers, bool fadeIn, TransitionStyle? style, double? length)
     {
         var shown = new List<(Layer View, Models.Timeline.TimelineClip Clip, double Seconds)>();
         var standard = AppSettings.Current.DefaultTransitionSeconds;
         foreach (var layer in layers)
         {
-            if (layer is not { IsPicture: true, IsCaptions: false, IsLoading: false } || !_vm.Layers.Contains(layer) || _vm.ClipOf(layer) is not { } clip)
+            if (layer is not { IsLoading: false } || !_vm.Layers.Contains(layer) || _vm.ClipOf(layer) is not { } clip)
+                continue;
+            if (style is not null && layer is not { IsPicture: true, IsCaptions: false })
                 continue;
             var (own, other) = fadeIn ? (clip.FadeInSeconds, clip.FadeOutSeconds) : (clip.FadeOutSeconds, clip.FadeInSeconds);
-            shown.Add((layer, clip, own >= 0.01 ? own : Math.Round(Math.Clamp(standard, 0, Math.Max(clip.Duration - other, 0)), 2)));
+            var room = Math.Max(clip.Duration - other, 0);
+            var seconds = length is { } asked ? Math.Round(Math.Clamp(asked, 0, room), 2) : own >= 0.01 ? own : Math.Round(Math.Clamp(standard, 0, room), 2);
+            shown.Add((layer, clip, seconds));
         }
 
         if (shown.Count == 0)
@@ -161,9 +233,9 @@ internal sealed class PausedHoverPreview : IDisposable
             _vm.PreviewOnView(view, v =>
             {
                 if (fadeIn)
-                    (v.FadeInSeconds, v.FadeInStyle) = (seconds, style);
+                    (v.FadeInSeconds, v.FadeInStyle) = (seconds, style ?? v.FadeInStyle);
                 else
-                    (v.FadeOutSeconds, v.FadeOutStyle) = (seconds, style);
+                    (v.FadeOutSeconds, v.FadeOutStyle) = (seconds, style ?? v.FadeOutStyle);
             });
         }
 
@@ -173,9 +245,146 @@ internal sealed class PausedHoverPreview : IDisposable
                 _vm.ShowViewAgain(view);
         });
 
-        // Into the middle of the first clip's fade.
+        // Loops round the first clip's fade (or moves the playhead into its middle).
         var (_, first, fade) = shown[0];
-        SeekInto(first.Start, first.End, fadeIn ? first.Start + fade / 2 : first.End - fade / 2, always: fade > 0.01);
+        var (from, to) = fadeIn ? (first.Start, first.Start + fade) : (first.End - fade, first.End);
+        PlayRound(from, to, first.Start, first.End, fadeIn ? first.Start + fade / 2 : first.End - fade / 2, always: fade > 0.01);
+    }
+
+    private void ShowSeam(Layer left, Layer right, double? seconds, CrossfadeCurve? curve)
+    {
+        if (!_vm.Layers.Contains(left) || !_vm.Layers.Contains(right) || _vm.ClipOf(left) is not { } outgoing || _vm.ClipOf(right) is not { } incoming)
+            return;
+
+        var length = Math.Round(Math.Clamp(seconds ?? incoming.TransitionIn, 0, Math.Min(outgoing.Duration, incoming.Duration)), 3);
+
+        // The curves are look values a reload from the clip does not touch: put back as they were, then the clip's values reloaded.
+        var (wasIn, wasCurveIn, wasCurveOut) = (right.TransitionIn, right.CrossfadeInCurve, left.CrossfadeOutCurve);
+        _vm.PreviewOnView(right, v =>
+        {
+            v.TransitionIn = length;
+            if (curve is { } law)
+                v.CrossfadeInCurve = law;
+        });
+        if (curve is { } outLaw)
+            _vm.PreviewOnView(left, v => v.CrossfadeOutCurve = outLaw);
+        _restore.Add(() =>
+        {
+            _vm.PreviewOnView(right, v => (v.TransitionIn, v.CrossfadeInCurve) = (wasIn, wasCurveIn));
+            _vm.PreviewOnView(left, v => v.CrossfadeOutCurve = wasCurveOut);
+            _vm.ShowViewAgain(right);
+            _vm.ShowViewAgain(left);
+        });
+
+        // Round the cut: the crossfade's middle is the cut.
+        var cut = incoming.Start;
+        PlayRound(cut - length / 2, cut + length / 2, outgoing.Start, incoming.End, cut, always: true);
+    }
+
+    private void ShowGain(Layer clip, double gainDb)
+    {
+        if (!_vm.Layers.Contains(clip) || _vm.ClipOf(clip) is not { } model)
+            return;
+
+        var was = clip.GainDb;
+        _vm.PreviewOnView(clip, v => v.GainDb = gainDb);
+        _restore.Add(() =>
+        {
+            _vm.PreviewOnView(clip, v => v.GainDb = was);
+            _vm.ShowViewAgain(clip);
+        });
+        PlayStretch(model.Start, model.End);
+    }
+
+    private void ShowAutoLevel(Layer clip, Func<Task<double?>> measure)
+    {
+        if (!_vm.Layers.Contains(clip) || _vm.ClipOf(clip) is null)
+            return;
+
+        var key = (clip, clip.MediaOffset, clip.Duration);
+        if (_levels.TryGetValue(key, out var known))
+        {
+            if (known is { } gain)
+                ShowGain(clip, gain);
+            return;
+        }
+
+        var serial = _hoverSerial;
+        _ = MeasureThenShow();
+
+        async Task MeasureThenShow()
+        {
+            double? gain;
+            try
+            {
+                gain = await measure();
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or IOException or InvalidDataException or UnauthorizedAccessException
+                                           or NotSupportedException or System.Runtime.InteropServices.COMException)
+            {
+                AppLog.Write("Hover preview: Auto-Level", ex);
+                return;
+            }
+
+            _levels[key] = gain;
+            if (serial == _hoverSerial && gain is { } level && !_vm.IsPlaying && !IsShowing)
+                ShowGain(clip, level);
+        }
+    }
+
+    private void ShowDucking(Layer sound, bool ducks)
+    {
+        if (!_vm.Layers.Contains(sound) || _vm.ClipOf(sound) is not { } model)
+            return;
+
+        var was = sound.AutoDuck;
+        _vm.PreviewOnView(sound, v => v.AutoDuck = ducks);
+        _restore.Add(() =>
+        {
+            _vm.PreviewOnView(sound, v => v.AutoDuck = was);
+            _vm.ShowViewAgain(sound);
+        });
+
+        // Where a voice speaks over it, if one does: that is where ducking is heard.
+        var voice = _vm.Layers.Where(l => l is { IsVoice: true, CarriesSound: true, IsHidden: false } && !ReferenceEquals(l, sound))
+            .Select(_vm.ClipOf).OfType<Models.Timeline.TimelineClip>()
+            .Where(c => c.Start < model.End && c.End > model.Start).OrderBy(c => c.Start).FirstOrDefault();
+        if (voice is not null)
+        {
+            var from = Math.Max(voice.Start, model.Start);
+            PlayRound(from, Math.Min(from + SoundLoopSeconds, Math.Min(voice.End, model.End)), model.Start, model.End, from, always: false);
+        }
+        else
+        {
+            PlayStretch(model.Start, model.End);
+        }
+    }
+
+    // A clip's stretch to hear: SoundLoopSeconds from the playhead when it is on the clip, else from the clip's start.
+    private void PlayStretch(double start, double end)
+    {
+        var at = _vm.PositionMs / 1000;
+        var from = at >= start && at < end ? at : start;
+        PlayRound(from, Math.Min(from + SoundLoopSeconds, end), start, end, from, always: false);
+    }
+
+    // Loops [from, to] on the engine when a host can (the playhead stays parked), else moves the playhead into [start, end) at `seconds`.
+    private void PlayRound(double from, double to, double start, double end, double seconds, bool always)
+    {
+        var parked = _vm.PositionMs / 1000;
+        if (Loop is { } host && GpuPreviewEngine.LoopWindowOf(from, to, _vm.SequenceSeconds, _vm.SequenceFps) is var (loopFrom, loopTo)
+            && host.Start(loopFrom, loopTo))
+        {
+            Looping = (loopFrom, loopTo);
+            _restore.Add(() =>
+            {
+                Looping = null;
+                host.Stop(parked, keepPlaying: _vm.IsPlaying);
+            });
+            return;
+        }
+
+        SeekInto(start, end, seconds, always);
     }
 
     // Moves the playhead to `seconds` when it is outside [start, end) (or always), remembering where it was.
@@ -205,6 +414,7 @@ internal sealed class PausedHoverPreview : IDisposable
         }
 
         _restore.Clear();
+        Looping = null;
         if (_seek is { } seek && Math.Abs(_vm.PositionMs - seek.To) < 1)
             _vm.PositionMs = seek.From;
         _seek = null;
