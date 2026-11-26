@@ -1,0 +1,7 @@
+# Slice-Preview gate: dormant above 300 DIP/s, shown after 120 ms below 250 DIP/s, kept in between, asleep off video.
+ok: a fast whip (above 300 DIP/s) keeps it dormant
+ok: below 250 DIP/s it arms, and shows once that has held 120 ms
+ok: once shown, 250-300 DIP/s keeps it (hysteresis) and a still pointer keeps it; above 300 it sleeps at once
+ok: arming broken by 250 DIP/s or more starts over: 120 ms below 250 from the new start
+ok: off a video clip, or with no speed, it sleeps at once; Sleep (release, playback) too
+ok: the playhead speed is a 120 ms average: a steady 200 DIP/s reads 200.0; after a 2000 DIP/s whip it falls below 250 between 0.2 and 0.3 s; no time passed keeps it

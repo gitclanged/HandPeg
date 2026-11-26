@@ -1,0 +1,15 @@
+# Slice-Preview spacing for the zoom and its readout (+-1f .. +-1s), slot count, placement and cell sizes.
+  zoom 1200 DIP per Sequence second, 60 fps: +-1f
+  zoom 480 DIP per Sequence second, 60 fps: +-2f
+  zoom 320 DIP per Sequence second, 60 fps: +-3f
+  zoom 100 DIP per Sequence second, 60 fps: +-0.25s
+  zoom 32 DIP per Sequence second, 60 fps: +-0.5s
+  zoom 16 DIP per Sequence second, 60 fps: +-1s
+  zoom 0.01 DIP per Sequence second, 60 fps: +-60s
+ok: zoomed in deep the slots are whole frames apart (+-1f to +-3f); further out a round part of a second (+-0.25s, +-0.5s, +-1s ...)
+ok: zooming out never narrows the spacing
+ok: with no frame rate the spacing is in seconds; with no zoom it is unusable and shows no readout
+ok: seven slots when the time area holds nine cells, else five
+ok: the ribbon centres on the playhead, kept inside the time area when it fits
+ok: strip cells are even-sided, the short side 16-256 px, the shape of the Sequence (portrait too), at most 4:1
+ok: the ribbon's strip is 60 DIP tall: the XAML element's fixed height, so it never resizes
