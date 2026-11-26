@@ -399,6 +399,15 @@ public sealed partial class Layer : ObservableObject
     /// </summary>
     [ObservableProperty] private double _transitionIn;
 
+    /// <summary>
+    /// Gain law of the sound's side of a crossfade into this clip (<see cref="TransitionIn"/>, or a fade in under an overlap; Pass 5.7.1
+    /// Seam menu). Equal power by default; saved only when changed (LayerState.CrossfadeInCurve).
+    /// </summary>
+    [ObservableProperty] private CrossfadeCurve _crossfadeInCurve;
+
+    /// <summary>Gain law of the sound's side of a crossfade out of this clip (its fade out over an overlap or into the next clip).</summary>
+    [ObservableProperty] private CrossfadeCurve _crossfadeOutCurve;
+
     // ----- Audio tab row binding -----
     // Audio clips share the AudioTrack row template. These members mirror AudioTrack's binding names: some map to clip settings,
     // the rest report unsupported features (own codec, filters, solo) so the row leaves them empty.
@@ -1044,6 +1053,7 @@ public sealed partial class Layer : ObservableObject
         Speed = ReadSpeed(state?.Speed ?? 1);
         (FadeInSeconds, FadeOutSeconds, TransitionIn) = (Seconds(state?.FadeInSeconds ?? 0), Seconds(state?.FadeOutSeconds ?? 0), Seconds(state?.TransitionIn ?? 0));
         (FadeInStyle, FadeOutStyle) = (Style(state?.FadeInStyle ?? 0), Style(state?.FadeOutStyle ?? 0));
+        (CrossfadeInCurve, CrossfadeOutCurve) = (CrossfadeCurves.Known(state?.CrossfadeInCurve), CrossfadeCurves.Known(state?.CrossfadeOutCurve));
         ApplyKeys(state);
     }
 

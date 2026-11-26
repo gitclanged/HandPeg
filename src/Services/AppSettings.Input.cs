@@ -49,6 +49,15 @@ public sealed partial class AppSettings
     public bool EnableMomentumScrolling { get; set; } = true;
 
     /// <summary>
+    /// Cursor-Locked Scrub Pointer (Pass 5.7.1): while the playhead is dragged the OS cursor is hidden and the playhead's own visual
+    /// draws the pointer, so the two never part on a high-refresh display; the OS cursor returns on release, capture loss, Esc or a
+    /// fault. Off by default (user decision Q1); Settings > Timeline. Serialized only when on; <see cref="Clone"/> copies it with the
+    /// other value settings (MemberwiseClone).
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool CursorLockedScrubPointer { get; set; }
+
+    /// <summary>
     /// Developer flight recorder (<see cref="DevFlightRecorder"/>; also on while %AppData%\HandPeg\dev-verbose.flag exists). Settings >
     /// General > Diagnostics > Verbose flight recorder, off by default; serialized only when true.
     /// </summary>

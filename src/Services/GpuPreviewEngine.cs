@@ -226,6 +226,7 @@ public sealed partial class GpuPreviewEngine : IDisposable
             var canvasMoved = plan.CanvasWidth != _plan.CanvasWidth || plan.CanvasHeight != _plan.CanvasHeight;
             Volatile.Write(ref _plan, plan);
             _state = state;
+            StateInstalled(state);
             if (canvasMoved)
                 CanvasChanged?.Invoke();
             Volatile.Write(ref _canvasFps, state.Timeline.FrameRate.IsValid ? state.Timeline.FrameRate.Fps : 0);
@@ -916,6 +917,9 @@ public sealed partial class GpuPreviewEngine : IDisposable
                 // Attach/detach Live Video Preview mirrors here (the sole presenting thread).
                 TakeMirrorRequests();
 
+                // The Slice-Preview ribbon's newest burst, posted or withdrawn from this one thread (Pass 5.7.1 seam).
+                SliceBurstTurn(_playing);
+
                 if (_playing)
                 {
                     if (!playBegun)
@@ -945,10 +949,12 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     if (_primingSince != 0 && PrimingReady())
                         EndPriming();
 
-                    // A ghost pause or seek posted during the wait lands before this turn's moment is measured.
+                    // A ghost pause or seek posted during the wait lands before this turn's moment is measured; a hover preview's loop
+                    // wraps first (its Seek is drained just below).
                     ApplyGhostPause();
                     if (!_playing)
                         continue;
+                    LoopPreviewTurn();
                     DrainSeek();
 
                     // Read requested marks before the plan and playhead so this scene satisfies them (PresentedSince).
@@ -1516,6 +1522,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
                     extras[extraCount++] = hint;
             }
         }
+        if (quiet)
+            AddLoopPreviewHints(extras, ref extraCount);
 
         // The cuts ahead as if Space were pressed: not while a scrub runs (they would move with every step of it).
         var rate = playing ? _rate : scrubbing ? 0 : _rate > 0 ? _rate : 1;
@@ -1523,8 +1531,8 @@ public sealed partial class GpuPreviewEngine : IDisposable
             _client.SetHints(hints[..count]);
     }
 
-    // Cap on prewarm hints: one drop file plus two tabs' videos (four each, per PrewarmTabs callers).
-    private const int MostExtras = 9;
+    // Cap on prewarm hints: one drop file, two tabs' videos (four each, per PrewarmTabs callers) and a hover preview's two clips.
+    private const int MostExtras = 11;
 
     // Where Loop takes playback back from and to (seconds; NaN: no Loop; from infinite: the sequence's end), for the hints.
     private double _loopFrom = double.NaN, _loopTo = double.NaN;
@@ -1537,6 +1545,35 @@ public sealed partial class GpuPreviewEngine : IDisposable
     {
         Volatile.Write(ref _loopFrom, from);
         Volatile.Write(ref _loopTo, to);
+    }
+
+    // ----- Pass 5.7.1 wave-0 seams -----
+    // Hooks the lanes' partial files implement (an unimplemented one is compiled away with its calls): GpuPreviewEngine.LoopPreview.cs
+    // (live looping hover previews) and GpuPreviewEngine.SlicePreview.cs (the Slice-Preview burst, SlicePreviewContracts.cs).
+
+    /// <summary>Pump thread, each playing turn before a posted seek is applied: a hover preview's loop wraps here (by posting a Seek).</summary>
+    partial void LoopPreviewTurn();
+
+    /// <summary>Pump thread, with the quiet prewarm extras: idle-priority hints for a hover preview's window (only while count &lt; extras.Length).</summary>
+    partial void AddLoopPreviewHints(Span<GpuSeekHint> extras, ref int count);
+
+    /// <summary>UI thread, as <see cref="SetState"/> installs a Sequence: a hover preview keeps the newest state to restore.</summary>
+    partial void StateInstalled(SequenceExportState state);
+
+    /// <summary>Pump thread, every turn: posts or withdraws the newest Slice-Preview burst (CompositorClient.PostSliceBurst); dormant while playing.</summary>
+    partial void SliceBurstTurn(bool playing);
+
+    /// <summary>
+    /// One coalesced scrub step (ScrubCoalescer: at most once per rendered frame, from the live cursor): a <see cref="Seek"/>, unless the
+    /// target is the moment already posted while paused or ghost-paused, so a still pointer wakes nothing. True when posted. UI thread.
+    /// </summary>
+    public bool ScrubSeek(double sequenceSeconds)
+    {
+        var seconds = Math.Clamp(sequenceSeconds, 0, Math.Max(SequenceSeconds, 0));
+        if (!double.IsFinite(seconds) || ((!_playing || _ghostPaused) && seconds.Equals(_lastSeekAt) && seconds.Equals(Volatile.Read(ref _pausedAt))))
+            return false;
+        Seek(seconds);
+        return true;
     }
 
     /// <summary>Paused pump wait: until hover rest or scrub end, at most 250 ms.</summary>

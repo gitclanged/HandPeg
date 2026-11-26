@@ -85,6 +85,8 @@ public sealed partial class Layer
         FadeInStyle = FadeInStyle,
         FadeOutStyle = FadeOutStyle,
         TransitionIn = TransitionIn,
+        CrossfadeInCurve = CurveOrNull(CrossfadeInCurve),
+        CrossfadeOutCurve = CurveOrNull(CrossfadeOutCurve),
         Rotation = Rotation,
         TiltX = TiltX,
         TiltY = TiltY,
@@ -125,6 +127,9 @@ public sealed partial class Layer
 
     /// <summary>Validated transition style (unknown values map to dissolve).</summary>
     private static TransitionStyle Style(TransitionStyle saved) => Enum.IsDefined(saved) ? saved : TransitionStyle.Dissolve;
+
+    /// <summary>A crossfade curve as saved: null (omitted) for the default equal power, so older projects read and write unchanged.</summary>
+    private static CrossfadeCurve? CurveOrNull(CrossfadeCurve curve) => curve == CrossfadeCurve.EqualPower ? null : curve;
 
     /// <summary>A saved crop, held to what leaves something of the layer: at most 95% from one edge.</summary>
     private static double Crop(double value) => double.IsFinite(value) ? Math.Clamp(value, 0, 0.95) : 0;
@@ -244,6 +249,8 @@ public sealed partial class Layer
             FadeInStyle = Style(state.FadeInStyle),
             FadeOutStyle = Style(state.FadeOutStyle),
             TransitionIn = Seconds(state.TransitionIn),
+            CrossfadeInCurve = CrossfadeCurves.Known(state.CrossfadeInCurve),
+            CrossfadeOutCurve = CrossfadeCurves.Known(state.CrossfadeOutCurve),
             Rotation = Math.Clamp(state.Rotation, -360, 360),
             TiltX = Tilt(state.TiltX),
             TiltY = Tilt(state.TiltY),
@@ -440,6 +447,15 @@ public sealed class LayerState
     public TransitionStyle FadeInStyle { get; set; }
     public TransitionStyle FadeOutStyle { get; set; }
     public double TransitionIn { get; set; }
+
+    /// <summary>Gain law of the crossfade into the clip (Layer.CrossfadeInCurve); null (omitted) = equal power.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CrossfadeCurve? CrossfadeInCurve { get; set; }
+
+    /// <summary>Gain law of the crossfade out of the clip (Layer.CrossfadeOutCurve); null (omitted) = equal power.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public CrossfadeCurve? CrossfadeOutCurve { get; set; }
+
     public double Rotation { get; set; }
 
     /// <summary>3D pitch and yaw in degrees (Layer.TiltX); 0 (omitted) for flat layers.</summary>

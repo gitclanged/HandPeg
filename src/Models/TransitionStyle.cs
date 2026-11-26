@@ -44,6 +44,46 @@ public enum TransitionStyle
     Spin,
 }
 
+/// <summary>
+/// Gain law of an audio crossfade across a cut seam or an overlap (Pass 5.7.1, the Seam menu; Layer.CrossfadeInCurve and
+/// CrossfadeOutCurve). Equal power, the default, keeps the loudness of two different sounds through the fade; linear keeps the level
+/// of one sound cut in two (a through-edit).
+/// </summary>
+/// <remarks>Saved by value: append new curves, never reorder or rename.</remarks>
+public enum CrossfadeCurve
+{
+    /// <summary>Quarter sine and cosine: out^2 + in^2 = 1 (no dip in loudness for uncorrelated sounds).</summary>
+    EqualPower,
+
+    /// <summary>Straight ramps: out + in = 1 (no bump in level for correlated sounds).</summary>
+    Linear,
+}
+
+/// <summary>What each <see cref="CrossfadeCurve"/> is called and the two gains it gives (one formula for the mixer, menus and drawing).</summary>
+public static class CrossfadeCurves
+{
+    public static IReadOnlyList<CrossfadeCurve> All { get; } = Enum.GetValues<CrossfadeCurve>();
+
+    public static string Label(CrossfadeCurve curve) => curve == CrossfadeCurve.Linear ? "Linear" : "Equal Power";
+
+    /// <summary>A saved curve, held to the known ones (an unknown value is equal power).</summary>
+    public static CrossfadeCurve Known(CrossfadeCurve? saved) => saved is { } curve && Enum.IsDefined(curve) ? curve : CrossfadeCurve.EqualPower;
+
+    /// <summary>
+    /// Gains of the outgoing and incoming sounds at <paramref name="progress"/> (0 at the crossfade's start, 1 at its end; clamped,
+    /// NaN as 0). Exact at both ends: (1, 0) and (0, 1).
+    /// </summary>
+    public static (double Out, double In) Gains(CrossfadeCurve curve, double progress)
+    {
+        var t = double.IsFinite(progress) ? Math.Clamp(progress, 0, 1) : 0;
+        if (t <= 0)
+            return (1, 0);
+        if (t >= 1)
+            return (0, 1);
+        return curve == CrossfadeCurve.Linear ? (1 - t, t) : (Math.Cos(t * Math.PI / 2), Math.Sin(t * Math.PI / 2));
+    }
+}
+
 /// <summary>What each <see cref="TransitionStyle"/> is called, which way it goes, and the curve its fade follows.</summary>
 public static class TransitionStyles
 {

@@ -55,6 +55,12 @@ public static class CompositorProtocol
     /// <summary>How many seek hints the client can leave in the control block (<see cref="ControlBlock.Hints"/>).</summary>
     public const int MaxHints = 16;
 
+    /// <summary>
+    /// File times one Slice-Preview burst can carry (<see cref="ControlBlock.SliceBurstMedia"/>; Pass 5.7.1, append-only in free control
+    /// space, so <see cref="Version"/> is unchanged: a worker without it never answers and the ribbon keeps its placeholders).
+    /// </summary>
+    public const int MaxSliceSlots = 8;
+
     public const int ControlOffset = 0;
     public const int ControlBytes = 4096;
     public const int SceneOffset = ControlOffset + ControlBytes;
@@ -281,7 +287,30 @@ public struct ControlBlock
     /// <summary>What limits <see cref="CacheBudgetBytes"/> now (FrameCache.CapAuto, CapOff, CapDxgi, CapCommit, CapRam; FrameCache.CapName).</summary>
     [FieldOffset(320)] public int CacheBudgetCap;
 
-    // 324..511: free.
+    // ----- 324..415: Slice-Preview burst (Pass 5.7.1; SliceBurstSlot writes it, the worker answers SliceBurstDone) -----
+
+    /// <summary>Client-written: bumped after a burst (or its withdrawal) is written; the worker re-reads the burst when it changes.</summary>
+    [FieldOffset(324)] public int SliceBurstVersion;
+
+    /// <summary>Client-written: valid entries of <see cref="SliceBurstMedia"/>, 0 to <see cref="CompositorProtocol.MaxSliceSlots"/> (0: withdrawn).</summary>
+    [FieldOffset(328)] public int SliceBurstCount;
+
+    /// <summary>Client-written: the source-table entry the slices are decoded from.</summary>
+    [FieldOffset(332)] public int SliceBurstSourceId;
+
+    /// <summary>Client-written: that entry's <see cref="SourceEntry.PathHash"/>; a burst for a since-changed entry is dropped, as hints are.</summary>
+    [FieldOffset(336)] public long SliceBurstPathHash;
+
+    /// <summary>Worker-written: the newest <see cref="SliceBurstVersion"/> whose slices are all in the frame cache (0: none yet).</summary>
+    [FieldOffset(344)] public int SliceBurstDone;
+
+    /// <summary>Client-written: the thumbnails' short side in pixels (0: the worker's own size).</summary>
+    [FieldOffset(348)] public int SliceBurstShortSide;
+
+    /// <summary>Client-written: the slices' file seconds, left to right (<see cref="SliceBurstCount"/> valid).</summary>
+    [FieldOffset(352)] public SliceBurstTimes SliceBurstMedia;
+
+    // 416..511: free.
 
     // 512..1023: per-shader-slot GPU time of the last frame (ms), when the scene requests timing.
     [FieldOffset(512)] public SlotTimings SlotGpuMs;
@@ -538,6 +567,50 @@ public struct GpuSeekHint
 public struct SeekHints
 {
     private GpuSeekHint _first;
+}
+
+/// <summary>A Slice-Preview burst's file times (64 bytes at <see cref="ControlBlock.SliceBurstMedia"/>).</summary>
+[InlineArray(CompositorProtocol.MaxSliceSlots)]
+public struct SliceBurstTimes
+{
+    private double _first;
+}
+
+/// <summary>
+/// The Slice-Preview burst in the control block (Pass 5.7.1): the client posts one file's neighbour times around the playhead, the
+/// worker decodes them into its frame cache ahead of background work (never ahead of the visible frame) and answers with
+/// <see cref="ControlBlock.SliceBurstDone"/>. One writer per side: the client posts, the worker answers. The worker reads the version,
+/// the burst, then the version again; a changed version means a newer burst was being written, so it reads again.
+/// </summary>
+public static class SliceBurstSlot
+{
+    /// <summary>
+    /// Writes a burst (at most <see cref="CompositorProtocol.MaxSliceSlots"/> times; non-finite or negative ones are dropped, the rest
+    /// kept in order), or with no times withdraws it, then bumps the version. Returns the burst's version, 0 when withdrawn.
+    /// </summary>
+    public static int Post(ref ControlBlock control, int sourceId, long pathHash, ReadOnlySpan<double> mediaSeconds, int shortSide)
+    {
+        var count = 0;
+        foreach (var seconds in mediaSeconds)
+        {
+            if (count == CompositorProtocol.MaxSliceSlots)
+                break;
+            if (double.IsFinite(seconds) && seconds >= 0)
+                control.SliceBurstMedia[count++] = seconds;
+        }
+
+        if (sourceId < 0)
+            count = 0;
+        control.SliceBurstSourceId = count > 0 ? sourceId : -1;
+        control.SliceBurstPathHash = count > 0 ? pathHash : 0;
+        control.SliceBurstShortSide = Math.Max(shortSide, 0);
+        Volatile.Write(ref control.SliceBurstCount, count);
+        var version = Interlocked.Increment(ref control.SliceBurstVersion);
+        return count > 0 ? version : 0;
+    }
+
+    /// <summary>The worker has decoded every slice of burst <paramref name="version"/> (or of a newer one).</summary>
+    public static bool IsDone(ref ControlBlock control, int version) => version > 0 && Volatile.Read(ref control.SliceBurstDone) >= version;
 }
 
 /// <summary>One float per shader slot number, 0 to 127.</summary>

@@ -124,8 +124,7 @@ public sealed class TimelineRow
     internal readonly List<(double Left, double Right)> Gaps = [];
 }
 
-/// <summary>Context-menu request: row, block (or null), header flag, fade handle (true = fade in), and the menu for the host to fill.</summary>
-public sealed record TimelineMenuRequest(TimelineRow? Row, TimelineBlock? Block, bool OnHeader, bool? FadeIn, ContextMenu Menu);
+// TimelineMenuRequest, ClipMenuRegion and TimelineSeamTarget: TimelineMenuContracts.cs (Pass 5.7.1 wave-0 contract).
 
 /// <summary>
 /// The unified timeline: all sequence tracks on one immediate-mode surface (headers left, time area right). Rows, blocks, mini-stacks,

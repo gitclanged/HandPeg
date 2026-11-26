@@ -1,0 +1,11 @@
+# Shared-memory slice burst in free control space (posted, capped, withdrawn, answered); engine hooks called where the lanes need them.
+ok: the burst sits in the free control space (324..415, between CacheBudgetCap and the slot timings), aligned, overlapping nothing; the block is still 4096 bytes and protocol 9
+ok: a post writes the source, hash, size and the finite times in order (NaN and negative ones dropped), then bumps the version
+ok: a post of more times keeps the first eight
+ok: no times, or no source, withdraws the burst (count 0) and still bumps the version so the worker lets it go
+ok: a burst is done once the worker answers its version (or a newer one); version 0 never is
+ok: CompositorClient posts through SliceBurstSlot and wakes the worker without rendering; SliceBurstDone reads the answer
+ok: GpuPreviewEngine declares the four partial hooks the lanes' partial files implement
+ok: the pump posts the slice burst every turn, and wraps a hover preview's loop each playing turn before the posted seek is applied
+ok: SetState tells the hover preview of each installed Sequence; the quiet prewarm extras take its window's hints
+ok: ScrubSeek (one coalesced step a frame) posts nothing when a paused or ghost-paused target is the moment already posted

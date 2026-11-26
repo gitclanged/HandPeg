@@ -1,0 +1,11 @@
+# Cursor-Locked Scrub Pointer: off by default, saved only when on, in Settings; Top & Tail on Shift+Q/E and [ ] (WASD kept), Q/W in the Razor and Color presets.
+ok: CursorLockedScrubPointer is off in a new install (user decision Q1), written only when on, and read back on
+ok: Clone copies it
+ok: the Settings window's Save writes it back either way (CopyEdited)
+ok: Settings has one CheckBox for it in the Timeline & Player tab: "Cursor-locked scrub pointer" (3 words), its tooltip 10 words
+ok: Top & Tail are clip.trimStartToPlayhead (Shift+Q, [) and clip.trimEndToPlayhead (Shift+E, ]): project edits, once per press
+ok: Shift+Q, [, Shift+E, ], Q and W are legal chords for them and read back as written
+ok: WASD (Default): Q/E still step frames and W/S/A/D still zoom and pan while Top & Tail take Shift+Q / Shift+E and [ / ]
+ok: Studio Razor & Ripple: Top & Tail on Q / W; frame back on Left, the held zoom keys and the plain trims' keys given up for them
+ok: Color & Node Studio: Top & Tail on Q / W; frame back on Left, the held zoom keys and the plain trims' keys given up for them
+ok: KeybindManager.CheckPresets(): no preset gives a chord to two actions
