@@ -1443,7 +1443,7 @@ public partial class MainWindow
         if (row.CarriesSound)
         {
             var ducks = row.AutoDuck;
-            PreviewItem(menu, "Auto-Duck against Voice", () => _viewModel.ToggleDucking(row, false), () => HoverPreview.HoverDucking(row, !ducks), ticked: ducks,
+            PreviewItem(menu, "Auto-Duck against Voice", () => _viewModel.ToggleDucking(row, false), () => HoverPreview.HoverDucking(row, clip, !ducks), ticked: ducks,
                 tip: "Turns this sound down while a voice speaks.");
             PreviewItem(menu, "Voiceover / Dialogue", () => _viewModel.ToggleDucking(row, true), null, ticked: row.IsVoice, tip: "Marks this sound as a voice to duck under.");
             AddSeparator(menu);
@@ -1465,11 +1465,31 @@ public partial class MainWindow
             return null;
 
         var (stream, from) = (model.AudioStreamIndex, clip.MediaOffset);
-        var span = clip.HasSpeedRamp ? clip.MediaSecondsAt(clip.Duration) : clip.Duration * Math.Max(clip.Speed, Layer.SlowestSpeed);
+        var span = Shell.PausedHoverPreview.MeasuredMediaSpan(clip);
         using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var measured = await Task.Run(() => Services.Audio.SpeechLevel.Measure(path, stream, from, span, limit.Token), limit.Token);
         return Services.Audio.SpeechLevel.GainDb(measured.Lufs, measured.Peak);
     };
+
+    /// <summary>
+    /// Golden seam (track-menu-hover-571): a window as far as the region menus reach, its view model and hover-preview holder only (no
+    /// constructor run, nothing shown or made).
+    /// </summary>
+    internal static MainWindow MenuShellForTests(MainViewModel vm)
+    {
+        var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
+        System.Runtime.CompilerServices.Unsafe.AsRef(in window._viewModel) = vm;
+        System.Runtime.CompilerServices.Unsafe.AsRef(in window._hotbarUi) = new HotbarState();
+        return window;
+    }
+
+    /// <summary>Golden seam: fills <paramref name="request"/>'s menu for its region (FillRegionMenu); true when a region menu took it.</summary>
+    internal bool FillRegionMenuForTests(TimelineMenuRequest request)
+    {
+        var filled = false;
+        FillRegionMenu(request, ref filled);
+        return filled;
+    }
 
     /// <summary>The GPU preview engine as the hover preview's loop host (whichever engine runs now; none: the playhead moves instead).</summary>
     private sealed class EngineLoopHost(MainWindow window) : Shell.ILoopPreviewHost

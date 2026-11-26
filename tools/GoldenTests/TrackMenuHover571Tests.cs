@@ -20,7 +20,6 @@ namespace HandPegGoldenTests;
 public static class TrackMenuHover571Tests
 {
     private const string Second = "D:/media/second.mkv";
-    private const BindingFlags Hidden = BindingFlags.Instance | BindingFlags.NonPublic;
 
     public static IEnumerable<GraphResult> All()
     {
@@ -70,7 +69,7 @@ public static class TrackMenuHover571Tests
         expect(double.IsNaN(GpuPreviewEngine.LoopWrapTarget(10.2, 10, 11, 1 / 60.0)) && Near(GpuPreviewEngine.LoopWrapTarget(10.99, 10, 11, 1 / 60.0), 10)
                && Near(GpuPreviewEngine.LoopWrapTarget(11.4, 10, 11), 10) && Near(GpuPreviewEngine.LoopWrapTarget(9, 10, 11), 10),
             "the pump wraps to the window's start a refresh before its end (or once past it, or run before it), else plays on");
-        expect(SourceProbe.InOrder(SourceProbe.Member(Engine(), "partial void LoopPreviewTurn()"), "SeekMailSlot.IsPending(ref _pendingSeekBits)", "LoopWrapTarget(", "SeekMailSlot.Post(ref _pendingSeekBits, target)")
+        expect(SourceProbe.InOrder(SourceProbe.Member(Engine(), "partial void LoopPreviewTurn()"), "SeekMailSlot.IsPending(ref _pendingSeekBits)", "LoopWrapTarget(", "SeekMailSlot.TryPostIfEmpty(ref _pendingSeekBits, target)") && StaleWrapYields()
                && !SourceProbe.Member(Engine(), "partial void LoopPreviewTurn()").Contains("Seek(target)", StringComparison.Ordinal),
             "the wrap is posted to the seek mail-slot from the pump (one per pass, never over a pending seek), not through the UI thread's Seek");
         expect(SourceProbe.InOrder(SourceProbe.Member(Engine(), "partial void AddLoopPreviewHints("), "_loopWarm", "GpuSeekHintKind.TabRoll", "added++"),
@@ -263,7 +262,7 @@ public static class TrackMenuHover571Tests
         slow.SetResult(-2);
         expect(Near(clip.GainDb, 0) && !late.IsShowing && Untouched(), "a measurement finishing after its item was left shows nothing");
 
-        hover.HoverDucking(clip, true);
+        hover.HoverDucking(clip, clip, true);
         hover.ShowPendingNow();
         expect(clip.AutoDuck && hover.IsShowing, "Auto-Duck: the sound heard ducked under the voice while hovered");
         hover.Leave();
@@ -303,28 +302,17 @@ public static class TrackMenuHover571Tests
     }
 
     // The window as far as the menus reach: its view model and its hover preview's holder (none shown, nothing made).
-    private static MainWindow Window(MainViewModel vm)
-    {
-        var window = (MainWindow)System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MainWindow));
-        typeof(MainWindow).GetField("_viewModel", Hidden)!.SetValue(window, vm);
-        var holder = typeof(MainWindow).GetField("_hotbarUi", Hidden)!;
-        holder.SetValue(window, Activator.CreateInstance(holder.FieldType, nonPublic: true));
-        return window;
-    }
+    private static MainWindow Window(MainViewModel vm) => MainWindow.MenuShellForTests(vm);
 
-    private static MenuFill Fill(MainWindow window, TimelineMenuRequest request)
-    {
-        object[] args = [request, false];
-        try
-        {
-            typeof(MainWindow).GetMethod("FillRegionMenu", Hidden)!.Invoke(window, args);
-        }
-        catch (TargetInvocationException ex) when (ex.InnerException is { } inner)
-        {
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw();
-        }
+    private static MenuFill Fill(MainWindow window, TimelineMenuRequest request) => new(request.Menu, window.FillRegionMenuForTests(request));
 
-        return new MenuFill(request.Menu, (bool)args[1]);
+    // Review F29, deterministic: the UI's park seek posted between the pump's pending check and its wrap stays; the stale wrap yields.
+    private static bool StaleWrapYields()
+    {
+        var slot = SeekMailSlot.Empty;
+        var first = SeekMailSlot.TryPostIfEmpty(ref slot, 10) && SeekMailSlot.TryTake(ref slot, out var wrapped) && wrapped == 10;
+        SeekMailSlot.Post(ref slot, 42);
+        return first && !SeekMailSlot.TryPostIfEmpty(ref slot, 10) && SeekMailSlot.TryTake(ref slot, out var parked) && parked == 42;
     }
 
     private static IEnumerable<MenuItem> Items(MenuFill? menu) => menu?.Menu.Items.OfType<MenuItem>() ?? [];

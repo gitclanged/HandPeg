@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Reflection;
 using System.Text;
 using System.Windows;
 using System.Windows.Input;
@@ -115,8 +114,7 @@ public static class TimelineErgonomics571Tests
         var view = UnifiedTimelineControl.SpringViewOf(0, 10, 0.3 * 832, 832, UnifiedTimelineControl.SpringFactor);
         expect(Math.Abs(view.Start - 2.25) < 1e-9 && Math.Abs(view.Span - 2.5) < 1e-9, F($"the spring's view from 0-10 s at 30% of the width: {view.Start:0.00} s + {view.Span:0.00} s (a quarter, 3 s held under the pointer)"));
 
-        var scroller = (ContainerVisual)typeof(UnifiedTimelineControl).GetField("_scroller", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(surface)!;
-        expect(scroller.Transform is TranslateTransform, "the rows are only ever shifted, never stretched (no ScaleTransform on the time area)");
+        expect(surface.RowsTransform is TranslateTransform,"the rows are only ever shifted, never stretched (no ScaleTransform on the time area)");
 
         surface.PressBlockAt(surface.Rows[0], BlockOf("a"), At(surface, 2, mid), ModifierKeys.None, 0);
         surface.MoveBlockDrag(At(surface, 3, mid), 1000, ModifierKeys.None);
@@ -139,18 +137,22 @@ public static class TimelineErgonomics571Tests
         surface.FinishSpring();
         expect(surface.SpringHome is null && Math.Abs(surface.PixelsPerSecond - home) < 1e-9 && surface.ViewOffsetX == 0, "released, it springs back to exactly 0 s + 10 s");
 
-        // Z out mid-drag: back to the view it left while still dragging, re-seated again.
+        // Z out mid-drag: back to the view it left while still dragging, re-seated again; a move made while zoomed keeps its time (F14).
         commits.Clear();
         surface.PressBlockAt(surface.Rows[0], BlockOf("b"), At(surface, 6, mid), ModifierKeys.None, 0);
         surface.MoveBlockDrag(At(surface, 6.5, mid), 1000, ModifierKeys.None);
         surface.SpringZoomAt(At(surface, 6.5, mid).X);
         surface.FinishSpring();
         var inScale = surface.PixelsPerSecond;
-        surface.SpringZoomAt(At(surface, 6.5, mid).X);
+        var zoomedX = At(surface, 6.5, mid).X + 8.32;
+        surface.MoveBlockDrag(new Point(zoomedX, mid), 2000, ModifierKeys.None);
+        surface.SpringZoomAt(zoomedX);
         surface.FinishSpring();
         expect(Math.Abs(inScale / home - 4) < 1e-6 && surface.SpringHome is null && Math.Abs(surface.PixelsPerSecond - home) < 1e-9 && surface.IsDragging
                && Math.Abs(surface.DragScale - home) < 1e-9, "Z in then Z out mid-drag: 4x, then the exact view back, the drag still held at its scale");
-        expect(surface.ReleaseBlockDrag() && commits.SequenceEqual(["b: 5.500 to 7.500 s"]), F($"let go: {string.Join("; ", commits)}"));
+        expect(Math.Abs(BlockOf("b").Left / home - 5.525) < 1e-6,
+            F($"8.32 DIPs moved while zoomed, then Z out with the pointer still: b {BlockOf("b").Left / home - 5:0.000} s on, the zoomed edit kept"));
+        expect(surface.ReleaseBlockDrag() && commits.SequenceEqual(["b: 5.525 to 7.525 s"]), F($"let go: {string.Join("; ", commits)}"));
         text.Append(F($"home {home:0.0} px/s, sprung {zoomed:0.0} px/s\n"));
     }
 
@@ -499,14 +501,7 @@ public static class TimelineErgonomics571Tests
     // The parent's visual stack openness set to a value mid-animation (Current), laid out at once (as a frame of the animation would).
     private static void SetOpenness(UnifiedTimelineControl surface, TimelineRow row, double openness)
     {
-        var type = typeof(UnifiedTimelineControl);
-        var expansions = type.GetField("_expansion", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(surface)!;
-        var entryType = type.GetNestedType("Expansion", BindingFlags.NonPublic)!;
-        var entry = Activator.CreateInstance(entryType)!;
-        entryType.GetField("Current")!.SetValue(entry, openness);
-        entryType.GetField("Target")!.SetValue(entry, 1.0);
-        expansions.GetType().GetProperty("Item")!.SetValue(expansions, entry, [(row.Key, ChildStack.Visual)]);
-        type.GetMethod("Relayout", BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(surface, null);
+        surface.SetOpennessForTests(row.Key, ChildStack.Visual, openness);
         surface.UpdateLayout();
     }
 

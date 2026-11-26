@@ -41,7 +41,7 @@ public sealed partial class UnifiedTimelineControl
         public required TimelineRow Row { get; init; }
         public required TimelineBlock Block { get; init; }
         public required BlockEdit Kind { get; init; }
-        public double PointerX { get; init; }
+        public double PointerX { get; set; }
         public double Left { get; init; }
         public double Width { get; init; }
         public bool Ripple { get; init; }

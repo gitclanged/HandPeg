@@ -12,5 +12,6 @@ ok: 8.32 DIPs more: 0.025 s on (a quarter of the 0.1 s it would be unzoomed)
 ok: let go: committed through the rebuilt block at its own scale (a: 2.025 to 4.025 s)
 ok: released, it springs back to exactly 0 s + 10 s
 ok: Z in then Z out mid-drag: 4x, then the exact view back, the drag still held at its scale
-ok: let go: b: 5.500 to 7.500 s
+ok: 8.32 DIPs moved while zoomed, then Z out with the pointer still: b 0.525 s on, the zoomed edit kept
+ok: let go: b: 5.525 to 7.525 s
 home 83.2 px/s, sprung 332.8 px/s

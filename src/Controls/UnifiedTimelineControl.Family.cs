@@ -374,6 +374,9 @@ public sealed partial class UnifiedTimelineControl
     private double _dragScale;
     private Point? _dragPointer;
 
+    // A re-seated block drag's travel so far (laid DIPs at the new scale), rebased on the relaid pointer by ResumeDrag; null when none waits.
+    private double? _reseatMoved;
+
     /// <summary>
     /// Rows were relaid at a new scale mid-drag (a Spring-Zoom view): carries the drag onto the rebuilt blocks (same family key, else the
     /// same Clip) with its pixel state scaled by new/old scale, so the drag goes on at the same times and commits through the rebuilt
@@ -390,6 +393,7 @@ public sealed partial class UnifiedTimelineControl
         }
 
         var k = scale / _dragScale;
+        _reseatMoved = null;
         if (_drag is { } drag)
         {
             if (Again(drag.Block, drag.Row) is not { } own)
@@ -418,6 +422,10 @@ public sealed partial class UnifiedTimelineControl
             seated.NewTrack = drag.NewTrack is { } seam && RowAgain(seam.Beside) is { } beside ? (beside, seam.Above, seam.Y) : null;
             seated.Attach = drag.Attach is { } attach && Again(attach.Block, attach.Row) is { } parent ? (parent.Row, parent.Block, attach.Name) : null;
             _drag = seated;
+
+            // The live edit kept (review F14): the travel so far keeps its seconds across the scale change, and ResumeDrag rebases PointerX
+            // on the relaid pointer, so a view with another time under the pointer (Z out to the home view) never replays it at that time.
+            _reseatMoved = (_lastPointer.X - drag.PointerX) * k;
         }
         else if (_fadeDrag is { } fade)
         {
@@ -457,8 +465,12 @@ public sealed partial class UnifiedTimelineControl
     {
         var pointer = _dragPointer ?? Mouse.GetPosition(this);
         var laid = Laid(pointer);
+        var moved = _reseatMoved;
+        _reseatMoved = null;
         if (_drag is { } drag)
         {
+            if (moved is { } travel)
+                drag.PointerX = laid.X - travel;
             CollectFamily(drag);
             if (!_dragParked)
             {

@@ -196,7 +196,7 @@ public partial class MainViewModel
 {
     /// <summary>
     /// One take cut in two on one track: file, streams and speed the same, file time continuous across the cut, no crossfade, fade or J/L
-    /// at the cut, same gain, flags and parent, and the same look (keyframed halves never heal, as their keys differ). Delete heals it.
+    /// at the cut, same gain, flags and parent, and the same look held still (halves animated by keyframes never heal). Delete heals it.
     /// </summary>
     public bool IsThroughEdit(Layer left, Layer right) => ClipOf(left) is { } a && ClipOf(right) is { } b && IsThroughEdit(a, b);
 
@@ -205,7 +205,15 @@ public partial class MainViewModel
         Document.TrackOf(a) is { } track && ReferenceEquals(track, Document.TrackOf(b)) && b.TransitionIn <= 0.01 && a.FadeOutSeconds <= 0.001
         && b.FadeInSeconds <= 0.001 && a.AudioTailOutSeconds == 0 && b.AudioLeadInSeconds == 0 && a.GainDb == b.GainDb && a.IsHidden == b.IsHidden
         && a.IsMuted == b.IsMuted && a.ParentClipId == b.ParentClipId && a.AudioLinked == b.AudioLinked && a.AudioSlipSeconds == b.AudioSlipSeconds
-        && Services.Audio.AudioProgramBuilder.IsThroughEdit(a, b) && LookKey(a.State) == LookKey(b.State);
+        && Services.Audio.AudioProgramBuilder.IsThroughEdit(a, b) && SameStillLook(a.State, b.State);
+
+    // The same look on both halves, held still: identical clip-relative keys that change value play once per half, and would play once
+    // over the healed clip (review F13), so halves animated by keyframes never heal.
+    private static bool SameStillLook(LayerState left, LayerState right) => !Animates(left) && !Animates(right) && LookKey(left) == LookKey(right);
+
+    // Whether any keyframed channel of a look changes value over time (one key, or keys all alike, hold still).
+    private static bool Animates(LayerState state) =>
+        LayerState.MotionChannels.Any(c => c.Get(state) is { Count: > 1 } keys && keys.Exists(k => k.Value != keys[0].Value));
 
     // A look as JSON without the fields each half of a split owns.
     private static string LookKey(LayerState state)

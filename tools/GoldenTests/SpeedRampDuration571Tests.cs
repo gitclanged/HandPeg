@@ -31,8 +31,7 @@ public static class SpeedRampDuration571Tests
 
     private static string F(FormattableString text) => text.ToString(CultureInfo.InvariantCulture);
 
-    private static int UndoSteps(MainViewModel vm) =>
-        ((System.Collections.ICollection)typeof(MainViewModel).GetField("_undo", Reflect.Hidden)!.GetValue(vm)!).Count;
+    private static int UndoSteps(MainViewModel vm) => vm.HistoryPosition.Undo;
 
     private static Keyframe Key(double time, double speed) => new(time, speed, EasingType.Linear);
 

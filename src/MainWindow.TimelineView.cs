@@ -993,8 +993,9 @@ public partial class MainWindow
             return false;
         }
 
+        // A key the focused control owns stays its own (Delete in Keyframes rows or the rules grid; review F12).
         var (act, repeats) = SeamKeyAction(key, Keyboard.Modifiers);
-        if (act is null)
+        if (act is null || KeyBelongsToFocus(KeybindManager.ChordOf(e), Keyboard.FocusedElement))
             return false;
 
         e.Handled = true;

@@ -25,6 +25,13 @@ internal static class SeekMailSlot
         return bits != Empty;
     }
 
+    /// <summary>
+    /// Posts a pump-made target (a hover loop's wrap) only into an empty slot, so a target posted after the pump looked (the UI's seek or a
+    /// stop's park) is never replaced by it (Pass 5.7.1, review F29). Non-finite values are ignored. True when posted.
+    /// </summary>
+    public static bool TryPostIfEmpty(ref long slot, double seconds) =>
+        double.IsFinite(seconds) && Interlocked.CompareExchange(ref slot, BitConverter.DoubleToInt64Bits(seconds + 0.0), Empty) == Empty;
+
     /// <summary>True while a target waits to be taken.</summary>
     public static bool IsPending(ref long slot) => Volatile.Read(ref slot) != Empty;
 

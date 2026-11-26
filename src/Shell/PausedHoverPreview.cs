@@ -53,8 +53,13 @@ internal sealed class PausedHoverPreview : IDisposable
     // Playhead moved by the preview: where it was, and where the preview put it (ms).
     private (double From, double To)? _seek;
 
-    // Auto-Level gains measured for hover previews, by clip view and the file span measured (a trim measures again).
-    private readonly Dictionary<(Layer View, double From, double Span), double?> _levels = [];
+    // Auto-Level gains measured for hover previews, by what the measure hears (file, audio stream, media offset and span: a stream, trim or
+    // speed change measures again), the newest LevelCacheSize kept, no clip view held (review F33).
+    private readonly Dictionary<LevelKey, double?> _levels = [];
+    private readonly Queue<LevelKey> _levelOrder = new();
+    private const int LevelCacheSize = 16;
+
+    private readonly record struct LevelKey(string Path, int? Stream, double From, double Span);
 
     // Bumped by every hover and leave: an Auto-Level measurement that finishes after its item was left shows nothing.
     private int _hoverSerial;
@@ -101,8 +106,11 @@ internal sealed class PausedHoverPreview : IDisposable
     /// </summary>
     public void HoverAutoLevel(Layer clip, Func<Task<double?>> measure) => Hover(() => ShowAutoLevel(clip, measure));
 
-    /// <summary>Pointer rests on Auto-Duck: after the dwell, while paused, <paramref name="sound"/> plays with Auto-Duck <paramref name="ducks"/>.</summary>
-    public void HoverDucking(Layer sound, bool ducks) => Hover(() => ShowDucking(sound, ducks));
+    /// <summary>
+    /// Pointer rests on Auto-Duck: after the dwell, while paused, <paramref name="clip"/> plays with Auto-Duck <paramref name="ducks"/> set on
+    /// <paramref name="owner"/> (its row's layer, whose setting it is).
+    /// </summary>
+    public void HoverDucking(Layer owner, Layer clip, bool ducks) => Hover(() => ShowDucking(owner, clip, ducks));
 
     /// <summary>A menu opened over a target: its window is pre-warmed on the engine (nothing without a <see cref="Loop"/> host).</summary>
     public void Warm(double from, double to)
@@ -298,10 +306,10 @@ internal sealed class PausedHoverPreview : IDisposable
 
     private void ShowAutoLevel(Layer clip, Func<Task<double?>> measure)
     {
-        if (!_vm.Layers.Contains(clip) || _vm.ClipOf(clip) is null)
+        if (!_vm.Layers.Contains(clip) || _vm.ClipOf(clip) is not { } model)
             return;
 
-        var key = (clip, clip.MediaOffset, clip.Duration);
+        var key = new LevelKey(model.SourcePath ?? "", model.AudioStreamIndex, clip.MediaOffset, MeasuredMediaSpan(clip));
         if (_levels.TryGetValue(key, out var known))
         {
             if (known is { } gain)
@@ -326,27 +334,45 @@ internal sealed class PausedHoverPreview : IDisposable
                 return;
             }
 
-            _levels[key] = gain;
+            RememberLevel(key, gain);
             if (serial == _hoverSerial && gain is { } level && !_vm.IsPlaying && !IsShowing)
                 ShowGain(clip, level);
         }
     }
 
-    private void ShowDucking(Layer sound, bool ducks)
+    // Keeps a measured gain, dropping the oldest beyond LevelCacheSize.
+    private void RememberLevel(LevelKey key, double? gain)
     {
-        if (!_vm.Layers.Contains(sound) || _vm.ClipOf(sound) is not { } model)
+        if (!_levels.ContainsKey(key))
+        {
+            _levelOrder.Enqueue(key);
+            while (_levelOrder.Count > LevelCacheSize)
+                _levels.Remove(_levelOrder.Dequeue());
+        }
+
+        _levels[key] = gain;
+    }
+
+    /// <summary>The media seconds an Auto-Level measure hears for <paramref name="clip"/>: its span through its speed or Speed Ramp.</summary>
+    internal static double MeasuredMediaSpan(Layer clip) =>
+        clip.HasSpeedRamp ? clip.MediaSecondsAt(clip.Duration) : clip.Duration * Math.Max(clip.Speed, Layer.SlowestSpeed);
+
+    // Auto-Duck is the row's setting (owner), heard on the clicked clip: over a voice within that clip's interval, else its stretch (F30).
+    private void ShowDucking(Layer owner, Layer clip, bool ducks)
+    {
+        if (!_vm.Layers.Contains(owner) || !_vm.Layers.Contains(clip) || _vm.ClipOf(clip) is not { } model)
             return;
 
-        var was = sound.AutoDuck;
-        _vm.PreviewOnView(sound, v => v.AutoDuck = ducks);
+        var was = owner.AutoDuck;
+        _vm.PreviewOnView(owner, v => v.AutoDuck = ducks);
         _restore.Add(() =>
         {
-            _vm.PreviewOnView(sound, v => v.AutoDuck = was);
-            _vm.ShowViewAgain(sound);
+            _vm.PreviewOnView(owner, v => v.AutoDuck = was);
+            _vm.ShowViewAgain(owner);
         });
 
         // Where a voice speaks over it, if one does: that is where ducking is heard.
-        var voice = _vm.Layers.Where(l => l is { IsVoice: true, CarriesSound: true, IsHidden: false } && !ReferenceEquals(l, sound))
+        var voice = _vm.Layers.Where(l => l is { IsVoice: true, CarriesSound: true, IsHidden: false } && !ReferenceEquals(l, owner) && !ReferenceEquals(l, clip))
             .Select(_vm.ClipOf).OfType<Models.Timeline.TimelineClip>()
             .Where(c => c.Start < model.End && c.End > model.Start).OrderBy(c => c.Start).FirstOrDefault();
         if (voice is not null)
@@ -371,7 +397,6 @@ internal sealed class PausedHoverPreview : IDisposable
     // Loops [from, to] on the engine when a host can (the playhead stays parked), else moves the playhead into [start, end) at `seconds`.
     private void PlayRound(double from, double to, double start, double end, double seconds, bool always)
     {
-        var parked = _vm.PositionMs / 1000;
         if (Loop is { } host && GpuPreviewEngine.LoopWindowOf(from, to, _vm.SequenceSeconds, _vm.SequenceFps) is var (loopFrom, loopTo)
             && host.Start(loopFrom, loopTo))
         {
@@ -379,7 +404,8 @@ internal sealed class PausedHoverPreview : IDisposable
             _restore.Add(() =>
             {
                 Looping = null;
-                host.Stop(parked, keepPlaying: _vm.IsPlaying);
+                // Parked where the playhead is now: a seek made during the audition stands (review F35).
+                host.Stop(_vm.PositionMs / 1000, keepPlaying: _vm.IsPlaying);
             });
             return;
         }

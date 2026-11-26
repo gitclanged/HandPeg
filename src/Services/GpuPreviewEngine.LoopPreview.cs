@@ -25,6 +25,9 @@ public sealed partial class GpuPreviewEngine
 
     private LoopWindow? _hoverLoop;
 
+    // Serializes the pump's wrap publication with StopLoopPreview's cancel (review F29): once a stop took the window, no wrap is posted.
+    private readonly Lock _loopGate = new();
+
     // A menu's pre-warm request: its window and expiry (Stopwatch ticks).
     private sealed record LoopWarm(double From, double To, long Until);
 
@@ -122,7 +125,10 @@ public sealed partial class GpuPreviewEngine
     public void StopLoopPreview(double parkAt, bool keepPlaying = false)
     {
         _uiOwner.Check();
-        if (Interlocked.Exchange(ref _hoverLoop, null) is null)
+        LoopWindow? taken;
+        lock (_loopGate)
+            taken = Interlocked.Exchange(ref _hoverLoop, null);
+        if (taken is null)
             return;
 
         if (!keepPlaying)
@@ -138,22 +144,29 @@ public sealed partial class GpuPreviewEngine
 
     partial void LoopPreviewTurn()
     {
-        if (Volatile.Read(ref _hoverLoop) is not { } loop)
+        if (Volatile.Read(ref _hoverLoop) is null)
             return;
 
-        // A seek already posted (the UI's, or a wrap not drained yet) lands first: one wrap per pass through the window, as DrainSeek moves
-        // the audio clock back to the window's start within this same turn.
-        if (SeekMailSlot.IsPending(ref _pendingSeekBits))
-            return;
+        // Under the gate a stop cannot take the window between the look and the post, and the post lands only in an empty slot, so a seek
+        // the UI posted after the look (its own, or a stop's park) is never replaced by a stale wrap (review F29).
+        lock (_loopGate)
+        {
+            if (Volatile.Read(ref _hoverLoop) is not { } loop)
+                return;
 
-        var target = LoopWrapTarget(PlayingPosition(), loop.From, loop.To, _refresh > 0 ? _refresh : 1.0 / 60);
-        if (double.IsNaN(target))
-            return;
+            // A seek already posted (the UI's, or a wrap not drained yet) lands first: one wrap per pass through the window, as DrainSeek
+            // moves the audio clock back to the window's start within this same turn.
+            if (SeekMailSlot.IsPending(ref _pendingSeekBits))
+                return;
 
-        // Posted as Seek posts it, without Seek's scrub bookkeeping (that is the UI thread's own).
-        Volatile.Write(ref _pausedAt, target);
-        SeekMailSlot.Post(ref _pendingSeekBits, target);
-        Interlocked.Increment(ref _transportSerial);
+            var target = LoopWrapTarget(PlayingPosition(), loop.From, loop.To, _refresh > 0 ? _refresh : 1.0 / 60);
+            if (double.IsNaN(target) || !SeekMailSlot.TryPostIfEmpty(ref _pendingSeekBits, target))
+                return;
+
+            // Posted as Seek posts it, without Seek's scrub bookkeeping (that is the UI thread's own).
+            Volatile.Write(ref _pausedAt, target);
+            Interlocked.Increment(ref _transportSerial);
+        }
     }
 
     partial void AddLoopPreviewHints(Span<GpuSeekHint> extras, ref int count)

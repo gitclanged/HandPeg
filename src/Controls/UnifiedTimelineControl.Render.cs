@@ -415,6 +415,16 @@ public sealed partial class UnifiedTimelineControl
     /// </summary>
     private static bool ShowsPictures(in Lane lane) => !lane.Summary && lane.Height >= FullDetailHeight;
 
+    /// <summary>Test seam: the time area's transform (the rows are only ever shifted by it, never stretched).</summary>
+    internal Transform? RowsTransform => _scroller.Transform;
+
+    /// <summary>Test seam: a row's stack openness set mid-animation (heading open) and laid out at once, as a frame of the animation would.</summary>
+    internal void SetOpennessForTests(object rowKey, ChildStack stack, double current)
+    {
+        _expansion[(rowKey, stack)] = new Expansion { Current = current, Target = 1.0 };
+        Relayout();
+    }
+
     /// <summary>Test seam: whether the lane of the row with this key draws thumbnails and labels now (ShowsPictures); null when not laid.</summary>
     internal bool? LaneShowsPictures(object key)
     {
