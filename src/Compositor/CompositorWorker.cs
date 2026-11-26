@@ -198,14 +198,14 @@ public static unsafe partial class CompositorWorker
                     decoders.Cache.SetBudget(budget = requested);
                 decoders.TakeHints();
                 decoders.Tidy();
-
-                // The Slice-Preview burst (Pass 5.7.1): its slices are decoded into the frame cache ahead of background work.
-                SliceBurstTurn(ref control, decoders);
                 decoders.Cache.CheckWindowsBudget(Stopwatch.GetTimestamp());
 
                 var slot = shared.TakeLatest(out var isNew);
                 sceneAfterTrim |= giveBackWaiting && isNew;
                 ref var header = ref shared.SceneHeader(slot);
+
+                // Read before the draw clears redraw: a turn that draws a new or redrawn scene asks for no slices.
+                var sliceQuiet = !isNew && !redraw;
                 if ((isNew || redraw) && header.FrameSequenceNumber > 0 && header.CanvasWidth > 0 && header.CanvasHeight > 0)
                 {
                     redraw = false;
@@ -223,6 +223,11 @@ public static unsafe partial class CompositorWorker
 
                     presented.Set();
                 }
+
+                // The Slice-Preview burst (Pass 5.7.1): taken after the visible scene has registered its decode demands (TakeLatest,
+                // RenderScene). Its slices are asked for only on a quiet turn whose picture is exact (no visible frame still owed), so a
+                // newly arrived seek or play start always goes first.
+                SliceBurstTurn(ref control, decoders, sliceQuiet && decoders.LastFrameExact);
 
                 // Publish decoder counters every turn, drawn or not (pre-roll decodes between frames; readers must not wait for the next
                 // frame to see them).

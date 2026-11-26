@@ -14,7 +14,8 @@ namespace HandPegApp;
 //
 // Frame-edge scrubbing (Pass 5.7.1): the ruler stamps its raw moves and samples the live cursor once per rendered frame
 // (TimelineParts.cs), and the engine is sought at most once per rendered frame too (ScrubCoalescer.TakeSeek -> GpuPreviewEngine.ScrubSeek,
-// which skips a moment already posted), so neither the dispatcher nor the pump is woken at the pointer's rate. The drag's first move
+// which skips a moment already posted), so neither the dispatcher nor the pump is woken at the pointer's rate. Both happen in one ordered
+// frame callback (OnScrubFrame: the held ruler's sample, then the seek), so a frame's seek carries that frame's cursor. The drag's first move
 // seeks at once; the last owed seek lands on release. A ruler drag leaves the Overview Scrubber's binding off until release
 // (FreezeOverviewSlider, MainWindow.Player.cs): no slider layout at the commit rate.
 //
@@ -142,6 +143,12 @@ public partial class MainWindow
 
     private void OnScrubFrame(object? sender, EventArgs e)
     {
+        // One ordered callback: the held ruler's live cursor first, so this frame's one engine seek (SeekOwed) is this frame's pointer.
+        // A drag that ends inside the sample (Esc, capture lost) was already released by EndScrub.
+        SampleScrubRulers(e);
+        if (!_scrubState.FrameHooked)
+            return;
+
         var now = Stopwatch.GetTimestamp();
         SeekOwed();
         Scrub.Tick(now * 1000.0 / Stopwatch.Frequency);
@@ -158,6 +165,17 @@ public partial class MainWindow
             EndSlicePreview();
             if (!_isScrubbing)
                 ReleaseScrubGate();
+        }
+    }
+
+    // The frame sample of a ruler holding a seek drag (TimelineRuler.SampleScrubFrame; its own hook then skips the frame). With no capture
+    // drag held (direct SeekRequested callers, goldens) nothing is sampled.
+    private void SampleScrubRulers(EventArgs e)
+    {
+        foreach (var ruler in _rulers)
+        {
+            if (ruler.IsSampling)
+                ruler.SampleScrubFrame(e);
         }
     }
 

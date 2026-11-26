@@ -78,6 +78,30 @@ public static class ScrubAndSlice571Tests
                && double.IsNaN(TimelineRuler.SampleTarget(double.NaN, 5, 800)),
             "a frame sample seeks only to a new x, clamped to the ruler; the same x, no layout or no cursor seeks nothing");
 
+        var rendered = TimeSpan.FromMilliseconds(16.7);
+        expect(TimelineRuler.SamplesFrame(rendered, TimeSpan.MinValue) && !TimelineRuler.SamplesFrame(rendered, rendered)
+               && TimelineRuler.SamplesFrame(rendered + TimeSpan.FromMilliseconds(2), rendered) && TimelineRuler.SamplesFrame(null, rendered),
+            "one cursor sample per rendered frame: a second render callback of the frame (same RenderingTime) skips it; a direct call samples");
+
+        // Frame N's cursor sampled, then the frame's one seek taken (one ordered callback), against the old split hooks (seek drained first).
+        var cursor = new[] { 100.0, 130, 170, 220, 280 };
+        var (ordered, split) = (new ScrubCoalescer(_ => { }), new ScrubCoalescer(_ => { }));
+        var (orderedSeeks, splitSeeks) = (new List<double>(), new List<double>());
+        ordered.Move(90, sought: true);
+        split.Move(90, sought: true);
+        foreach (var x in cursor)
+        {
+            ordered.Move(x);
+            if (ordered.TakeSeek(out var sameFrame))
+                orderedSeeks.Add(sameFrame);
+            if (split.TakeSeek(out var lastFrame))
+                splitSeeks.Add(lastFrame);
+            split.Move(x);
+        }
+
+        expect(orderedSeeks.SequenceEqual(cursor) && splitSeeks.SequenceEqual(cursor[..^1]),
+            "sampled before the seek in one callback, the seek consumed on frame N is frame N's cursor (drained first, it was frame N-1's)");
+
         var ruler = RulerFile;
         var move = SourceProbe.Member(ruler, "protected override void OnMouseMove(");
         expect(move.Contains("_lastScrubMoveTicks", StringComparison.Ordinal) && !move.Contains("SeekRequested", StringComparison.Ordinal),
@@ -95,6 +119,11 @@ public static class ScrubAndSlice571Tests
                && seek.Contains("engine.ScrubSeek(", StringComparison.Ordinal) && !seek.Contains("engine.Seek(", StringComparison.Ordinal)
                && SourceProbe.InOrder(SourceProbe.Member(main, "private void EndScrub("), "UnhookScrubFrame();", "SeekOwed();", "_scrub?.Release("),
             "MainWindow seeks the engine once per rendered frame through GpuPreviewEngine.ScrubSeek (repeats skipped), the last owed seek before the release commit");
+        expect(SourceProbe.InOrder(SourceProbe.Member(main, "private void OnScrubFrame("), "SampleScrubRulers(e);", "if (!_scrubState.FrameHooked)", "SeekOwed();", "Scrub.Tick(")
+               && SourceProbe.InOrder(SourceProbe.Member(main, "private void SampleScrubRulers("), "if (ruler.IsSampling)", "ruler.SampleScrubFrame(e);")
+               && SourceProbe.InOrder(SourceProbe.Member(ruler, "private void OnScrubFrame("), "RenderingTime", "SamplesFrame(", "_sampledFrame = time;", "GetCursorPos(")
+               && SourceProbe.Member(ruler, "internal void SampleScrubFrame(").Contains("if (_scrubHooked)", StringComparison.Ordinal),
+            "one ordered frame callback: MainWindow samples the held ruler's live cursor before the frame's one engine seek; the ruler's own hook skips a frame already sampled (no capture drag held: nothing sampled)");
         expect(!main.Contains("new DispatcherTimer", StringComparison.Ordinal) && !main.Contains("GhostDwell?.", StringComparison.Ordinal)
                && !SourceProbe.Src("Shell", "ScrubState.cs").Contains("public DispatcherTimer", StringComparison.Ordinal),
             "no DispatcherTimer is stopped and restarted per move any more (ScrubState keeps stamps, not a timer)");
@@ -260,6 +289,23 @@ public static class ScrubAndSlice571Tests
         expect(fast is not null && Math.Abs(fast.Slots[2].MediaSeconds - 12) < 1e-9 && Math.Abs(fast.Slots[3].MediaSeconds - fast.Slots[2].MediaSeconds - 2 / 30.0) < 1e-9,
             "a 2x clip steps its file times twice the sequence spacing");
 
+        // A keyframed speed ramp (Pass 5.6.5): 1x rising linearly to 3x over the clip, so 5 s in, 7.5 s of the file have played.
+        var keys = new List<Keyframe> { new(0, 1, EasingType.Linear), new(10, 3) };
+        var ramped = Clip(LayerKind.VideoFile, 10, 20);
+        ramped.State.KeysSpeed = keys;
+        var layer = new Layer();
+        layer.SetSpeedKeys(keys);
+        var rampPlan = SlicePreviewPlanner.Plan(Document((TimelineTrackKind.Video, [ramped])), 15, spacing, 7, 72);
+        var rampSteps = rampPlan is null ? new List<double>() : rampPlan.Slots.Zip(rampPlan.Slots.Skip(1), (a, b) => b.MediaSeconds - a.MediaSeconds).ToList();
+        expect(rampPlan is { Slots.Count: 7 } && Math.Abs(rampPlan.Slots[3].MediaSeconds - 9.5) < 1e-9
+               && rampPlan.Slots.All(s => Math.Abs(s.MediaSeconds - (2 + layer.MediaSecondsAt(s.SequenceSeconds - 10))) < 1e-9)
+               && rampSteps.Count == 6 && rampSteps.Zip(rampSteps.Skip(1)).All(p => p.Second > p.First),
+            "on a keyframed speed ramp the playhead's slot and its neighbours read the file through the ramp (the player's mapping, Layer.MediaSecondsAt), not the constant speed");
+        ramped.SourceDuration = 9;
+        var heldPlan = SlicePreviewPlanner.Plan(Document((TimelineTrackKind.Video, [ramped])), 15, spacing, 7, 72);
+        expect(heldPlan is { Slots.Count: 7 } && heldPlan.Slots[3].MediaSeconds == 9 && heldPlan.Slots.All(s => s.MediaSeconds <= 9),
+            "a slot past the file's end reads its last moment (file times held to the file's length)");
+
         var image = Document((TimelineTrackKind.Video, [Clip(LayerKind.Image, 10, 20, @"C:\logo.png")]));
         var audio = Document((TimelineTrackKind.Audio, [Clip(LayerKind.Audio, 10, 20, @"C:\music.wav")]));
         expect(SlicePreviewPlanner.Plan(image, 15, spacing, 7, 72) is null && SlicePreviewPlanner.Plan(audio, 15, spacing, 7, 72) is null
@@ -334,26 +380,43 @@ public static class ScrubAndSlice571Tests
                && GpuPreviewEngine.SliceStripDue(true, false, true, false, false, 10 * f + 60 * f / 1000, 10 * f, f),
             "the pump draws a strip once per answered burst, never with a seek pending or in the 3D view, at most every 60 ms");
 
+        const long s = 40;
+        expect(GpuPreviewEngine.SliceReadbackOf(s, s, s, false, 10 * f, 10 * f, f) == GpuPreviewEngine.SliceReadback.Ready
+               && GpuPreviewEngine.SliceReadbackOf(s, s, s + 1, true, 11 * f, 10 * f, f) == GpuPreviewEngine.SliceReadback.Ready
+               && GpuPreviewEngine.SliceReadbackOf(s, s - 1, s - 1, false, 10 * f + 59 * f / 1000, 10 * f, f) == GpuPreviewEngine.SliceReadback.Waiting
+               && GpuPreviewEngine.SliceReadbackOf(s, s - 1, s - 1, false, 10 * f + 60 * f / 1000, 10 * f, f) == GpuPreviewEngine.SliceReadback.Overdue
+               && GpuPreviewEngine.SliceReadbackOf(s, s + 1, s + 1, false, 10 * f, 10 * f, f) == GpuPreviewEngine.SliceReadback.Replaced
+               && GpuPreviewEngine.SliceReadbackOf(s, s - 1, s + 1, false, 10 * f, 10 * f, f) == GpuPreviewEngine.SliceReadback.Replaced
+               && GpuPreviewEngine.SliceReadbackOf(s, s - 1, s - 1, true, 10 * f, 10 * f, f) == GpuPreviewEngine.SliceReadback.Replaced,
+            "the pump never waits for a strip's readback: polled on later turns, taken once it is the newest readback, let go for a later readback, a later scene or a seek arriving mid-readback (the player's picture first), given up 60 ms after publishing");
+
         var engine = SourceProbe.Src("Services", "GpuPreviewEngine.SlicePreview.cs");
-        expect(SourceProbe.InOrder(SourceProbe.Member(engine, "partial void SliceBurstTurn(bool playing)"), "if (playing || IsExplodedForSlices)", "WithdrawSlices();", "return;",
-                   "PostSlices(ask);", "_client.SliceBurstDone(_sliceVersion)", "DrawSliceStrip(posted);")
+        expect(SourceProbe.InOrder(SourceProbe.Member(engine, "partial void SliceBurstTurn(bool playing)"), "if (playing || IsExplodedForSlices)", "EndSliceReadback(retry: false);",
+                   "WithdrawSlices();", "return;", "PollSliceStrip();", "PostSlices(ask);", "_sliceReadback == 0", "_client.SliceBurstDone(_sliceVersion)", "PlayerOwesPicture()",
+                   "DrawSliceStrip(posted);")
                && SourceProbe.Member(engine, "private void PostSlices(").Contains("_client.PostSliceBurst(ask.SourceId, ask.PathHash", StringComparison.Ordinal)
                && SourceProbe.Member(engine, "public int RequestSlicePreview(").Contains("_broker.SourceFor(request.Path, request.Stream)", StringComparison.Ordinal),
-            "the pump withdraws any burst while playing or in 3D, posts the newest ask (resolved on the UI thread) through the W0 seam, and draws only an answered one");
+            "the pump withdraws any burst (and drops a strip in flight) while playing or in 3D, polls a strip in flight first, posts the newest ask (resolved on the UI thread) through the W0 seam, and draws only an answered one with none in flight and no seek or picture owed");
         var draw = SourceProbe.Member(engine, "private void DrawSliceStrip(");
         expect(draw.Contains("scene.Flags = FrameSceneHeader.FlagReadback;", StringComparison.Ordinal) && !draw.Contains("FlagExactFrames", StringComparison.Ordinal)
-               && SourceProbe.InOrder(draw, "_client.Publish();", "_client.TryReadback(", "SliceReadbackMs, _stop)", "finally", "InvalidateView();"),
-            "the strip is one read-back scene from cached frames (no exact-frame wait, a bounded readback) and the player's scene is published again after it");
+               && draw.Contains("_sliceReadback = _client.Publish();", StringComparison.Ordinal) && !draw.Contains("TryReadback(", StringComparison.Ordinal)
+               && SourceProbe.InOrder(SourceProbe.Member(engine, "private void PollSliceStrip("), "Volatile.Read(ref control.ReadbackSequence)", "SliceReadbackOf(",
+                   "case SliceReadback.Ready:", "TakeSliceStrip(sequence);", "case SliceReadback.Replaced:", "EndSliceReadback(retry: true);", "case SliceReadback.Overdue:",
+                   "EndSliceReadback(retry: false);")
+               && SourceProbe.Member(engine, "private void TakeSliceStrip(").Contains("out var gotHeight, 0)", StringComparison.Ordinal)
+               && SourceProbe.Member(engine, "private void EndSliceReadback(").Contains("InvalidateView();", StringComparison.Ordinal),
+            "the strip is one read-back scene from cached frames (no exact-frame wait) published without waiting; its readback is copied with no wait once polled ready, and the player's scene is published again once it is read back, replaced or overdue");
 
         var worker = SourceProbe.Src("Compositor", "CompositorWorker.cs");
-        expect(SourceProbe.InOrder(worker, "decoders.TakeHints();", "SliceBurstTurn(ref control, decoders);", "shared.TakeLatest(")
+        expect(SourceProbe.InOrder(worker, "decoders.TakeHints();", "shared.TakeLatest(", "var sliceQuiet = !isNew && !redraw;", "RenderScene(shared, slot,",
+                   "SliceBurstTurn(ref control, decoders, sliceQuiet && decoders.LastFrameExact);")
                && worker.Contains("SliceBurstOutstanding ? SliceBurstPollMs", StringComparison.Ordinal)
                && SourceProbe.InOrder(SourceProbe.Member(worker, "private static void ReadBack("), "output.Texture.Width != width", "CopySubresourceRegion(_readbackStaging"),
-            "the worker takes the burst each turn after the hints, polls every 8 ms while it is outstanding, and copies an in-place readback's region");
+            "the worker takes the burst each turn after the turn's scene is drawn (visible demands first), asks for slices only on a quiet turn with an exact picture, polls every 8 ms while one is outstanding, and copies an in-place readback's region");
         var turn = SourceProbe.Member(SourceProbe.Src("Compositor", "CompositorWorker.SlicePreview.cs"), "private static void SliceBurstTurn(");
         expect(SourceProbe.InOrder(turn, "SliceBurstSlot.TryRead(", "decoders.SyncSources();", "decoders.HasExact(", "Volatile.Write(ref control.SliceBurstDone, _slice.Version);",
-                   "SliceAskDue(", "decoders.Request("),
-            "a newer whole burst replaces the old one (answered never), and the exact version is answered once every slice is in the frame cache");
+                   "!admit || !SliceAskDue(", "decoders.Request("),
+            "a newer whole burst replaces the old one (answered never), the exact version is answered once every slice is in the frame cache, and missing slices are asked for only when admitted");
 
         var frame = SourceProbe.Member(ScrubFile, "private void SlicePreviewFrame(");
         expect(SourceProbe.InOrder(frame, "state.Velocity <= SlicePreviewRequest.DormantAbove", "SlicePreviewPlanner.VideoClipAt(", "state.SliceGate.Update(", "HideSlicePreview();",

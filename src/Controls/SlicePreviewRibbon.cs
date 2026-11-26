@@ -138,12 +138,17 @@ public static class SlicePreviewPlanner
             return null;
 
         var half = Math.Clamp(count, SlicePreviewRequest.MinSlots, SlicePreviewRequest.MaxSlots) / 2;
-        var speed = double.IsFinite(clip.Speed) && clip.Speed > 0 ? clip.Speed : 1;
+
+        // The player's own mapping (GpuScenePlan.Into, Layer.MediaSecondsAt): a keyframed ramp's integral (keys normalized as the clip's
+        // layer holds them), else the constant speed; so every slot, the playhead's included, asks for the frame the player shows there.
+        IReadOnlyList<Keyframe> ramp = clip.State?.KeysSpeed is { Count: > 0 } keys ? SpeedRamp.Normalized(keys) : [];
         var slots = new List<SlicePreviewSlot>(2 * half + 1);
         for (var offset = -half; offset <= half; offset++)
         {
             var at = seconds + offset * spacing.Seconds;
-            var media = clip.MediaOffset + (at - clip.Start) * speed;
+            var media = clip.MediaOffset + Math.Max(SpeedRamp.MediaSeconds(ramp, clip.Speed, at - clip.Start), 0);
+            if (clip.SourceDuration > 0)
+                media = Math.Min(media, clip.SourceDuration);
             if (at >= clip.Start - 1e-9 && at < clip.End && media >= 0 && double.IsFinite(media))
                 slots.Add(new SlicePreviewSlot(offset, at, media));
         }

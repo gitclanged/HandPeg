@@ -7,9 +7,10 @@ namespace HandPegApp.Compositor;
 // The client posts one file's neighbour times around the playhead (SliceBurstSlot, ControlBlock 324..415). Each worker turn takes the
 // newest whole burst (seqlock) and asks the decoder pool for every slice not yet in the frame cache, never while playing and only while no
 // decode lane is busy (so a visible frame being chased, cut pre-roll or play-ahead always goes first: ahead of background work, never ahead
-// of the visible frame). Asks repeat at most every SliceAskEveryMs. Once every slice is cached it answers SliceBurstDone with that exact
-// version; a burst superseded before then is dropped unanswered. While one is outstanding the paused loop polls every SliceBurstPollMs
-// instead of 100 ms, so the answer is prompt.
+// of the visible frame). The burst is taken after the turn's scene is drawn, and asks are admitted only on a turn that drew no new or
+// redrawn scene and whose picture is exact (a seek or play start that just arrived registers its demands first). Asks repeat at most
+// every SliceAskEveryMs. Once every slice is cached it answers SliceBurstDone with that exact version; a burst superseded before then is
+// dropped unanswered. While one is outstanding the paused loop polls every SliceBurstPollMs instead of 100 ms, so the answer is prompt.
 public static unsafe partial class CompositorWorker
 {
     /// <summary>The paused loop's wait, ms, while a slice burst is outstanding.</summary>
@@ -49,7 +50,11 @@ public static unsafe partial class CompositorWorker
     internal static bool SliceAskDue(bool outstanding, bool playing, int busyLanes, long now, long askedAt, long frequency) =>
         outstanding && !playing && busyLanes == 0 && (askedAt == 0 || (now - askedAt) * 1000 >= SliceAskEveryMs * frequency);
 
-    private static void SliceBurstTurn(ref ControlBlock control, DecoderPool decoders)
+    /// <summary>
+    /// Each worker turn, after the turn's scene: takes the newest burst and answers it once every slice is cached; asks for missing slices
+    /// only when <paramref name="admit"/> (a quiet turn: no new or redrawn scene, the picture exact).
+    /// </summary>
+    private static void SliceBurstTurn(ref ControlBlock control, DecoderPool decoders, bool admit)
     {
         // A newer whole burst replaces the one being decoded (its answer is never written); a torn read is retried next turn.
         if (SliceBurstSlot.TryRead(ref control, out var burst) && burst.Version != _slice.Version)
@@ -85,7 +90,7 @@ public static unsafe partial class CompositorWorker
             return;
         }
 
-        if (!SliceAskDue(true, decoders.Playing, decoders.BusyLanes, now, _sliceAskedAt, Stopwatch.Frequency))
+        if (!admit || !SliceAskDue(true, decoders.Playing, decoders.BusyLanes, now, _sliceAskedAt, Stopwatch.Frequency))
             return;
 
         _sliceAskedAt = now;

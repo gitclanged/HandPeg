@@ -1066,7 +1066,9 @@ public sealed class TimelineRuler : TimelineBar
     // ----- Frame-sampled seek drag and Cursor-Locked Scrub Pointer (Pass 5.7.1) -----
     // A seek drag's raw WM_MOUSEMOVEs (up to 1000 Hz) are only stamped (_lastScrubMoveTicks). Once per rendered frame
     // (CompositionTarget.Rendering) the live cursor (GetCursorPos) is mapped straight to ruler x and seeks, so the playhead follows the
-    // freshest position at the display's rate and nothing downstream runs at the pointer's rate. With Settings > Cursor-locked scrub
+    // freshest position at the display's rate and nothing downstream runs at the pointer's rate. The host samples first in its own frame
+    // callback (SampleScrubFrame, before it takes the frame's one engine seek), so frame N's seek is frame N's cursor; this ruler's own hook
+    // then skips that frame (one sample per RenderingTime) and samples only when no host does. With Settings > Cursor-locked scrub
     // pointer on (off by default, user decision Q1) the OS cursor is hidden for the drag and the playhead visual draws the pointer; it
     // always comes back on release, capture loss (window deactivated, a dialog), Esc, hiding, unloading or a fault.
 
@@ -1074,6 +1076,9 @@ public sealed class TimelineRuler : TimelineBar
     private double _sampledX = double.NaN, _movedX = double.NaN;
     private long _lastScrubMoveTicks;
     private object? _cursorBefore;
+
+    // RenderingTime of the frame last sampled: whichever render callback asks first samples it, the other skips.
+    private TimeSpan _sampledFrame = TimeSpan.MinValue;
 
     /// <summary>
     /// Raised once per rendered frame of a seek drag with the live cursor's screen point (real pixels): the track surface draws the
@@ -1109,6 +1114,22 @@ public sealed class TimelineRuler : TimelineBar
     /// </summary>
     internal static bool HidesCursor(bool locked, bool overRuler, bool drawnElsewhere) => locked && (overRuler || drawnElsewhere);
 
+    /// <summary>
+    /// True when a render callback samples this frame: not yet sampled (<paramref name="renderingTime"/> differs from the last sampled
+    /// frame's), or no frame time (a direct call). WPF raises Rendering to every handler, sometimes twice, with the same time. Pure; goldens.
+    /// </summary>
+    internal static bool SamplesFrame(TimeSpan? renderingTime, TimeSpan lastSampled) => renderingTime is not { } time || time != lastSampled;
+
+    /// <summary>
+    /// Samples this frame's live cursor now, from the host's frame callback before it takes the frame's one engine seek, so the seek sent
+    /// on frame N is frame N's pointer (this ruler's own hook then skips the frame). Nothing unless a seek drag is held.
+    /// </summary>
+    internal void SampleScrubFrame(EventArgs e)
+    {
+        if (_scrubHooked)
+            OnScrubFrame(this, e);
+    }
+
     private void BeginScrubSampling(double pointerY)
     {
         PointerLocked = HandPegApp.Services.AppSettings.Current.CursorLockedScrubPointer;
@@ -1118,6 +1139,7 @@ public sealed class TimelineRuler : TimelineBar
             return;
 
         _scrubHooked = true;
+        _sampledFrame = TimeSpan.MinValue;
         CompositionTarget.Rendering += OnScrubFrame;
     }
 
@@ -1156,6 +1178,13 @@ public sealed class TimelineRuler : TimelineBar
 
     private void OnScrubFrame(object? sender, EventArgs e)
     {
+        // One sample per rendered frame: the host's callback (SampleScrubFrame) usually took this one already.
+        var renderingTime = (e as RenderingEventArgs)?.RenderingTime;
+        if (!SamplesFrame(renderingTime, _sampledFrame))
+            return;
+        if (renderingTime is { } time)
+            _sampledFrame = time;
+
         try
         {
             // Capture gone without notice, or Esc (the ruler takes no focus, so the key is read here): the drag ends where it is.

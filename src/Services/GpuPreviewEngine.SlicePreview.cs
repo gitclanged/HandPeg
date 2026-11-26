@@ -13,12 +13,14 @@ public sealed record SlicePreviewStrip(int Ticket, SlicePreviewRequest Request, 
 // The ribbon (MainWindow.Scrub.cs) asks with RequestSlicePreview (UI thread: the file is resolved to its source-table entry there, as
 // PrewarmTabs does). The pump posts the newest ask as the shared-memory slice burst (CompositorClient.PostSliceBurst) and, once the worker
 // answers that every slice is in its frame cache (SliceBurstDone), draws the slots side by side in one small read-back scene: from cached
-// frames, so the worker never waits, at most every SliceStripEveryMs and only paused with no seek pending. The player's own scene is
-// published again right after. Dormant while playing (any burst is withdrawn) and in the 3D view (a flat scene would release its plane
-// textures on small cards). The UI takes the strip with TakeSlicePreview from its frame hook: no dispatcher traffic, nothing queued.
+// frames, so the worker never waits, at most every SliceStripEveryMs and only paused with no seek pending and no player picture owed.
+// The pump never waits for that readback: it polls it on later turns, after the ghost pause and the seek are applied (PollSliceStrip), and
+// publishes the player's own scene again once it is read back, replaced or overdue. Dormant while playing (any burst is withdrawn) and in
+// the 3D view (a flat scene would release its plane textures on small cards). The UI takes the strip with TakeSlicePreview from its frame
+// hook: no dispatcher traffic, nothing queued.
 public sealed partial class GpuPreviewEngine
 {
-    /// <summary>Longest wait, ms, for a strip's readback on the pump (its frames are cached; normally a few ms).</summary>
+    /// <summary>Longest time, ms, a strip's readback is polled for on later pump turns (its frames are cached; normally a few ms).</summary>
     internal const int SliceReadbackMs = 60;
 
     /// <summary>Least time, ms, between two strips drawn on the pump (each costs one small scene and the player's redraw).</summary>
@@ -38,6 +40,11 @@ public sealed partial class GpuPreviewEngine
     private SliceAsk? _slicePosted;
     private bool _sliceDrawn;
     private long _sliceDrawnAt;
+
+    // Pump's own: the strip scene published and not read back yet (its sequence, 0 for none), its ask, and when it was published.
+    private long _sliceReadback;
+    private SliceAsk? _sliceReading;
+    private long _sliceReadbackAt;
 
     // Pump -> UI: the newest strip not yet taken.
     private SlicePreviewStrip? _sliceStrip;
@@ -87,6 +94,26 @@ public sealed partial class GpuPreviewEngine
     internal static bool SliceStripDue(bool posted, bool drawn, bool done, bool seekPending, bool exploded, long now, long lastDrawnAt, long frequency) =>
         posted && !drawn && done && !seekPending && !exploded && (lastDrawnAt == 0 || (now - lastDrawnAt) * 1000 >= SliceStripEveryMs * frequency);
 
+    /// <summary>Where a published strip's readback is (<see cref="SliceReadbackOf"/>).</summary>
+    internal enum SliceReadback
+    {
+        Waiting,
+        Ready,
+        Replaced,
+        Overdue,
+    }
+
+    /// <summary>
+    /// Strip scene <paramref name="sequence"/>'s readback, looked at without waiting: ready once the worker's newest readback is that scene;
+    /// replaced by a later readback, by a later scene drawn without it, or by a picture the player owes now (a seek or an edit arrived:
+    /// its scene goes first); overdue <see cref="SliceReadbackMs"/> after publishing (a held or refused frame); else waiting. Pure; goldens.
+    /// </summary>
+    internal static SliceReadback SliceReadbackOf(long sequence, long readBack, long presented, bool playerOwes, long now, long publishedAt, long frequency) =>
+        readBack == sequence ? SliceReadback.Ready
+        : readBack > sequence || presented > sequence || playerOwes ? SliceReadback.Replaced
+        : (now - publishedAt) * 1000 >= SliceReadbackMs * frequency ? SliceReadback.Overdue
+        : SliceReadback.Waiting;
+
     private void WakePaused()
     {
         if (!_playing)
@@ -97,26 +124,37 @@ public sealed partial class GpuPreviewEngine
     {
         var ask = Interlocked.Exchange(ref _sliceAsk, null);
 
-        // Playing or in the 3D view: the ribbon is dormant, and any burst is let go (the worker answers nothing more).
+        // Playing or in the 3D view: the ribbon is dormant, a strip in flight is dropped, and any burst is let go (the worker answers
+        // nothing more).
         if (playing || IsExplodedForSlices)
         {
+            if (_sliceReadback != 0)
+                EndSliceReadback(retry: false);
             if (_slicePosted is not null)
                 WithdrawSlices();
             return;
         }
+
+        // A strip published on an earlier turn: polled, never waited on (this turn's ghost pause and seek were applied first).
+        if (_sliceReadback != 0)
+            PollSliceStrip();
 
         if (ask is { Request: null })
             WithdrawSlices();
         else if (ask is not null)
             PostSlices(ask);
 
-        if (_slicePosted is { } posted
-            && SliceStripDue(true, _sliceDrawn, _client.SliceBurstDone(_sliceVersion), SeekMailSlot.IsPending(ref _pendingSeekBits), false,
+        // A new strip only with none in flight and no seek or player picture owed (the player's scene would replace it at once).
+        if (_sliceReadback == 0 && _slicePosted is { } posted
+            && SliceStripDue(true, _sliceDrawn, _client.SliceBurstDone(_sliceVersion), PlayerOwesPicture(), false,
                 Stopwatch.GetTimestamp(), _sliceDrawnAt, Stopwatch.Frequency))
         {
             DrawSliceStrip(posted);
         }
     }
+
+    // A seek not yet applied, or a player scene marked dirty (a seek, an edit, a resize) and not yet published.
+    private bool PlayerOwesPicture() => SeekMailSlot.IsPending(ref _pendingSeekBits) || Volatile.Read(ref _sceneDirty) != 0;
 
     // The 3D view's planes are cached per plane (SceneRenderer.Exploded.cs): a flat strip scene would let small cards release them.
     private bool IsExplodedForSlices => _drawingExploded;
@@ -141,8 +179,8 @@ public sealed partial class GpuPreviewEngine
     }
 
     /// <summary>
-    /// Draws the posted burst's slots side by side in one read-back scene (pump thread; its frames are cached, so no exact-frame wait) and
-    /// hands the strip to the UI; the player's scene is published again after, drawn or not.
+    /// Publishes the posted burst's slots side by side as one read-back scene (pump thread; its frames are cached, so no exact-frame wait).
+    /// Its readback is polled on later turns (<see cref="PollSliceStrip"/>), never waited on here, so no seek or picture queues behind it.
     /// </summary>
     private void DrawSliceStrip(SliceAsk ask)
     {
@@ -150,6 +188,7 @@ public sealed partial class GpuPreviewEngine
         var count = Math.Min(request.Slots.Count, CompositorProtocol.MaxSliceSlots);
         var (cellWidth, cellHeight) = (ask.CellWidth, ask.CellHeight);
         var (width, height) = (cellWidth * count, cellHeight);
+        (_sliceReading, _sliceReadbackAt) = (ask, Stopwatch.GetTimestamp());
         try
         {
             var bytes = (long)width * height * 4;
@@ -183,21 +222,78 @@ public sealed partial class GpuPreviewEngine
                 layer.Flags = GpuLayerDescriptor.FlagVisible;
             }
 
-            var pixels = new byte[bytes];
-            var sequence = _client.Publish();
-            if (_client.TryReadback(sequence, pixels, out var gotWidth, out var gotHeight, SliceReadbackMs, _stop) && gotWidth == width && gotHeight == height)
-                Volatile.Write(ref _sliceStrip, new SlicePreviewStrip(ask.Ticket, request, pixels, width, height, cellWidth));
+            _sliceReadback = _client.Publish();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             AppLog.Write("GPU engine: the Slice-Preview strip could not be drawn", ex);
+            EndSliceReadback(retry: false);
         }
-        finally
-        {
-            (_sliceDrawn, _sliceDrawnAt) = (true, Stopwatch.GetTimestamp());
+    }
 
-            // The player's own picture again (the strip scene is now the worker's newest).
-            InvalidateView();
+    /// <summary>
+    /// The published strip's readback, looked at without waiting (pump thread, after the turn's ghost pause and seek): taken once read back;
+    /// let go and tried again later once replaced (a seek arriving mid-readback re-dirties the player's scene at once); given up once
+    /// overdue.
+    /// </summary>
+    private void PollSliceStrip()
+    {
+        ref var control = ref _client.Memory.Control;
+        var sequence = _sliceReadback;
+        var readBack = Volatile.Read(ref control.ReadbackSequence);
+        switch (SliceReadbackOf(sequence, readBack, Volatile.Read(ref control.PresentedSequence), PlayerOwesPicture(), Stopwatch.GetTimestamp(),
+            _sliceReadbackAt, Stopwatch.Frequency))
+        {
+            case SliceReadback.Ready:
+                try
+                {
+                    TakeSliceStrip(sequence);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException)
+                {
+                    AppLog.Write("GPU engine: the Slice-Preview strip could not be read back", ex);
+                }
+                finally
+                {
+                    EndSliceReadback(retry: false);
+                }
+
+                break;
+            case SliceReadback.Replaced:
+                EndSliceReadback(retry: true);
+                break;
+            case SliceReadback.Overdue:
+                EndSliceReadback(retry: false);
+                break;
         }
+    }
+
+    // Copies the strip read back (the worker's newest readback, so the copy waits for nothing) and hands it to the UI.
+    private void TakeSliceStrip(long sequence)
+    {
+        var ask = _sliceReading!;
+        var request = ask.Request!;
+        var count = Math.Min(request.Slots.Count, CompositorProtocol.MaxSliceSlots);
+        var (width, height) = (ask.CellWidth * count, ask.CellHeight);
+        var pixels = new byte[(long)width * height * 4];
+        if (_client.TryReadback(sequence, pixels, out var gotWidth, out var gotHeight, 0) && gotWidth == width && gotHeight == height)
+            Volatile.Write(ref _sliceStrip, new SlicePreviewStrip(ask.Ticket, request, pixels, width, height, ask.CellWidth));
+    }
+
+    /// <summary>
+    /// Ends the strip in flight (read back, replaced, overdue or failed): the burst it was drawn for counts as drawn unless it is tried again
+    /// (<paramref name="retry"/>, after <see cref="SliceStripEveryMs"/>), and the player's own scene is published again.
+    /// </summary>
+    private void EndSliceReadback(bool retry)
+    {
+        var reading = _sliceReading;
+        (_sliceReadback, _sliceReading, _sliceDrawnAt) = (0, null, Stopwatch.GetTimestamp());
+
+        // A newer burst posted meanwhile is still owed its own strip.
+        if (ReferenceEquals(reading, _slicePosted))
+            _sliceDrawn = !retry;
+
+        // The player's own picture again (the strip scene is the worker's newest, or was replaced by a scene the player may still owe).
+        InvalidateView();
     }
 }
