@@ -206,18 +206,27 @@ public static class ContractSeam571Tests
             $"the burst sits in the free control space ({ordered[0].At}..{ordered[^1].At + ordered[^1].Size - 1}, between CacheBudgetCap and the slot timings), aligned, overlapping nothing; the block is still {CompositorProtocol.ControlBytes} bytes and protocol {CompositorProtocol.Version}");
 
         var first = SliceBurstSlot.Post(ref block, 3, 0x1234, [1.0, double.NaN, 2.0, -1, 3.0], 72);
-        expect(first == 1 && block is { SliceBurstVersion: 1, SliceBurstCount: 3, SliceBurstSourceId: 3, SliceBurstPathHash: 0x1234, SliceBurstShortSide: 72 }
+        expect(first == 2 && block is { SliceBurstVersion: 2, SliceBurstCount: 3, SliceBurstSourceId: 3, SliceBurstPathHash: 0x1234, SliceBurstShortSide: 72 }
                && block.SliceBurstMedia[0] == 1 && block.SliceBurstMedia[1] == 2 && block.SliceBurstMedia[2] == 3,
-            "a post writes the source, hash, size and the finite times in order (NaN and negative ones dropped), then bumps the version");
+            "a post writes the source, hash, size and the finite times in order (NaN and negative ones dropped) under an odd version, then publishes the next even one");
+        expect(SliceBurstSlot.TryRead(ref block, out var seen) && seen is { Version: 2, Count: 3, SourceId: 3, PathHash: 0x1234, ShortSide: 72 }
+               && seen.Media[0] == 1 && seen.Media[1] == 2 && seen.Media[2] == 3,
+            "the worker reads the whole burst under its even version");
         var capped = SliceBurstSlot.Post(ref block, 3, 0x1234, [.. Enumerable.Range(0, 12).Select(i => i * 0.1)], 0);
-        expect(capped == 2 && block.SliceBurstCount == CompositorProtocol.MaxSliceSlots && block.SliceBurstMedia[7] == 7 * 0.1, "a post of more times keeps the first eight");
+        expect(capped == 4 && block.SliceBurstCount == CompositorProtocol.MaxSliceSlots && block.SliceBurstMedia[7] == 7 * 0.1, "a post of more times keeps the first eight");
+        block.SliceBurstDone = capped;
+        expect(SliceBurstSlot.IsDone(ref block, capped) && !SliceBurstSlot.IsDone(ref block, first) && !SliceBurstSlot.IsDone(ref block, capped - 1)
+               && !SliceBurstSlot.IsDone(ref block, capped + 2) && !SliceBurstSlot.IsDone(ref block, 0),
+            "a burst is done only when the worker answers that very version: completing B leaves the superseded A undone; 0, odd and later versions never are");
         var withdrawn = SliceBurstSlot.Post(ref block, 3, 0x1234, [], 0);
         var noSource = SliceBurstSlot.Post(ref block, -1, 5, [1.0], 0);
-        expect(withdrawn == 0 && noSource == 0 && block is { SliceBurstCount: 0, SliceBurstSourceId: -1, SliceBurstPathHash: 0, SliceBurstVersion: 4 },
-            "no times, or no source, withdraws the burst (count 0) and still bumps the version so the worker lets it go");
-        block.SliceBurstDone = 2;
-        expect(SliceBurstSlot.IsDone(ref block, 2) && SliceBurstSlot.IsDone(ref block, 1) && !SliceBurstSlot.IsDone(ref block, 3) && !SliceBurstSlot.IsDone(ref block, 0),
-            "a burst is done once the worker answers its version (or a newer one); version 0 never is");
+        expect(withdrawn == 0 && noSource == 0 && block is { SliceBurstCount: 0, SliceBurstSourceId: -1, SliceBurstPathHash: 0, SliceBurstVersion: 8 },
+            "no times, or no source, withdraws the burst (count 0) and still publishes a new even version so the worker lets it go");
+        block.SliceBurstVersion = 9;
+        var midPost = SliceBurstSlot.TryRead(ref block, out var torn);
+        var resumed = SliceBurstSlot.Post(ref block, 3, 0x1234, [1.5], 0);
+        expect(!midPost && torn.Version == 0 && resumed == 12 && block.SliceBurstVersion == 12 && SliceBurstSlot.TryRead(ref block, out var after) && after is { Version: 12, Count: 1 },
+            "an odd version (a post being written) is never read; a post after an interrupted one writes under the next odd number and publishes 12");
 
         var client = SourceProbe.Src("Services", "CompositorClient.cs");
         expect(SourceProbe.InOrder(SourceProbe.Member(client, "public int PostSliceBurst("), "SliceBurstSlot.Post(ref _shared.Control", "_wake.Set();")
