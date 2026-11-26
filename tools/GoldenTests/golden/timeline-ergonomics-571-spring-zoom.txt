@@ -1,0 +1,16 @@
+# Spring-Zoom is a real view: ViewSpan / 4 anchored at the pointer, rows relaid at 4x and the drag re-seated on them (1/4 travel), the exact view back on release or Z.
+ok: the spring's view from 0-10 s at 30% of the width: 2.25 s + 2.50 s (a quarter, 3 s held under the pointer)
+ok: the rows are only ever shifted, never stretched (no ScaleTransform on the time area)
+ok: a pressed at 2 s and moved 1 s on: it starts at 2.00 s
+ok: Z (the dwell's spring) during the move springs
+ok: the view is 4x (332.8 px/s against 83.2), rows rebuilt at that scale
+ok: the view it left is kept: 0 s + 10 s
+ok: the pointer's time is held: 3.000 s under it, as before
+ok: the drag carried on, re-seated on the rebuilt rows at their scale
+ok: the rebuilt a is drawn where the drag had it: 2.000 s
+ok: 8.32 DIPs more: 0.025 s on (a quarter of the 0.1 s it would be unzoomed)
+ok: let go: committed through the rebuilt block at its own scale (a: 2.025 to 4.025 s)
+ok: released, it springs back to exactly 0 s + 10 s
+ok: Z in then Z out mid-drag: 4x, then the exact view back, the drag still held at its scale
+ok: let go: b: 5.500 to 7.500 s
+home 83.2 px/s, sprung 332.8 px/s

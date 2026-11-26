@@ -1,0 +1,7 @@
+# The crossfade's gain law: equal power (out^2 + in^2 = 1) for two sounds, linear (out + in = 1) for one cut in two or when chosen, in the mixer's fades.
+ok: equal power: out^2 + in^2 = 1 at every step, as CrossfadeCurves.Gains has it (worst 2.2E-016)
+ok: linear: out + in = 1 at every step (worst 0.0E+000)
+ok: a fade that is no crossfade stays linear (afade)
+ok: the later clip of a crossfade: its fade in is the crossfade's (equal power), its fade out none (a gap follows)
+ok: the earlier clip: its fade out is the crossfade's
+ok: Linear chosen on the seam (the later clip's look): both sides follow it

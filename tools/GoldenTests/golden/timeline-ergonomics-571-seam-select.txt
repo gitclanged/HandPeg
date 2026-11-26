@@ -1,0 +1,12 @@
+# A click on a cut selects the seam (through-edit or not), a rebuild finds it again by its clips; its keys: Ctrl+T, Delete, comma, period, Esc.
+ok: pressed on the cut (the roll grip) and let go in place: the seam is selected (L | R at 4.00 s, a through-edit), no clip click
+ok: the rows rebuilt: the same seam found again on the new blocks
+ok: the host says it is no longer a through-edit: the seam says so too
+ok: the cut rolled to 4.5 s: the seam follows it
+ok: the clips no longer meet: the seam is let go
+ok: a click on a clip's body is a clip click, no seam
+ok: the seam's reach is the trim edge's (7 DIPs either side of the cut)
+ok: Ctrl+T on a selected seam: its crossfade (ahead of New Tab)
+ok: Delete or Backspace: heal (ahead of Delete Clip)
+ok: comma / period: a frame earlier / later, repeating while held
+ok: T alone and Shift+Delete (Ripple Delete) are left to their shortcuts

@@ -366,7 +366,7 @@ public sealed partial class UnifiedTimelineControl
                 var shift = drag.Keys.HasFlag(ModifierKeys.Shift) && drag.Group is not { Count: > 0 };
                 drag.TimeLocked &= shift;
                 PlaceMoved(drag, moved);
-                if (drag.Group is { Count: > 0 })
+                if (drag.Group is { Count: > 0 } || drag.Clone)
                 {
                     (drag.Target, drag.NewTrack, drag.Attach) = (null, null, null);
                 }
