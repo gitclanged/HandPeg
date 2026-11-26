@@ -3,6 +3,38 @@
 Release notes for HandPeg, newest first. Notes for 2.1.0 and earlier are on the
 [GitHub Releases page](https://github.com/gitclanged/HandPeg/releases).
 
+## HandPeg v5.7.1 — Timeline & Scrub Feel: Spring-Zoom, Smart Right-Click Menus, Crossfade Seams and a Slice-Preview Ribbon
+
+### New
+- **A true 4x Spring-Zoom.** Resting during a drag (or pressing `Z`) zooms the Timeline itself 4x around the pointer instead of
+  stretching the picture, so the ruler, playhead, handles, waveforms and filmstrips stay crisp and aligned; letting go restores the view.
+- **Right-click menus that know what you clicked.** A fade opens Fade & Ease, a cut seam opens Crossfade, Roll and Heal Through-Edit, a
+  gain line or waveform opens Audio, Auto-Level Speech (-14 LUFS) and Auto-Duck, and the clip body opens a slimmer core menu.
+- **Live hover previews.** Resting on a fade, ease or transition in a menu loops it in the player around the cut; leaving restores
+  the clip and playhead with nothing added to Undo. Effect and Fade menus preview on the paused frame too.
+- **Drag-overlap crossfades and selectable seams.** Dragging a clip over its neighbour makes a live crossfade (Linear or Equal Power).
+  Click a seam to select it: `Ctrl+T` adds a crossfade, `Delete` heals a through-edit, `,` and `.` roll it a frame.
+- **Top & Tail and Ctrl+drag clones.** `Shift+Q` / `Shift+E` (or `[` / `]`) ripple-trim a clip's start or end to the playhead; trims
+  show their delta and length beside the Ghost Trim Tails, and Ctrl+drag duplicates a clip in one Undo step.
+- **Slice-Preview ribbon.** Scrubbing slowly over video fades in a strip of neighbouring frames above the playhead, drawn by the
+  GPU compositor; fast scrubs leave it asleep.
+- **Keyframed Speed Ramps.** The Speed & Time card shapes speed over a clip's length; the clip and its linked Cutouts and audio resize
+  to the ramp's real length, so the end of a ramp no longer plays black.
+- **Player tools.** Find Layer (X-Ray) shows why a clip is hidden or silent with a one-click fix and jumps to it on the Timeline;
+  Social Safe Zones and the Aspect Sandbox check vertical framing; EasyCut (`1`-`9`); a `+ Side Window` title-bar button.
+
+### Changes
+- **Scrubbing follows the pointer frame for frame.** The playhead reads the cursor once per displayed frame and seeks once per frame;
+  the cursor-locked scrub pointer can be turned off in Settings.
+- **Touchpads.** Two-finger scrolling pans the Timeline in both directions and orbits the 3D Exploded View; `Alt + Scroll` sets a
+  track's height. Ducking curves on waveforms can be dragged.
+- **Color Match** is a control of its own beside the player, and the grade wipe follows edits without polling.
+
+### Fixes
+- **Cold clicks on the Timeline decode first.** Background pre-roll and hover decodes yield the video decoder to the frame you asked for.
+- **Project tabs switch through one controller,** so a fast switch can no longer leave two tabs half active.
+- **Windows and the player line up at every display scale** from 100 % to 250 % and on 16:9, 16:10, 3:2 and 21:9 screens.
+
 ## HandPeg v5.6.4 — A Three-Column Color Studio, a Live YRGB Histogram, and Smooth Scrubbing
 
 ### New

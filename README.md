@@ -19,6 +19,10 @@ without the timeline lagging.
 
 ![The Export tab's three columns under the player: Preset & Format with the Export Presets selector on YouTube Shorts and a hardware H.264 encoder; Quality, Bitrate & Resolution at 1080 x 1920 with the project's frame rate; and Audio & Output with the project's sample rate, the Live Encoded Preview button and the Projected Output summary](docs/screenshots/export-tab-v5.4.png)
 
+![The editor with a gameplay recording open: a vertical frame in the player with its layer gizmo, the Effects pane's Speed & Time card with the new Speed Ramp graph beside the Color Studio's wheels and YRGB curves, and the Timeline's cut clips with their HUD Cutout Sub-Lanes](docs/screenshots/timeline-workspace-v5.7.png)
+
+![Right-clicking a cut seam on the Timeline: the seam is selected and its own menu offers Add Crossfade (Ctrl+T), Crossfade Length, Audio Curve, Roll Cut 1 Frame Earlier or Later, Roll Cut to Playhead and Heal Through-Edit](docs/screenshots/seam-menu-v5.7.png)
+
 ![The Color Studio as a three-column deck beside the player: Lift, Gamma and Gain wheels above the Color Match card with Pick Target, Reference and Match Strength; the Master curve lifted over the live YRGB histogram of the graded picture, with its YRGB, RGB and Luma pills; and Basics & LUT with a warmer Temperature, more Contrast and Saturation, while the vertical gameplay frame shows in the player](docs/screenshots/color-studio-deck-v5.6.png)
 
 ![The Cutout Studio opened from the Timeline on a video with an older Overwatch preset: its three Cutouts listed by name (Killfeed with 2 shapes, Health & Name with 4, Abilities & Ammo with 6), their outlines traced over a still of the game, the Source Navigator and Output Stage beside it, and the Game Preset Name filled in as Overwatch](docs/screenshots/cutout-studio-v5.6.png)
@@ -32,6 +36,10 @@ without the timeline lagging.
   reorder). A tab you have been in stays live in memory, so switching back is a swap rather than a reload. Each tab keeps its
   own window layout and its own 3D view and camera. Closing HandPeg asks only when a tab holds unsaved work, and the tab in
   front keeps a crash-recovery copy while you edit.
+- **Timeline feel (new in 5.7).** A true 4x Spring-Zoom around the pointer while you drag, right-click menus that match what
+  you clicked (fade, cut seam, gain line or clip), live looping previews of fades and transitions on hover, drag-overlap
+  crossfades and selectable seams, Top & Tail (`Shift+Q` / `Shift+E`), Ctrl+drag clones, a frame-exact cursor-locked scrub and a
+  Slice-Preview ribbon of neighbouring frames when you scrub slowly.
 - **Tethers and nested tracks.** Drop a clip on another clip's bottom band to tether it (a webcam that follows its gameplay
   clip in time), and drag a track's header onto another's to nest it as a Sub-Lane. Fast drags glide over tracks; a short rest
   drops the clip where the pointer is.
@@ -56,7 +64,7 @@ without the timeline lagging.
   over a live YRGB histogram of the graded picture (Ctrl + Click on the player drops a curve point at that pixel's tone).
   Color Match grades one clip to look like another by two clicks, blended in with Match Strength, and holding `\` shows the
   picture before the grade.
-- **Speed & Pitch.** Play a clip from 0.10x to 16x, with Smooth Slow-Mo's optical-flow in-between frames and sound that keeps
+- **Speed & Pitch.** Play a clip from 0.10x to 16x or shape it with a keyframed Speed Ramp, with Smooth Slow-Mo's optical-flow in-between frames and sound that keeps
   its pitch; Ripple Timeline moves the clips after it to fit.
 - **Multi-track audio.** Each audio stream of a recording gets its own Sub-Lane under its clip. Studio Voice (denoise,
   presence and a broadcast leveller in one card), a De-Esser and a parametric EQ are effect cards; the Master Meter pane
@@ -76,8 +84,8 @@ From the [latest release](https://github.com/gitclanged/HandPeg/releases/latest)
 - `HandPeg-win-Setup.exe`: the installer (Windows 10 or 11, x64). It updates itself.
 - `HandPeg-win-arm64-Setup.exe`: the native installer for Windows on ARM (Snapdragon PCs). It updates itself from the ARM64
   releases.
-- `HandPeg-5.6.4-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
-- `HandPeg-5.6.4-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
+- `HandPeg-5.7.1-win-x64-Portable.zip` (about 7 MB): unzip and run `HandPeg.exe`.
+- `HandPeg-5.7.1-win-arm64-Portable.zip` (about 7 MB): the same for Windows on ARM.
 
 HandPeg runs on Microsoft's .NET 10 Desktop Runtime, and neither the installers nor the zips need it installed first. On a PC
 without it (an older .NET such as .NET 8 is not enough), `HandPeg.exe` asks the first time it starts: download .NET 10 for
