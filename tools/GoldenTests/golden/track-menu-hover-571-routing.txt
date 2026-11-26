@@ -1,0 +1,15 @@
+# Each region of a clip picks its own menu (header and other rows keep the track menu); the loop window and its wrap.
+ok: a fade handle, wedge or curve (in or out, its own sound's too): the Fade & Ease menu
+ok: a cut seam: the Seam menu; a seam region with no seam found falls back to the core menu
+ok: the gain line or the waveform: the Audio & Gain menu
+ok: the body: the slim core clip menu
+ok: a header, an empty spot and an effect lane keep the track menu (FillTrackMenu)
+ok: a request made the old way (fade flag only) routes by its flag
+ok: each style shows its ease: Dissolve Linear, wipes Ease In-Out, slides Ease Out, Zoom Overshoot
+ok: a 0.5 s fade at 10 s loops 1 s round its middle ((9.75, 10.75))
+ok: a 2 s crossfade loops at most 2 s, centred ((20, 22))
+ok: held inside the Sequence: from 0 at its start ((0, 1)), two frames clear of its end (58.933-59.933) so play never pauses there
+ok: nothing to loop in a Sequence too short, or round no time
+ok: the pump wraps to the window's start a refresh before its end (or once past it, or run before it), else plays on
+ok: the wrap is posted to the seek mail-slot from the pump (one per pass, never over a pending seek), not through the UI thread's Seek
+ok: the menu's window is pre-decoded with idle-priority hints (at most two clips) while the menu is open
