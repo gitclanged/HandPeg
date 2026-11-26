@@ -1,0 +1,11 @@
+# SpeedRamp.Fit (5.7.1): the clip keeps its file span; keys re-timed (speeds kept), the exact length, the average speed, the room's clamp.
+   slow 1x->0.5x over 4 s, span 4 s: 0:1x 5.333:0.5x, 5.333 s at 0.75x
+ok: a slow ramp lengthens the clip to the exact length that plays the same 4 s of its file (16/3 s), its average speed 0.75x
+ok: its keys re-time with it (times x 4/3) and keep their speeds: the curve's shape over the clip is the one drawn
+   fast 1x->3x over 4 s, span 4 s: 0:1x 2:3x, 2 s at 2x
+ok: a fast ramp shrinks it to 2 s (never past the file's end), 2x average
+ok: an eased ramp's fitted length (1.081 s) plays exactly its 2.5 s span
+ok: cleared, a clip at its ramp's average speed keeps its length and span
+ok: with 5 s of room the slow ramp is clamped at 5 s (Clamped), its unclamped length still reported
+ok: a shrinking ramp is never clamped
+ok: a span that is not a number changes nothing

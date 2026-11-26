@@ -1,0 +1,13 @@
+# Ramp auto-duration with Ripple Timeline on (5.7.1): fast shrinks, slow lengthens, the family follows, what follows moves; one Undo step.
+   fast, ripple on: 0-2, 2-6, 3-5, 0-2, 0-2
+ok: a fast ramp shrinks the clip to 2 s, what follows moves up as far on every track, its stream lane and Cutout shrink with it
+ok: its keys re-time to the new length (0:1x 2:3x) on the clip and its family; its base speed is the average (2x)
+ok: it still plays the same 4 s of its file
+ok: one undo step for the ramp, the fit, the family and the ripple
+ok: Undo puts every clip, the speed and the constant speed (no ramp) back at once
+ok: Redo makes the fitted ramp again
+   slow, ripple on: 0-5.333, 5.333-9.333, 6.333-8.333, 0-5.333, 0-5.333
+ok: a slow ramp lengthens the clip to 5.333 s, what follows moves on 1.333 s, nothing moved twice, the family grows with it
+ok: its keys stretch with it (0:1x 5.333:0.5x) at the 0.75x average (0.75x)
+ok: Clear keeps the clip's length (it runs at the ramp's average speed)
+ok: the card's fit (Ripple Timeline on) closes up after a shrink

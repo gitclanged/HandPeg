@@ -419,4 +419,153 @@ public partial class MainViewModel
             : now.Count == 1 ? $"Playing {now[0].DisplayName} on its own. Press its button again to stop; click another's to hear them together (Alt-click: alone)."
             : $"Playing {string.Join(", ", now.Select(t => t.DisplayName))} together, without the rest. Alt-click a track's button to hear it alone.";
     }
+
+    // ----- Speed Ramp auto-duration (Pass 5.7.1) -----
+    // A ramp keeps the clip's source span: shaping changes how long the span takes to play, never how much of the file plays, so a fast
+    // ramp no longer runs past the file's end (a black tail) and a slow one no longer cuts its end off. SpeedRamp.Fit re-times the keys and
+    // gives the exact length; the clip and its speed family (stream lanes, Cutouts) take it in one document edit, rippling per Ripple
+    // Timeline. Not rippling, a clip that grows stops at the next clip on its track or theirs (user decision Q2: clamp and warn).
+
+    /// <summary>What <see cref="FitClipToRamp(Layer, IReadOnlyList{Keyframe}, double, bool)"/> did: fitted, stopped at the next clip, length, file seconds lost.</summary>
+    public readonly record struct RampFitOutcome(bool Fitted, bool Clamped, double Duration, double LostSeconds);
+
+    /// <summary>File seconds a clip's view plays now (its ramp or constant speed over its length), held to what is left of the file.</summary>
+    public double RampSourceSpan(Layer clip)
+    {
+        if (ClipOf(clip) is not { PlaysFile: true } model)
+            return 0;
+
+        var span = SpeedRamp.MediaSeconds(clip.SpeedKeys, model.Speed, model.Duration);
+        return model.WholeDuration > 0 ? Math.Min(span, Math.Max(model.WholeDuration - model.MediaOffset, 0)) : span;
+    }
+
+    /// <summary>The fit the card's commit would make (its live length and clamp note while shaping); no edit.</summary>
+    public SpeedRampFit PreviewRampFit(Layer clip, IReadOnlyList<Keyframe> keys, double sourceSpan) =>
+        ClipOf(clip) is { PlaysFile: true } model
+            ? SpeedRamp.Fit(keys, model.Speed, model.Duration, sourceSpan, AppSettings.Current.SpeedRipplesTimeline ? double.PositiveInfinity : RampRoom(model))
+            : default;
+
+    /// <summary>Sets a clip's speed ramp (empty: constant speed) on it and its family and fits them, as one Undo step (its own checkpoint).</summary>
+    public RampFitOutcome SetSpeedRamp(Layer clip, IReadOnlyList<Keyframe> keys, bool ripple)
+    {
+        if (IsRestoringTimeline || ClipOf(clip) is not { PlaysFile: true } model)
+            return default;
+
+        var span = RampSourceSpan(clip);
+        Checkpoint(keys.Count == 0 ? $"clear the speed ramp of {clip.Name}" : $"ramp the speed of {clip.Name}");
+        clip.SetSpeedKeys(keys);
+        foreach (var member in SpeedFamilyOf(model))
+            ViewOf(member)?.SetSpeedKeys(keys);
+        return FitClipToRamp(clip, clip.SpeedKeys, span, ripple);
+    }
+
+    /// <summary>Fits per <see cref="AppSettings.SpeedRipplesTimeline"/> (the Speed &amp; Time card).</summary>
+    public RampFitOutcome FitClipToRamp(Layer clip, IReadOnlyList<Keyframe> keys, double sourceSpan) =>
+        FitClipToRamp(clip, keys, sourceSpan, AppSettings.Current.SpeedRipplesTimeline);
+
+    /// <summary>
+    /// Fits a clip and its speed family to the ramp <paramref name="keys"/> (shaped over its current length) so they play
+    /// <paramref name="sourceSpan"/> file seconds (the span before the gesture): keys re-timed, length the exact integral, base speed the
+    /// ramp's average. With <paramref name="ripple"/> what follows moves by the change (all tracks or its own, per Ripple All Tracks);
+    /// without, a growing clip stops at the next clip and the status bar says so. No undo step of its own: the caller checkpointed before
+    /// the ramp gesture, so gesture, fit and family are one step.
+    /// </summary>
+    public RampFitOutcome FitClipToRamp(Layer clip, IReadOnlyList<Keyframe> keys, double sourceSpan, bool ripple)
+    {
+        if (IsRestoringTimeline || ClipOf(clip) is not { PlaysFile: true } model || Document.TrackOf(model) is null || !(model.Duration > 0.001))
+            return default;
+
+        var family = SpeedFamilyOf(model);
+        var left = model.WholeDuration > 0 ? Math.Max(model.WholeDuration - model.MediaOffset, 0) : double.PositiveInfinity;
+        var span = Math.Min(sourceSpan > 0 && double.IsFinite(sourceSpan) ? sourceSpan : SpeedRamp.MediaSeconds(keys, model.Speed, model.Duration), left);
+        var fit = SpeedRamp.Fit(keys, model.Speed, model.Duration, span, ripple ? double.PositiveInfinity : RampRoom(model));
+        var rate = Document.FrameRate;
+        var frame = rate.IsValid ? rate.Denominator / (double)rate.Numerator : 1 / 60.0;
+
+        // The base speed to the 0.001 the document keeps, never above the average (beyond the keys' microsecond rounding): the
+        // constant-speed file bound stays at or past the ramp's own.
+        var speed = Math.Round(fit.Speed, 3);
+        if (speed > fit.Speed + 1e-6)
+            speed -= 0.001;
+        speed = Math.Clamp(speed, Layer.SlowestSpeed, Layer.FastestSpeed);
+        var start = model.Start;
+        var co = family.Where(c => Math.Abs(c.Start - start) < 1e-6 && Math.Abs(c.End - model.End) < 1e-6).ToList();
+        var all = AppSettings.Current.RippleAllTracks;
+        if (!Edit($"fit {clip.Name} to its speed ramp", edit =>
+            {
+                if (ripple)
+                {
+                    // As SetClipSpeed: growing, followers move before the family grows; shrinking, the family shrinks first.
+                    var grows = speed < model.Speed;
+                    if (!grows)
+                    {
+                        foreach (var child in family)
+                            edit.SetClipSpeed(child, speed);
+                    }
+
+                    edit.SetClipSpeed(model, speed, ripple: true, rippleAll: all);
+                    if (grows)
+                    {
+                        foreach (var child in family)
+                            edit.SetClipSpeed(child, speed);
+                    }
+                }
+                else
+                {
+                    // A new speed keeps the constant span and pushes what its growth runs into: first bring each end in (a frame short)
+                    // so that span at the new speed stops before the next clip; the exact end is set below.
+                    foreach (var piece in family.Prepend(model))
+                    {
+                        if (NextOnTrack(piece) is { } next && piece.Start + piece.Duration * piece.Speed / speed > next.Start - 1e-6)
+                            edit.TrimClipEnd(piece, piece.Start + Math.Max((next.Start - piece.Start) * speed / piece.Speed - frame, TimelineDocument.MinimumClipSeconds));
+                        edit.SetClipSpeed(piece, speed);
+                    }
+                }
+
+                // The exact length (the respeed lands within the 0.001 rounding of the speed); the co-timed family follows the clip's end.
+                if (Math.Abs(model.End - (start + fit.Duration)) > 1e-6)
+                    edit.TrimClipEnd(model, start + fit.Duration, ripple, all);
+                foreach (var child in co)
+                {
+                    if (Math.Abs(child.End - model.End) > 1e-6)
+                        edit.TrimClipEnd(child, model.End);
+                }
+            }, undoable: false))
+            return default;
+
+        // The re-timed keys, exact (the respeed scaled the look's key times by its rounded stretch).
+        var view = ViewOf(model) ?? clip;
+        view.SetSpeedKeys(fit.Keys);
+        foreach (var member in family)
+            ViewOf(member)?.SetSpeedKeys(fit.Keys);
+
+        var played = SpeedRamp.MediaSeconds(fit.Keys, speed, model.Duration);
+        var clamped = fit.Clamped && model.End < start + fit.Length - frame / 2;
+        var lost = clamped ? Math.Max(span - played, 0) : 0;
+        if (clamped)
+            StatusText = $"{clip.Name} stops at the next clip (Ripple Timeline is off): it plays {TimeDisplay.Format(lost)} less of its file.";
+        else
+            Log($"Fitted {clip.Name} to its speed ramp: it now runs {TimeDisplay.Format(model.Start)} to {TimeDisplay.Format(model.End)}");
+        return new RampFitOutcome(true, clamped, model.Duration, lost);
+    }
+
+    // Clips sharing a clip's source time (stream lanes, Cutouts), as SetClipSpeed takes them.
+    private List<TimelineClip> SpeedFamilyOf(TimelineClip model) =>
+        [.. Document.Tracks.SelectMany(t => t.Clips).Where(c => c.ParentClipId == model.Id && c.PlaysFile && string.Equals(c.SourcePath, model.SourcePath, StringComparison.OrdinalIgnoreCase))];
+
+    private TimelineClip? NextOnTrack(TimelineClip clip) =>
+        Document.TrackOf(clip) is { } track && track.IndexOf(clip) is var index and >= 0 && index + 1 < track.Clips.Count ? track.Clips[index + 1] : null;
+
+    // Seconds a clip may run from its start before the next clip on its track or a co-started family member's (infinite when none).
+    private double RampRoom(TimelineClip model)
+    {
+        var room = double.PositiveInfinity;
+        foreach (var piece in SpeedFamilyOf(model).Prepend(model))
+        {
+            if (Math.Abs(piece.Start - model.Start) < 1e-6 && NextOnTrack(piece) is { } next)
+                room = Math.Min(room, next.Start - piece.Start);
+        }
+
+        return room;
+    }
 }
