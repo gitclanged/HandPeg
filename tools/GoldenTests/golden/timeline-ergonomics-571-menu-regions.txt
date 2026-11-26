@@ -1,0 +1,10 @@
+# A right-click names the region it lands on: fade handle or wedge (Fade & Ease), cut seam (Seam), gain line or waveform (Gain), else the body.
+ok: on the fade-in handle (top band, at the fade's end): Fade In
+ok: inside the shaded fade-in wedge, below the handle band: Fade In
+ok: inside the fade-out wedge: Fade Out
+ok: within the edge reach of the cut where A meets B: Seam, A on its left, B on its right, at 4.00 s
+ok: on A's gain line (0 dB): Gain
+ok: A's lower body and B's middle: the body (the core menu)
+ok: an audio clip's waveform middle band: Gain; its top edge: the body
+ok: an empty stretch of a track: no block, the body region (track menu)
+ok: a request made the old way (fade flag) still routes to the fade's region

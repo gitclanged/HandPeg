@@ -1,0 +1,9 @@
+# Trims read out their change and length live; Ctrl+drag on a body clones the clip where it is let go (the original stays), a Ctrl click without travel stays a click.
+ok: an end trim 0.5 s out reads "+0.50 s · 2.50 s"
+ok: a start trim 0.75 s in reads "-0.75 s · 1.25 s" (the change in length)
+ok: under 5 ms reads as no change; seconds to the hundredth
+ok: Ctrl+drag on the body: a clone in flight, no crossfade or trim readout
+ok: let go 2 s on: the host is asked for a clone at 3.00 s, nothing committed, the original back at 1.00 s
+ok: a Ctrl click without travel: a click (the selection toggles), no clone
+ok: cloned to 20 s: a new clip 20-24 s on the same track, the original still 10-14 s
+ok: one Undo takes the clone away

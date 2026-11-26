@@ -122,6 +122,9 @@ public partial class MainWindow
             ["edit.rippleDelete"] = (always, RippleDeleteSelected),
             ["edit.trimStart"] = (source, () => TrimSelectedClip(start: true)),
             ["edit.trimEnd"] = (source, () => TrimSelectedClip(start: false)),
+            // Top & Tail (Pass 5.7.1): ripple-trim the selected clip's start / end to the playhead, closing the gap.
+            [KeybindManager.TrimStartToPlayhead] = (source, () => TopOrTailSelectedClip(start: true)),
+            [KeybindManager.TrimEndToPlayhead] = (source, () => TopOrTailSelectedClip(start: false)),
             ["clip.toggleLink"] = (source, ToggleSelectedClipLink),
             // Target the selection like the toolbar/menus (video clip, audio track, else voice or video at the playhead).
             ["edit.deadAir"] = (source, () => RemoveDeadAir_Click(this, new RoutedEventArgs())),
@@ -426,7 +429,8 @@ public partial class MainWindow
                     _fullscreen.Exit();
                     break;
                 default:
-                    return false;
+                    // Nothing else takes it: a selected cut seam is let go (Interactive Crop's Esc comes later, EndCropOnEscape).
+                    return !focusKeepsIt && !_viewModel.IsInteractiveCropActive && TakeCutSeamKey(e, key);
             }
 
             e.Handled = true;
@@ -458,9 +462,15 @@ public partial class MainWindow
         _ => null,
     };
 
-    /// <summary>Offers an unmodified EasyCut digit or Z to its seam (TakeOverlayKey); true when consumed.</summary>
+    /// <summary>
+    /// Offers a selected cut seam its keys (Ctrl+T, Delete, comma, period, Esc; Pass 5.7.1), then an unmodified EasyCut digit or Z to its
+    /// seam (TakeOverlayKey); true when consumed.
+    /// </summary>
     private bool TakeSeamKey(KeyEventArgs e, Key key)
     {
+        if (TakeCutSeamKey(e, key))
+            return true;
+
         var focused = Keyboard.FocusedElement;
         if (Keyboard.Modifiers != ModifierKeys.None || focused is TextBoxBase or PasswordBox or ComboBox or ComboBoxItem
             || KeyBelongsToFocus(KeybindManager.ChordOf(e), focused))

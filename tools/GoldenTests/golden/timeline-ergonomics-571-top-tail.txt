@@ -1,0 +1,8 @@
+# Top & Tail ripple-trims the clip's start or end to the playhead and what follows moves up, one step of Undo; Shift+Q / Shift+E and [ / ] on WASD, Q / W elsewhere.
+ok: Top at 11 s
+ok: the first clip lost its first second (10-13 s, from 1 s into its file), the next moved up (13.00-17.00 s)
+ok: one Undo puts both back
+ok: Tail at 12.5 s
+ok: the first ends at 12.5 s and the next follows its end
+ok: the playhead outside the clip: nothing changes, the status says to put it inside
+ok: WASD (Default): Top on Shift+Q and [, Tail on Shift+E and ] (Q / E stay frame steps)

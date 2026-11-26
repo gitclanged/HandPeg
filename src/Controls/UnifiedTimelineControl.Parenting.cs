@@ -591,6 +591,7 @@ public sealed partial class UnifiedTimelineControl
         _drag = StartDrag(row, block, laid, modifiers);
         _drag.Keys = modifiers;
         _lastPointer = laid;
+        _dragPointer = point;
         Settle.Begin(point, nowMs);
         BeginDrag();
     }
@@ -615,6 +616,7 @@ public sealed partial class UnifiedTimelineControl
             return false;
         drag.Keys = modifiers;
         _lastPointer = Laid(point);
+        _dragPointer = point;
         FollowPointer(drag, point, _lastPointer, nowMs);
         return true;
     }
@@ -797,6 +799,8 @@ public sealed partial class UnifiedTimelineControl
     /// <summary>Pointer move (any button): spring dwell and ghost while dragging, the ducking drag, hover strips. True when consumed.</summary>
     private bool TakeMove(Point point)
     {
+        if (IsDragging)
+            _dragPointer = point;
         NoteSpringMotion(point);
         if (_duckDrag is { } duck)
         {
@@ -809,13 +813,25 @@ public sealed partial class UnifiedTimelineControl
     }
 
     // ----- Spring-Zoom -----
+    // True view zoom (Pass 5.7.1): a 300 ms rest (or Z) during a springable drag asks the host for the view ViewSpan / 4 anchored at the
+    // pointer's time (SpringViewRequested); the host rebuilds rows at that scale even mid-drag and the drag is re-seated on them
+    // (ReseatDrag, Family.cs), so ruler, playhead, waveforms, filmstrips, handles and labels stay crisp and 1:1. Release or Z springs back
+    // to the exact view the spring left.
 
     /// <summary>Magnification of a spring-zoomed drag, the pointer rest that springs it (ms), the rest radius (DIPs) and the spring (ms).</summary>
     internal const double SpringFactor = 4, SpringDwellMs = 300, SpringStillDips = 3, SpringMs = 180;
 
-    // Time-area magnification about the anchor (control x), after the scroll shift; current, start and target factors and start tick.
-    private readonly ScaleTransform _springScale = new();
-    private double _springZoom = 1, _springFrom = 1, _springTarget = 1, _springAnchor;
+    /// <summary>
+    /// Spring-Zoom view: the host shows it at once (rows rebuilt at its scale, even mid-drag). <see cref="SpringView.Home"/> restores the
+    /// view the spring left exactly (fitted stays fitted).
+    /// </summary>
+    public event Action<SpringView>? SpringViewRequested;
+
+    // Current, start and target magnification and the start tick; the view the spring left (seconds) and its anchor (time, and fraction
+    // of the time area, held under the pointer).
+    private double _springZoom = 1, _springFrom = 1, _springTarget = 1;
+    private (double Start, double Span)? _springHome;
+    private double _springAnchorSeconds, _springAnchorFraction;
     private long _springAt;
     private DispatcherTimer? _springTick, _springDwell;
 
@@ -823,8 +839,8 @@ public sealed partial class UnifiedTimelineControl
     private Point _springRest;
     private bool _springArmed;
 
-    /// <summary>True while the time area is magnified (or springing).</summary>
-    internal bool IsSpringZoomed => _springTarget > 1 || _springZoom > 1.0001;
+    /// <summary>True while the view is spring-zoomed (or springing either way).</summary>
+    internal bool IsSpringZoomed => _springTarget > 1 || _springZoom > 1.0001 || _springHome is not null;
 
     /// <summary>The current magnification (1 = none).</summary>
     internal double SpringZoom => _springZoom;
@@ -832,11 +848,11 @@ public sealed partial class UnifiedTimelineControl
     /// <summary>True during a drag that spring-zooms (Z then toggles it).</summary>
     internal bool CanSpringZoom => Springable;
 
+    /// <summary>Test seam: the view the spring left (start, span in seconds); null when not spring-zoomed.</summary>
+    internal (double Start, double Span)? SpringHome => _springHome;
+
     // A drag that spring-zooms: clip move, trims and roll, fade, crossfade, gain and ducking.
     private bool Springable => _drag is { Kind: not BlockEdit.Slip } || _fadeDrag is not null || _crossfadeDrag is not null || _gainDrag is not null || _duckDrag is not null;
-
-    /// <summary>Control x to unmagnified control x (identity unless spring-zoomed): pointer travel maps 1/zoom while magnified.</summary>
-    private double SpringX(double x) => _springZoom <= 1.0001 ? x : _springAnchor + (x - _springAnchor) / _springZoom;
 
     // Restarts the rest timer whenever the pointer leaves the rest radius; feeds the Ghost Playhead.
     private void NoteSpringMotion(Point point)
@@ -864,7 +880,10 @@ public sealed partial class UnifiedTimelineControl
     }
 
     /// <summary>Z during a spring-zooming drag: toggles the magnification (about the pointer when springing in). False when no such drag.</summary>
-    internal bool SpringZoomKey()
+    internal bool SpringZoomKey() => SpringZoomAt(Mouse.GetPosition(this).X);
+
+    /// <summary>Test seam (and Z): toggles the spring about control x <paramref name="x"/>. False when no springable drag.</summary>
+    internal bool SpringZoomAt(double x)
     {
         if (!Springable)
             return false;
@@ -872,17 +891,29 @@ public sealed partial class UnifiedTimelineControl
         if (_springTarget > 1)
             SpringTo(1);
         else
-            SpringIn(Mouse.GetPosition(this).X);
+            SpringIn(x);
         return true;
     }
 
+    // Anchors the spring at control x (its time held at its fraction of the time area) and springs to SpringFactor. Springing in again
+    // mid-way re-anchors in the current view, so the picture never jumps.
     private void SpringIn(double x)
     {
-        _springAnchor = Math.Clamp(x, _headerWidth, _headerWidth + Math.Max(TimeAreaWidth, 0));
+        var width = TimeAreaWidth;
+        if (width <= 0 || PixelsPerSecond <= 0)
+            return;
+
+        var at = Math.Clamp(x, _headerWidth, _headerWidth + width);
+        var home = _springHome ??= (_viewStart, _viewSpan);
+        var fraction = (at - _headerWidth) / width;
+
+        // Start = anchor - fraction * span must equal the current view's start at the current zoom.
+        var span = home.Span / Math.Max(_springZoom, 1);
+        (_springAnchorSeconds, _springAnchorFraction) = (_viewStart + fraction * span, fraction);
         SpringTo(SpringFactor);
     }
 
-    /// <summary>Drag over (EndDrag): springs back to 1x and snaps the Ghost Playhead home.</summary>
+    /// <summary>Drag over (EndDrag): springs back to the view the spring left and snaps the Ghost Playhead home.</summary>
     private void SpringRelease()
     {
         _springDwell?.Stop();
@@ -905,7 +936,17 @@ public sealed partial class UnifiedTimelineControl
         SpringStep();
     }
 
-    // Ease-out cubic toward the target; the labels, skim and playhead lines (not magnified) hide while magnified.
+    /// <summary>Test seam (and unload): ends a spring now at its target, its last view asked of the host.</summary>
+    internal void FinishSpring()
+    {
+        if (_springTick is not { IsEnabled: true } && _springHome is null)
+            return;
+
+        _springAt = Environment.TickCount64 - (long)SpringMs - 1;
+        SpringStep();
+    }
+
+    // Ease-out cubic toward the target, each step a real view: span = home span / zoom, the anchor's time at its fraction.
     private void SpringStep()
     {
         var t = Math.Clamp((Environment.TickCount64 - _springAt) / SpringMs, 0, 1);
@@ -916,11 +957,32 @@ public sealed partial class UnifiedTimelineControl
             _springTick?.Stop();
         }
 
-        (_springScale.CenterX, _springScale.ScaleX) = (_springAnchor, _springZoom);
-        var plain = _springZoom <= 1.0001 ? 1.0 : 0.0;
-        (_labels.Opacity, _skim.Opacity, _playhead.Opacity) = (plain, plain, plain);
-        _overlayDirty = true;
-        InvalidateVisual();
+        if (_springHome is not { } home)
+            return;
+
+        if (_springTarget <= 1 && _springZoom <= 1.0001)
+        {
+            (_springZoom, _springHome) = (1, null);
+            _springTick?.Stop();
+            Raise(() => SpringViewRequested?.Invoke(new SpringView(home.Start, home.Span, Home: true)));
+            return;
+        }
+
+        var span = home.Span / Math.Max(_springZoom, 1);
+        var start = _springAnchorSeconds - _springAnchorFraction * span;
+        Raise(() => SpringViewRequested?.Invoke(new SpringView(start, span, Home: false)));
+    }
+
+    /// <summary>
+    /// The view a spring at <paramref name="zoom"/> shows from a home view: span / zoom, the time under <paramref name="anchorX"/> (DIPs from
+    /// the time area's left) held there. Pure (goldens).
+    /// </summary>
+    internal static (double Start, double Span) SpringViewOf(double homeStart, double homeSpan, double anchorX, double timeAreaWidth, double zoom)
+    {
+        var fraction = timeAreaWidth > 0 ? Math.Clamp(anchorX / timeAreaWidth, 0, 1) : 0.5;
+        var anchor = homeStart + fraction * homeSpan;
+        var span = homeSpan / Math.Max(zoom, 1);
+        return (anchor - fraction * span, span);
     }
 
     private DispatcherTimer NewTimer(double ms, EventHandler tick)

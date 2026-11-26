@@ -581,9 +581,14 @@ public sealed class AudioMixer : IDisposable
         return (float)g;
     }
 
-    // Fade level at a fraction of its length (EasingCurves; Linear matches afade).
-    private static double Curve(double u, EasingType easing) =>
-        easing == EasingType.Linear ? u : EasingCurves.Evaluate(u, new Keyframe(0, 0, easing));
+    // Fade level at a fraction of its length (EasingCurves; Linear matches afade). EaseOut is a crossfade side's equal-power law
+    // (AudioProgramBuilder.EasingOf): sin(u * PI / 2) in, and so cos out (u runs back from the end), whose squares sum to one.
+    internal static double Curve(double u, EasingType easing) => easing switch
+    {
+        EasingType.Linear => u,
+        EasingType.EaseOut => Math.Sin(Math.Clamp(u, 0, 1) * Math.PI / 2),
+        _ => EasingCurves.Evaluate(u, new Keyframe(0, 0, easing)),
+    };
 
     // Sequence fades over the mix (one second each), and silence outside the sequence.
     private void SequenceFades(AudioProgram program, Span<float> output, long frame, int frames, double from, double to)

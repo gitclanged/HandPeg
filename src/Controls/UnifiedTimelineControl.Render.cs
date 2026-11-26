@@ -409,6 +409,36 @@ public sealed partial class UnifiedTimelineControl
         }
     }
 
+    /// <summary>
+    /// Whether a lane draws thumbnails and labels: full-detail lanes, and mini-stack lanes once their visible height reaches the full-detail
+    /// height (22 DIPs), so expanding or collapsing stacks reveal pictures smoothly; never the collapsed audio summary bar.
+    /// </summary>
+    private static bool ShowsPictures(in Lane lane) => !lane.Summary && lane.Height >= FullDetailHeight;
+
+    /// <summary>Test seam: whether the lane of the row with this key draws thumbnails and labels now (ShowsPictures); null when not laid.</summary>
+    internal bool? LaneShowsPictures(object key)
+    {
+        foreach (var lane in _lanes)
+        {
+            if (Equals(lane.Row.Key, key))
+                return ShowsPictures(lane);
+        }
+
+        return null;
+    }
+
+    /// <summary>Test seam: the laid height of the lane of the row with this key; NaN when not laid.</summary>
+    internal double LaneHeightOf(object key)
+    {
+        foreach (var lane in _lanes)
+        {
+            if (Equals(lane.Row.Key, key))
+                return lane.Height;
+        }
+
+        return double.NaN;
+    }
+
     // True if a row's audio feeds its collapsed stack's summary bar (unmuted audio-stack lane).
     private static bool HeardInBar(TimelineRow row) => row.Stack == ChildStack.Audio && (row.State & RowSwitches.Muted) == 0;
 
@@ -545,13 +575,16 @@ public sealed partial class UnifiedTimelineControl
         drawing.DrawGeometry(block.Fill, null, shape);
         drawing.PushClip(shape);
 
+        // Thumbnails by visible height (Pass 5.7.1), not by openness: an opening or closing mini-stack shows its pictures as soon as its
+        // lanes are tall enough, never solid bars that flash into thumbnails at the end.
         var pictures = false;
-        if (detailed && scale > 0 && block.Film is { Frames.Count: > 0 } film)
+        var showsPictures = detailed || ShowsPictures(lane);
+        if (showsPictures && scale > 0 && block.Film is { Frames.Count: > 0 } film)
         {
             DrawFilm(drawing, film, rect, contentLeft, from, to, scale);
             pictures = true;
         }
-        else if (detailed && block.Frames is { } frames)
+        else if (showsPictures && block.Frames is { } frames)
         {
             for (var i = 0; i < frames.Count; i++)
             {
@@ -1254,7 +1287,8 @@ public sealed partial class UnifiedTimelineControl
         var sliding = CurrentShift(PixelsPerSecond);
         foreach (var lane in _lanes)
         {
-            if (lane.Mini || lane.Height < 14)
+            // A mini-stack lane is labelled once tall enough (ShowsPictures), so labels grow in with the stack too.
+            if ((lane.Mini && !ShowsPictures(lane)) || lane.Height < 14)
                 continue;
 
             if (lane.Row.Kind == TimelineRowKind.Empty)
