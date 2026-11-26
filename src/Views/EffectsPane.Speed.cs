@@ -710,6 +710,9 @@ public partial class EffectsPane
     // the clip still has that length, so an Undo clears it).
     private double _rampSpan;
     private SpeedRampFit? _rampLive;
+
+    // The clip's length when the gesture began: the editor shapes keys over it while live fits resize the clip.
+    private double _rampBase;
     private (Guid Clip, double Duration)? _rampClamped;
 
     private StackPanel RampRow(Layer target, bool sound)
@@ -750,10 +753,15 @@ public partial class EffectsPane
         if (!_rampStepTaken)
         {
             _rampDippedBefore = target.SpeedKeys.Any(k => k.Value < 1);
-            (_rampSpan, _rampClamped) = (vm.RampSourceSpan(target), null);
+            (_rampSpan, _rampClamped, _rampBase) = (vm.RampSourceSpan(target), null, vm.ClipOf(target)?.Duration ?? target.Duration);
             vm.Checkpoint(keys.Count == 0 ? $"clear the speed ramp of {target.Name}" : $"ramp the speed of {target.Name}");
             _rampStepTaken = true;
         }
+
+        // Live fits resize the clip mid-gesture: re-time the editor's keys (shaped over the gesture's first length) to its current length.
+        var length = vm.ClipOf(target)?.Duration ?? target.Duration;
+        if (_rampBase > 0 && length > 0 && Math.Abs(length - _rampBase) > 1e-9)
+            keys = [.. keys.Select(k => k with { Time = k.Time * length / _rampBase })];
 
         var family = SpeedFamily(target);
         using (OwnLooks())
@@ -783,6 +791,28 @@ public partial class EffectsPane
         else
         {
             _rampLive = vm.PreviewRampFit(target, target.SpeedKeys, _rampSpan);
+
+            // Preview the fit itself (no past-EOF black tail while shaping): bounds and re-timed keys on the clip and family inside the
+            // gesture's step, resized only when the length moves half a frame (else just the re-timed keys); the release commits the same fit.
+            if (_rampLive is { Duration: > 0 } live && vm.ClipOf(target) is { } model)
+            {
+                var rate = vm.Document.FrameRate;
+                var halfFrame = rate.IsValid ? rate.Denominator / (2.0 * rate.Numerator) : 1 / 120.0;
+                if (Math.Abs(model.Duration - live.Duration) >= halfFrame)
+                {
+                    vm.FitClipToRamp(target, target.SpeedKeys, _rampSpan, AppSettings.Current.SpeedRipplesTimeline, live: true);
+                }
+                else
+                {
+                    using (OwnLooks())
+                    {
+                        target.SetSpeedKeys(live.Keys);
+                        foreach (var member in family)
+                            member.SetSpeedKeys(live.Keys);
+                    }
+                }
+            }
+
             ShowRampNote(target);
             ShowRampLength();
         }

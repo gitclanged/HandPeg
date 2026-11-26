@@ -429,13 +429,26 @@ public partial class MainViewModel
     /// <summary>What <see cref="FitClipToRamp(Layer, IReadOnlyList{Keyframe}, double, bool)"/> did: fitted, stopped at the next clip, length, file seconds lost.</summary>
     public readonly record struct RampFitOutcome(bool Fitted, bool Clamped, double Duration, double LostSeconds);
 
-    /// <summary>File seconds a clip's view plays now (its ramp or constant speed over its length), held to what is left of the file.</summary>
+    /// <summary>
+    /// File seconds a clip's ramp keeps, held to what is left of the file: its ramp's integral over its length when that agrees with its
+    /// selected source range (MediaOffset..MediaEnd) within a fit's rounding (a fitted ramp: the exact span, no drift across edits), else
+    /// the selected range itself (a legacy ramp shaped before auto-duration, whose integral omitted or overran part of the selection).
+    /// </summary>
     public double RampSourceSpan(Layer clip)
     {
         if (ClipOf(clip) is not { PlaysFile: true } model)
             return 0;
 
         var span = SpeedRamp.MediaSeconds(clip.SpeedKeys, model.Speed, model.Duration);
+        var selected = model.MediaEnd - model.MediaOffset;
+        var rate = Document.FrameRate;
+        var frame = rate.IsValid ? rate.Denominator / (double)rate.Numerator : 1 / 60.0;
+        if (clip.SpeedKeys.Count > 0 && selected > 0 && double.IsFinite(selected)
+            && Math.Abs(span - selected) > model.Duration * 0.001 + frame * Math.Max(SpeedRamp.SpeedAt(clip.SpeedKeys, model.Speed, model.Duration), model.Speed))
+        {
+            span = selected;
+        }
+
         return model.WholeDuration > 0 ? Math.Min(span, Math.Max(model.WholeDuration - model.MediaOffset, 0)) : span;
     }
 
@@ -468,9 +481,9 @@ public partial class MainViewModel
     /// <paramref name="sourceSpan"/> file seconds (the span before the gesture): keys re-timed, length the exact integral, base speed the
     /// ramp's average. With <paramref name="ripple"/> what follows moves by the change (all tracks or its own, per Ripple All Tracks);
     /// without, a growing clip stops at the next clip and the status bar says so. No undo step of its own: the caller checkpointed before
-    /// the ramp gesture, so gesture, fit and family are one step.
+    /// the ramp gesture, so gesture, fit and family are one step. <paramref name="live"/>: a shaping preview (no log line or status).
     /// </summary>
-    public RampFitOutcome FitClipToRamp(Layer clip, IReadOnlyList<Keyframe> keys, double sourceSpan, bool ripple)
+    public RampFitOutcome FitClipToRamp(Layer clip, IReadOnlyList<Keyframe> keys, double sourceSpan, bool ripple, bool live = false)
     {
         if (IsRestoringTimeline || ClipOf(clip) is not { PlaysFile: true } model || Document.TrackOf(model) is null || !(model.Duration > 0.001))
             return default;
@@ -542,9 +555,10 @@ public partial class MainViewModel
         var played = SpeedRamp.MediaSeconds(fit.Keys, speed, model.Duration);
         var clamped = fit.Clamped && model.End < start + fit.Length - frame / 2;
         var lost = clamped ? Math.Max(span - played, 0) : 0;
-        if (clamped)
+        // A live (shaping) fit reports nothing: the card's note and length box show it; the release's fit reports.
+        if (clamped && !live)
             StatusText = $"{clip.Name} stops at the next clip (Ripple Timeline is off): it plays {TimeDisplay.Format(lost)} less of its file.";
-        else
+        else if (!live)
             Log($"Fitted {clip.Name} to its speed ramp: it now runs {TimeDisplay.Format(model.Start)} to {TimeDisplay.Format(model.End)}");
         return new RampFitOutcome(true, clamped, model.Duration, lost);
     }
